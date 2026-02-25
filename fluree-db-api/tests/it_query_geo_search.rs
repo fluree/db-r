@@ -18,7 +18,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use serde_json::{json, Value as JsonValue};
 use support::start_background_indexer_local;
 
@@ -117,7 +117,7 @@ async fn query_nearby(
     let result = fluree.query(ledger, &query).await;
     match result {
         Ok(r) => {
-            let json_rows = r.to_jsonld(&ledger.db).expect("jsonld");
+            let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
             json_rows
                 .as_array()
                 .map(|arr| {
@@ -168,7 +168,7 @@ async fn query_nearby_with_distance(
     let result = fluree.query(ledger, &query).await;
     match result {
         Ok(r) => {
-            let json_rows = r.to_jsonld(&ledger.db).expect("jsonld");
+            let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
             json_rows
                 .as_array()
                 .map(|arr| {
@@ -215,17 +215,17 @@ async fn geo_search_time_travel_different_results_at_different_t() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Paris (lat=48.8566, lng=2.3522)
             let ledger = insert_city(&fluree, ledger, "ex:paris", "Paris", 2.3522, 48.8566).await;
-            let _t1 = ledger.db.t;
+            let _t1 = ledger.snapshot.t;
 
             // t=2: Insert London (lat=51.5074, lng=-0.1278) - ~343km from Paris
             let ledger =
                 insert_city(&fluree, ledger, "ex:london", "London", -0.1278, 51.5074).await;
-            let t2 = ledger.db.t;
+            let t2 = ledger.snapshot.t;
 
             // Trigger indexing to build binary index
             let completion = handle.trigger(alias, t2).await;
@@ -272,7 +272,7 @@ async fn geo_search_retraction_removes_point_from_results() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Paris
@@ -281,11 +281,11 @@ async fn geo_search_retraction_removes_point_from_results() {
             // t=2: Insert London
             let ledger =
                 insert_city(&fluree, ledger, "ex:london", "London", -0.1278, 51.5074).await;
-            let _t2 = ledger.db.t;
+            let _t2 = ledger.snapshot.t;
 
             // t=3: Retract London's location
             let ledger = retract_location(&fluree, ledger, "ex:london", -0.1278, 51.5074).await;
-            let t3 = ledger.db.t;
+            let t3 = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t3).await;
@@ -333,7 +333,7 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert Paris with two locations: city center and a point 100km away
@@ -357,7 +357,7 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
             });
 
             let ledger = fluree.insert(ledger, &tx).await.expect("insert").ledger;
-            let t = ledger.db.t;
+            let t = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t).await;
@@ -418,7 +418,7 @@ async fn geo_search_returns_correct_distances() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities
@@ -427,7 +427,7 @@ async fn geo_search_returns_correct_distances() {
                 insert_city(&fluree, ledger, "ex:london", "London", -0.1278, 51.5074).await;
             let ledger =
                 insert_city(&fluree, ledger, "ex:berlin", "Berlin", 13.4050, 52.5200).await;
-            let t = ledger.db.t;
+            let t = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t).await;
@@ -497,7 +497,7 @@ async fn geo_search_respects_limit_returns_nearest() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities at increasing distances from Paris
@@ -507,7 +507,7 @@ async fn geo_search_respects_limit_returns_nearest() {
             let ledger =
                 insert_city(&fluree, ledger, "ex:berlin", "Berlin", 13.4050, 52.5200).await; // ~878km
             let ledger = insert_city(&fluree, ledger, "ex:tokyo", "Tokyo", 139.6917, 35.6895).await; // ~9700km
-            let t = ledger.db.t;
+            let t = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t).await;
@@ -538,7 +538,7 @@ async fn geo_search_respects_limit_returns_nearest() {
             let result = fluree.query(&loaded, &query).await;
             match result {
                 Ok(r) => {
-                    let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
+                    let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
                     let names: Vec<&str> = json_rows
                         .as_array()
                         .map(|arr| {
@@ -595,7 +595,7 @@ async fn geo_search_respects_named_graph_boundaries() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities in default graph (France)
@@ -647,7 +647,7 @@ async fn geo_search_respects_named_graph_boundaries() {
                 .await
                 .expect("insert italy graph")
                 .ledger;
-            let t = ledger.db.t;
+            let t = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t).await;
@@ -676,7 +676,7 @@ async fn geo_search_respects_named_graph_boundaries() {
             let result = fluree.query(&loaded, &default_query).await;
             match result {
                 Ok(r) => {
-                    let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
+                    let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
                     let names: Vec<&str> = json_rows
                         .as_array()
                         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
@@ -737,7 +737,7 @@ async fn sparql_geof_distance_uses_geo_index() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities
@@ -747,7 +747,7 @@ async fn sparql_geof_distance_uses_geo_index() {
             let ledger =
                 insert_city(&fluree, ledger, "ex:berlin", "Berlin", 13.4050, 52.5200).await;
             let ledger = insert_city(&fluree, ledger, "ex:tokyo", "Tokyo", 139.6917, 35.6895).await;
-            let t = ledger.db.t;
+            let t = ledger.snapshot.t;
 
             // Trigger indexing
             let completion = handle.trigger(alias, t).await;
@@ -784,7 +784,7 @@ async fn sparql_geof_distance_uses_geo_index() {
             let result = fluree.query_sparql(&loaded, sparql).await;
             match result {
                 Ok(r) => {
-                    let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
+                    let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
                     println!("SPARQL geof:distance results: {:?}", json_rows);
 
                     // Parse results

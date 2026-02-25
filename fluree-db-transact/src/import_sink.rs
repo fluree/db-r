@@ -12,7 +12,7 @@
 //! ## Spool integration (Tier 2)
 //!
 //! When a [`SpoolContext`] is attached, each triple is also written as a 44-byte
-//! [`RunRecord`](fluree_db_indexer::run_index::RunRecord) to a spool file.
+//! [`RunRecord`](fluree_db_binary_index::RunRecord) to a spool file.
 //! Subject and string IDs are **chunk-local** sequential counters assigned by
 //! per-chunk dictionaries ([`ChunkSubjectDict`], [`ChunkStringDict`]). After all
 //! chunks are parsed, a merge pass deduplicates across chunks and builds remap
@@ -27,15 +27,15 @@ mod inner {
     use crate::generate::{infer_datatype, DT_ID, DT_JSON, DT_LANG_STRING};
     use crate::namespace::{NamespaceRegistry, NsAllocator, SharedNamespaceAllocator, WorkerCache};
     use crate::value_convert::{convert_native_literal, convert_string_literal};
+    use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+    use fluree_db_binary_index::RunRecord;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GraphId, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
-    use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
     use fluree_db_indexer::run_index::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
     use fluree_db_indexer::run_index::spool::{SpoolFileInfo, SpoolWriter};
-    use fluree_db_indexer::run_index::RunRecord;
     use fluree_db_novelty::commit_v2::CommitV2Error;
     use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
     use rustc_hash::FxHashMap;
@@ -368,7 +368,9 @@ mod inner {
                         (ObjKind::NUM_INT.as_u8(), ObjKey::encode_i64(v).as_u64())
                     } else {
                         // Overflow: use shared numbig pool for global handle.
-                        let handle = self.numbig_pool.get_or_insert_bigint(p_id, bi.as_ref());
+                        let handle =
+                            self.numbig_pool
+                                .get_or_insert_bigint(self.g_id, p_id, bi.as_ref());
                         (
                             ObjKind::NUM_BIG.as_u8(),
                             ObjKey::encode_u32_id(handle).as_u64(),
@@ -377,7 +379,9 @@ mod inner {
                 }
                 FlakeValue::Decimal(dec) => {
                     // Use shared numbig pool for global handle.
-                    let handle = self.numbig_pool.get_or_insert_bigdec(p_id, dec.as_ref());
+                    let handle =
+                        self.numbig_pool
+                            .get_or_insert_bigdec(self.g_id, p_id, dec.as_ref());
                     (
                         ObjKind::NUM_BIG.as_u8(),
                         ObjKey::encode_u32_id(handle).as_u64(),
@@ -385,7 +389,7 @@ mod inner {
                 }
                 FlakeValue::Vector(v) => {
                     // Use shared vector pool for global handle.
-                    match self.vector_pool.insert_f64(p_id, v) {
+                    match self.vector_pool.insert_f64(self.g_id, p_id, v) {
                         Ok(handle) => (
                             ObjKind::VECTOR_ID.as_u8(),
                             ObjKey::encode_u32_id(handle).as_u64(),

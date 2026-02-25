@@ -694,7 +694,10 @@ async fn vector_idx_query_syntax_e2e() {
         .query_connection_with_bm25(&search_query)
         .await
         .unwrap();
-    let formatted = result.to_jsonld_async(&ledger.db).await.unwrap();
+    let formatted = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Parse and verify results
     let results: Vec<serde_json::Value> = serde_json::from_value(formatted).unwrap();

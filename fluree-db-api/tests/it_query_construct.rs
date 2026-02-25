@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use serde_json::{json, Map, Value as JsonValue};
 
 fn context_people() -> JsonValue {
@@ -46,7 +46,7 @@ async fn seed_people() -> (
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/construct:people";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -94,7 +94,7 @@ async fn construct_basic() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -122,7 +122,7 @@ async fn construct_no_prefix_context_full_iris() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": {},
@@ -162,7 +162,7 @@ async fn construct_multiple_clauses() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -198,7 +198,7 @@ async fn construct_multiple_clauses_different_subjects() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -223,7 +223,7 @@ async fn construct_at_type_values_are_unwrapped() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     // Only the 4 ex:Person nodes have @type
     let expected = normalize_construct(json!({
@@ -251,7 +251,7 @@ async fn construct_class_patterns_in_template() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -278,7 +278,7 @@ async fn construct_id_only_patterns_produce_no_triples() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -304,7 +304,7 @@ async fn construct_unbound_vars_are_not_included() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
         "@context": ctx,
@@ -341,7 +341,7 @@ async fn construct_value_metadata_displays() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let actual = normalize_construct(result.to_construct(&ledger.db).expect("to_construct"));
+    let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     // Note: Clojure shows a native date object; Rust formats as a typed string.
     let expected = normalize_construct(json!({

@@ -239,13 +239,18 @@ pub struct TripleTemplate {
     /// - `Some(i)`: list element at position `i`
     pub list_index: Option<i32>,
 
-    /// Graph ID for named graphs (maps to RunRecord.g_id in indexer)
+    /// Transaction-local graph ID for named graphs
     ///
     /// - `0`: default graph
     /// - `1`: txn-meta graph (reserved)
     /// - `2+`: user-defined named graphs
     ///
     /// If None, defaults to 0 (default graph).
+    ///
+    /// IMPORTANT: this ID is scoped to the transaction envelope (see `Txn.graph_delta`).
+    /// It is **not** ledger-stable and must be translated via:
+    /// `txn_local_id -> graph IRI (Txn.graph_delta) -> ledger GraphId (GraphRegistry)`
+    /// before doing any per-graph index/range queries.
     pub graph_id: Option<u16>,
 }
 

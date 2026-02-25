@@ -366,17 +366,22 @@ pub async fn info(
         // Non-proxy mode: load ledger and return comprehensive info
         let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
 
-        let t = ledger_state.db.t;
+        let t = ledger_state.snapshot.t;
 
         // Build comprehensive ledger info (at parity with Clojure)
         //
         // By default we return the optimized base payload. Callers can opt into
         // heavier/real-time property details via query params.
         let realtime_details = query.realtime_property_details.unwrap_or(false);
+        let graph_selector = match query.graph.as_deref() {
+            Some(name) => fluree_db_api::ledger_info::GraphSelector::ByName(name.to_string()),
+            None => fluree_db_api::ledger_info::GraphSelector::Default,
+        };
         let opts = fluree_db_api::ledger_info::LedgerInfoOptions {
             realtime_property_details: realtime_details,
             include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
                 || realtime_details,
+            graph: graph_selector,
         };
         let mut info = match &state.fluree {
             crate::state::FlureeInstance::File(f) => {
@@ -475,6 +480,9 @@ pub struct LedgerInfoQuery {
     pub realtime_property_details: Option<bool>,
     /// When true, include `datatypes` under `stats.properties[*]` (indexed view by default).
     pub include_property_datatypes: Option<bool>,
+    /// Which graph to scope stats to (e.g., “default”, “txn-meta”, or a graph IRI).
+    /// Defaults to “default” (g_id = 0).
+    pub graph: Option<String>,
 }
 
 /// Ledger exists response

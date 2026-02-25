@@ -9,8 +9,8 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,7 +20,7 @@ use tracing::Instrument;
 ///
 /// This ensures ORDER BY uses correct term ordering (namespace/name for IRIs,
 /// value semantics for literals) rather than raw ID ordering.
-fn materialize_encoded_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option<Binding> {
+fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Binding> {
     match b {
         Binding::EncodedLit {
             o_kind,
@@ -31,16 +31,17 @@ fn materialize_encoded_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option
             i_val,
             t,
         } => {
-            let val = store.decode_value(*o_kind, *o_key, *p_id).ok()?;
+            let val = gv.decode_value(*o_kind, *o_key, *p_id).ok()?;
             match val {
                 FlakeValue::Ref(sid) => Some(Binding::Sid(sid)),
                 other => {
-                    let dt_sid = store
+                    let dt_sid = gv
+                        .store()
                         .dt_sids()
                         .get(*dt_id as usize)
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
-                    let meta = store.decode_meta(*lang_id, *i_val);
+                    let meta = gv.store().decode_meta(*lang_id, *i_val);
                     Some(Binding::Lit {
                         val: other,
                         dt: dt_sid,
@@ -53,13 +54,13 @@ fn materialize_encoded_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option
         }
         Binding::EncodedSid { s_id } => {
             // Resolve to Sid for correct namespace/name ordering
-            let iri = store.resolve_subject_iri(*s_id).ok()?;
-            Some(Binding::Sid(store.encode_iri(&iri)))
+            let iri = gv.store().resolve_subject_iri(*s_id).ok()?;
+            Some(Binding::Sid(gv.store().encode_iri(&iri)))
         }
         Binding::EncodedPid { p_id } => {
             // Resolve to Sid for correct namespace/name ordering
-            let iri = store.resolve_predicate_iri(*p_id)?;
-            Some(Binding::Sid(store.encode_iri(iri)))
+            let iri = gv.store().resolve_predicate_iri(*p_id)?;
+            Some(Binding::Sid(gv.store().encode_iri(iri)))
         }
         _ => None,
     }
@@ -72,12 +73,12 @@ fn materialize_encoded_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option
 fn materialize_sort_keys_in_rows(
     rows: &mut [Vec<Binding>],
     sort_col_indices: &[usize],
-    store: &BinaryIndexStore,
+    gv: &BinaryGraphView,
 ) {
     for row in rows.iter_mut() {
         for &col_idx in sort_col_indices {
             if let Some(existing) = row.get(col_idx) {
-                if let Some(materialized) = materialize_encoded_for_sort(existing, store) {
+                if let Some(materialized) = materialize_encoded_for_sort(existing, gv) {
                     row[col_idx] = materialized;
                 }
             }
@@ -436,11 +437,11 @@ impl Operator for SortOperator {
                     "sort_execute",
                     total_rows = all_rows.len(),
                     sort_columns = self.sort_col_indices.len(),
-                    materialize = ctx.binary_store.is_some(),
+                    materialize = ctx.graph_view().is_some(),
                 );
                 let _sort_exec_guard = sort_execute_span.enter();
-                if let Some(store) = ctx.binary_store.as_deref() {
-                    materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, store);
+                if let Some(gv) = ctx.graph_view() {
+                    materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, &gv);
                 }
                 let sort_start = Instant::now();
                 all_rows.sort_by(|a, b| self.compare_rows(a, b));
@@ -506,7 +507,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -734,9 +735,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_asc() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![3, 1, 4, 1, 5, 9, 2]);
@@ -755,9 +756,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_desc() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![3, 1, 4, 1, 5]);
@@ -776,9 +777,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_multi_column() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         // Sort by col0 asc, col1 desc
@@ -804,9 +805,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_with_unbound() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let columns = vec![vec![
@@ -845,9 +846,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_across_batches() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch1 = make_batch_with_values(schema.clone(), vec![5, 3, 1]);
@@ -867,10 +868,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_emits_in_batches() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         // Use small batch size
-        let ctx = ExecutionContext::new(&db, &vars).with_batch_size(3);
+        let ctx = ExecutionContext::new(&snapshot, &vars).with_batch_size(3);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![5, 4, 3, 2, 1, 0]);
@@ -896,9 +897,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_empty_input() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let mock = MockOperator::new(vec![]);
 
@@ -911,9 +912,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_preserves_schema() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
         let columns: Vec<Vec<Binding>> = (0..3)
@@ -942,9 +943,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_state_transitions() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![3, 1, 2]);

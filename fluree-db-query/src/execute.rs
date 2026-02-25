@@ -57,62 +57,11 @@ pub use pushdown::{
 };
 
 use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::dataset::DataSet;
 use crate::error::Result;
-use crate::ir::Pattern;
-use crate::parse::ParsedQuery;
-use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, StatsView, Tracker};
-use std::sync::Arc;
-use tracing::Instrument;
+use fluree_db_core::{GraphDbRef, Tracker};
 
-/// Data source for query execution.
-///
-/// Describes the data being queried: the database, overlay (novelty layer),
-/// and time bounds for the query.
-#[derive(Clone, Copy)]
-pub struct DataSource<'a> {
-    /// The database to query
-    pub db: &'a Db,
-    /// Overlay provider for novelty data
-    pub overlay: &'a dyn fluree_db_core::OverlayProvider,
-    /// Upper time bound (inclusive)
-    pub to_t: i64,
-    /// Optional lower time bound for history/range queries
-    pub from_t: Option<i64>,
-}
-
-impl<'a> DataSource<'a> {
-    /// Create a new data source with no lower time bound.
-    pub fn new(db: &'a Db, overlay: &'a dyn fluree_db_core::OverlayProvider, to_t: i64) -> Self {
-        Self {
-            db,
-            overlay,
-            to_t,
-            from_t: None,
-        }
-    }
-
-    /// Create a new data source with a time range.
-    pub fn with_range(
-        db: &'a Db,
-        overlay: &'a dyn fluree_db_core::OverlayProvider,
-        to_t: i64,
-        from_t: i64,
-    ) -> Self {
-        Self {
-            db,
-            overlay,
-            to_t,
-            from_t: Some(from_t),
-        }
-    }
-}
-
-use reasoning_prep::effective_reasoning_modes;
-use rewrite_glue::rewrite_query_patterns;
 pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
@@ -123,201 +72,35 @@ use runner::{
     execute_prepared_with_policy, execute_prepared_with_r2rml,
 };
 
-/// Execute a query with full modifier support
-///
-/// Builds an operator tree from the query and options, executes it,
-/// and collects all result batches.
-///
-/// # Arguments
-///
-/// * `db` - Database to query
-/// * `vars` - Variable registry for name resolution
-/// * `query` - Executable query with modifiers
-///
-/// # Returns
-///
-/// Vector of result batches. Empty vector if no results.
-pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Result<Vec<Batch>> {
-    let span = tracing::debug_span!(
-        "query_execute",
-        db_t = db.t,
-        pattern_count = query.query.patterns.len()
-    );
-    // Use an async block with .instrument() so the span is NOT held
-    // across .await via a thread-local guard (which would cause cross-request
-    // trace contamination in tokio's multi-threaded runtime).
-    async move {
-        tracing::debug!("starting query execution");
-
-        let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
-        let hierarchy = db.schema_hierarchy();
-
-        // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
-        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
-
-        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
-            tracing::debug!(
-                rdfs = reasoning.rdfs,
-                owl2ql = reasoning.owl2ql,
-                owl2rl = reasoning.owl2rl,
-                "reasoning enabled"
-            );
-        }
-
-        // Build ontology for OWL2-QL mode (if enabled)
-        let ontology = if reasoning.owl2ql {
-            tracing::debug!("building OWL2-QL ontology");
-            Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
-        } else {
-            None
-        };
-
-        // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
-        fn encode_term(db: &Db, t: &Term) -> Term {
-            match t {
-                Term::Iri(iri) => db
-                    .encode_iri(iri)
-                    .map(Term::Sid)
-                    .unwrap_or_else(|| t.clone()),
-                _ => t.clone(),
-            }
-        }
-
-        fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
-            patterns
-                .iter()
-                .map(|p| match p {
-                    Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
-                        o: encode_term(db, &tp.o),
-                        dt: tp.dt.clone(),
-                        lang: tp.lang.clone(),
-                    }),
-                    Pattern::Optional(inner) => {
-                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Union(branches) => Pattern::Union(
-                        branches
-                            .iter()
-                            .map(|b| encode_patterns_for_reasoning(db, b))
-                            .collect(),
-                    ),
-                    Pattern::Minus(inner) => {
-                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Exists(inner) => {
-                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::NotExists(inner) => {
-                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Graph { name, patterns } => Pattern::Graph {
-                        name: name.clone(),
-                        patterns: encode_patterns_for_reasoning(db, patterns),
-                    },
-                    _ => p.clone(),
-                })
-                .collect()
-        }
-
-        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-            encode_patterns_for_reasoning(db, &query.query.patterns)
-        } else {
-            query.query.patterns.clone()
-        };
-        let (rewritten_patterns, _diag) = rewrite_query_patterns(
-            &patterns_for_rewrite,
-            hierarchy,
-            &reasoning,
-            ontology.as_ref(),
-        );
-
-        if rewritten_patterns.len() != query.query.patterns.len() {
-            tracing::debug!(
-                original_count = query.query.patterns.len(),
-                rewritten_count = rewritten_patterns.len(),
-                "patterns rewritten for reasoning"
-            );
-        }
-
-        // Build query with rewritten patterns
-        let rewritten_query = query.query.with_patterns(rewritten_patterns);
-
-        // Build stats view for selectivity-based optimization
-        //
-        // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
-        // stats view so planning can still consult stats for IRI predicates.
-        let stats_view = db.stats.as_ref().map(|s| {
-            Arc::new(StatsView::from_db_stats_with_namespaces(
-                s,
-                &db.namespace_codes,
-            ))
-        });
-
-        // Build the operator tree
-        tracing::debug!("building operator tree");
-        let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
-
-        // Execute: open, drain batches, close
-        run_operator(operator, &ctx).await
-    }
-    .instrument(span)
-    .await
-}
-
-/// Execute a parsed query with default options
-///
-/// Convenience function for simple queries without modifiers.
-///
-/// # Arguments
-///
-/// * `db` - Database to query
-/// * `vars` - Variable registry for name resolution
-/// * `query` - Parsed query
-///
-/// # Returns
-///
-/// Vector of result batches.
-pub async fn execute_query(db: &Db, vars: &VarRegistry, query: &ParsedQuery) -> Result<Vec<Batch>> {
-    execute(db, vars, &ExecutableQuery::simple(query.clone())).await
-}
-
 /// Execute a query with an overlay
 ///
 /// This is the primary execution path for queries over indexed databases
-/// with uncommitted changes (novelty).
-///
-/// # Arguments
-///
-/// * `db` - The indexed database to query
-/// * `overlay` - Overlay provider (e.g., `Novelty` from `fluree-db-novelty`)
-/// * `vars` - Variable registry for name resolution
-/// * `query` - Executable query with modifiers
+/// with uncommitted changes (novelty). The `GraphDbRef` bundles the snapshot,
+/// graph ID, overlay, and time bound.
 ///
 /// # Returns
 ///
 /// Vector of result batches.
 pub async fn execute_with_overlay(
-    source: DataSource<'_>,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_overlay(source, vars, prepared).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_overlay(db, vars, prepared).await
 }
 
-/// Execute a query with an overlay and time-travel settings, with optional tracking.
+/// Execute a query with an overlay and optional tracking.
 ///
 /// This mirrors `execute_with_overlay`, but attaches `tracker` to the execution context.
 pub async fn execute_with_overlay_tracked<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_overlay_tracked(source, vars, prepared, tracker).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_overlay_tracked(db, vars, prepared, tracker).await
 }
 
 /// Execute a query with policy enforcement
@@ -325,41 +108,41 @@ pub async fn execute_with_overlay_tracked<'a>(
 /// This function applies access control policies during query execution,
 /// filtering results based on the provided `PolicyContext`.
 pub async fn execute_with_policy<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_policy(source, vars, prepared, policy, None).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_policy(db, vars, prepared, policy, None).await
 }
 
 /// Execute a query with policy enforcement, with optional tracking.
 ///
 /// This mirrors `execute_with_policy`, but attaches `tracker` to the execution context.
-pub async fn execute_with_policy_tracked(
-    source: DataSource<'_>,
+pub async fn execute_with_policy_tracked<'a>(
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
-    policy: &fluree_db_policy::PolicyContext,
-    tracker: &Tracker,
+    policy: &'a fluree_db_policy::PolicyContext,
+    tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_policy(source, vars, prepared, policy, Some(tracker)).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_policy(db, vars, prepared, policy, Some(tracker)).await
 }
 
-/// Execute a query with R2RML providers (for graph source support).
+/// Execute a query with R2RML providers (for mapped graph source support).
 pub async fn execute_with_r2rml<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     tracker: &'a Tracker,
     r2rml_provider: &'b dyn crate::r2rml::R2rmlProvider,
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(db, query).await?;
     execute_prepared_with_r2rml(
-        source,
+        db,
         vars,
         prepared,
         tracker,
@@ -371,90 +154,89 @@ pub async fn execute_with_r2rml<'a, 'b>(
 
 /// Execute a query against a dataset (multi-graph query)
 pub async fn execute_with_dataset<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset(source, vars, prepared, dataset, None).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset(db, vars, prepared, dataset, None).await
 }
 
 /// Execute a query against a dataset (multi-graph), with optional tracking.
 pub async fn execute_with_dataset_tracked<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset(source, vars, prepared, dataset, Some(tracker)).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset(db, vars, prepared, dataset, Some(tracker)).await
 }
 
 /// Execute a query against a dataset in history mode
 pub async fn execute_with_dataset_history<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_history(source, vars, prepared, dataset, tracker, true).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset_history(db, vars, prepared, dataset, tracker, true).await
 }
 
 /// Execute a query against a dataset (multi-graph) with policy enforcement
 pub async fn execute_with_dataset_and_policy<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, None).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset_and_policy(db, vars, prepared, dataset, policy, None).await
 }
 
 /// Execute a query against a dataset (multi-graph) with policy enforcement, with optional tracking.
 pub async fn execute_with_dataset_and_policy_tracked<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, Some(tracker))
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset_and_policy(db, vars, prepared, dataset, policy, Some(tracker))
         .await
 }
 
-/// Execute a query against a dataset with BM25 provider (for graph source BM25 queries)
+/// Execute a query against a dataset with BM25 provider (for index graph source queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with BM25 index
 /// provider support, enabling `f:searchText` patterns in queries to resolve against
 /// graph source BM25 indexes.
 pub async fn execute_with_dataset_and_bm25<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_and_bm25(source, vars, prepared, dataset, bm25_provider, tracker)
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset_and_bm25(db, vars, prepared, dataset, bm25_provider, tracker)
         .await
 }
 
 /// Execute a query against a dataset with policy enforcement and BM25 provider
 ///
 /// This combines dataset execution (multiple default/named graphs) with policy
-/// enforcement and BM25 index provider support, enabling `f:searchText` patterns in
-/// queries with policy controls.
+/// enforcement and BM25 index provider support.
 pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
@@ -462,9 +244,9 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(db, query).await?;
     execute_prepared_with_dataset_and_policy_and_bm25(
-        source,
+        db,
         vars,
         prepared,
         dataset,
@@ -475,13 +257,13 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
     .await
 }
 
-/// Execute a query against a dataset with both BM25 and vector providers (for graph source queries)
+/// Execute a query against a dataset with both BM25 and vector providers (for index graph source queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with both BM25 and
 /// vector index provider support, enabling both `f:searchText` and `f:queryVector` patterns
 /// in queries.
 pub async fn execute_with_dataset_and_providers<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
@@ -489,9 +271,9 @@ pub async fn execute_with_dataset_and_providers<'a, 'b>(
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(db, query).await?;
     execute_prepared_with_dataset_and_providers(
-        source,
+        db,
         vars,
         prepared,
         dataset,
@@ -507,13 +289,13 @@ pub async fn execute_with_dataset_and_providers<'a, 'b>(
 /// This combines dataset execution with policy enforcement and both BM25 and
 /// vector index provider support.
 pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     params: QueryContextParams<'a, 'b>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_and_policy_and_providers(source, vars, prepared, params).await
+    let prepared = prepare_execution(db, query).await?;
+    execute_prepared_with_dataset_and_policy_and_providers(db, vars, prepared, params).await
 }
 
 #[cfg(test)]
@@ -521,18 +303,18 @@ mod tests {
     use super::*;
     use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
-    use crate::parse::SelectMode;
+    use crate::parse::{ParsedQuery, SelectMode};
     use crate::pattern::{Term, TriplePattern};
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::var_registry::VarId;
-    use fluree_db_core::{Db, FlakeValue, PropertyStatData, Sid, StatsView};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, NoOverlay, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
     use std::collections::HashSet;
     use where_plan::collect_inner_join_block;
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_snapshot() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -543,26 +325,24 @@ mod tests {
         )
     }
 
-    fn make_simple_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
-        ParsedQuery {
+    #[tokio::test]
+    async fn test_empty_patterns_returns_one_row() {
+        let snapshot = make_test_snapshot();
+        let vars = VarRegistry::new();
+        let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+
+        let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select,
-            patterns,
+            select: vec![],
+            patterns: vec![],
             options: QueryOptions::default(),
             select_mode: SelectMode::default(),
             construct_template: None,
             graph_select: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_empty_patterns_returns_one_row() {
-        let db = make_test_db();
-        let vars = VarRegistry::new();
-
-        let query = make_simple_query(vec![], vec![]);
-        let results = execute_query(&db, &vars, &query).await.unwrap();
+        };
+        let executable = ExecutableQuery::simple(query);
+        let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
         // Empty WHERE returns 1 batch with a single empty solution
         assert_eq!(results.len(), 1);

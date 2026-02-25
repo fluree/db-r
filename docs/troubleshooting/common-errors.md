@@ -185,7 +185,7 @@ cat query.json | jq .
 **Check indexing lag:**
 ```bash
 curl http://localhost:8090/ledgers/mydb:main
-# If novelty_count > 50, wait for indexing
+# If (commit_t - index_t) is large, wait for indexing (or reduce write rate)
 ```
 
 **Simplify query:**
@@ -390,7 +390,8 @@ curl http://localhost:8090/ledgers/mydb:main
 
 ```json
 {
-  "novelty_count": 150  // High!
+  "commit_t": 150,
+  "index_t": 0
 }
 ```
 
@@ -405,10 +406,10 @@ curl http://localhost:8090/ledgers/mydb:main
 
 **Tune indexing:**
 ```bash
-./fluree-db-server \
-  --index-interval-ms 3000 \
-  --index-batch-size 20 \
-  --index-threads 4
+fluree-server \
+  --indexing-enabled \
+  --reindex-min-bytes 100000 \
+  --reindex-max-bytes 1000000
 ```
 
 **Reduce transaction rate:**
@@ -423,7 +424,8 @@ await sleep(100);
 async function waitForIndexing() {
   while (true) {
     const status = await getStatus();
-    if (status.novelty_count < 10) break;
+    const lag = status.commit_t - status.index_t;
+    if (lag < 10) break;
     await sleep(1000);
   }
 }
@@ -534,9 +536,8 @@ curl http://localhost:8090/admin/memory
 
 **Reduce memory usage:**
 ```bash
-./fluree-db-server \
-  --index-memory-mb 1024 \
-  --query-memory-mb 512
+# See docs/operations/configuration.md for current memory-related flags.
+# In general: reduce write/query load, reduce indexing lag, and provision more RAM.
 ```
 
 **Add more RAM:**

@@ -1,11 +1,13 @@
 //! Database struct
 //!
-//! The `Db` struct represents a database value at a specific point in time.
+//! The `LedgerSnapshot` struct represents a database value at a specific point in time.
 //! It is a pure value type — no storage backend reference.
 
 use crate::content_id::ContentId;
 use crate::content_kind::ContentKind;
 use crate::error::{Error, Result};
+use crate::graph_registry::GraphRegistry;
+use crate::ids::GraphId;
 use crate::index_schema::IndexSchema;
 use crate::index_stats::IndexStats;
 use crate::namespaces::default_namespace_codes;
@@ -20,8 +22,8 @@ use std::sync::Arc;
 /// Metadata for creating a database from its index root.
 ///
 /// Bundles all the metadata fields extracted from a v2 BinaryIndexRoot
-/// for constructing a metadata-only `Db`.
-pub struct DbMetadata {
+/// for constructing a metadata-only `LedgerSnapshot`.
+pub struct LedgerSnapshotMetadata {
     /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
@@ -36,13 +38,17 @@ pub struct DbMetadata {
     pub subject_watermarks: Vec<u64>,
     /// Max assigned string_id from the index root
     pub string_watermark: u32,
+    /// Graph IRIs from index root in raw root format.
+    /// Index 0 = g_id 1 (txn-meta), index 1 = g_id 2 (first user graph), etc.
+    /// Matches `IndexRootV5.graph_iris` encoding.
+    pub graph_iris: Vec<String>,
 }
 
 /// Database value at a specific point in time.
 ///
 /// A pure value type — no storage backend reference. All I/O (loading,
 /// writing) happens at the call site, not inside `Db`.
-pub struct Db {
+pub struct LedgerSnapshot {
     /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
@@ -77,9 +83,17 @@ pub struct Db {
     /// All existing range callers (reasoner, API, policy, SHACL) use this
     /// automatically.
     pub range_provider: Option<Arc<dyn RangeProvider>>,
+
+    /// Ledger-wide graph IRI → GraphId registry.
+    ///
+    /// Populated from index root (via `seed_from_root_iris`) or ledger creation
+    /// (via `new_for_ledger`), and updated during novelty replay
+    /// (via `apply_envelope_deltas`). Provides IRI→GraphId resolution
+    /// without requiring a binary index.
+    pub graph_registry: GraphRegistry,
 }
 
-impl Clone for Db {
+impl Clone for LedgerSnapshot {
     fn clone(&self) -> Self {
         Self {
             ledger_id: self.ledger_id.clone(),
@@ -92,13 +106,14 @@ impl Clone for Db {
             subject_watermarks: self.subject_watermarks.clone(),
             string_watermark: self.string_watermark,
             range_provider: self.range_provider.clone(),
+            graph_registry: self.graph_registry.clone(),
         }
     }
 }
 
-impl std::fmt::Debug for Db {
+impl std::fmt::Debug for LedgerSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Db")
+        f.debug_struct("LedgerSnapshot")
             .field("ledger_id", &self.ledger_id)
             .field("t", &self.t)
             .field("version", &self.version)
@@ -110,12 +125,12 @@ impl std::fmt::Debug for Db {
     }
 }
 
-impl Db {
+impl LedgerSnapshot {
     /// Create a genesis (empty) database for a new ledger.
     ///
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with no base data.  Queries against
-    /// a genesis Db return overlay (novelty) flakes only.
+    /// a genesis LedgerSnapshot return overlay (novelty) flakes only.
     pub fn genesis(ledger_id: &str) -> Self {
         Self {
             ledger_id: ledger_id.to_string(),
@@ -129,6 +144,7 @@ impl Db {
             subject_watermarks: Vec::new(),
             string_watermark: 0,
             range_provider: None,
+            graph_registry: GraphRegistry::new_for_ledger(ledger_id),
         }
     }
 
@@ -138,8 +154,17 @@ impl Db {
     /// The Db carries namespace codes, stats, and schema for callers
     /// that need ledger metadata, while all actual range queries go
     /// through `BinaryIndexStore` / `BinaryScanOperator`.
-    pub fn new_meta(meta: DbMetadata) -> Self {
-        Self {
+    pub fn new_meta(meta: LedgerSnapshotMetadata) -> Result<Self> {
+        // Seed graph registry from index root graph IRIs.
+        // If graph_iris is empty (old index or genesis), seed with ledger-scoped txn-meta.
+        let graph_registry = if meta.graph_iris.is_empty() {
+            GraphRegistry::new_for_ledger(&meta.ledger_id)
+        } else {
+            GraphRegistry::seed_from_root_iris(&meta.graph_iris)
+                .map_err(|e| Error::invalid_index(format!("graph registry seed from root: {e}")))?
+        };
+
+        Ok(Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
             version: 3,
@@ -150,7 +175,8 @@ impl Db {
             subject_watermarks: meta.subject_watermarks,
             string_watermark: meta.string_watermark,
             range_provider: None,
-        }
+            graph_registry,
+        })
     }
 
     /// Extract metadata from raw index root bytes (IRB1 binary format).
@@ -257,7 +283,7 @@ impl Db {
 
         // Validate version (caller already checked len >= 24 and magic)
         let version = data[4];
-        if version != 2 {
+        if version != 3 {
             return Err(Error::invalid_index(format!(
                 "IRB1: unsupported version {version}"
             )));
@@ -290,8 +316,14 @@ impl Db {
             let _suffix = read_str(data, &mut pos)?;
         }
 
-        // Small dict inlines: graph_iris, datatype_iris, language_tags (skip all)
-        skip_string_array(data, &mut pos)?;
+        // Small dict inlines: graph_iris, datatype_iris, language_tags
+        // Read graph_iris in raw root format: index 0 = g_id 1 (txn-meta), etc.
+        let graph_iris_count = read_u16(data, &mut pos)? as usize;
+        let mut graph_iris: Vec<String> = Vec::with_capacity(graph_iris_count);
+        for _ in 0..graph_iris_count {
+            graph_iris.push(read_str(data, &mut pos)?);
+        }
+        // Skip datatype_iris and language_tags
         skip_string_array(data, &mut pos)?;
         skip_string_array(data, &mut pos)?;
 
@@ -318,18 +350,38 @@ impl Db {
         skip_dict_tree_refs(data, &mut pos)?;
         // String reverse tree
         skip_dict_tree_refs(data, &mut pos)?;
-        let numbig_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..numbig_count {
-            let _p_id = read_u32(data, &mut pos)?;
-            skip_cid(data, &mut pos)?;
-        }
-        let vector_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..vector_count {
-            let _p_id = read_u32(data, &mut pos)?;
-            skip_cid(data, &mut pos)?; // manifest
-            let shard_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..shard_count {
+
+        // Per-graph specialty arenas (v3: graph-scoped numbig/vectors/spatial)
+        let arena_graph_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..arena_graph_count {
+            let _g_id = read_u16(data, &mut pos)?;
+            // numbig
+            let numbig_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..numbig_count {
+                let _p_id = read_u32(data, &mut pos)?;
                 skip_cid(data, &mut pos)?;
+            }
+            // vectors
+            let vector_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..vector_count {
+                let _p_id = read_u32(data, &mut pos)?;
+                skip_cid(data, &mut pos)?; // manifest
+                let shard_count = read_u16(data, &mut pos)? as usize;
+                for _ in 0..shard_count {
+                    skip_cid(data, &mut pos)?;
+                }
+            }
+            // spatial
+            let spatial_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..spatial_count {
+                let _p_id = read_u32(data, &mut pos)?;
+                skip_cid(data, &mut pos)?; // root_cid (SpatialIndexRoot JSON)
+                skip_cid(data, &mut pos)?; // manifest
+                skip_cid(data, &mut pos)?; // arena
+                let leaflet_count = read_u16(data, &mut pos)? as usize;
+                for _ in 0..leaflet_count {
+                    skip_cid(data, &mut pos)?;
+                }
             }
         }
 
@@ -405,7 +457,7 @@ impl Db {
 
         let _ = pos; // remaining optional sections (prev_index, garbage, sketch) not needed
 
-        let meta = DbMetadata {
+        let meta = LedgerSnapshotMetadata {
             ledger_id,
             t: index_t,
             namespace_codes,
@@ -413,8 +465,9 @@ impl Db {
             schema,
             subject_watermarks,
             string_watermark,
+            graph_iris,
         };
-        Ok(Self::new_meta(meta))
+        Self::new_meta(meta)
     }
 
     /// Attach a range provider for binary index queries.
@@ -441,6 +494,36 @@ impl Db {
         })
     }
 
+    /// Build a reverse lookup from graph Sid → GraphId.
+    ///
+    /// Returns `Err` if any registered graph IRI cannot be encoded (missing
+    /// namespace prefix) or if two graph IRIs collide to the same Sid.
+    ///
+    /// **Prerequisite**: `apply_envelope_deltas()` must be called first so that
+    /// namespace codes are available for `encode_iri()`.
+    pub fn build_reverse_graph(&self) -> Result<HashMap<Sid, GraphId>> {
+        let mut map = HashMap::new();
+        for (g_id, iri) in self.graph_registry.iter_entries() {
+            if g_id == 0 {
+                continue;
+            } // default graph has no Sid
+            let sid = self.encode_iri(iri).ok_or_else(|| {
+                Error::invalid_index(format!(
+                    "graph IRI '{}' (g_id={}) has no matching namespace prefix \
+                     — namespace_codes may be incomplete",
+                    iri, g_id
+                ))
+            })?;
+            if let Some(prev_g_id) = map.insert(sid.clone(), g_id) {
+                return Err(Error::invalid_index(format!(
+                    "Sid collision: graph IRIs for g_id={} and g_id={} encode to same Sid '{}'",
+                    prev_g_id, g_id, sid
+                )));
+            }
+        }
+        Ok(map)
+    }
+
     /// Decode a SID to an IRI using this db's namespace codes.
     ///
     /// Returns None if the namespace code is not registered.
@@ -453,6 +536,24 @@ impl Db {
     /// Get all registered namespace codes
     pub fn namespaces(&self) -> &HashMap<u16, String> {
         &self.namespace_codes
+    }
+
+    /// Apply commit envelope deltas (namespace + graph) to this snapshot.
+    ///
+    /// Called at commit-apply time only. Centralizes all snapshot mutations
+    /// so callers don't need to know which fields to update.
+    ///
+    /// **Call order invariant**: namespace deltas are applied first so that
+    /// `encode_iri()` can decompose graph IRIs when building reverse maps.
+    pub fn apply_envelope_deltas(
+        &mut self,
+        ns_delta: &HashMap<u16, String>,
+        graph_iris: impl IntoIterator<Item = impl AsRef<str>>,
+    ) {
+        for (code, prefix) in ns_delta {
+            self.namespace_codes.insert(*code, prefix.clone());
+        }
+        self.graph_registry.apply_delta(graph_iris);
     }
 
     /// Get the schema hierarchy for RDFS reasoning.
@@ -478,11 +579,11 @@ impl Db {
 ///
 /// The storage address is derived internally from the `ContentId` and
 /// `ledger_id` using the storage backend's method identifier.
-pub async fn load_db(
+pub async fn load_ledger_snapshot(
     storage: &(impl StorageRead + crate::storage::StorageMethod),
     root_id: &ContentId,
     ledger_id: &str,
-) -> Result<Db> {
+) -> Result<LedgerSnapshot> {
     let root_address = crate::content_address(
         storage.storage_method(),
         ContentKind::IndexRoot,
@@ -490,7 +591,7 @@ pub async fn load_db(
         &root_id.digest_hex(),
     );
     let bytes = storage.read_bytes(&root_address).await?;
-    Db::from_root_bytes(&bytes)
+    LedgerSnapshot::from_root_bytes(&bytes)
 }
 
 #[cfg(test)]
@@ -500,13 +601,13 @@ mod tests {
     #[test]
     fn test_from_root_bytes_rejects_non_irb1() {
         let json = b"{\"ledger_id\": \"test:main\"}";
-        let err = Db::from_root_bytes(json).unwrap_err();
+        let err = LedgerSnapshot::from_root_bytes(json).unwrap_err();
         assert!(err.to_string().contains("IRB1"));
     }
 
     #[test]
     fn test_from_root_bytes_rejects_truncated() {
-        let err = Db::from_root_bytes(b"IRB1").unwrap_err();
+        let err = LedgerSnapshot::from_root_bytes(b"IRB1").unwrap_err();
         assert!(err.to_string().contains("truncated"));
     }
 
@@ -515,7 +616,7 @@ mod tests {
         let mut ns = HashMap::new();
         ns.insert(0u16, String::new());
         ns.insert(100u16, "http://example.org/".to_string());
-        let db = Db::new_meta(DbMetadata {
+        let db = LedgerSnapshot::new_meta(LedgerSnapshotMetadata {
             ledger_id: "test:main".into(),
             t: 1,
             namespace_codes: ns,
@@ -523,7 +624,9 @@ mod tests {
             schema: None,
             subject_watermarks: vec![],
             string_watermark: 0,
-        });
+            graph_iris: vec![],
+        })
+        .unwrap();
 
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
         assert_eq!(sid.namespace_code, 100);
@@ -535,9 +638,27 @@ mod tests {
 
     #[test]
     fn test_genesis_db() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         assert_eq!(db.t, 0);
         assert_eq!(db.ledger_id, "test:main");
         assert!(db.range_provider.is_none());
+    }
+
+    #[test]
+    fn test_encode_iri_txn_meta_graph() {
+        let db = LedgerSnapshot::genesis("mydb:main");
+        let txn_meta_iri = crate::graph_registry::txn_meta_graph_iri("mydb:main");
+        assert_eq!(txn_meta_iri, "urn:fluree:mydb:main#txn-meta");
+
+        // encode_iri must succeed via the urn:fluree: baseline namespace (FLUREE_URN=12).
+        let sid = db
+            .encode_iri(&txn_meta_iri)
+            .expect("encode_iri must work for txn-meta");
+        assert_eq!(sid.namespace_code, fluree_vocab::namespaces::FLUREE_URN);
+        assert_eq!(sid.name.as_ref(), "mydb:main#txn-meta");
+
+        // Round-trip back to IRI
+        let decoded = db.decode_sid(&sid).unwrap();
+        assert_eq!(decoded, txn_meta_iri);
     }
 }

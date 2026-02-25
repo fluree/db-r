@@ -12,9 +12,9 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{GraphDbRef, LedgerSnapshot, Sid};
 use fluree_db_query::binding::{Binding, RowAccess};
-use fluree_db_query::execute::{execute_with_overlay, DataSource, ExecutableQuery};
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{parse_query, MemoryEncoder};
 use fluree_db_query::rewrite::ReasoningModes;
@@ -104,6 +104,7 @@ impl OverlayProvider for SortedOverlay {
 
     fn for_each_overlay_flake(
         &self,
+        _g_id: fluree_db_core::GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -181,17 +182,21 @@ fn overlay_epoch_from_flakes(flakes: &[Flake]) -> u64 {
 #[tokio::test]
 async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     // Base DB is empty; all facts come from overlay.
-    let mut db = Db::genesis("test/main");
-    // The query parser lowers IRIs as `Term::Iri` and scan time encodes them via `db.encode_iri`.
+    let mut snapshot = LedgerSnapshot::genesis("test/main");
+    // The query parser lowers IRIs as `Term::Iri` and scan time encodes them via `snapshot.encode_iri`.
     // Since this test constructs facts directly as SIDs in an overlay, we must teach the DB
     // the namespace codes used by those SIDs so encoding succeeds.
-    db.namespace_codes
+    snapshot
+        .namespace_codes
         .insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
-    db.namespace_codes
+    snapshot
+        .namespace_codes
         .insert(4, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    db.namespace_codes
+    snapshot
+        .namespace_codes
         .insert(6, "http://www.w3.org/2002/07/owl#".to_string());
-    db.namespace_codes
+    snapshot
+        .namespace_codes
         .insert(100, "http://example.org/".to_string());
 
     // Vocabulary
@@ -245,7 +250,8 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
 
     // Sanity check: core range_with_overlay can see the schema axioms in overlay.
     let domain_flakes = range_with_overlay(
-        &db,
+        &snapshot,
+        0,
         &overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -292,7 +298,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_a.clone(),
         QueryOptions::new().with_reasoning(ReasoningModes::default()),
     );
-    let source = DataSource::new(&db, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_no = execute_with_overlay(source, &vars_a, &exec_no)
         .await
         .unwrap();
@@ -307,14 +313,15 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_a,
         QueryOptions::new().with_reasoning(ReasoningModes::default().with_owl2rl()),
     );
-    let source = DataSource::new(&db, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_yes = execute_with_overlay(source, &vars_a, &exec_yes)
         .await
         .unwrap();
 
     // Sanity check: reasoner itself produces derived facts from this overlay.
     let cache = ReasoningCache::with_default_capacity();
-    let reasoner_res = reason_owl2rl(&db, &overlay, 10, &ReasoningOptions::default(), &cache)
+    let db = GraphDbRef::new(&snapshot, 0, &overlay, 10);
+    let reasoner_res = reason_owl2rl(db, &ReasoningOptions::default(), &cache)
         .await
         .unwrap();
     assert!(
@@ -355,7 +362,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_b,
         QueryOptions::new().with_reasoning(ReasoningModes::default().with_owl2rl()),
     );
-    let source = DataSource::new(&db, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_chain = execute_with_overlay(source, &vars_b, &exec_chain)
         .await
         .unwrap();

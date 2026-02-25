@@ -4,8 +4,8 @@ use crate::{
     ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
     TypeErasedStore,
 };
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
@@ -28,9 +28,9 @@ where
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
-        // queryable, indexed Db after (re)indexing.
+        // queryable, indexed LedgerSnapshot after (re)indexing.
         //
-        // Note: we may already have a `Db.range_provider` (e.g. attached after `load_db`),
+        // Note: we may already have a `LedgerSnapshot.range_provider` (e.g. attached after `load_ledger_snapshot`),
         // but we still want `binary_store` so query execution can use `BinaryScanOperator`.
         if let Some(index_cid) = state
             .ns_record
@@ -38,10 +38,12 @@ where
             .and_then(|r| r.index_head_id.as_ref())
             .cloned()
         {
-            if state.db.range_provider.is_none() || state.binary_store.is_none() {
+            if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
-                let cs =
-                    fluree_db_core::content_store_for(storage.clone(), state.db.ledger_id.as_str());
+                let cs = fluree_db_core::content_store_for(
+                    storage.clone(),
+                    state.snapshot.ledger_id.as_str(),
+                );
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read binary index root for {}: {}",
@@ -68,17 +70,16 @@ where
                 // Augment namespace codes with entries from novelty commits.
                 // The index root only contains namespaces known at index time, but
                 // subsequent transactions may introduce new namespace prefixes.
-                // Db.namespace_codes already has the merged set (index + novelty).
-                store.augment_namespace_codes(&state.db.namespace_codes);
+                // LedgerSnapshot.namespace_codes already has the merged set (index + novelty).
+                store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
                 let arc_store = Arc::new(store);
-                if state.db.range_provider.is_none() {
+                if state.snapshot.range_provider.is_none() {
                     let provider = BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
-                        0,
                     );
-                    state.db.range_provider = Some(Arc::new(provider));
+                    state.snapshot.range_provider = Some(Arc::new(provider));
                 }
                 state.binary_store = Some(TypeErasedStore(arc_store));
             }
@@ -92,7 +93,7 @@ where
         {
             let cs = fluree_db_core::content_store_for(
                 self.connection.storage().clone(),
-                state.db.ledger_id.as_str(),
+                state.snapshot.ledger_id.as_str(),
             );
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
@@ -180,8 +181,8 @@ where
             }
         }
 
-        // 3. Create genesis Db with empty state at t=0
-        let db = fluree_db_core::Db::genesis(&ledger_id);
+        // 3. Create genesis LedgerSnapshot with empty state at t=0
+        let db = fluree_db_core::LedgerSnapshot::genesis(&ledger_id);
 
         // 4. Create LedgerState with empty Novelty (t=0)
         let ledger = LedgerState::new(db, Novelty::new(0));

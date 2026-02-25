@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::query::helpers::{
     extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec,
 };
-use crate::view::FlureeDataSetView;
+use crate::view::DataSetDb;
 use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, Storage};
 
 impl<S, N> Fluree<S, N>
@@ -16,8 +16,8 @@ where
     ///
     /// This is the unified entry point for connection queries. It:
     /// 1. Parses dataset spec and options from query JSON
-    /// 2. For single-ledger: builds a `FlureeView` and uses view API
-    /// 3. For multi-ledger: builds a `FlureeDataSetView` for proper merge
+    /// 2. For single-ledger: builds a `GraphDb` and uses view API
+    /// 3. For multi-ledger: builds a `DataSetDb` for proper merge
     /// 4. Applies policy wrappers if policy options are present
     pub async fn query_connection(&self, query_json: &JsonValue) -> Result<QueryResult> {
         let (spec, qc_opts) = parse_dataset_spec(query_json)?;
@@ -28,11 +28,11 @@ where
             ));
         }
 
-        // Single-ledger fast path: use FlureeView API
+        // Single-ledger fast path: use GraphDb API
         if Self::is_single_ledger_fast_path(&spec) {
             let source = &spec.default_graphs[0];
             let alias = source.identifier.as_str();
-            let mut view = self.view(alias).await?;
+            let mut view = self.db(alias).await?;
 
             // Apply graph selector if specified in structured from
             if let Some(selector) = &source.graph_selector {
@@ -47,7 +47,7 @@ where
             return self.query_view(&view, query_json).await;
         }
 
-        // Single-ledger with time travel: use FlureeView API
+        // Single-ledger with time travel: use GraphDb API
         if let Some(mut view) = self.try_single_view_from_spec(&spec).await? {
             let source = &spec.default_graphs[0];
 
@@ -64,7 +64,7 @@ where
             return self.query_view(&view, query_json).await;
         }
 
-        // Multi-ledger: use FlureeDataSetView
+        // Multi-ledger: use DataSetDb
         let dataset = if qc_opts.has_any_policy_inputs() {
             self.build_dataset_view_with_policy(&spec, &qc_opts).await?
         } else {
@@ -76,7 +76,7 @@ where
 
     /// Execute a connection query and return a tracked JSON-LD response.
     ///
-    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
+    /// Uses GraphDb API for single-ledger, DataSetDb for multi-ledger.
     pub(crate) async fn query_connection_jsonld_tracked(
         &self,
         query_json: &JsonValue,
@@ -93,12 +93,12 @@ where
             ));
         }
 
-        // Single-ledger fast path (no time override): use FlureeView API
+        // Single-ledger fast path (no time override): use GraphDb API
         if Self::is_single_ledger_fast_path(&spec) {
             let source = &spec.default_graphs[0];
             let alias = source.identifier.as_str();
             let mut view = self
-                .view(alias)
+                .db(alias)
                 .await
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
@@ -118,7 +118,7 @@ where
             return self.query_view_tracked(&view, query_json).await;
         }
 
-        // Single-ledger with time travel: use FlureeView API
+        // Single-ledger with time travel: use GraphDb API
         let single_view = self
             .try_single_view_from_spec(&spec)
             .await
@@ -143,7 +143,7 @@ where
             return self.query_view_tracked(&view, query_json).await;
         }
 
-        // Multi-ledger: use FlureeDataSetView
+        // Multi-ledger: use DataSetDb
         let dataset = if qc_opts.has_any_policy_inputs() {
             self.build_dataset_view_with_policy(&spec, &qc_opts)
                 .await
@@ -168,7 +168,7 @@ where
 
     /// Execute a JSON-LD query via connection with explicit policy context.
     ///
-    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
+    /// Uses GraphDb API for single-ledger, DataSetDb for multi-ledger.
     pub(crate) async fn query_connection_with_policy(
         &self,
         query_json: &JsonValue,
@@ -188,7 +188,7 @@ where
             return self.query_view(&view, query_json).await;
         }
 
-        // Multi-ledger: use FlureeDataSetView and apply explicit policy to each view
+        // Multi-ledger: use DataSetDb and apply explicit policy to each view
         let dataset = self.build_dataset_view(&spec).await?;
         let dataset = apply_policy_to_dataset(dataset, policy);
         self.query_dataset_view(&dataset, query_json).await
@@ -196,7 +196,7 @@ where
 
     /// Execute a connection query with explicit policy context and return a tracked JSON-LD response.
     ///
-    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
+    /// Uses GraphDb API for single-ledger, DataSetDb for multi-ledger.
     pub(crate) async fn query_connection_jsonld_tracked_with_policy(
         &self,
         query_json: &JsonValue,
@@ -225,7 +225,7 @@ where
             return self.query_view_tracked(&view, query_json).await;
         }
 
-        // Multi-ledger: use FlureeDataSetView and apply explicit policy to each view
+        // Multi-ledger: use DataSetDb and apply explicit policy to each view
         let dataset = self
             .build_dataset_view(&spec)
             .await
@@ -342,10 +342,10 @@ where
     /// If neither has policy, returns the view unchanged.
     async fn apply_source_or_global_policy(
         &self,
-        view: crate::view::FlureeView,
+        view: crate::view::GraphDb,
         source: &crate::dataset::GraphSource,
         global_opts: &crate::QueryConnectionOptions,
-    ) -> Result<crate::view::FlureeView> {
+    ) -> Result<crate::view::GraphDb> {
         // Per-source policy takes precedence
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
@@ -362,10 +362,7 @@ where
     }
 }
 
-fn apply_policy_to_dataset(
-    mut dataset: FlureeDataSetView,
-    policy: &PolicyContext,
-) -> FlureeDataSetView {
+fn apply_policy_to_dataset(mut dataset: DataSetDb, policy: &PolicyContext) -> DataSetDb {
     let policy = Arc::new(policy.clone());
 
     dataset.default = dataset

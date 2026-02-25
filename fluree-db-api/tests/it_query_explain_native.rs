@@ -9,7 +9,7 @@ mod support;
 use fluree_db_api::{
     tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty,
 };
-use fluree_db_core::{load_db, Db};
+use fluree_db_core::{load_ledger_snapshot, LedgerSnapshot};
 use fluree_db_transact::TxnOpts;
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -33,9 +33,9 @@ async fn index_and_load_db(
         fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
     };
 
-    let loaded = load_db(fluree.storage(), &root_id, &ledger_id)
+    let loaded = load_ledger_snapshot(fluree.storage(), &root_id, &ledger_id)
         .await
-        .expect("load_db(root)");
+        .expect("load_ledger_snapshot(root)");
     LedgerState::new(loaded, Novelty::new(0))
 }
 
@@ -53,7 +53,7 @@ async fn explain_no_optimization_when_equal_selectivity() {
     local
         .run_until(async move {
             let ledger_id ="test/explain:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -117,7 +117,7 @@ async fn explain_reorders_bound_object_email_first() {
     local
         .run_until(async move {
             let ledger_id ="test/optimize:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -177,7 +177,7 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
     local
         .run_until(async move {
             let ledger_id ="test/property-opt:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -236,7 +236,7 @@ async fn explain_includes_inputs_fields_and_flags() {
     local
         .run_until(async move {
             let ledger_id ="test/inputs:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {

@@ -82,7 +82,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -104,7 +104,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results2 = normalize_rows(&rows2);
 
@@ -184,7 +184,7 @@ async fn owl2rl_multi_same_property_restrictions() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -261,7 +261,7 @@ async fn owl2rl_union_3_plus_branches() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -345,7 +345,7 @@ async fn owl2rl_nested_unions() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -430,7 +430,7 @@ async fn owl2rl_union_with_intersection() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -500,7 +500,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -522,7 +522,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results2 = normalize_rows(&rows2);
 
@@ -577,7 +577,7 @@ async fn owl2rl_double_inverse_normalization() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -599,7 +599,7 @@ async fn owl2rl_double_inverse_normalization() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results2 = normalize_rows(&rows2);
 
@@ -681,7 +681,7 @@ async fn owl2rl_partial_conditions_no_inference() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -755,7 +755,7 @@ async fn owl2rl_hasvalue_class_to_property_entailment() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 

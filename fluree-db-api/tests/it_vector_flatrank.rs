@@ -60,7 +60,7 @@ async fn vector_search_test() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 2, "Should return 2 results");
@@ -140,7 +140,7 @@ async fn vector_search_with_filter() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 1, "Should return only Homer (age 36)");
@@ -195,7 +195,7 @@ async fn vector_search_score_filter() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 1, "Should return only results with score > 0.7");
@@ -251,7 +251,7 @@ async fn vector_search_multi_cardinality() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(
@@ -316,7 +316,7 @@ async fn vector_search_cosine_similarity() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 2, "Should return 2 results");
@@ -371,7 +371,7 @@ async fn vector_search_euclidean_distance() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 2, "Should return 2 results");
@@ -430,7 +430,7 @@ async fn vector_search_mixed_datatypes() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(
@@ -469,7 +469,7 @@ async fn vector_search_mixed_datatypes() {
 #[tokio::test]
 async fn vector_search_post_indexing() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_nameservice::NameService;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
@@ -485,7 +485,7 @@ async fn vector_search_post_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -561,7 +561,7 @@ async fn vector_search_post_indexing() {
             });
 
             let qr = fluree.query(&loaded, &query).await.expect("query");
-            let rows = qr.to_jsonld(&loaded.db).expect("jsonld");
+            let rows = qr.to_jsonld(&loaded.snapshot).expect("jsonld");
             let arr = rows.as_array().expect("array");
 
             assert_eq!(arr.len(), 2, "Should return 2 results from indexed path");
@@ -591,7 +591,7 @@ async fn vector_search_post_indexing() {
 #[tokio::test]
 async fn vector_search_novelty_plus_indexed() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
 
@@ -606,7 +606,7 @@ async fn vector_search_novelty_plus_indexed() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -683,7 +683,7 @@ async fn vector_search_novelty_plus_indexed() {
             });
 
             let qr = fluree.query(&r2.ledger, &query).await.expect("query");
-            let rows = qr.to_jsonld(&r2.ledger.db).expect("jsonld");
+            let rows = qr.to_jsonld(&r2.ledger.snapshot).expect("jsonld");
             let arr = rows.as_array().expect("array");
 
             assert_eq!(
@@ -746,7 +746,7 @@ async fn vector_at_type_shorthand() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(
@@ -776,7 +776,7 @@ async fn vector_at_type_shorthand() {
 #[tokio::test]
 async fn vector_cosine_normalized_optimization() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
 
@@ -791,7 +791,7 @@ async fn vector_cosine_normalized_optimization() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -867,14 +867,14 @@ async fn vector_cosine_normalized_optimization() {
                 .query(&loaded, &cosine_query)
                 .await
                 .expect("cosine query");
-            let cos_rows = cos_result.to_jsonld(&loaded.db).expect("jsonld");
+            let cos_rows = cos_result.to_jsonld(&loaded.snapshot).expect("jsonld");
             let cos_arr = cos_rows.as_array().expect("array");
 
             let dot_result = fluree
                 .query(&loaded, &dot_query)
                 .await
                 .expect("dot query");
-            let dot_rows = dot_result.to_jsonld(&loaded.db).expect("jsonld");
+            let dot_rows = dot_result.to_jsonld(&loaded.snapshot).expect("jsonld");
             let dot_arr = dot_rows.as_array().expect("array");
 
             assert_eq!(cos_arr.len(), 2);
@@ -971,7 +971,7 @@ async fn vector_search_with_date_filter_property_join() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // bart (2025-01-15) should be excluded by the date filter

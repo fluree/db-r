@@ -75,7 +75,7 @@ async fn shacl_cardinality_constraints() {
         "where": {"@id": "ex:john", "schema:name": "?name"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
     let ledger_min = fluree
@@ -156,7 +156,7 @@ async fn shacl_datatype_constraints() {
         "where": {"@id": "ex:john", "schema:name": "?name"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
     let ledger_bad = fluree
@@ -316,7 +316,7 @@ async fn shacl_pattern_constraints() {
         "where": {"@id": "ex:alice", "ex:greeting": "?greeting"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["hello big world"]));
 
     let ledger_bad = fluree
@@ -379,7 +379,7 @@ async fn shacl_has_value_constraint() {
         "where": {"@id": "ex:alice", "schema:role": "?role"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["admin"]));
 
     let ledger_bad = fluree
@@ -442,7 +442,7 @@ async fn shacl_node_kind_constraint() {
         "where": {"@id": "ex:alice", "schema:homepage": "?home"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["ex:homepage"]));
 
     let ledger_bad = fluree
@@ -516,7 +516,7 @@ async fn shacl_closed_constraint() {
         "where": {"@id": "ex:alice", "schema:name": "?name"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["Alice"]));
 
     // Invalid: uses undeclared property (schema:email)
@@ -626,7 +626,7 @@ async fn shacl_pattern_with_flags() {
         "where": {"@id": "ex:msg1", "ex:text": "?text"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["HELLO WORLD"]));
 
     // Invalid: "goodbye" doesn't match pattern
@@ -694,7 +694,7 @@ async fn shacl_in_constraint() {
         "where": {"@id": "ex:task1", "ex:status": "?status"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["active"]));
 
     // Invalid: "cancelled" is not in the allowed list
@@ -760,7 +760,7 @@ async fn shacl_equals_constraint() {
         "where": {"@id": "ex:event1", "ex:startDate": "?date"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["2024-01-15"]));
 
     // Invalid: startDate does not equal endDate
@@ -834,7 +834,7 @@ async fn shacl_not_constraint() {
         "where": {"@id": "ex:alice", "ex:status": "?status"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["active"]));
 
     // Invalid: user with status "banned" matches the forbidden shape
@@ -917,7 +917,7 @@ async fn shacl_and_constraint() {
         "where": {"@id": "ex:alice", "schema:name": "?name"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["Alice"]));
 
     // Invalid: missing email (only has name)
@@ -999,7 +999,7 @@ async fn shacl_or_constraint() {
         "where": {"@id": "ex:alice", "schema:email": "?email"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["alice@example.org"]));
 
     // Invalid: has neither phone nor email
@@ -1081,7 +1081,7 @@ async fn shacl_xone_constraint() {
         "where": {"@id": "ex:acct1", "ex:personalId": "?id"}
     });
     let result = fluree.query(&ledger_ok, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["P12345"]));
 
     // Invalid: has both personalId AND businessId (both shapes match)

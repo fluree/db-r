@@ -14,10 +14,10 @@ use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -475,15 +475,10 @@ impl NestedLoopJoinOperator {
                         Binding::Lit { val, .. } => {
                             pattern.o = Term::Value(val.clone());
                         }
-                        Binding::EncodedLit {
-                            o_kind,
-                            o_key,
-                            p_id,
-                            ..
-                        } => {
+                        Binding::EncodedLit { o_kind, o_key, .. } => {
                             // Decode encoded literal if store available
                             if let Some(store) = store {
-                                if let Ok(val) = store.decode_value(*o_kind, *o_key, *p_id) {
+                                if let Ok(val) = store.decode_value_no_graph(*o_kind, *o_key) {
                                     pattern.o = Term::Value(val);
                                 }
                             }
@@ -947,17 +942,17 @@ impl NestedLoopJoinOperator {
         Ok(())
     }
 
-    /// Flush batched accumulator using the appropriate db/overlay/to_t for the current context.
+    /// Flush batched accumulator using the appropriate snapshot/overlay/to_t for the current context.
     ///
-    /// - Single-db mode: uses ctx.db/ctx.overlay()/ctx.to_t
-    /// - Dataset mode with exactly one graph: uses that graph's db/overlay/to_t
+    /// - Single-db mode: uses ctx.snapshot/ctx.overlay()/ctx.to_t
+    /// - Dataset mode with exactly one graph: uses that graph's snapshot/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,
         ctx: &ExecutionContext<'_>,
     ) -> Result<()> {
         if ctx.binary_store.is_none() {
             return Err(crate::error::QueryError::execution(
-                "binary_store is required for batched joins — b-tree fallback has been removed",
+                "binary_store is required for batched joins — no non-binary fallback exists",
             ));
         }
 
@@ -1009,13 +1004,13 @@ impl NestedLoopJoinOperator {
     /// of the current left batch. Without subject bounds we'd scan the entire
     /// predicate partition even when subjects fall into a narrow range.
     fn find_psot_leaf_range(
-        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        branch: &fluree_db_binary_index::BranchManifest,
         g_id: GraphId,
         p_id: u32,
         min_s_id: u64,
         max_s_id: u64,
     ) -> std::ops::Range<usize> {
-        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
+        use fluree_db_binary_index::{cmp_psot, RunRecord};
 
         let min_key = RunRecord {
             g_id,
@@ -1054,22 +1049,18 @@ impl NestedLoopJoinOperator {
         &self,
         ctx: &ExecutionContext<'_>,
         store: &BinaryIndexStore,
-        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        branch: &fluree_db_binary_index::BranchManifest,
         leaf_range: std::ops::Range<usize>,
         p_id: u32,
         unique_s_ids: &[u64],
         s_id_to_accum: &HashMap<u64, Vec<usize>>,
         scatter: &mut [Vec<Vec<Binding>>],
     ) -> Result<()> {
+        use fluree_db_binary_index::{
+            decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, CachedRegion1,
+            CachedRegion2, LeafletCacheKey, LeafletHeader, RunSortOrder,
+        };
         use fluree_db_core::ListIndex;
-        use fluree_db_indexer::run_index::leaf::read_leaf_header;
-        use fluree_db_indexer::run_index::leaflet::{
-            decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
-        };
-        use fluree_db_indexer::run_index::leaflet_cache::{
-            CachedRegion1, CachedRegion2, LeafletCacheKey,
-        };
-        use fluree_db_indexer::run_index::run_record::RunSortOrder;
         use memmap2::Mmap;
         use std::sync::Arc as StdArc;
         use xxhash_rust::xxh3::xxh3_128;
@@ -1491,7 +1482,7 @@ impl NestedLoopJoinOperator {
     /// This avoids opening/decompressing leaflets once per subject, which can be
     /// catastrophically slow for large left batches.
     async fn flush_batched_accumulator_binary(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        use fluree_db_indexer::run_index::run_record::RunSortOrder;
+        use fluree_db_binary_index::RunSortOrder;
 
         if self.batched_accumulator.is_empty() {
             return Ok(());
@@ -1766,14 +1757,14 @@ mod tests {
     async fn test_join_substituted_var_no_unification() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue};
+        use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
         // Minimal context (db is unused here; only batch_size matters).
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let x = vars.get_or_insert("?x"); // VarId(0)
         let v = vars.get_or_insert("?v"); // VarId(1)
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Left schema: [?v]
         let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
@@ -1868,14 +1859,14 @@ mod tests {
     async fn test_join_multiple_new_vars() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue};
+        use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let s = vars.get_or_insert("?s"); // VarId(0)
         let x = vars.get_or_insert("?x"); // VarId(1)
         let y = vars.get_or_insert("?y"); // VarId(2)
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Left schema: [?s] - a Sid (e.g., from VALUES or prior scan)
         let left_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());
@@ -1947,7 +1938,7 @@ mod tests {
     /// has pushed-down object bounds must still be able to execute via the binary path.
     ///
     /// Previously, join right-scans with `object_bounds=Some(...)` could fall back to
-    /// `ScanOperator` (B-tree), which yields 0 results in binary-only ingest mode.
+    /// the legacy scan path (`ScanOperator`), which yields 0 results in binary-only ingest mode.
     #[tokio::test]
     async fn test_join_right_scan_with_object_bounds_uses_binary_path() {
         use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};
@@ -1955,9 +1946,11 @@ mod tests {
         use crate::parse::ParsedQuery;
         use crate::pattern::Term;
         use crate::var_registry::VarRegistry;
+        use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+        use fluree_db_binary_index::BinaryIndexStore;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
         use fluree_db_indexer::run_index::dict_io::{
             write_language_dict, write_predicate_dict, write_subject_index,
         };
@@ -1966,8 +1959,6 @@ mod tests {
         };
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
-        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_indexer::run_index::BinaryIndexStore;
         use fluree_graph_json_ld::ParsedContext;
 
         // --- Temp dirs ---
@@ -2233,8 +2224,9 @@ mod tests {
         let exec = ExecutableQuery::simple(pq.clone());
         let operator = build_operator_tree(&pq, &exec.options, None).unwrap();
 
-        let db = Db::genesis("test:main");
-        let mut ctx = crate::context::ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut ctx =
+            crate::context::ExecutionContext::new(&snapshot, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 
         let batches = run_operator(operator, &ctx).await.unwrap();

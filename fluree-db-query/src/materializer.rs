@@ -23,8 +23,8 @@
 
 use crate::binding::Binding;
 use chrono::{Datelike, Timelike};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -254,8 +254,8 @@ pub enum JoinKeyMode {
 /// Create one instance per query execution and pass it to operators that need
 /// to materialize bindings for comparison/hashing/output.
 pub struct Materializer {
-    /// Binary index store for decoding
-    store: Arc<BinaryIndexStore>,
+    /// Graph-scoped view (store + graph ID) for decoding
+    graph_view: BinaryGraphView,
     /// Cache: s_id -> Sid (for terminal output)
     sid_cache: HashMap<u64, Sid>,
     /// Cache: s_id -> canonical IRI (for multi-ledger join keys)
@@ -272,11 +272,11 @@ impl Materializer {
     /// Create a new materializer for a query.
     ///
     /// # Arguments
-    /// * `store` - Binary index store for decoding
+    /// * `graph_view` - Graph-scoped view (store + graph ID) for decoding
     /// * `mode` - Single-ledger or multi-ledger join key mode
-    pub fn new(store: Arc<BinaryIndexStore>, mode: JoinKeyMode) -> Self {
+    pub fn new(graph_view: BinaryGraphView, mode: JoinKeyMode) -> Self {
         Self {
-            store,
+            graph_view,
             sid_cache: HashMap::new(),
             iri_cache: HashMap::new(),
             pid_cache: HashMap::new(),
@@ -298,7 +298,7 @@ impl Materializer {
 
     /// Get the underlying binary index store.
     pub fn store(&self) -> &BinaryIndexStore {
-        &self.store
+        self.graph_view.store()
     }
 
     // -------------------------------------------------------------------------
@@ -326,7 +326,7 @@ impl Materializer {
                     JoinKeyMode::MultiLedger => {
                         // In multi-ledger mode, namespace codes may differ across ledgers,
                         // so we must use the full canonical IRI for comparison
-                        let iri = self.store.sid_to_iri(sid);
+                        let iri = self.graph_view.store().sid_to_iri(sid);
                         JoinKey::IriOwned(Arc::from(iri))
                     }
                 }
@@ -354,7 +354,7 @@ impl Materializer {
                     JoinKeyMode::MultiLedger => {
                         // Resolve to canonical IRI
                         // Using IriOwned avoids allocation - just clones the Arc
-                        if let Some(iri) = self.store.resolve_predicate_iri(*p_id) {
+                        if let Some(iri) = self.graph_view.store().resolve_predicate_iri(*p_id) {
                             JoinKey::IriOwned(Arc::from(iri))
                         } else {
                             JoinKey::Pid(*p_id) // Fallback
@@ -420,7 +420,8 @@ impl Materializer {
             }
 
             Binding::EncodedPid { p_id } => self
-                .store
+                .graph_view
+                .store()
                 .resolve_predicate_iri(*p_id)
                 .map(|iri| ComparableValue::Iri(Arc::from(iri))),
 
@@ -431,7 +432,7 @@ impl Materializer {
                 o_key,
                 p_id,
                 ..
-            } => match self.store.decode_value(*o_kind, *o_key, *p_id) {
+            } => match self.graph_view.decode_value(*o_kind, *o_key, *p_id) {
                 Ok(val) => flake_value_to_comparable(&val),
                 Err(_) => None,
             },
@@ -455,7 +456,7 @@ impl Materializer {
             Binding::Sid(sid) => {
                 // Decode to full IRI string.
                 // IMPORTANT: `namespace_code:name` is an internal representation and is not a full IRI.
-                Some(Arc::from(self.store.sid_to_iri(sid)))
+                Some(Arc::from(self.graph_view.store().sid_to_iri(sid)))
             }
 
             Binding::IriMatch { iri, .. } => Some(Arc::clone(iri)),
@@ -464,7 +465,11 @@ impl Materializer {
 
             Binding::EncodedSid { s_id } => Some(self.resolve_iri(*s_id)),
 
-            Binding::EncodedPid { p_id } => self.store.resolve_predicate_iri(*p_id).map(Arc::from),
+            Binding::EncodedPid { p_id } => self
+                .graph_view
+                .store()
+                .resolve_predicate_iri(*p_id)
+                .map(Arc::from),
 
             Binding::Lit { val, .. } => Some(Arc::from(val.to_string())),
 
@@ -474,7 +479,7 @@ impl Materializer {
                 p_id,
                 ..
             } => self
-                .store
+                .graph_view
                 .decode_value(*o_kind, *o_key, *p_id)
                 .ok()
                 .map(|v| Arc::from(v.to_string())),
@@ -523,16 +528,17 @@ impl Materializer {
                 lang_id,
                 i_val,
                 t,
-            } => match self.store.decode_value(*o_kind, *o_key, *p_id) {
+            } => match self.graph_view.decode_value(*o_kind, *o_key, *p_id) {
                 Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
                     let dt_sid = self
-                        .store
+                        .graph_view
+                        .store()
                         .dt_sids()
                         .get(*dt_id as usize)
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
-                    let meta = self.store.decode_meta(*lang_id, *i_val);
+                    let meta = self.graph_view.store().decode_meta(*lang_id, *i_val);
                     Binding::Lit {
                         val,
                         dt: dt_sid,
@@ -556,7 +562,7 @@ impl Materializer {
             return Arc::clone(cached);
         }
 
-        let iri = match self.store.resolve_subject_iri(s_id) {
+        let iri = match self.graph_view.store().resolve_subject_iri(s_id) {
             Ok(iri) => Arc::from(iri),
             Err(_) => Arc::from(format!("_:unknown_{}", s_id)),
         };
@@ -571,8 +577,8 @@ impl Materializer {
             return cached.clone();
         }
 
-        let sid = match self.store.resolve_subject_iri(s_id) {
-            Ok(iri) => self.store.encode_iri(&iri),
+        let sid = match self.graph_view.store().resolve_subject_iri(s_id) {
+            Ok(iri) => self.graph_view.store().encode_iri(&iri),
             Err(_) => Sid::new(0, format!("_:unknown_{}", s_id)),
         };
 
@@ -586,8 +592,8 @@ impl Materializer {
             return cached.clone();
         }
 
-        let sid = match self.store.resolve_predicate_iri(p_id) {
-            Some(iri) => self.store.encode_iri(iri),
+        let sid = match self.graph_view.store().resolve_predicate_iri(p_id) {
+            Some(iri) => self.graph_view.store().encode_iri(iri),
             None => Sid::new(0, format!("_:unknown_p_{}", p_id)),
         };
 

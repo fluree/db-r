@@ -15,6 +15,7 @@ members = [
     "fluree-db-novelty",
     "fluree-db-ledger",
     "fluree-db-transact",
+    "fluree-db-binary-index",
     "fluree-db-indexer",
     "fluree-db-spatial",
     "fluree-db-policy",
@@ -104,6 +105,9 @@ tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"]
 
 # Concurrent collections
 dashmap = "6"
+
+# Data parallelism (used by fluree-db-indexer incremental leaf rewrites)
+rayon = "1"
 
 # API documentation
 utoipa = { version = "5", features = ["axum_extras"] }

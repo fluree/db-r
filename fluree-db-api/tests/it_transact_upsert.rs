@@ -78,7 +78,10 @@ async fn upsert_parsing() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let alice = &jsonld[0];
     // Name should be updated
@@ -127,7 +130,10 @@ async fn upsert_data() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should have 3 users with updated data
     assert_eq!(jsonld.as_array().unwrap().len(), 3);
@@ -187,7 +193,10 @@ async fn upsert_no_changes() {
         "where": {"@id": "?id", "schema:name": "?name"}
     });
     let result1 = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld1 = result1.to_jsonld_async(&ledger1.db).await.unwrap();
+    let jsonld1 = result1
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let ledger2 = fluree
         .upsert(ledger1, &sample_insert_txn)
@@ -195,7 +204,10 @@ async fn upsert_no_changes() {
         .unwrap()
         .ledger;
     let result2 = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld2 = result2.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld2 = result2
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let ledger3 = fluree
         .upsert(ledger2, &sample_insert_txn)
@@ -203,7 +215,10 @@ async fn upsert_no_changes() {
         .unwrap()
         .ledger;
     let result3 = fluree.query(&ledger3, &query).await.unwrap();
-    let jsonld3 = result3.to_jsonld_async(&ledger3.db).await.unwrap();
+    let jsonld3 = result3
+        .to_jsonld_async(ledger3.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     assert_eq!(normalize_rows(&jsonld1), normalize_rows(&jsonld2));
     assert_eq!(normalize_rows(&jsonld1), normalize_rows(&jsonld3));
@@ -246,7 +261,10 @@ async fn upsert_multicardinal_data() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should have 2 users with updated multicardinal data
     assert_eq!(jsonld.as_array().unwrap().len(), 2);
@@ -293,15 +311,15 @@ async fn upsert_cancels_identical_pairs_in_novelty() {
     let ledger2 = fluree.upsert(ledger1, &upsert).await.unwrap().ledger;
 
     let s = ledger2
-        .db
+        .snapshot
         .encode_iri("http://example.org/ns/alice")
         .expect("subject sid");
     let p_name = ledger2
-        .db
+        .snapshot
         .encode_iri("http://schema.org/name")
         .expect("name sid");
     let p_nums = ledger2
-        .db
+        .snapshot
         .encode_iri("http://example.org/ns/nums")
         .expect("nums sid");
 
@@ -367,7 +385,10 @@ async fn upsert_and_commit() {
         "where": {"@id": "?id", "schema:name": "?name"}
     });
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     assert_eq!(
         normalize_rows(&jsonld),

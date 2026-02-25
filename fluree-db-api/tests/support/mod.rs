@@ -10,7 +10,7 @@
 pub mod span_capture;
 
 use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{Db, MemoryStorage};
+use fluree_db_core::{LedgerSnapshot, MemoryStorage};
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ pub fn genesis_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
 /// Generic version of `genesis_ledger` for any `Fluree` storage backend.
 ///
 /// The ledger ID is normalized to canonical `name:branch` form (e.g., `"mydb"` → `"mydb:main"`)
-/// so that the `Db.ledger_id` matches the canonical form used by the nameservice and
+/// so that the `LedgerSnapshot.ledger_id` matches the canonical form used by the nameservice and
 /// content-addressed storage paths.
 pub fn genesis_ledger_for_fluree<S, N>(
     _fluree: &fluree_db_api::Fluree<S, N>,
@@ -73,7 +73,7 @@ where
 {
     let canonical = fluree_db_core::ledger_id::normalize_ledger_id(ledger_id)
         .unwrap_or_else(|_| ledger_id.to_string());
-    let db = Db::genesis(&canonical);
+    let db = LedgerSnapshot::genesis(&canonical);
     LedgerState::new(db, Novelty::new(0))
 }
 

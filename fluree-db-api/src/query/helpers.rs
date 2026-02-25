@@ -7,7 +7,8 @@ use crate::{
     SelectMode, Tracker, TrackingOptions, VarRegistry,
 };
 
-use fluree_db_core::Db;
+use fluree_db_binary_index::BinaryGraphView;
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;
@@ -25,7 +26,7 @@ use super::QueryResult;
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
@@ -49,7 +50,7 @@ pub(crate) fn parse_jsonld_query(
     };
 
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_ref, db, &mut vars)?;
+    let parsed = parse_query(query_ref, snapshot, &mut vars)?;
     Ok((vars, parsed))
 }
 
@@ -63,7 +64,7 @@ pub(crate) fn parse_jsonld_query(
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_sparql_to_ir(
     sparql: &str,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let mut ast = parse_and_validate_sparql(sparql)?;
@@ -95,7 +96,7 @@ pub(crate) fn parse_sparql_to_ir(
     }
 
     let mut vars = VarRegistry::new();
-    let parsed = fluree_db_sparql::lower_sparql(&ast, db, &mut vars)?;
+    let parsed = fluree_db_sparql::lower_sparql(&ast, snapshot, &mut vars)?;
     Ok((vars, parsed))
 }
 
@@ -128,7 +129,7 @@ pub(crate) fn build_query_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
+    binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -139,7 +140,7 @@ pub(crate) fn build_query_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
-        binary_store,
+        binary_graph,
         construct_template: parsed.construct_template,
         graph_select: parsed.graph_select,
     }
@@ -152,7 +153,7 @@ pub(crate) fn build_sparql_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
+    binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -163,7 +164,7 @@ pub(crate) fn build_sparql_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
-        binary_store,
+        binary_graph,
         construct_template: parsed.construct_template,
         graph_select: None, // SPARQL doesn't support graph crawl
     }

@@ -21,6 +21,7 @@ use fluree_db_core::{
     ClassPropertyUsage, ClassRefCount, ClassStatEntry, IndexStats, PropertyStatEntry,
 };
 use fluree_db_core::{FlakeValue, Sid};
+use fluree_vocab::namespaces::FLUREE_COMMIT;
 use std::collections::{HashMap, HashSet};
 
 /// Compute current stats by merging indexed stats with novelty updates.
@@ -47,6 +48,37 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
         return indexed.clone();
     }
 
+    // Track total flake delta (asserts - retracts) from novelty so callers like
+    // `ledger-info` can report up-to-date flake counts even before indexing.
+    //
+    // Note: This intentionally does not attempt to exclude txn-meta graph flakes.
+    // The novelty layer operates on Sid-keyed flakes and does not currently have
+    // access to the graph-id routing needed to apply the same g_id=1 exclusion
+    // policy as the indexer.
+    let mut flakes_delta: i64 = 0;
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        // Skip commit-metadata flakes (commit subject namespace).
+        // These are stored in novelty for time travel / commit queries but are
+        // not part of user-data stats (and are excluded from index stats).
+        if flake.s.namespace_code == FLUREE_COMMIT {
+            continue;
+        }
+        // Exclude txn-meta graph, matching the indexer's g_id=1 exclusion policy.
+        //
+        // We only have Sid-keyed graph IRIs here (not GraphId), so we match by
+        // the reserved graph suffix "txn-meta".
+        if let Some(g) = &flake.g {
+            let name = g.name.as_ref();
+            // `txn-meta` is reserved; historically this graph has appeared as either a
+            // compact IRI suffix ("txn-meta") or a full IRI/URN containing "txn-meta".
+            if name == "txn-meta" || name.ends_with("txn-meta") || name.contains("txn-meta") {
+                continue;
+            }
+        }
+        flakes_delta += if flake.op { 1 } else { -1 };
+    }
+
     // Build a mutable representation for updates
     let mut property_counts = build_property_counts(indexed);
     let mut class_data = build_class_data(indexed);
@@ -57,6 +89,10 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
     // Second pass: update property counts and class->property list
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
+        // Skip commit-metadata flakes (not user data stats).
+        if flake.s.namespace_code == FLUREE_COMMIT {
+            continue;
+        }
         let delta = if flake.op { 1i64 } else { -1i64 };
 
         // Update property counts
@@ -82,6 +118,7 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
 
     // Convert back to IndexStats format
     let mut stats = finalize_stats(indexed, property_counts, class_data);
+    stats.flakes = (indexed.flakes as i64 + flakes_delta).max(0) as u64;
     stats.size = indexed.size + novelty.size as u64;
     stats
 }
@@ -157,6 +194,10 @@ fn build_subject_class_map(
 
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
+        // Skip commit-metadata flakes (commit subject namespace).
+        if flake.s.namespace_code == FLUREE_COMMIT {
+            continue;
+        }
 
         if !is_rdf_type(&flake.p) {
             continue;
@@ -252,6 +293,8 @@ fn finalize_stats(
                     .filter(|(_, prop)| prop.count_delta > 0)
                     .map(|(property_sid, prop)| ClassPropertyUsage {
                         property_sid,
+                        datatypes: Vec::new(),
+                        langs: Vec::new(),
                         ref_classes: prop.ref_classes,
                     })
                     .collect();
@@ -387,7 +430,7 @@ mod tests {
             make_prop_flake(make_sid(100, "alice"), make_sid(100, "name"), 42, 6),
             make_prop_flake(make_sid(100, "bob"), make_sid(100, "name"), 43, 6),
         ];
-        novelty.apply_commit(flakes, 6).unwrap();
+        novelty.apply_commit(flakes, 6, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let props = result.properties.unwrap();
@@ -411,7 +454,7 @@ mod tests {
             make_type_flake(make_sid(100, "bob"), make_sid(100, "Person"), 1, true),
             make_type_flake(make_sid(100, "acme"), make_sid(100, "Company"), 1, true),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();
@@ -444,7 +487,7 @@ mod tests {
             make_prop_flake(alice.clone(), name_prop.clone(), 42, 1),
             make_prop_flake(bob.clone(), name_prop.clone(), 43, 1),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();
@@ -492,7 +535,7 @@ mod tests {
             false, // retraction
             None,
         )];
-        novelty.apply_commit(flakes, 6).unwrap();
+        novelty.apply_commit(flakes, 6, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let props = result.properties.unwrap();
@@ -515,7 +558,7 @@ mod tests {
             make_lang_flake(alice.clone(), label.clone(), "Alice", "en", 1),
             make_lang_flake(alice.clone(), label.clone(), "Alicia", "es", 1),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();

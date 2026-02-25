@@ -1,28 +1,37 @@
 //! Ledger information API
 //!
-//! This module provides the `build_ledger_info` function that returns comprehensive
-//! metadata about a ledger, including commit info, nameservice record, namespace
-//! mappings, and statistics with decoded IRIs.
+//! This module provides graph-scoped ledger metadata via `build_ledger_info`.
 //!
-//! ## Clojure Parity
+//! ## Response Shape
 //!
-//! The response format matches Clojure's `ledger-info` API exactly, including:
-//! - Commit JSON-LD (uses `"id"` not `"@id"`, `"type"` as array)
-//! - Nameservice JSON-LD (uses `"@id"`, `"@type"`, `"@context"`)
-//! - Stats with decoded IRIs and computed selectivity
+//! ```json
+//! {
+//!   "ledger": { "alias", "t", "commit-t", "index-t", "flakes", "size", "named-graphs" },
+//!   "graph": "urn:default",
+//!   "stats": { "flakes", "size", "properties": { ... }, "classes": { ... } },
+//!   "commit": { ... },
+//!   "nameservice": { ... },
+//!   "index": { ... }
+//! }
+//! ```
+//!
+//! The `stats` block is always scoped to a single graph (default: g_id=0).
+//! Use the builder API to select a different graph via name, IRI, or g_id.
 
 use crate::format::iri::IriCompactor;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
-    is_rdf_type, ClassPropertyUsage, ClassRefCount, Db, FlakeValue, OverlayProvider, Sid, Storage,
+    is_rdf_type, ClassPropertyUsage, ClassRefCount, Flake, FlakeValue, LedgerSnapshot,
+    OverlayProvider, Sid, Storage,
 };
 use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
-    PropertyStatEntry, SchemaPredicateInfo,
+    SchemaPredicateInfo,
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
@@ -30,15 +39,30 @@ use fluree_db_novelty::{load_commit_by_id, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+/// Which graph to scope the stats section to.
+#[derive(Debug, Clone, Default)]
+pub enum GraphSelector {
+    /// Default graph (g_id = 0).
+    #[default]
+    Default,
+    /// Select by numeric graph ID.
+    ById(GraphId),
+    /// Select by graph IRI (resolved via the binary index store).
+    ByIri(String),
+    /// Select by well-known name ("default" or "txn-meta").
+    ByName(String),
+}
 
 /// Options controlling `ledger-info` stats detail and freshness.
 ///
-/// Defaults preserve the fast, small “base” payload; callers can opt into
+/// Defaults preserve the fast, small "base" payload; callers can opt into
 /// heavier/real-time details when needed.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct LedgerInfoOptions {
-    /// When true, augment property “details” with novelty deltas so the result
-    /// is real-time (novelty-aware) rather than “as of last index”.
+    /// When true, augment property "details" with novelty deltas so the result
+    /// is real-time (novelty-aware) rather than "as of last index".
     pub realtime_property_details: bool,
 
     /// When true, include `datatypes` under `stats.properties[*]`.
@@ -46,9 +70,12 @@ pub struct LedgerInfoOptions {
     /// By default the API omits datatype breakdowns at the top-level property
     /// map to keep payloads small.
     pub include_property_datatypes: bool,
+
+    /// Which graph to scope the stats section to.
+    pub graph: GraphSelector,
 }
 
-/// Schema index for fast SID → hierarchy lookup
+/// Schema index for fast SID -> hierarchy lookup
 type SchemaIndex<'a> = HashMap<Sid, &'a SchemaPredicateInfo>;
 
 /// Build a schema index for fast hierarchy lookups
@@ -78,6 +105,9 @@ pub enum LedgerInfoError {
 
     #[error("Class lookup failed: {0}")]
     ClassLookup(String),
+
+    #[error("Unknown graph: {0}")]
+    UnknownGraph(String),
 }
 
 /// Result type for ledger info operations
@@ -86,25 +116,12 @@ pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 /// Build comprehensive ledger metadata with Clojure parity.
 ///
 /// Returns JSON containing:
+/// - `ledger`: ledger-wide metadata
+/// - `graph`: name of the graph being reported
+/// - `stats`: graph-scoped statistics with decoded IRIs
 /// - `commit`: Commit info in JSON-LD format
 /// - `nameservice`: NsRecord in JSON-LD format
-/// - `stats`: Current statistics with decoded IRIs
 /// - `index`: Index metadata (if available)
-///
-/// # Arguments
-///
-/// * `ledger` - The ledger state to get info for
-/// * `context` - Optional JSON-LD context for IRI compaction in stats
-///
-/// # Response Format
-///
-/// The commit section uses non-standard JSON-LD:
-/// - `"id"` instead of `"@id"`
-/// - `"type"` as array instead of `"@type"`
-/// - `@context` as string URL
-///
-/// The nameservice section uses standard JSON-LD keywords.
-/// The stats section has IRIs optionally compacted via the provided context.
 pub async fn build_ledger_info<S: Storage + Clone>(
     ledger: &LedgerState,
     storage: &S,
@@ -124,42 +141,68 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
         .unwrap_or_default();
-    let compactor = IriCompactor::new(&ledger.db.namespace_codes, &parsed_context);
+    let compactor = IriCompactor::new(&ledger.snapshot.namespace_codes, &parsed_context);
 
     // Build schema index for hierarchy lookups
     let schema_index = ledger
-        .db
+        .snapshot
         .schema
         .as_ref()
         .map(build_schema_index)
         .unwrap_or_default();
 
+    // Try to get the BinaryIndexStore for IRI resolution
+    let binary_store: Option<Arc<BinaryIndexStore>> = ledger
+        .binary_store
+        .as_ref()
+        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+
+    // Resolve graph selector to g_id
+    let g_id = resolve_graph_selector(&options.graph, binary_store.as_deref())?;
+
+    // Determine graph display name
+    let graph_name = graph_display_name(g_id, binary_store.as_deref());
+
     // Get current stats (always returns IndexStats)
     let mut stats = ledger.current_stats();
 
-    // Optional: real-time property details (merge novelty datatype deltas).
-    //
-    // `current_stats()` updates property counts and preserves indexed datatype
-    // breakdowns, but does not adjust datatype counts for novelty by default.
-    if options.realtime_property_details && options.include_property_datatypes {
-        merge_property_datatypes_from_novelty(&mut stats, &ledger.novelty);
-    }
-
-    // Optional: real-time “details” (merge novelty ref-edge deltas).
+    // Optional: real-time novelty merge into the graph entry for the requested g_id.
     if options.realtime_property_details {
-        merge_class_ref_edges_from_novelty(
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            ledger.t(),
-            &mut stats,
-        )
-        .await?;
+        if let Some(graphs) = stats.graphs.as_mut() {
+            if let Some(graph_entry) = graphs.iter_mut().find(|g| g.g_id == g_id) {
+                // Resolve graph IRI for filtering novelty flakes to this graph.
+                let graph_iri: Option<String> = binary_store
+                    .as_deref()
+                    .and_then(|s| s.graph_iri_for_id(g_id).map(|s| s.to_string()));
+
+                if let Some(store) = binary_store.as_deref() {
+                    merge_graph_property_novelty(
+                        graph_entry,
+                        &ledger.novelty,
+                        store,
+                        &ledger.snapshot.namespace_codes,
+                        graph_iri.as_deref(),
+                        options.include_property_datatypes,
+                    );
+                }
+                merge_graph_class_ref_edges_from_novelty(
+                    &ledger.snapshot,
+                    ledger.novelty.as_ref(),
+                    ledger.t(),
+                    g_id,
+                    graph_entry,
+                    &ledger.snapshot.namespace_codes,
+                    graph_iri.as_deref(),
+                )
+                .await?;
+            }
+        }
     }
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix = ledger_id_to_path_prefix(&ledger.db.ledger_id)
-            .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
+        let alias_prefix = ledger_id_to_path_prefix(&ledger.snapshot.ledger_id)
+            .unwrap_or_else(|_| ledger.snapshot.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
         if let Ok(bytes) = storage.read_bytes(&manifest_addr_primary).await {
@@ -178,19 +221,39 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     // Build the response
     let mut result = Map::new();
 
-    // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
+    // 1. Ledger block (ledger-wide metadata)
+    result.insert(
+        "ledger".to_string(),
+        build_ledger_block(ledger, &stats, binary_store.as_deref()),
+    );
+
+    // 2. Graph name
+    result.insert("graph".to_string(), json!(graph_name));
+
+    // 3. Graph-scoped stats section
+    result.insert(
+        "stats".to_string(),
+        build_graph_scoped_stats(
+            g_id,
+            &stats,
+            &compactor,
+            &schema_index,
+            binary_store.as_deref(),
+            options.include_property_datatypes,
+        )?,
+    );
+
+    // 4. Commit section (ALWAYS include, even if None - for Clojure parity)
     if let Some(head_cid) = &ledger.head_commit_id {
-        match build_commit_jsonld(storage, head_cid, &ledger.db.ledger_id).await {
+        match build_commit_jsonld(storage, head_cid, &ledger.snapshot.ledger_id).await {
             Ok(commit_json) => {
                 result.insert("commit".to_string(), commit_json);
             }
             Err(e) => {
-                // Include error in response for debugging
                 result.insert("commit".to_string(), json!({ "error": format!("{}", e) }));
             }
         }
     } else {
-        // Always include commit key for parity (null when no commit)
         result.insert("commit".to_string(), JsonValue::Null);
     }
 
@@ -202,24 +265,17 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
         result.insert("indexId".to_string(), json!(cid.to_string()));
     }
 
-    // 2. Nameservice section
+    // 5. Nameservice section
     if let Some(ns_record) = &ledger.ns_record {
         result.insert("nameservice".to_string(), ns_record_to_jsonld(ns_record));
     }
 
-    // 3. Stats section (with hierarchy fields)
-    result.insert(
-        "stats".to_string(),
-        build_stats(ledger, &stats, &compactor, &schema_index, options)?,
-    );
-
-    // 5. Index section (if available)
+    // 6. Index section (if available)
     if let Some(ns_record) = &ledger.ns_record {
         if ns_record.index_head_id.is_some() || ns_record.index_t > 0 {
             let mut index_obj = json!({
                 "t": ns_record.index_t,
             });
-            // Prefer head_index_id from LedgerState; fall back to ns_record
             if let Some(ref cid) = ledger.head_index_id {
                 index_obj["id"] = json!(cid.to_string());
             } else if let Some(ref cid) = ns_record.index_head_id {
@@ -232,94 +288,325 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     Ok(JsonValue::Object(result))
 }
 
-/// Merge novelty deltas into top-level property datatype counts.
+// ============================================================================
+// Graph selector resolution
+// ============================================================================
+
+/// Resolve a `GraphSelector` to a numeric `g_id`.
+fn resolve_graph_selector(
+    selector: &GraphSelector,
+    store: Option<&BinaryIndexStore>,
+) -> Result<GraphId> {
+    match selector {
+        GraphSelector::Default => Ok(0),
+        GraphSelector::ById(g_id) => Ok(*g_id),
+        GraphSelector::ByName(name) => match name.as_str() {
+            "default" | "urn:default" => Ok(0),
+            "txn-meta" => Ok(1),
+            other => {
+                // Try as IRI
+                if let Some(store) = store {
+                    store
+                        .graph_id_for_iri(other)
+                        .ok_or_else(|| LedgerInfoError::UnknownGraph(other.to_string()))
+                } else {
+                    Err(LedgerInfoError::UnknownGraph(format!(
+                        "no binary index store available to resolve graph name '{}'",
+                        other
+                    )))
+                }
+            }
+        },
+        GraphSelector::ByIri(iri) => {
+            if iri == "urn:default" {
+                return Ok(0);
+            }
+            if let Some(store) = store {
+                store
+                    .graph_id_for_iri(iri)
+                    .ok_or_else(|| LedgerInfoError::UnknownGraph(iri.clone()))
+            } else {
+                Err(LedgerInfoError::UnknownGraph(format!(
+                    "no binary index store available to resolve graph IRI '{}'",
+                    iri
+                )))
+            }
+        }
+    }
+}
+
+/// Determine the display name for a graph ID.
+fn graph_display_name(g_id: GraphId, store: Option<&BinaryIndexStore>) -> String {
+    if g_id == 0 {
+        return "urn:default".to_string();
+    }
+    if let Some(store) = store {
+        if let Some(iri) = store.graph_iri_for_id(g_id) {
+            return iri.to_string();
+        }
+    }
+    format!("g:{}", g_id)
+}
+
+// ============================================================================
+// Response builders
+// ============================================================================
+
+/// Build the `ledger` block with ledger-wide metadata.
+fn build_ledger_block(
+    ledger: &LedgerState,
+    stats: &IndexStats,
+    store: Option<&BinaryIndexStore>,
+) -> JsonValue {
+    let index_t = ledger
+        .ns_record
+        .as_ref()
+        .map(|r| r.index_t)
+        .unwrap_or(ledger.snapshot.t);
+
+    let commit_t = ledger
+        .ns_record
+        .as_ref()
+        .map(|r| r.commit_t)
+        .unwrap_or(ledger.t());
+
+    // Build named-graphs list
+    let mut named_graphs = Vec::new();
+    // Always include default graph
+    named_graphs.push(json!({"iri": "urn:default", "g-id": 0}));
+    // Add named graphs from binary store
+    if let Some(store) = store {
+        for (g_id, iri) in store.graph_entries() {
+            // Skip txn-meta (g_id=1) from the public list
+            if g_id == 1 {
+                continue;
+            }
+            named_graphs.push(json!({"iri": iri, "g-id": g_id}));
+        }
+    }
+
+    json!({
+        "alias": &ledger.snapshot.ledger_id,
+        "t": ledger.t(),
+        "commit-t": commit_t,
+        "index-t": index_t,
+        "flakes": stats.flakes,
+        "size": stats.size,
+        "named-graphs": named_graphs,
+    })
+}
+
+/// Build the graph-scoped `stats` section.
 ///
-/// This is intentionally scoped to *property*-level datatype stats (not class-scoped),
-/// so it can be computed cheaply from novelty without additional index lookups.
-fn merge_property_datatypes_from_novelty(stats: &mut IndexStats, novelty: &Novelty) {
-    if novelty.is_empty() {
+/// Extracts the `GraphStatsEntry` for the requested `g_id` and renders
+/// its properties and classes with IRI compaction.
+///
+/// All graphs (including default g_id=0) use their `GraphStatsEntry` for
+/// graph-scoped properties and classes.
+fn build_graph_scoped_stats(
+    g_id: GraphId,
+    stats: &IndexStats,
+    compactor: &IriCompactor,
+    schema_index: &SchemaIndex,
+    store: Option<&BinaryIndexStore>,
+    include_property_datatypes: bool,
+) -> Result<JsonValue> {
+    // Find the GraphStatsEntry for the requested g_id (works for all graphs including default).
+    let graph_entry = stats
+        .graphs
+        .as_ref()
+        .and_then(|gs| gs.iter().find(|g| g.g_id == g_id));
+
+    let (graph_flakes, graph_size) = graph_entry.map(|g| (g.flakes, g.size)).unwrap_or((0, 0));
+
+    // Properties: always from graph-scoped GraphStatsEntry.
+    let properties = if let (Some(entry), Some(store)) = (graph_entry, store) {
+        decode_graph_property_stats(
+            &entry.properties,
+            compactor,
+            schema_index,
+            store,
+            include_property_datatypes,
+        )?
+    } else {
+        JsonValue::Object(Map::new())
+    };
+
+    // Classes: always from graph-scoped GraphStatsEntry.
+    let classes = if let Some(entry) = graph_entry {
+        decode_class_stats(&entry.classes, compactor, schema_index)?
+    } else {
+        JsonValue::Object(Map::new())
+    };
+
+    Ok(json!({
+        "flakes": graph_flakes,
+        "size": graph_size,
+        "properties": properties,
+        "classes": classes,
+    }))
+}
+
+// ============================================================================
+// Novelty merge helpers
+// ============================================================================
+
+/// Check if a novelty flake belongs to the specified graph.
+///
+/// - `graph_iri == None` → default graph: matches flakes with `g: None`
+/// - `graph_iri == Some(iri)` → named graph: matches flakes whose graph Sid
+///   resolves to the given IRI via namespace_codes
+fn flake_in_graph(
+    flake: &Flake,
+    graph_iri: Option<&str>,
+    namespace_codes: &HashMap<u16, String>,
+) -> bool {
+    match (graph_iri, &flake.g) {
+        // Default graph: flakes with no graph annotation
+        (None, None) => true,
+        (None, Some(_)) => false,
+        // Named graph: flakes must match the graph IRI
+        (Some(_), None) => false,
+        (Some(expected), Some(g_sid)) => {
+            let Some(ns_prefix) = namespace_codes.get(&g_sid.namespace_code) else {
+                return false;
+            };
+            let flake_graph_iri = format!("{}{}", ns_prefix, g_sid.name);
+            flake_graph_iri == expected
+        }
+    }
+}
+
+/// Merge novelty deltas into a graph entry's property stats.
+///
+/// Only considers novelty flakes belonging to the specified graph:
+/// - `graph_iri == None` → default graph (flakes with `g: None`)
+/// - `graph_iri == Some(iri)` → named graph (flakes whose graph Sid resolves to `iri`)
+///
+/// Maps novelty predicate SIDs to p_ids via the binary index store, then
+/// applies property count deltas and per-datatype count deltas to the
+/// matching `GraphPropertyStatEntry`. Also updates the graph entry's
+/// flake count and size.
+///
+/// When `merge_datatypes` is true, datatype breakdowns are also adjusted.
+fn merge_graph_property_novelty(
+    graph_entry: &mut GraphStatsEntry,
+    novelty: &Novelty,
+    store: &BinaryIndexStore,
+    namespace_codes: &HashMap<u16, String>,
+    graph_iri: Option<&str>,
+    merge_datatypes: bool,
+) {
+    if novelty.is_empty() || graph_entry.properties.is_empty() {
         return;
     }
 
-    let Some(props) = stats.properties.as_mut() else {
-        return;
-    };
-
-    // Property SID -> datatype tag -> delta count
-    let mut deltas: HashMap<(u16, String), HashMap<u8, i64>> = HashMap::new();
+    // Property p_id -> (count_delta, datatype_tag -> dt_delta)
+    let mut deltas: HashMap<u32, (i64, HashMap<u8, i64>)> = HashMap::new();
+    let mut flakes_delta: i64 = 0;
+    let mut size_delta: u64 = 0;
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
-        let delta = if flake.op { 1i64 } else { -1i64 };
 
-        let prop_sid = (flake.p.namespace_code, flake.p.name.to_string());
-        let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
-        if tag == ValueTypeTag::UNKNOWN {
+        // Skip commit-metadata namespace flakes (not user data).
+        if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
             continue;
         }
 
-        *deltas
-            .entry(prop_sid)
-            .or_default()
-            .entry(tag.as_u8())
-            .or_insert(0) += delta;
+        // Graph filter: only include flakes belonging to the requested graph.
+        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+            continue;
+        }
+
+        let delta = if flake.op { 1i64 } else { -1i64 };
+        flakes_delta += delta;
+        size_delta += flake.size_estimate_bytes();
+
+        // Map predicate SID to p_id via namespace prefix + store lookup.
+        let Some(ns_prefix) = namespace_codes.get(&flake.p.namespace_code) else {
+            continue;
+        };
+        let full_iri = format!("{}{}", ns_prefix, flake.p.name);
+        let Some(p_id) = store.find_predicate_id(&full_iri) else {
+            continue;
+        };
+
+        let entry = deltas.entry(p_id).or_insert_with(|| (0, HashMap::new()));
+        entry.0 += delta;
+
+        if merge_datatypes {
+            let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
+            if tag != ValueTypeTag::UNKNOWN {
+                *entry.1.entry(tag.as_u8()).or_insert(0) += delta;
+            }
+        }
     }
+
+    // Update graph-level flake count and size (graph-scoped, not total novelty).
+    graph_entry.flakes = (graph_entry.flakes as i64 + flakes_delta).max(0) as u64;
+    graph_entry.size += size_delta;
 
     if deltas.is_empty() {
         return;
     }
 
-    // Index existing entries for in-place updates.
-    let mut by_sid: HashMap<(u16, String), usize> = HashMap::with_capacity(props.len());
-    for (idx, entry) in props.iter().enumerate() {
-        by_sid.insert(entry.sid.clone(), idx);
+    // Index existing entries for in-place updates by p_id.
+    let mut by_pid: HashMap<u32, usize> = HashMap::with_capacity(graph_entry.properties.len());
+    for (idx, entry) in graph_entry.properties.iter().enumerate() {
+        by_pid.insert(entry.p_id, idx);
     }
 
-    for (sid, delta_map) in deltas {
-        let Some(&idx) = by_sid.get(&sid) else {
+    for (p_id, (count_delta, dt_map)) in deltas {
+        let Some(&idx) = by_pid.get(&p_id) else {
             continue;
         };
-        let entry = &mut props[idx];
+        let entry = &mut graph_entry.properties[idx];
 
-        let mut merged: HashMap<u8, i64> = entry
-            .datatypes
-            .iter()
-            .map(|(tag, count)| (*tag, *count as i64))
-            .collect();
-        for (tag, delta) in delta_map {
-            *merged.entry(tag).or_insert(0) += delta;
+        // Adjust property count.
+        entry.count = (entry.count as i64 + count_delta).max(0) as u64;
+
+        // Adjust datatype breakdown if requested.
+        if merge_datatypes && !dt_map.is_empty() {
+            let mut merged: HashMap<u8, i64> = entry
+                .datatypes
+                .iter()
+                .map(|(tag, count)| (*tag, *count as i64))
+                .collect();
+            for (tag, delta) in dt_map {
+                *merged.entry(tag).or_insert(0) += delta;
+            }
+
+            let mut out: Vec<(u8, u64)> = merged
+                .into_iter()
+                .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
+                .collect();
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            entry.datatypes = out;
         }
-
-        let mut out: Vec<(u8, u64)> = merged
-            .into_iter()
-            .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        entry.datatypes = out;
     }
 }
 
-/// Merge novelty deltas into class-scoped ref-edge counts.
+/// Merge novelty ref-edge deltas into a graph entry's class stats.
 ///
-/// Updates `IndexStats.classes[*].properties[*].ref_classes` by applying deltas from
-/// ref-valued novelty flakes, attributed using the *current* (novelty-aware) rdf:type
-/// of both the subject and the referenced object.
+/// Only considers novelty flakes belonging to the specified graph
+/// (determined by `graph_iri`). Applies deltas from ref-valued novelty
+/// flakes to the graph entry's `classes[*].properties[*].ref_classes`,
+/// attributed using the *current* (novelty-aware) rdf:type of both the
+/// subject and the referenced object.
 ///
-/// Notes:
-/// - This is intentionally *on-demand*; it can be more expensive than the base payload.
-/// - This currently accounts for **ref assertions/retractions in novelty**. It does not
-///   attempt to reattribute *indexed* ref edges when only rdf:type changes in novelty.
-async fn merge_class_ref_edges_from_novelty(
-    db: &Db,
+async fn merge_graph_class_ref_edges_from_novelty(
+    snapshot: &LedgerSnapshot,
     novelty: &Novelty,
     to_t: i64,
-    stats: &mut IndexStats,
+    g_id: GraphId,
+    graph_entry: &mut GraphStatsEntry,
+    namespace_codes: &HashMap<u16, String>,
+    graph_iri: Option<&str>,
 ) -> Result<()> {
     if novelty.is_empty() {
         return Ok(());
     }
 
-    // Collect ref flakes from novelty (subject, predicate, object, delta) and the set of
-    // subjects/objects we need rdf:type for.
     let mut subj_set: HashSet<Sid> = HashSet::new();
     let mut obj_set: HashSet<Sid> = HashSet::new();
     let mut events: Vec<(Sid, Sid, Sid, i64)> = Vec::new();
@@ -327,7 +614,11 @@ async fn merge_class_ref_edges_from_novelty(
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
 
-        // Skip rdf:type itself (not an “edge property”).
+        // Graph filter: only include flakes belonging to the requested graph.
+        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+            continue;
+        }
+
         if is_rdf_type(&flake.p) {
             continue;
         }
@@ -348,17 +639,17 @@ async fn merge_class_ref_edges_from_novelty(
 
     let overlay: &dyn OverlayProvider = novelty;
 
-    // Look up current classes for all involved subjects/objects (novelty-aware).
     let mut subjects: Vec<Sid> = subj_set.into_iter().collect();
     subjects.sort();
     let mut objects: Vec<Sid> = obj_set.into_iter().collect();
     objects.sort();
 
-    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+    let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
+    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 
-    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t)
+    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 
@@ -389,9 +680,8 @@ async fn merge_class_ref_edges_from_novelty(
         return Ok(());
     }
 
-    let classes = stats.classes.get_or_insert_with(Vec::new);
+    let classes = graph_entry.classes.get_or_insert_with(Vec::new);
 
-    // Index class entries by SID for quick upsert.
     let mut class_idx: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
     for (i, c) in classes.iter().enumerate() {
         class_idx.insert(c.class_sid.clone(), i);
@@ -415,7 +705,6 @@ async fn merge_class_ref_edges_from_novelty(
         let class_entry = &mut classes[idx];
 
         for (prop_sid, target_map) in prop_map {
-            // Find or insert property usage.
             let pidx = class_entry
                 .properties
                 .iter()
@@ -423,6 +712,8 @@ async fn merge_class_ref_edges_from_novelty(
                 .unwrap_or_else(|| {
                     class_entry.properties.push(ClassPropertyUsage {
                         property_sid: prop_sid.clone(),
+                        datatypes: Vec::new(),
+                        langs: Vec::new(),
                         ref_classes: Vec::new(),
                     });
                     class_entry.properties.len() - 1
@@ -430,7 +721,6 @@ async fn merge_class_ref_edges_from_novelty(
 
             let usage = &mut class_entry.properties[pidx];
 
-            // Merge deltas into existing ref_classes.
             let mut merged: HashMap<Sid, i64> = usage
                 .ref_classes
                 .iter()
@@ -454,7 +744,6 @@ async fn merge_class_ref_edges_from_novelty(
             usage.ref_classes = out;
         }
 
-        // Keep deterministic ordering.
         class_entry
             .properties
             .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
@@ -464,12 +753,11 @@ async fn merge_class_ref_edges_from_novelty(
     Ok(())
 }
 
+// ============================================================================
+// Commit / Nameservice JSON-LD helpers
+// ============================================================================
+
 /// Build commit JSON-LD in Clojure parity format.
-///
-/// Uses `"id"` not `"@id"`, `"type"` as array not `"@type"`.
-/// Returns (commit_json, index_id) tuple.
-///
-/// Loads commit by ContentId via the content store.
 async fn build_commit_jsonld<S: Storage + Clone>(
     storage: &S,
     head_id: &fluree_db_core::ContentId,
@@ -487,19 +775,14 @@ async fn build_commit_jsonld<S: Storage + Clone>(
         "ledger_id": alias,
     });
 
-    // Add content-address IRI if available (now ContentId)
     if let Some(id) = &commit.id {
         obj["id"] = json!(id.to_string());
     }
 
-    // Add timestamp if available
     if let Some(time) = &commit.time {
         obj["time"] = json!(time);
     }
 
-    // NOTE: `t` is NOT on commit itself in Clojure - it's inside `data`
-
-    // Previous commit reference (CommitRef now has only `id: ContentId`)
     if let Some(prev_ref) = &commit.previous_ref {
         let prev_obj = json!({
             "type": ["Commit"],
@@ -508,40 +791,24 @@ async fn build_commit_jsonld<S: Storage + Clone>(
         obj["previous"] = prev_obj;
     }
 
-    // Data block - embedded DB metadata (t goes HERE, not on commit).
-    // CommitData has been removed; we always include a minimal data block with t.
     obj["data"] = json!({
         "type": ["DB"],
         "t": commit.t,
     });
 
-    // NS block
     obj["ns"] = json!([{"id": alias}]);
-
-    // Index info is NOT embedded in commits — it is tracked via the nameservice
-    // and LedgerState.head_index_id. The caller populates the index section
-    // from those canonical sources.
 
     Ok(obj)
 }
 
 /// Convert NsRecord to JSON-LD format for nameservice queries.
-///
-/// Uses standard JSON-LD keywords: `@id`, `@type`, `@context`.
-/// Includes `f:status` field that reflects retracted state.
-///
-/// This function is used both for `ledger-info` responses and for
-/// `query-nameservice` temporary ledger population.
 pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
-    // Use parse_alias for ledger name extraction (avoids edge cases)
     let ledger_name = split_ledger_id(&record.ledger_id)
         .map(|(ledger, _branch)| ledger)
         .unwrap_or_else(|_| record.name.clone());
 
-    // Use canonical form for @id: "{ledger_name}:{branch}"
     let canonical_id = format_ledger_id(&ledger_name, &record.branch);
 
-    // Reflect retracted state in status
     let status = if record.retracted {
         "retracted"
     } else {
@@ -558,13 +825,11 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
         "f:status": status,
     });
 
-    // Emit commit ref when CID is present
     if let Some(ref cid) = record.commit_head_id {
         let mut commit_obj = serde_json::Map::new();
         commit_obj.insert("@id".to_string(), json!(cid.to_string()));
         obj["f:ledgerCommit"] = JsonValue::Object(commit_obj);
     }
-    // Emit index ref when CID is present
     if let Some(ref cid) = record.index_head_id {
         let mut index_obj = serde_json::Map::new();
         index_obj.insert("@id".to_string(), json!(cid.to_string()));
@@ -579,21 +844,15 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
 }
 
 /// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
-///
-/// Uses standard JSON-LD keywords with `f:` namespace.
-/// Includes `f:status` field that reflects retracted state.
 pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
-    // Use canonical form for @id: "{name}:{branch}"
     let canonical_id = format_ledger_id(&record.name, &record.branch);
 
-    // Reflect retracted state in status
     let status = if record.retracted {
         "retracted"
     } else {
         "ready"
     };
 
-    // Determine the kind type string
     let kind_type_str = match record.source_type.kind() {
         fluree_db_nameservice::GraphSourceKind::Index => "f:IndexSource",
         fluree_db_nameservice::GraphSourceKind::Mapped => "f:MappedSource",
@@ -611,7 +870,6 @@ pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
         "f:graphSourceDependencies": &record.dependencies,
     });
 
-    // Include index fields if present (matching ns@v2 on-disk format)
     if let Some(ref index_id) = record.index_id {
         obj["f:graphSourceIndex"] = json!(index_id.to_string());
         obj["f:graphSourceIndexT"] = json!(record.index_t);
@@ -620,65 +878,35 @@ pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     obj
 }
 
-/// Build stats section with decoded IRIs and hierarchy fields.
-fn build_stats(
-    ledger: &LedgerState,
-    stats: &IndexStats,
-    compactor: &IriCompactor,
-    schema_index: &SchemaIndex,
-    options: LedgerInfoOptions,
-) -> Result<JsonValue> {
-    // CANONICAL RULE for indexed_t:
-    // 1. Use ns_record.index_t if ns_record exists (even if 0 when no index yet)
-    // 2. Fall back to db.t if no ns_record
-    let indexed_t = ledger
-        .ns_record
-        .as_ref()
-        .map(|r| r.index_t)
-        .unwrap_or(ledger.db.t);
+// ============================================================================
+// Stats rendering helpers
+// ============================================================================
 
-    let mut stats_obj = json!({
-        "flakes": stats.flakes,
-        "size": stats.size,
-        "indexed": indexed_t,
-        "properties": decode_property_stats(&stats.properties, compactor, schema_index, options)?,
-        "classes": decode_class_stats(&stats.classes, compactor, schema_index)?,
-    });
-
-    // Add per-graph stats when available (ID-keyed; IRI resolution requires
-    // predicate/graph dictionaries to be wired to the API layer).
-    if let Some(ref graphs) = stats.graphs {
-        stats_obj["graphs"] = encode_graph_stats(graphs);
-    }
-
-    Ok(stats_obj)
-}
-
-/// Decode property statistics with IRI compaction.
+/// Decode graph-scoped property stats with IRI compaction.
 ///
-/// Property stats do NOT include types/ref-classes/langs - those only appear
-/// in class→property breakdowns. Includes `sub-property-of` from schema.
-fn decode_property_stats(
-    properties: &Option<Vec<PropertyStatEntry>>,
+/// Uses the `BinaryIndexStore` to resolve p_id -> predicate IRI.
+fn decode_graph_property_stats(
+    properties: &[GraphPropertyStatEntry],
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
-    options: LedgerInfoOptions,
+    store: &BinaryIndexStore,
+    include_datatypes: bool,
 ) -> Result<JsonValue> {
     let mut result = Map::new();
 
-    let Some(properties) = properties else {
-        return Ok(JsonValue::Object(result));
-    };
-
     for entry in properties {
-        let sid = Sid::new(entry.sid.0, &entry.sid.1);
-        let iri = compactor.decode_sid(&sid).map_err(|e| match e {
-            crate::format::FormatError::UnknownNamespace(code) => {
-                LedgerInfoError::UnknownNamespace(code)
-            }
-            _ => LedgerInfoError::Storage(e.to_string()),
-        })?;
-        let compacted = compactor.compact_vocab_iri(&iri);
+        // Resolve p_id to IRI via the binary index store
+        let Some(full_iri) = store.resolve_predicate_iri(entry.p_id) else {
+            tracing::debug!(
+                p_id = entry.p_id,
+                "skipping unknown predicate in graph stats"
+            );
+            continue;
+        };
+        let compacted = compactor.compact_vocab_iri(full_iri);
+
+        // Try to find the SID for schema lookups
+        let sid_for_schema = compactor.try_encode_iri(full_iri);
 
         let mut prop_obj = Map::new();
         prop_obj.insert("count".to_string(), json!(entry.count));
@@ -686,17 +914,16 @@ fn decode_property_stats(
         prop_obj.insert("ndv-subjects".to_string(), json!(entry.ndv_subjects));
         prop_obj.insert("last-modified-t".to_string(), json!(entry.last_modified_t));
 
-        // Optional datatype breakdown (normally omitted to keep payloads small).
-        if options.include_property_datatypes {
+        if include_datatypes {
             let mut dts = Map::new();
             for (tag, count) in &entry.datatypes {
-                let label = ValueTypeTag::from_u8(*tag).to_string();
+                let label = datatype_display_string(*tag);
                 dts.insert(label, json!(*count));
             }
             prop_obj.insert("datatypes".to_string(), JsonValue::Object(dts));
         }
 
-        // Compute selectivity as integers
+        // Compute selectivity
         prop_obj.insert(
             "selectivity-value".to_string(),
             json!(compute_selectivity(entry.count, entry.ndv_values)),
@@ -707,20 +934,22 @@ fn decode_property_stats(
         );
 
         // Add sub-property-of from schema hierarchy
-        if let Some(schema_info) = schema_index.get(&sid) {
-            if !schema_info.parent_props.is_empty() {
-                let parent_iris: Vec<String> = schema_info
-                    .parent_props
-                    .iter()
-                    .filter_map(|parent_sid| {
-                        compactor
-                            .decode_sid(parent_sid)
-                            .ok()
-                            .map(|iri| compactor.compact_vocab_iri(&iri))
-                    })
-                    .collect();
-                if !parent_iris.is_empty() {
-                    prop_obj.insert("sub-property-of".to_string(), json!(parent_iris));
+        if let Some(sid) = &sid_for_schema {
+            if let Some(schema_info) = schema_index.get(sid) {
+                if !schema_info.parent_props.is_empty() {
+                    let parent_iris: Vec<String> = schema_info
+                        .parent_props
+                        .iter()
+                        .filter_map(|parent_sid| {
+                            compactor
+                                .decode_sid(parent_sid)
+                                .ok()
+                                .map(|iri| compactor.compact_vocab_iri(&iri))
+                        })
+                        .collect();
+                    if !parent_iris.is_empty() {
+                        prop_obj.insert("sub-property-of".to_string(), json!(parent_iris));
+                    }
                 }
             }
         }
@@ -731,7 +960,7 @@ fn decode_property_stats(
     Ok(JsonValue::Object(result))
 }
 
-/// Decode class statistics with IRI compaction and `subclass-of` from schema.
+/// Decode class statistics with IRI compaction, including types/langs/ref-classes.
 fn decode_class_stats(
     classes: &Option<Vec<ClassStatEntry>>,
     compactor: &IriCompactor,
@@ -776,11 +1005,7 @@ fn decode_class_stats(
             }
         }
 
-        // Decode class→property stats (map keyed by property IRI).
-        //
-        // This is used by:
-        // - f:onClass policy indexing (class→property presence)
-        // - Ontology/graph visualization (ref target class counts)
+        // Decode class->property stats with types/langs/ref-classes
         let mut props_map = Map::new();
         let mut props_list: Vec<JsonValue> = Vec::new();
 
@@ -798,26 +1023,34 @@ fn decode_class_stats(
 
             let mut prop_obj = Map::new();
 
-            if !usage.ref_classes.is_empty() {
-                let mut refs_obj = Map::new();
-                let mut total: u64 = 0;
-                for rc in &usage.ref_classes {
-                    let class_iri = compactor.decode_sid(&rc.class_sid).map_err(|e| match e {
-                        crate::format::FormatError::UnknownNamespace(code) => {
-                            LedgerInfoError::UnknownNamespace(code)
-                        }
-                        _ => LedgerInfoError::Storage(e.to_string()),
-                    })?;
-                    let class_compacted = compactor.compact_vocab_iri(&class_iri);
-                    refs_obj.insert(class_compacted, json!(rc.count));
-                    total = total.saturating_add(rc.count);
-                }
-                // Primary key (new): `refs`
-                prop_obj.insert("refs".to_string(), JsonValue::Object(refs_obj.clone()));
-                // Compatibility key: `ref-classes`
-                prop_obj.insert("ref-classes".to_string(), JsonValue::Object(refs_obj));
-                prop_obj.insert("count".to_string(), json!(total));
+            // types: per-datatype counts
+            let mut types_obj = Map::new();
+            for &(tag, count) in &usage.datatypes {
+                let label = datatype_display_string(tag);
+                types_obj.insert(label, json!(count));
             }
+            prop_obj.insert("types".to_string(), JsonValue::Object(types_obj));
+
+            // langs: per-language-tag counts
+            let mut langs_obj = Map::new();
+            for (lang, count) in &usage.langs {
+                langs_obj.insert(lang.clone(), json!(*count));
+            }
+            prop_obj.insert("langs".to_string(), JsonValue::Object(langs_obj));
+
+            // ref-classes: per-target-class ref counts
+            let mut refs_obj = Map::new();
+            for rc in &usage.ref_classes {
+                let class_iri = compactor.decode_sid(&rc.class_sid).map_err(|e| match e {
+                    crate::format::FormatError::UnknownNamespace(code) => {
+                        LedgerInfoError::UnknownNamespace(code)
+                    }
+                    _ => LedgerInfoError::Storage(e.to_string()),
+                })?;
+                let class_compacted = compactor.compact_vocab_iri(&class_iri);
+                refs_obj.insert(class_compacted, json!(rc.count));
+            }
+            prop_obj.insert("ref-classes".to_string(), JsonValue::Object(refs_obj));
 
             props_map.insert(prop_compacted, JsonValue::Object(prop_obj));
         }
@@ -831,28 +1064,32 @@ fn decode_class_stats(
     Ok(JsonValue::Object(result))
 }
 
-/// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
+// ============================================================================
+// Utility helpers
+// ============================================================================
+
+/// Convert a ValueTypeTag raw u8 to a display string suitable for JSON keys.
 ///
-/// The manifest is produced by `finalize_pre_index_stats` in the ingest tool.
-/// It has the structure:
-/// ```json
-/// {
-///   "graphs": [
-///     {
-///       "g_id": 0, "flakes": 1000, "size": 0,
-///       "properties": [
-///         { "p_id": 1, "count": 500, "ndv_values": 400, "ndv_subjects": 300,
-///           "last_modified_t": -42, "datatypes": [[0, 500]] }
-///       ]
-///     }
-///   ]
-/// }
-/// ```
+/// Special-cases `JSON_LD_ID` (16) -> `"@id"`. All others use the standard
+/// `ValueTypeTag::Display` implementation (e.g., `"xsd:string"`).
+fn datatype_display_string(tag: u8) -> String {
+    if tag == ValueTypeTag::JSON_LD_ID.as_u8() {
+        "@id".to_string()
+    } else {
+        ValueTypeTag::from_u8(tag).to_string()
+    }
+}
+
+/// Compute selectivity: ceil(count/ndv), minimum 1, as INTEGER.
+fn compute_selectivity(count: u64, ndv: u64) -> u64 {
+    if ndv == 0 {
+        1
+    } else {
+        ((count as f64 / ndv as f64).ceil() as u64).max(1)
+    }
+}
+
 /// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
-///
-/// This is produced by the ingest tool (`finalize_pre_index_stats`) and can be used
-/// to feed query planning with NDV/count stats before an index refresh has published
-/// its own `IndexStats.graphs`.
 pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
     let json: JsonValue =
         serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {}", e))?;
@@ -923,66 +1160,11 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
             flakes,
             size,
             properties,
+            classes: None,
         });
     }
 
     Ok(entries)
-}
-
-/// Encode per-graph stats as a JSON array.
-///
-/// Each entry is keyed by numeric `g_id` and `p_id`. The `ValueTypeTag` values
-/// are resolved to compact IRIs (e.g., `"xsd:string"`) via compile-time
-/// constants. Full predicate and graph IRI resolution requires wiring the
-/// predicate/graph dictionaries to the API layer (future work).
-///
-/// Excludes `g_id = 1` (transaction metadata graph) from the output.
-fn encode_graph_stats(graphs: &[GraphStatsEntry]) -> JsonValue {
-    let entries: Vec<JsonValue> = graphs
-        .iter()
-        .filter(|g| g.g_id != 1) // exclude txn-meta graph
-        .map(|g| {
-            let properties: Vec<JsonValue> = g
-                .properties
-                .iter()
-                .map(|p| {
-                    // Resolve ValueTypeTag to compact IRI via Display
-                    let mut dt_obj = Map::new();
-                    for &(dt_raw, count) in &p.datatypes {
-                        let dt_iri = ValueTypeTag::from_u8(dt_raw).to_string();
-                        dt_obj.insert(dt_iri, json!(count));
-                    }
-
-                    json!({
-                        "p_id": p.p_id,
-                        "count": p.count,
-                        "ndv-values": p.ndv_values,
-                        "ndv-subjects": p.ndv_subjects,
-                        "last-modified-t": p.last_modified_t,
-                        "datatypes": dt_obj,
-                    })
-                })
-                .collect();
-
-            json!({
-                "g_id": g.g_id,
-                "flakes": g.flakes,
-                "size": g.size,
-                "properties": properties,
-            })
-        })
-        .collect();
-
-    JsonValue::Array(entries)
-}
-
-/// Compute selectivity: ceil(count/ndv), minimum 1, as INTEGER.
-fn compute_selectivity(count: u64, ndv: u64) -> u64 {
-    if ndv == 0 {
-        1
-    } else {
-        ((count as f64 / ndv as f64).ceil() as u64).max(1)
-    }
 }
 
 // ============================================================================
@@ -1002,6 +1184,7 @@ use fluree_db_nameservice::NameService;
 /// ```ignore
 /// let info = fluree.ledger_info("mydb:main")
 ///     .with_context(&context)
+///     .for_graph("default")
 ///     .execute()
 ///     .await?;
 /// ```
@@ -1028,42 +1211,50 @@ where
     }
 
     /// Set the JSON-LD context for IRI compaction in stats.
-    ///
-    /// When provided, IRIs in the stats section will be compacted using
-    /// prefixes from this context.
     pub fn with_context(mut self, context: &'a JsonValue) -> Self {
         self.context = Some(context);
         self
     }
 
-    /// Include datatype breakdowns under `stats.properties[*]` (indexed view by default).
+    /// Include datatype breakdowns under `stats.properties[*]`.
     pub fn with_property_datatypes(mut self, enabled: bool) -> Self {
         self.options.include_property_datatypes = enabled;
         self
     }
 
-    /// When enabled, make property “details” real-time (novelty-aware).
-    ///
-    /// This enables the heavier, novelty-aware details used by UIs/optimizers:
-    /// - merges novelty datatype deltas into `stats.properties[*].datatypes`
-    /// - merges novelty ref-edge deltas into `stats.classes[*].properties[*].refs`
+    /// When enabled, make property "details" real-time (novelty-aware).
     pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
         self.options.realtime_property_details = enabled;
-        // If you want real-time property details, include the datatype payload.
         self.options.include_property_datatypes = enabled;
         self
     }
 
-    /// Execute the ledger info request.
+    /// Select which graph to scope stats to by well-known name.
     ///
-    /// Loads the ledger (using cache if available) and returns comprehensive
-    /// metadata including commit info, nameservice record, stats,
-    /// and index information.
+    /// - `"default"` -> default graph (g_id = 0)
+    /// - `"txn-meta"` -> transaction metadata graph (g_id = 1)
+    /// - Any other string is tried as a graph IRI
+    pub fn for_graph(mut self, name: &str) -> Self {
+        self.options.graph = GraphSelector::ByName(name.to_string());
+        self
+    }
+
+    /// Select which graph to scope stats to by IRI.
+    pub fn for_graph_iri(mut self, iri: &str) -> Self {
+        self.options.graph = GraphSelector::ByIri(iri.to_string());
+        self
+    }
+
+    /// Select which graph to scope stats to by numeric graph ID.
+    pub fn for_g_id(mut self, g_id: GraphId) -> Self {
+        self.options.graph = GraphSelector::ById(g_id);
+        self
+    }
+
+    /// Execute the ledger info request.
     pub async fn execute(self) -> crate::Result<JsonValue> {
-        // Load the ledger (uses cache if caching is enabled)
         let ledger = self.fluree.ledger(&self.ledger_id).await?;
 
-        // Build and return the ledger info
         build_ledger_info_with_options(&ledger, self.fluree.storage(), self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
@@ -1082,6 +1273,14 @@ mod tests {
         assert_eq!(compute_selectivity(0, 0), 1);
         assert_eq!(compute_selectivity(3, 2), 2); // ceil(1.5) = 2
         assert_eq!(compute_selectivity(1, 100), 1); // ceil(0.01) = 1, but min is 1
+    }
+
+    #[test]
+    fn test_datatype_display_string() {
+        assert_eq!(datatype_display_string(0), "xsd:string");
+        assert_eq!(datatype_display_string(16), "@id");
+        assert_eq!(datatype_display_string(7), "xsd:double");
+        assert_eq!(datatype_display_string(14), "rdf:langString");
     }
 
     #[test]
@@ -1166,8 +1365,35 @@ mod tests {
             json["f:graphSourceDependencies"],
             json!(["source-ledger:main"])
         );
-        // The index CID is rendered as a base32 multibase string
         assert_eq!(json["f:graphSourceIndex"], index_cid.to_string());
         assert_eq!(json["f:graphSourceIndexT"], 42);
+    }
+
+    #[test]
+    fn test_graph_selector_default() {
+        assert_eq!(
+            resolve_graph_selector(&GraphSelector::Default, None).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_graph_selector_by_id() {
+        assert_eq!(
+            resolve_graph_selector(&GraphSelector::ById(3), None).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_graph_selector_by_name_default() {
+        let sel = GraphSelector::ByName("default".to_string());
+        assert_eq!(resolve_graph_selector(&sel, None).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_graph_selector_by_name_txn_meta() {
+        let sel = GraphSelector::ByName("txn-meta".to_string());
+        assert_eq!(resolve_graph_selector(&sel, None).unwrap(), 1);
     }
 }

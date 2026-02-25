@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! A historical view consists of:
-//! - A `Db` loaded from the head index (or genesis if no index exists)
+//! - A `LedgerSnapshot` loaded from the head index (or genesis if no index exists)
 //! - An optional `Novelty` overlay for commits between `index_t` and `target_t`
 //! - A `to_t` field that bounds all queries
 //!
@@ -22,24 +22,21 @@
 //! ).await?;
 //!
 //! // Query using the view as an overlay provider
-//! execute_pattern_with_overlay(&view.db, view.overlay(), &vars, &pattern, view.to_t()).await?;
+//! execute_pattern_with_overlay(&view.snapshot, view.overlay(), &vars, &pattern, view.to_t()).await?;
 //! ```
 
 use crate::error::{LedgerError, Result};
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Db, Flake, FlakeMeta, FlakeValue, IndexType,
-    OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
+    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
 
 use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
-use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, RDF, XSD};
+use fluree_vocab::namespaces::{FLUREE_COMMIT, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
 use std::sync::Arc;
-
-/// Reserved local name for the txn-meta named graph.
-const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 
 /// Read-only ledger view for time-bounded historical queries
 ///
@@ -54,8 +51,8 @@ const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 /// Unlike `LedgerState`, this is immutable and cannot be updated.
 #[derive(Debug)]
 pub struct HistoricalLedgerView {
-    /// The indexed database (head index or genesis)
-    pub db: Db,
+    /// The indexed snapshot (head index or genesis)
+    pub snapshot: LedgerSnapshot,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
     /// Time bound for all queries
@@ -103,20 +100,20 @@ impl HistoricalLedgerView {
         // If the requested time is *before* the latest index_t, we cannot assume the
         // binary index can answer time-travel purely via the index. Until the index
         // format guarantees history coverage for all updates, we fall back to an
-        // overlay-only reconstruction (genesis Db + commit replay up to target_t).
+        // overlay-only reconstruction (genesis LedgerSnapshot + commit replay up to target_t).
         //
         // When target_t >= index_t, we can use the head index and only replay commits
         // after index_t (normal fast path).
         let use_index = record.index_head_id.is_some() && target_t >= record.index_t;
 
-        // Base db + baseline index_t for overlay range.
-        let (mut db, index_t) = if use_index {
+        // Base snapshot + baseline index_t for overlay range.
+        let (mut snapshot, index_t) = if use_index {
             let index_cid = record.index_head_id.as_ref().unwrap();
             let root_bytes = store.get(index_cid).await?;
-            let loaded = Db::from_root_bytes(&root_bytes)?;
+            let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
             (loaded, record.index_t)
         } else {
-            (Db::genesis(&record.ledger_id), 0)
+            (LedgerSnapshot::genesis(&record.ledger_id), 0)
         };
 
         // Build novelty from commits between index_t and target_t.
@@ -126,14 +123,15 @@ impl HistoricalLedgerView {
         let overlay = if let Some(head_cid) = &record.commit_head_id {
             if target_t > index_t {
                 tracing::trace!(target_t, index_t, "HistoricalLedgerView: loading novelty");
-                let (novelty, ns_delta) =
-                    Self::load_novelty_range(store, head_cid, index_t, target_t, &record.ledger_id)
-                        .await?;
-
-                // Apply namespace deltas to db
-                for (code, prefix) in ns_delta {
-                    db.namespace_codes.insert(code, prefix);
-                }
+                let novelty = Self::load_novelty_range(
+                    store,
+                    head_cid,
+                    index_t,
+                    target_t,
+                    &record.ledger_id,
+                    &mut snapshot,
+                )
+                .await?;
 
                 if novelty.is_empty() {
                     tracing::trace!("HistoricalLedgerView: novelty is empty");
@@ -155,7 +153,7 @@ impl HistoricalLedgerView {
         };
 
         Ok(Self {
-            db,
+            snapshot,
             overlay,
             to_t: target_t,
         })
@@ -165,14 +163,18 @@ impl HistoricalLedgerView {
     ///
     /// Walks the commit chain backwards from `head_cid` using the content store,
     /// including only commits where `index_t < commit.t <= target_t`.
+    ///
+    /// Uses a deferred batch approach: collect flakes during the HEAD→oldest walk,
+    /// apply namespace/graph deltas, build reverse_graph, then replay oldest→newest.
     async fn load_novelty_range<C: ContentStore + Clone + 'static>(
         store: C,
         head_cid: &ContentId,
         index_t: i64,
         target_t: i64,
         ledger_id: &str,
-    ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
-        use std::collections::HashMap;
+        snapshot: &mut LedgerSnapshot,
+    ) -> Result<Novelty> {
+        use std::collections::{HashMap, HashSet};
 
         tracing::trace!(
             %head_cid,
@@ -183,6 +185,19 @@ impl HistoricalLedgerView {
 
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
+        let mut all_graph_iris: HashSet<String> = HashSet::new();
+
+        // Deferred txn-meta: raw entries per commit (subject Sid, entries, t).
+        // Actual flakes are built after apply_envelope_deltas so that
+        // encode_iri can produce the correct txn-meta graph Sid.
+        struct DeferredTxnMeta {
+            commit_subject: Sid,
+            entries: Vec<fluree_db_novelty::TxnMetaEntry>,
+            t: i64,
+        }
+
+        // Collect (data flakes + commit-meta flakes, deferred txn-meta, t) per commit.
+        let mut commit_batches: Vec<(Vec<Flake>, Option<DeferredTxnMeta>, i64)> = Vec::new();
 
         let stream = trace_commits_by_id(store, head_cid.clone(), index_t);
         futures::pin_mut!(stream);
@@ -208,21 +223,52 @@ impl HistoricalLedgerView {
                 continue;
             }
 
-            // Derive a commit subject SID for txn-meta flakes from the CID's digest hex.
-            let commit_subject = commit
-                .id
-                .as_ref()
-                .map(|cid| Sid::new(FLUREE_COMMIT, cid.digest_hex()));
+            // Defer txn-meta flake construction — the graph Sid depends on
+            // namespace_codes which aren't fully applied until after the walk.
+            let deferred_txn_meta = if !commit.txn_meta.is_empty() {
+                commit.id.as_ref().map(|cid| DeferredTxnMeta {
+                    commit_subject: Sid::new(FLUREE_COMMIT, cid.digest_hex()),
+                    entries: commit.txn_meta.clone(),
+                    t: commit.t,
+                })
+            } else {
+                None
+            };
 
-            // Derive user-provided txn-meta entries as flakes in the txn-meta named graph.
-            // These are stored in the commit envelope (not in commit.flakes) and must be
-            // replayed to support historical `ledger#txn-meta` views.
-            let txn_meta_flakes = commit_subject.as_ref().map(|commit_sid| {
-                let txn_meta_graph = Sid::new(FLUREE_DB, TXN_META_GRAPH_LOCAL_NAME);
-                commit
-                    .txn_meta
-                    .iter()
-                    .map(|entry| {
+            let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
+            let mut all_flakes = commit.flakes;
+            all_flakes.extend(meta_flakes);
+            commit_batches.push((all_flakes, deferred_txn_meta, commit.t));
+
+            // Merge namespace deltas (newer wins - trace_commits is newest first)
+            for (code, prefix) in commit.namespace_delta {
+                merged_ns_delta.entry(code).or_insert(prefix);
+            }
+
+            // Collect graph IRIs
+            for iri in commit.graph_delta.into_values() {
+                all_graph_iris.insert(iri);
+            }
+        }
+
+        // Apply accumulated deltas to snapshot (ns codes + graph IRIs)
+        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+
+        // Resolve the txn-meta graph Sid now that namespace_codes are complete.
+        // This produces the same Sid that build_reverse_graph() will map to g_id=1.
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+        let txn_meta_graph_sid = snapshot.encode_iri(&txn_meta_iri);
+
+        // Build reverse_graph now that namespace_codes and graph_registry are complete
+        let reverse_graph = snapshot.build_reverse_graph()?;
+
+        // Replay oldest→newest (walk was HEAD→oldest)
+        commit_batches.reverse();
+        for (mut flakes, deferred_txn_meta, commit_t) in commit_batches {
+            // Materialize deferred txn-meta flakes with the correct graph Sid
+            if let Some(dtm) = deferred_txn_meta {
+                if let Some(ref txn_graph) = txn_meta_graph_sid {
+                    for entry in &dtm.entries {
                         let p = Sid::new(entry.predicate_ns, &entry.predicate_name);
                         let (o, dt, m) = match &entry.value {
                             fluree_db_novelty::TxnMetaValue::String(s) => (
@@ -263,39 +309,20 @@ impl HistoricalLedgerView {
                                 None,
                             ),
                         };
-
-                        Flake::new_in_graph(
-                            txn_meta_graph.clone(),
-                            commit_sid.clone(),
+                        flakes.push(Flake::new_in_graph(
+                            txn_graph.clone(),
+                            dtm.commit_subject.clone(),
                             p,
                             o,
                             dt,
-                            commit.t,
+                            dtm.t,
                             true,
                             m,
-                        )
-                    })
-                    .collect::<Vec<Flake>>()
-            });
-
-            let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
-            let meta_len = meta_flakes.len();
-            let mut all_flakes = commit.flakes;
-            all_flakes.extend(meta_flakes);
-            if let Some(mut flakes) = txn_meta_flakes {
-                all_flakes.append(&mut flakes);
+                        ));
+                    }
+                }
             }
-            tracing::trace!(
-                total_flakes = all_flakes.len(),
-                meta_flakes = meta_len,
-                "load_novelty_range: applying commit"
-            );
-            novelty.apply_commit(all_flakes, commit.t)?;
-
-            // Merge namespace deltas (newer wins - trace_commits is newest first)
-            for (code, prefix) in commit.namespace_delta {
-                merged_ns_delta.entry(code).or_insert(prefix);
-            }
+            novelty.apply_commit(flakes, commit_t, &reverse_graph)?;
         }
 
         tracing::trace!(
@@ -303,14 +330,18 @@ impl HistoricalLedgerView {
             novelty_empty = novelty.is_empty(),
             "load_novelty_range: completed"
         );
-        Ok((novelty, merged_ns_delta))
+        Ok(novelty)
     }
 
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
-    pub fn new(db: Db, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
-        Self { db, overlay, to_t }
+    pub fn new(snapshot: LedgerSnapshot, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+        Self {
+            snapshot,
+            overlay,
+            to_t,
+        }
     }
 
     /// Get the time bound for this view
@@ -318,14 +349,14 @@ impl HistoricalLedgerView {
         self.to_t
     }
 
-    /// Get the index time (when the db was indexed)
+    /// Get the index time (when the snapshot was indexed)
     pub fn index_t(&self) -> i64 {
-        self.db.t
+        self.snapshot.t
     }
 
     /// Get the ledger ID
     pub fn ledger_id(&self) -> &str {
-        &self.db.ledger_id
+        &self.snapshot.ledger_id
     }
 
     /// Get the overlay if present
@@ -342,6 +373,14 @@ impl HistoricalLedgerView {
             .as_ref()
             .map(|n| n.as_ref() as &dyn OverlayProvider)
     }
+
+    /// Create a `GraphDbRef` for the given graph.
+    ///
+    /// Uses `self` as the overlay provider (delegates to inner novelty if
+    /// present, no-op otherwise). `t` is set to `to_t` (the historical time bound).
+    pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
+        GraphDbRef::new(&self.snapshot, g_id, self, self.to_t)
+    }
 }
 
 /// OverlayProvider implementation for HistoricalLedgerView
@@ -355,6 +394,7 @@ impl OverlayProvider for HistoricalLedgerView {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -365,7 +405,15 @@ impl OverlayProvider for HistoricalLedgerView {
         if let Some(novelty) = &self.overlay {
             // Use the minimum of the requested to_t and our view's to_t
             let effective_to_t = to_t.min(self.to_t);
-            novelty.for_each_overlay_flake(index, first, rhs, leftmost, effective_to_t, callback);
+            novelty.for_each_overlay_flake(
+                g_id,
+                index,
+                first,
+                rhs,
+                leftmost,
+                effective_to_t,
+                callback,
+            );
         }
     }
 }
@@ -393,9 +441,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_new() {
-        let db = Db::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
-        let view = HistoricalLedgerView::new(db, None, 10);
+        let view = HistoricalLedgerView::new(snapshot, None, 10);
 
         assert_eq!(view.ledger_id(), "test:main");
         assert_eq!(view.to_t(), 10);
@@ -405,14 +453,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_with_overlay() {
-        let db = Db::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
+        let rg = std::collections::HashMap::new();
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1, &rg)
             .unwrap();
 
-        let view = HistoricalLedgerView::new(db, Some(Arc::new(novelty)), 10);
+        let view = HistoricalLedgerView::new(snapshot, Some(Arc::new(novelty)), 10);
 
         assert_eq!(view.to_t(), 10);
         assert!(view.overlay().is_some());
@@ -421,9 +470,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_overlay_provider() {
-        let db = Db::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
+        let rg = std::collections::HashMap::new();
         novelty
             .apply_commit(
                 vec![
@@ -432,14 +482,15 @@ mod tests {
                     make_flake(3, 1, 300, 10),
                 ],
                 10,
+                &rg,
             )
             .unwrap();
 
         // View at t=5 should only see flakes with t <= 5
-        let view = HistoricalLedgerView::new(db, Some(Arc::new(novelty)), 5);
+        let view = HistoricalLedgerView::new(snapshot, Some(Arc::new(novelty)), 5);
 
         let mut collected = Vec::new();
-        view.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |f| {
+        view.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |f| {
             collected.push(f.s.namespace_code);
         });
 
@@ -496,7 +547,7 @@ mod tests {
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
-        // Load at t=5 - should use genesis db since no index exists
+        // Load at t=5 - should use genesis snapshot since no index exists
         let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)
             .await
             .unwrap();

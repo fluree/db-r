@@ -56,7 +56,7 @@ async fn subquery_basic_correlated_join() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         rows,
@@ -93,7 +93,7 @@ async fn subquery_unrelated_vars_cartesian_expand() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // Order-insensitive parity; Clojure orders, but Rust is allowed to vary.
     assert_eq!(
@@ -168,7 +168,7 @@ async fn subquery_limit_applies_inside_subquery() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -215,7 +215,7 @@ async fn subquery_distinct_applies_to_subquery_select() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -273,7 +273,7 @@ async fn multiple_subqueries_parallel() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -347,7 +347,7 @@ async fn nested_subqueries_distinct() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // This is a large cartesian product; just assert cardinality and a few sentinel rows.
     assert_eq!(rows.as_array().unwrap().len(), 48);
@@ -394,7 +394,7 @@ async fn subquery_inside_union() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -425,7 +425,7 @@ async fn subquery_union_branch_query_alone_has_results() {
         .query(&ledger, &q_alice)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([["Alice", 42.333333333333336_f64]]));
 }
@@ -458,7 +458,7 @@ async fn subquery_with_values_filters_results() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),

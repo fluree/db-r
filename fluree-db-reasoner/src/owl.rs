@@ -4,10 +4,7 @@
 //! vocabulary in reasoning rules, reducing code duplication.
 
 use fluree_db_core::namespaces::is_rdf_type;
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
-};
+use fluree_db_core::{FlakeValue, GraphDbRef, IndexType, RangeMatch, RangeTest, Sid};
 use fluree_vocab::namespaces::OWL;
 use fluree_vocab::owl_names::*;
 
@@ -144,29 +141,21 @@ pub fn one_of_sid() -> Sid {
 ///
 /// Returns flakes of the form: (?entity rdf:type owl:Class)
 pub async fn find_owl_typed_entities(
-    db: &Db,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     owl_class: &str,
-    to_t: i64,
 ) -> crate::Result<Vec<fluree_db_core::flake::Flake>> {
     let owl_class_sid = Sid::new(OWL, owl_class);
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
 
-    let flakes = range_with_overlay(
-        db,
-        overlay,
-        IndexType::Opst,
-        RangeTest::Eq,
-        RangeMatch {
-            o: Some(FlakeValue::Ref(owl_class_sid)),
-            ..Default::default()
-        },
-        opts,
-    )
-    .await?;
+    let flakes = db
+        .range(
+            IndexType::Opst,
+            RangeTest::Eq,
+            RangeMatch {
+                o: Some(FlakeValue::Ref(owl_class_sid)),
+                ..Default::default()
+            },
+        )
+        .await?;
 
     // Filter to only rdf:type assertions
     Ok(flakes

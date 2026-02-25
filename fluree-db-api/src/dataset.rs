@@ -5,7 +5,7 @@
 //! - [`DatasetSpec`]: Declarative specification from query parsing (unresolved)
 //! - [`GraphSource`]: Individual graph source with optional time specification
 //! - [`TimeSpec`]: Time-travel specification (at t, commit, or time)
-//! - [`FlureeDataSetView`](crate::view::FlureeDataSetView): Resolved dataset composed of views
+//! - [`DataSetDb`](crate::view::DataSetDb): Resolved dataset composed of views
 //!
 //! # Architecture
 //!
@@ -13,7 +13,7 @@
 //!
 //! | Layer | Responsibility |
 //! |-------|---------------|
-//! | `fluree-db-api` | Parse `DatasetSpec` from query, resolve aliases via nameservice, apply time-travel, build `FlureeDataSetView` |
+//! | `fluree-db-api` | Parse `DatasetSpec` from query, resolve aliases via nameservice, apply time-travel, build `DataSetDb` |
 //! | `fluree-db-query` | Receive runtime `DataSet<'a>` (borrowed views), execute with graph-aware scanning |
 //!
 //! `fluree-db-query` should NOT know about ledger aliases, nameservice, or time-travel resolution.

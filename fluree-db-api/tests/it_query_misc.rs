@@ -49,7 +49,7 @@ async fn simple_where_select_limit_without_context_returns_full_iri() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!(["http://example.org/ns/alice"]));
 }
@@ -74,7 +74,7 @@ async fn simple_where_select_limit_with_context_returns_compacted_iri() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!(["ex:alice"]));
 }
@@ -106,7 +106,7 @@ async fn class_queries_type_and_all_types() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r1, json!(["ex:User"]));
 
@@ -119,7 +119,7 @@ async fn class_queries_type_and_all_types() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&r2),
@@ -161,7 +161,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &sanity)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(sanity_rows, json!([1]));
 
@@ -174,7 +174,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -190,7 +190,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -206,7 +206,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -222,7 +222,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q4)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -234,7 +234,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q5)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -247,7 +247,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q6)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -260,7 +260,7 @@ async fn result_formatting_graph_crawl_variants() {
         .query(&ledger, &q7)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -338,7 +338,7 @@ async fn s_p_o_full_db_queries_parity() {
         .query(&ledger, &q_all)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&r_all),
@@ -366,7 +366,7 @@ async fn s_p_o_full_db_queries_parity() {
         .query(&ledger, &q_graph)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -452,7 +452,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         .query(&ledger2, &q_commit)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     let rows = r_commit.as_array().expect("commit rows array");
     assert!(
@@ -481,7 +481,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         .query(&ledger2, &q_db)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     let rows = r_db.as_array().expect("db rows array");
     let mut commit_subjects = std::collections::HashSet::new();
@@ -593,7 +593,7 @@ async fn type_handling_parity() {
         .query(&db1, &q_type)
         .await
         .unwrap()
-        .to_jsonld_async(&db1.db)
+        .to_jsonld_async(db1.as_graph_db_ref(0))
         .await
         .unwrap();
     let canon_rows = |rows: &serde_json::Value| -> Vec<serde_json::Value> {
@@ -637,7 +637,7 @@ async fn type_handling_parity() {
         .query(&db1, &q_rdf_type)
         .await
         .unwrap()
-        .to_jsonld_async(&db1.db)
+        .to_jsonld_async(db1.as_graph_db_ref(0))
         .await
         .unwrap();
     let set_rdf = canon_rows(&r_rdf);
@@ -717,7 +717,7 @@ async fn type_handling_parity() {
         .query(&db2, &q_alias)
         .await
         .unwrap()
-        .to_jsonld_async(&db2.db)
+        .to_jsonld_async(db2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -757,7 +757,10 @@ async fn load_with_new_connection_placeholder() {
     });
     let result = fluree2.query_connection(&query).await.unwrap();
     let ledger = fluree2.ledger(ledger_id).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let rows = jsonld.as_array().expect("rows");
     assert_eq!(rows.len(), 1);
@@ -787,7 +790,7 @@ async fn repeated_transaction_results_parity() {
         .query(&ledger2, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -821,7 +824,7 @@ async fn base_context_parity() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     let normalize_type_pred = |rows: &serde_json::Value| -> serde_json::Value {
@@ -853,7 +856,7 @@ async fn base_context_parity() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -894,7 +897,7 @@ async fn untyped_value_matching_parity() {
         .query(&ledger2, &q_typed)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(r_typed.as_array().map(|a| a.len()), Some(1));
@@ -916,7 +919,7 @@ async fn untyped_value_matching_parity() {
         .query(&ledger2, &q_untyped)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(r_untyped.as_array().map(|a| a.len()), Some(1));
@@ -978,12 +981,19 @@ async fn index_range_scans() {
 
     let ledger = fluree.insert(db0, &insert_txn).await.unwrap().ledger;
 
-    let alice_sid = ledger.db.encode_iri("http://example.org/ns/alice").unwrap();
-    let _cam_sid = ledger.db.encode_iri("http://example.org/ns/cam").unwrap();
+    let alice_sid = ledger
+        .snapshot
+        .encode_iri("http://example.org/ns/alice")
+        .unwrap();
+    let _cam_sid = ledger
+        .snapshot
+        .encode_iri("http://example.org/ns/cam")
+        .unwrap();
 
     // Slice for subject id only
     let alice_flakes = range_with_overlay(
-        &ledger.db,
+        &ledger.snapshot,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1007,12 +1017,13 @@ async fn index_range_scans() {
 
     // Slice for subject + predicate
     let favnums_pid = ledger
-        .db
+        .snapshot
         .encode_iri("http://example.org/ns/favNums")
         .unwrap();
 
     let alice_favnums_flakes = range_with_overlay(
-        &ledger.db,
+        &ledger.snapshot,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1043,7 +1054,8 @@ async fn index_range_scans() {
 
     // Slice for subject + predicate + value
     let alice_favnum_42_flakes = range_with_overlay(
-        &ledger.db,
+        &ledger.snapshot,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1067,12 +1079,13 @@ async fn index_range_scans() {
 
     // Slice for subject + predicate + value + datatype
     let integer_dt = ledger
-        .db
+        .snapshot
         .encode_iri("http://www.w3.org/2001/XMLSchema#integer")
         .unwrap();
 
     let alice_favnum_42_typed_flakes = range_with_overlay(
-        &ledger.db,
+        &ledger.snapshot,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1092,12 +1105,13 @@ async fn index_range_scans() {
 
     // Slice for subject + predicate + value + mismatch datatype
     let string_dt = ledger
-        .db
+        .snapshot
         .encode_iri("http://www.w3.org/2001/XMLSchema#string")
         .unwrap();
 
     let alice_favnum_42_wrong_type_flakes = range_with_overlay(
-        &ledger.db,
+        &ledger.snapshot,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1188,7 +1202,7 @@ async fn union_basic_combine_emails() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([
         ["Alice", "alice@example.org"],
@@ -1218,7 +1232,7 @@ async fn union_different_variables() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([
         ["ex:alice", null, "alice@example.org"],
@@ -1248,7 +1262,7 @@ async fn union_passthrough_variables() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([
         ["Alice", null, "alice@example.org"],

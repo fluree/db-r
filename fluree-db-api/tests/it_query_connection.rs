@@ -146,7 +146,7 @@ async fn query_connection_from_combined_datasets_selecting_subgraphs_depth_3() {
     let result = fluree.query_connection(&q).await.expect("query_connection");
     let ledger = fluree.ledger("test/movies:main").await.expect("ledger");
     let jsonld = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -192,7 +192,7 @@ async fn query_connection_from_named_selecting_subgraphs_depth_3() {
     let result = fluree.query_connection(&q).await.expect("query_connection");
     let ledger = fluree.ledger("test/movies:main").await.expect("ledger");
     let jsonld = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -239,7 +239,7 @@ async fn query_connection_from_combined_datasets_direct_select_vars() {
 
     let result = fluree.query_connection(&q).await.expect("query_connection");
     let ledger = fluree.ledger("test/movies:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -284,7 +284,7 @@ async fn query_connection_from_named_with_graph_patterns() {
 
     let result = fluree.query_connection(&q).await.expect("query_connection");
     let ledger = fluree.ledger("test/movies:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -323,7 +323,7 @@ async fn query_connection_single_ledger_from_top_level() {
 
     // Use the ledger we loaded above for formatting
     let ledger = fluree.ledger("people:main").await.expect("ledger load");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -356,7 +356,7 @@ async fn query_connection_multiple_default_graphs_union() {
 
     // Format using an arbitrary ledger's DB (encoding is consistent across these test ledgers)
     let ledger = fluree.ledger("people1:main").await.expect("ledger load");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -387,7 +387,7 @@ async fn query_connection_uses_opts_ledger_fallback() {
         .expect("query_connection should succeed");
 
     let ledger = fluree.ledger("people:main").await.expect("ledger load");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -465,7 +465,7 @@ WHERE {
         .expect("query_connection_sparql should succeed");
 
     let ledger = fluree.ledger("people:main").await.expect("ledger load");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_flat_results(&jsonld),

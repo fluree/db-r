@@ -11,11 +11,12 @@
 //! # Usage
 //!
 //! ```ignore
-//! let mut overlay = DictOverlay::new(store.clone(), dict_novelty.clone());
+//! let mut overlay = DictOverlay::new(graph_view, dict_novelty.clone());
 //! let s_id = overlay.assign_subject_id_from_sid(&sid)?;
 //! let iri = overlay.resolve_subject_iri(s_id)?;
 //! ```
 
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::flake::FlakeMeta;
 use fluree_db_core::ns_vec_bi_dict::NsVecBiDict;
@@ -26,7 +27,6 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use std::sync::Arc;
 /// guaranteed to be in the persisted tree; IDs above the watermark are novel
 /// and resolved from `DictNovelty`.
 pub struct DictOverlay {
-    store: Arc<BinaryIndexStore>,
+    graph_view: BinaryGraphView,
     dict_novelty: Arc<DictNovelty>,
 
     // -- Ephemeral predicate extensions (per-query, low cardinality) --
@@ -95,15 +95,16 @@ const EPHEMERAL_VECTOR_BASE: u32 = 0x8000_0000;
 const EPHEMERAL_SUBJECT_LOCAL_BASE: u64 = 0x0000_8000_0000_0000;
 
 impl DictOverlay {
-    /// Create a new overlay wrapping the given store and DictNovelty.
-    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>) -> Self {
+    /// Create a new overlay wrapping the given graph view and DictNovelty.
+    pub fn new(graph_view: BinaryGraphView, dict_novelty: Arc<DictNovelty>) -> Self {
+        let store = graph_view.store();
         let base_p_count = store.predicate_count();
         let base_g_count = store.graph_ids().len() as GraphId;
         let base_lang_count = store.language_tag_count();
         let base_str_count = store.string_count();
 
         Self {
-            store,
+            graph_view,
             dict_novelty,
             ext_predicates: VecBiDict::new(base_p_count),
             ext_graphs: VecBiDict::new(base_g_count),
@@ -120,7 +121,12 @@ impl DictOverlay {
 
     /// Reference to the underlying store.
     pub fn store(&self) -> &BinaryIndexStore {
-        &self.store
+        self.graph_view.store()
+    }
+
+    /// Reference to the underlying graph view.
+    pub fn graph_view(&self) -> &BinaryGraphView {
+        &self.graph_view
     }
 
     // ========================================================================
@@ -134,12 +140,12 @@ impl DictOverlay {
     /// uninitialized (range provider path).
     pub fn assign_subject_id(&mut self, iri: &str) -> io::Result<u64> {
         // 1. Persisted tree (canonical — must be first)
-        if let Some(id) = self.store.find_subject_id(iri)? {
+        if let Some(id) = self.graph_view.store().find_subject_id(iri)? {
             return Ok(id);
         }
         // 2. DictNovelty
         if self.dict_novelty.is_initialized() {
-            let sid = self.store.encode_iri(iri);
+            let sid = self.graph_view.store().encode_iri(iri);
             if let Some(id) = self
                 .dict_novelty
                 .subjects
@@ -149,7 +155,7 @@ impl DictOverlay {
             }
         }
         // 3. Ephemeral fallback (for range provider path)
-        let sid = self.store.encode_iri(iri);
+        let sid = self.graph_view.store().encode_iri(iri);
         Ok(self
             .ext_subjects
             .assign_or_lookup(sid.namespace_code, sid.name.as_ref()))
@@ -163,7 +169,8 @@ impl DictOverlay {
     pub fn assign_subject_id_from_sid(&mut self, sid: &Sid) -> io::Result<u64> {
         // 1. Persisted tree
         if let Some(id) = self
-            .store
+            .graph_view
+            .store()
             .find_subject_id_by_parts(sid.namespace_code, &sid.name)?
         {
             return Ok(id);
@@ -192,12 +199,12 @@ impl DictOverlay {
     pub fn resolve_subject_iri(&self, id: u64) -> io::Result<String> {
         if !self.dict_novelty.is_initialized() {
             // Uninitialized: try persisted tree first
-            if let Ok(iri) = self.store.resolve_subject_iri(id) {
+            if let Ok(iri) = self.graph_view.store().resolve_subject_iri(id) {
                 return Ok(iri);
             }
             // Ephemeral fallback: namespace-aware sid64 allocation
             if let Some((ns_code, suffix)) = self.ext_subjects.resolve_subject(id) {
-                let prefix = self.store.namespace_prefix(ns_code)?;
+                let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
                 return Ok(format!("{}{}", prefix, suffix));
             }
             return Err(io::Error::new(
@@ -210,11 +217,11 @@ impl DictOverlay {
 
         if sid64.local_id() <= wm {
             // Guaranteed persisted
-            return self.store.resolve_subject_iri(id);
+            return self.graph_view.store().resolve_subject_iri(id);
         }
         // Novel — DictNovelty forward
         if let Some((ns_code, suffix)) = self.dict_novelty.subjects.resolve_subject(id) {
-            let prefix = self.store.namespace_prefix(ns_code)?;
+            let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
 
@@ -222,7 +229,7 @@ impl DictOverlay {
         // may allocate into ext_subjects in certain view paths (e.g., historical overlays
         // where DictNovelty is present but doesn't contain the entry).
         if let Some((ns_code, suffix)) = self.ext_subjects.resolve_subject(id) {
-            let prefix = self.store.namespace_prefix(ns_code)?;
+            let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
 
@@ -235,7 +242,7 @@ impl DictOverlay {
     /// Resolve a subject ID back to a Sid (encodes IRI via namespace trie).
     pub fn resolve_subject_sid(&self, id: u64) -> io::Result<Sid> {
         let iri = self.resolve_subject_iri(id)?;
-        Ok(self.store.encode_iri(&iri))
+        Ok(self.graph_view.store().encode_iri(&iri))
     }
 
     // ========================================================================
@@ -244,7 +251,7 @@ impl DictOverlay {
 
     /// Look up or assign a predicate ID for the given IRI.
     pub fn assign_predicate_id(&mut self, iri: &str) -> u32 {
-        if let Some(id) = self.store.find_predicate_id(iri) {
+        if let Some(id) = self.graph_view.store().find_predicate_id(iri) {
             return id;
         }
         self.ext_predicates.assign_or_lookup(iri)
@@ -252,14 +259,14 @@ impl DictOverlay {
 
     /// Assign a predicate ID from a Sid.
     pub fn assign_predicate_id_from_sid(&mut self, sid: &Sid) -> u32 {
-        let iri = self.store.sid_to_iri(sid);
+        let iri = self.graph_view.store().sid_to_iri(sid);
         self.assign_predicate_id(&iri)
     }
 
     /// Resolve a predicate ID back to an IRI.
     pub fn resolve_predicate_iri(&self, id: u32) -> Option<&str> {
         if id < self.ext_predicates.base_id() {
-            self.store.resolve_predicate_iri(id)
+            self.graph_view.store().resolve_predicate_iri(id)
         } else {
             self.ext_predicates.resolve(id)
         }
@@ -268,7 +275,7 @@ impl DictOverlay {
     /// Resolve a predicate ID back to a Sid.
     pub fn resolve_predicate_sid(&self, id: u32) -> Option<Sid> {
         self.resolve_predicate_iri(id)
-            .map(|iri| self.store.encode_iri(iri))
+            .map(|iri| self.graph_view.store().encode_iri(iri))
     }
 
     // ========================================================================
@@ -280,7 +287,7 @@ impl DictOverlay {
     /// Tries: persisted tree → DictNovelty → ephemeral fallback.
     pub fn assign_string_id(&mut self, value: &str) -> io::Result<u32> {
         // 1. Persisted tree
-        if let Some(id) = self.store.find_string_id(value)? {
+        if let Some(id) = self.graph_view.store().find_string_id(value)? {
             return Ok(id);
         }
         // 2. DictNovelty (populated during commit)
@@ -301,7 +308,7 @@ impl DictOverlay {
     pub fn resolve_string_value(&self, id: u32) -> io::Result<String> {
         if !self.dict_novelty.is_initialized() {
             // Try persisted tree first
-            if let Ok(val) = self.store.resolve_string_value(id) {
+            if let Ok(val) = self.graph_view.store().resolve_string_value(id) {
                 return Ok(val);
             }
             // Ephemeral fallback
@@ -316,7 +323,7 @@ impl DictOverlay {
         let wm = self.dict_novelty.strings.watermark();
 
         if id <= wm {
-            return self.store.resolve_string_value(id);
+            return self.graph_view.store().resolve_string_value(id);
         }
         // Novel — DictNovelty forward
         if let Some(value) = self.dict_novelty.strings.resolve_string(id) {
@@ -341,7 +348,7 @@ impl DictOverlay {
 
     /// Look up or assign a language tag ID.
     pub fn assign_lang_id(&mut self, tag: &str) -> u16 {
-        if let Some(id) = self.store.find_lang_id(tag) {
+        if let Some(id) = self.graph_view.store().find_lang_id(tag) {
             return id;
         }
         self.ext_lang_tags.assign_or_lookup(tag)
@@ -377,7 +384,7 @@ impl DictOverlay {
     /// be present in the persisted index. If truly missing, returns dt_id 0
     /// (which maps to an empty Sid) rather than failing.
     pub fn assign_dt_id(&self, dt_sid: &Sid) -> u16 {
-        self.store.find_dt_id(dt_sid).unwrap_or(0)
+        self.graph_view.store().find_dt_id(dt_sid).unwrap_or(0)
     }
 
     // ========================================================================
@@ -576,7 +583,7 @@ impl DictOverlay {
             };
             if is_novel {
                 let iri = self.resolve_subject_iri(ref_id)?;
-                return Ok(FlakeValue::Ref(self.store.encode_iri(&iri)));
+                return Ok(FlakeValue::Ref(self.graph_view.store().encode_iri(&iri)));
             }
         }
         // LEX_ID — check for novel/ephemeral string IDs
@@ -624,13 +631,14 @@ impl DictOverlay {
             }
         }
 
-        // Delegate to store for all persisted entries
-        self.store.decode_value(o_kind, o_key, p_id)
+        // Delegate to graph view for all persisted entries (graph-scoped decode)
+        self.graph_view.decode_value(o_kind, o_key, p_id)
     }
 
     /// Decode a datatype ID back to a Sid.
     pub fn decode_dt_sid(&self, dt_id: u16) -> Sid {
-        self.store
+        self.graph_view
+            .store()
             .dt_sids()
             .get(dt_id as usize)
             .cloned()
@@ -653,7 +661,8 @@ impl DictOverlay {
         if has_lang {
             let tag = if lang_id < self.ext_lang_tags.base_id() {
                 // Persisted lang_id — delegate to store
-                self.store
+                self.graph_view
+                    .store()
                     .decode_meta(lang_id, ListIndex::none().as_i32())
                     .and_then(|m| m.lang)
             } else {

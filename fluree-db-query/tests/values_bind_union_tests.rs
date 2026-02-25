@@ -5,10 +5,10 @@
 //! - BIND expression evaluation
 //! - UNION branch execution
 
-use fluree_db_core::{Db, FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, GraphDbRef, LedgerSnapshot, NoOverlay, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
-use fluree_db_query::execute::execute_query;
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db {
-    Db::genesis("test/main")
+fn make_test_snapshot() -> LedgerSnapshot {
+    LedgerSnapshot::genesis("test/main")
 }
 
 fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -57,7 +57,7 @@ fn xsd_long() -> Sid {
 /// 3. The join with subsequent patterns works
 #[tokio::test]
 async fn test_values_first_then_join() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // VALUES ?s { :sid1 :sid2 } followed by (?s :name ?n)
@@ -76,7 +76,9 @@ async fn test_values_first_then_join() {
     );
 
     // This should succeed even though VALUES is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -91,7 +93,7 @@ async fn test_values_first_then_join() {
 /// 3. The result is bound to the variable
 #[tokio::test]
 async fn test_bind_first() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // BIND(42 AS ?x) followed by (?s :age ?x)
@@ -107,7 +109,9 @@ async fn test_bind_first() {
     );
 
     // Should succeed even though BIND is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -122,7 +126,7 @@ async fn test_bind_first() {
 /// 3. The unified schema is correct
 #[tokio::test]
 async fn test_union_first() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // UNION { (?s :name ?n) } { (?s :email ?e) }
@@ -143,7 +147,9 @@ async fn test_union_first() {
     );
 
     // Should succeed even though UNION is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results
     // but the query structure is valid
@@ -155,7 +161,7 @@ async fn test_union_first() {
 /// This verifies FILTER at position 0 works with empty seed support
 #[tokio::test]
 async fn test_filter_first_true() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // FILTER(1 = 1) followed by triple
@@ -171,7 +177,9 @@ async fn test_filter_first_true() {
     );
 
     // Should succeed - FILTER is on constants, passes for the empty seed row
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Empty database, so no triple matches
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -180,7 +188,7 @@ async fn test_filter_first_true() {
 /// Test FILTER at position 0 with false condition
 #[tokio::test]
 async fn test_filter_first_false() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // FILTER(1 = 2) followed by triple - should filter out the empty seed
@@ -196,7 +204,9 @@ async fn test_filter_first_false() {
     );
 
     // The false filter should eliminate all rows
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // No results because the filter eliminates the empty seed row
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -205,9 +215,9 @@ async fn test_filter_first_false() {
 /// Test ValuesOperator directly with overlap compatibility
 #[tokio::test]
 async fn test_values_operator_overlap_compatibility() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create an EmptyOperator as the seed
     let empty = Box::new(EmptyOperator::new());
@@ -250,9 +260,9 @@ async fn test_bind_clobber_same_value() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a seed that already has ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -284,9 +294,9 @@ async fn test_bind_clobber_different_value() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a seed that already has ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -318,7 +328,7 @@ async fn test_bind_clobber_different_value() {
 /// - If uncorrelated, we'd incorrectly see ?s=2 in results
 #[tokio::test]
 async fn test_union_is_correlated_via_values_overlap() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     let query = make_query(
@@ -346,7 +356,9 @@ async fn test_union_is_correlated_via_values_overlap() {
         ],
     );
 
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
     let rows: Vec<Binding> = results
         .iter()
         .flat_map(|b| b.column_by_idx(0).unwrap_or(&[]).iter().cloned())
@@ -369,9 +381,9 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Seed row: ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());

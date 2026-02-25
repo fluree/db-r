@@ -29,6 +29,7 @@ fluree-db/
 │   └── fluree-db-nameservice-sync/# Git-like remote sync for nameservice
 │
 ├── Indexing
+│   ├── fluree-db-binary-index/    # Binary index formats + read-side runtime
 │   ├── fluree-db-indexer/         # Index building
 │   └── fluree-db-ledger/          # Ledger state (indexed DB + novelty)
 │
@@ -89,7 +90,7 @@ fluree-db/
 **Key Types:**
 - `Flake` - Indexed triple representation
 - `Sid` - Subject identifier
-- `Db` - Database snapshot
+- `LedgerSnapshot` - Database snapshot at a point in time
 - `IndexType` - Index selection enum
 - `StatsView` - Query statistics
 - `ContentId` - CIDv1 content-addressed identifier
@@ -115,6 +116,7 @@ fluree-db/
 
 **Dependencies:**
 - fluree-db-core
+- fluree-db-binary-index
 - fluree-vocab
 
 ## Graph Processing Crates
@@ -309,6 +311,18 @@ fluree-db/
 
 ## Indexing Crates
 
+### fluree-db-binary-index
+
+**Purpose:** Binary index wire formats and read-side runtime
+
+**Responsibilities:**
+- Binary index format codecs (IRB1 root, FBR2 branch, FLI2 leaf, leaflet layout)
+- Dictionary artifacts and readers (inline dicts, dict trees, arenas)
+- Query-time read types (`BinaryIndexStore`, `BinaryGraphView`, cursors)
+
+**Dependencies:**
+- fluree-db-core
+
 ### fluree-db-indexer
 
 **Purpose:** Index building for Fluree DB
@@ -320,6 +334,7 @@ fluree-db/
 
 **Dependencies:**
 - fluree-db-core
+- fluree-db-binary-index
 - fluree-db-novelty
 - fluree-db-nameservice
 - fluree-vocab
@@ -575,13 +590,9 @@ Layer 3 (Query)      └──────┴──────┴────�
                                               │
                      fluree-db-query ←── fluree-db-sparql
                             │
-Layer 2 (Data)       ┌──────┼──────┬──────────┐
-                     │      │      │          │
-                  ledger indexer novelty  connection
-                     │      │      │          │
-Layer 1 (Core)       └──────┴──────┴──────────┘
+Layer 2 (Data)       ledger, binary-index, indexer, novelty, connection
                             │
-                     fluree-db-core
+Layer 1 (Core)       fluree-db-core
                             │
 Layer 0 (Foundation) fluree-vocab, fluree-sse, fluree-db-tabular
 ```

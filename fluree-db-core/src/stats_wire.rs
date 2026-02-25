@@ -133,6 +133,59 @@ fn decode_graph_property(data: &[u8], pos: &mut usize) -> io::Result<GraphProper
     })
 }
 
+/// Decode the per-property payload within a class section: datatypes, langs, ref_classes.
+fn decode_class_property_payload(
+    data: &[u8],
+    pos: &mut usize,
+    property_sid: Sid,
+) -> io::Result<ClassPropertyUsage> {
+    // Datatypes
+    let dt_count = read_u16(data, pos)? as usize;
+    let mut datatypes = Vec::with_capacity(dt_count);
+    for _ in 0..dt_count {
+        let tag = read_u8(data, pos)?;
+        let count = read_u64(data, pos)?;
+        datatypes.push((tag, count));
+    }
+
+    // Langs
+    let lang_count = read_u16(data, pos)? as usize;
+    let mut langs = Vec::with_capacity(lang_count);
+    for _ in 0..lang_count {
+        let lang_len = read_u16(data, pos)? as usize;
+        ensure_len(data, *pos, lang_len, "lang string")?;
+        let lang = std::str::from_utf8(&data[*pos..*pos + lang_len]).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid UTF-8 in lang tag: {e}"),
+            )
+        })?;
+        *pos += lang_len;
+        let count = read_u64(data, pos)?;
+        langs.push((lang.to_string(), count));
+    }
+
+    // Ref classes
+    let rc_count = read_u16(data, pos)? as usize;
+    let mut ref_classes = Vec::with_capacity(rc_count);
+    for _ in 0..rc_count {
+        let (ref_sid, new_pos) = read_sid(data, *pos)?;
+        *pos = new_pos;
+        let ref_count = read_u64(data, pos)?;
+        ref_classes.push(ClassRefCount {
+            class_sid: ref_sid,
+            count: ref_count,
+        });
+    }
+
+    Ok(ClassPropertyUsage {
+        property_sid,
+        datatypes,
+        langs,
+        ref_classes,
+    })
+}
+
 // ---- Public decode functions ----
 
 /// Decode `IndexStats` from the binary wire format.
@@ -155,11 +208,53 @@ pub fn decode_stats(data: &[u8]) -> io::Result<(IndexStats, usize)> {
         for _ in 0..prop_count {
             properties.push(decode_graph_property(data, &mut pos)?);
         }
+        // Per-graph classes (optional section after properties).
+        // Backward compat: if there are remaining bytes in the graph section,
+        // read the has_classes flag. Otherwise default to None.
+        let graph_classes = if pos < data.len() {
+            let has_classes = read_u8(data, &mut pos)?;
+            if has_classes != 0 {
+                let gc_count = read_u32(data, &mut pos)? as usize;
+                let mut gc = Vec::with_capacity(gc_count);
+                for _ in 0..gc_count {
+                    let (class_sid, new_pos) = read_sid(data, pos)?;
+                    pos = new_pos;
+                    let instance_count = read_u64(data, &mut pos)?;
+                    let pu_count = read_u16(data, &mut pos)? as usize;
+                    let mut properties = Vec::with_capacity(pu_count);
+                    for _ in 0..pu_count {
+                        let (property_sid, new_pos2) = read_sid(data, pos)?;
+                        pos = new_pos2;
+                        properties.push(decode_class_property_payload(
+                            data,
+                            &mut pos,
+                            property_sid,
+                        )?);
+                    }
+                    gc.push(ClassStatEntry {
+                        class_sid,
+                        count: instance_count,
+                        properties,
+                    });
+                }
+                if gc.is_empty() {
+                    None
+                } else {
+                    Some(gc)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         graphs.push(GraphStatsEntry {
             g_id,
             flakes: g_flakes,
             size: g_size,
             properties,
+            classes: graph_classes,
         });
     }
 
@@ -194,21 +289,7 @@ pub fn decode_stats(data: &[u8]) -> io::Result<(IndexStats, usize)> {
         for _ in 0..pu_count {
             let (property_sid, new_pos2) = read_sid(data, pos)?;
             pos = new_pos2;
-            let rc_count = read_u16(data, &mut pos)? as usize;
-            let mut ref_classes = Vec::with_capacity(rc_count);
-            for _ in 0..rc_count {
-                let (ref_sid, new_pos3) = read_sid(data, pos)?;
-                pos = new_pos3;
-                let ref_count = read_u64(data, &mut pos)?;
-                ref_classes.push(ClassRefCount {
-                    class_sid: ref_sid,
-                    count: ref_count,
-                });
-            }
-            properties.push(ClassPropertyUsage {
-                property_sid,
-                ref_classes,
-            });
+            properties.push(decode_class_property_payload(data, &mut pos, property_sid)?);
         }
         classes.push(ClassStatEntry {
             class_sid,

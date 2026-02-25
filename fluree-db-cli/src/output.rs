@@ -3,7 +3,8 @@ use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::format::{IriCompactor, SelectMode};
 use fluree_db_api::QueryResult;
-use fluree_db_core::{Db, FlakeValue};
+use fluree_db_binary_index::BinaryGraphView;
+use fluree_db_core::{FlakeValue, LedgerSnapshot};
 use fluree_db_query::binding::Binding;
 
 /// Output format for query results.
@@ -29,13 +30,13 @@ pub struct FormatOutput {
 ///   callers should fall back to the JSON-based formatter for correctness.
 pub fn format_sparql_table_from_result(
     result: &QueryResult,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     limit: Option<usize>,
 ) -> CliResult<Option<FormatOutput>> {
     // Grouped bindings require cartesian disaggregation (SPARQL formatter logic).
     // Rather than re-implement that here, fall back to the existing SPARQL JSON formatter.
-    let compactor = IriCompactor::new(db.namespaces(), &result.context);
-    let store = result.binary_store.as_deref();
+    let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
+    let gv = result.binary_graph.as_ref();
 
     let head_var_ids: Vec<fluree_db_query::VarId> = match result.select_mode {
         SelectMode::Wildcard => result
@@ -83,7 +84,7 @@ pub fn format_sparql_table_from_result(
             let mut cells: Vec<String> = Vec::with_capacity(head_pairs.len());
             for (_, var_id) in &head_pairs {
                 let b = batch.get(row, *var_id).unwrap_or(&Binding::Unbound);
-                match sparql_table_cell(b, &compactor, store) {
+                match sparql_table_cell(b, &compactor, gv) {
                     Ok(cell) => cells.push(cell),
                     Err(SparqlTableFastPath::NeedsDisaggregation) => return Ok(None),
                 }
@@ -128,7 +129,7 @@ fn strip_question_mark(var_name: &str) -> String {
 fn sparql_table_cell(
     b: &Binding,
     compactor: &IriCompactor,
-    store: Option<&fluree_db_indexer::run_index::BinaryIndexStore>,
+    gv: Option<&BinaryGraphView>,
 ) -> Result<String, SparqlTableFastPath> {
     let s = match b {
         Binding::Unbound | Binding::Poisoned => String::new(),
@@ -143,19 +144,19 @@ fn sparql_table_cell(
         Binding::Lit { val, .. } => flake_value_to_table_cell(val, compactor),
 
         Binding::EncodedSid { s_id } => {
-            let Some(store) = store else {
+            let Some(gv) = gv else {
                 return Ok(format!("{b:?}"));
             };
-            match store.resolve_subject_iri(*s_id) {
+            match gv.store().resolve_subject_iri(*s_id) {
                 Ok(iri) => compact_bnode_strip(compactor.compact_iri_for_display(&iri).ok()),
                 Err(_) => format!("{b:?}"),
             }
         }
         Binding::EncodedPid { p_id } => {
-            let Some(store) = store else {
+            let Some(gv) = gv else {
                 return Ok(format!("{b:?}"));
             };
-            match store.resolve_predicate_iri(*p_id) {
+            match gv.store().resolve_predicate_iri(*p_id) {
                 Some(iri) => compact_bnode_strip(compactor.compact_iri_for_display(iri).ok()),
                 None => format!("{b:?}"),
             }
@@ -166,10 +167,10 @@ fn sparql_table_cell(
             p_id,
             ..
         } => {
-            let Some(store) = store else {
+            let Some(gv) = gv else {
                 return Ok(format!("{b:?}"));
             };
-            match store.decode_value(*o_kind, *o_key, *p_id) {
+            match gv.decode_value(*o_kind, *o_key, *p_id) {
                 Ok(v) => flake_value_to_table_cell(&v, compactor),
                 Err(_) => format!("{b:?}"),
             }

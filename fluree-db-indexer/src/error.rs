@@ -52,6 +52,14 @@ pub enum IndexerError {
     /// Error applying index to ledger state
     #[error("Ledger apply error: {0}")]
     LedgerApply(String),
+
+    /// Incremental indexing aborted; caller should fall back to full rebuild.
+    #[error("Incremental index aborted: {0}")]
+    IncrementalAbort(String),
+
+    /// General-purpose error for spatial index building and other auxiliary pipelines.
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<serde_json::Error> for IndexerError {

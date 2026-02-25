@@ -184,7 +184,7 @@ impl<'a> TransactCore<'a> {
 /// A staged (uncommitted) transaction. Queryable and committable.
 ///
 /// Created by [`OwnedTransactBuilder::stage()`]. The staged state can be:
-/// - **Queried** via [`FlureeView::from_staged()`](crate::FlureeView) to
+/// - **Queried** via [`GraphDb::from_staged()`](crate::GraphDb) to
 ///   preview changes before committing
 /// - **Committed** via [`Fluree::commit_staged()`](crate::Fluree) to persist
 ///
@@ -196,7 +196,7 @@ impl<'a> TransactCore<'a> {
 ///     .stage().await?;
 ///
 /// // Query staged state
-/// let graph = FlureeView::from_staged(&staged);
+/// let graph = GraphDb::from_staged(&staged);
 /// let preview = graph.query(&fluree).jsonld(&q).execute().await?;
 ///
 /// // Commit if satisfied

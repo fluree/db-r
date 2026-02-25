@@ -66,10 +66,59 @@ pub struct IndexerConfig {
     /// If `None`, defaults to `{system_temp_dir}/fluree-index`. For production
     /// deployments, this should always be set to a persistent directory.
     pub data_dir: Option<PathBuf>,
+
+    /// Whether incremental indexing is enabled.
+    ///
+    /// When `true`, `build_index_for_ledger` will attempt to incrementally
+    /// update the existing index by merging only new commits into affected
+    /// leaves. Falls back to full rebuild on failure.
+    ///
+    /// Default: `true`
+    pub incremental_enabled: bool,
+
+    /// Maximum number of commits to process incrementally.
+    ///
+    /// If the gap between `index_t` and `commit_t` exceeds this, a full
+    /// rebuild is used instead. Larger windows increase the number of
+    /// touched leaves and reduce the incremental advantage.
+    ///
+    /// Default: 10,000
+    pub incremental_max_commits: usize,
+
+    /// Maximum number of concurrent (graph, order) branch updates during
+    /// incremental indexing.
+    ///
+    /// Each branch update fetches affected leaves from CAS, merges novelty,
+    /// and uploads new blobs. Higher concurrency speeds up multi-graph
+    /// ledgers at the cost of more peak memory (one decoded leaf set per
+    /// in-flight task).
+    ///
+    /// Default: 4 (one per sort order in a single-graph workload)
+    pub incremental_max_concurrency: usize,
+
+    /// Target rows per leaflet (FLI2).
+    ///
+    /// This is primarily a build-format tuning knob. Smaller values produce
+    /// more leaflets (and therefore more leaves) for the same dataset, which
+    /// can be useful for tests that need multi-leaf coverage with small data.
+    ///
+    /// Default: 25,000.
+    pub leaflet_rows: usize,
+
+    /// Leaflets per leaf file (FLI2).
+    ///
+    /// Default: 10.
+    pub leaflets_per_leaf: usize,
 }
 
 /// Default run-sort budget: 256 MB.
 pub const DEFAULT_RUN_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+
+/// Default max commits for incremental indexing.
+pub const DEFAULT_INCREMENTAL_MAX_COMMITS: usize = 10_000;
+
+/// Default max concurrency for incremental branch updates.
+pub const DEFAULT_INCREMENTAL_MAX_CONCURRENCY: usize = 4;
 
 impl Default for IndexerConfig {
     fn default() -> Self {
@@ -82,6 +131,11 @@ impl Default for IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 }
@@ -103,6 +157,11 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 
@@ -117,6 +176,11 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 
@@ -131,7 +195,22 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
+    }
+
+    pub fn with_leaflet_rows(mut self, rows: usize) -> Self {
+        self.leaflet_rows = rows.max(1);
+        self
+    }
+
+    pub fn with_leaflets_per_leaf(mut self, n: usize) -> Self {
+        self.leaflets_per_leaf = n.max(1);
+        self
     }
 
     /// Builder method to set GC max old indexes
@@ -159,6 +238,24 @@ impl IndexerConfig {
         self.data_dir = Some(data_dir.into());
         self
     }
+
+    /// Builder method to enable or disable incremental indexing
+    pub fn with_incremental_enabled(mut self, enabled: bool) -> Self {
+        self.incremental_enabled = enabled;
+        self
+    }
+
+    /// Builder method to set the maximum commit window for incremental indexing
+    pub fn with_incremental_max_commits(mut self, max_commits: usize) -> Self {
+        self.incremental_max_commits = max_commits;
+        self
+    }
+
+    /// Builder method to set the maximum concurrency for incremental branch updates
+    pub fn with_incremental_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.incremental_max_concurrency = max_concurrency.max(1);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +271,15 @@ mod tests {
         assert_eq!(config.branch_max_children, 200);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
         assert_eq!(config.gc_min_time_mins, DEFAULT_MIN_TIME_GARBAGE_MINS);
+        assert!(config.incremental_enabled);
+        assert_eq!(
+            config.incremental_max_commits,
+            DEFAULT_INCREMENTAL_MAX_COMMITS
+        );
+        assert_eq!(
+            config.incremental_max_concurrency,
+            DEFAULT_INCREMENTAL_MAX_CONCURRENCY
+        );
     }
 
     #[test]
@@ -181,6 +287,7 @@ mod tests {
         let config = IndexerConfig::small();
         assert_eq!(config.leaf_target_bytes, 50_000);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
+        assert!(config.incremental_enabled);
     }
 
     #[test]
@@ -188,6 +295,7 @@ mod tests {
         let config = IndexerConfig::large();
         assert_eq!(config.leaf_target_bytes, 750_000);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
+        assert!(config.incremental_enabled);
     }
 
     #[test]
@@ -197,5 +305,20 @@ mod tests {
             .with_gc_min_time_mins(60);
         assert_eq!(config.gc_max_old_indexes, 10);
         assert_eq!(config.gc_min_time_mins, 60);
+    }
+
+    #[test]
+    fn test_incremental_config_builders() {
+        let config = IndexerConfig::default()
+            .with_incremental_enabled(false)
+            .with_incremental_max_commits(500)
+            .with_incremental_max_concurrency(8);
+        assert!(!config.incremental_enabled);
+        assert_eq!(config.incremental_max_commits, 500);
+        assert_eq!(config.incremental_max_concurrency, 8);
+
+        // Concurrency is clamped to at least 1.
+        let config2 = IndexerConfig::default().with_incremental_max_concurrency(0);
+        assert_eq!(config2.incremental_max_concurrency, 1);
     }
 }

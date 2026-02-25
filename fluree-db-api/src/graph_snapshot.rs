@@ -1,10 +1,10 @@
 //! Materialized graph snapshot bound to an executor.
 //!
-//! [`GraphSnapshot`] holds both a [`FlureeView`] and a reference to [`Fluree`],
+//! [`GraphSnapshot`] holds both a [`GraphDb`] and a reference to [`Fluree`],
 //! so queries no longer need `&fluree` passed separately.
 
 use crate::graph_query_builder::GraphSnapshotQueryBuilder;
-use crate::view::FlureeView;
+use crate::view::GraphDb;
 use crate::{Fluree, NameService, Storage};
 
 /// A materialized, queryable graph snapshot.
@@ -22,11 +22,11 @@ use crate::{Fluree, NameService, Storage};
 /// let r2 = snapshot.query().jsonld(&q).execute().await?;
 ///
 /// // Access the underlying view if needed
-/// let view = snapshot.view();
+/// let view = snapshot.db();
 /// ```
 pub struct GraphSnapshot<'a, S: Storage + 'static, N> {
     pub(crate) fluree: &'a Fluree<S, N>,
-    pub(crate) view: FlureeView,
+    pub(crate) view: GraphDb,
 }
 
 impl<'a, S, N> GraphSnapshot<'a, S, N>
@@ -35,7 +35,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new snapshot (called internally by `Graph::load()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: FlureeView) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: GraphDb) -> Self {
         Self { fluree, view }
     }
 
@@ -51,13 +51,13 @@ where
         GraphSnapshotQueryBuilder::new_from_parts(self.fluree, &self.view)
     }
 
-    /// Access the underlying [`FlureeView`] snapshot.
-    pub fn view(&self) -> &FlureeView {
+    /// Access the underlying [`GraphDb`] snapshot.
+    pub fn db(&self) -> &GraphDb {
         &self.view
     }
 
-    /// Unwrap into the underlying [`FlureeView`] snapshot.
-    pub fn into_view(self) -> FlureeView {
+    /// Unwrap into the underlying [`GraphDb`] snapshot.
+    pub fn into_db(self) -> GraphDb {
         self.view
     }
 }

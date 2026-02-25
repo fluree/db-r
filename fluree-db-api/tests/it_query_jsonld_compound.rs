@@ -30,7 +30,7 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -54,7 +54,7 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(normalize_rows(&rows2), normalize_rows(&rows));
@@ -79,7 +79,7 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -102,7 +102,7 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(normalize_rows(&rows2), normalize_rows(&expected));
@@ -126,7 +126,7 @@ async fn compound_passthrough_variables_and_select_one() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -148,7 +148,7 @@ async fn compound_passthrough_variables_and_select_one() {
         .query(&ledger, &q_one)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // SelectOne returns the first row (order not defined); assert it is one of the expected rows.
     assert!(
@@ -172,7 +172,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -196,7 +196,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         .query(&ledger, &q_asc)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         asc,
@@ -220,7 +220,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         .query(&ledger, &q_desc)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         desc,
@@ -244,7 +244,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         .query(&ledger, &q_multi)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         multi,
@@ -277,7 +277,7 @@ async fn compound_group_by_multicard_without_aggregate() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         rows,
@@ -300,7 +300,7 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         .query(&ledger, &q_spo)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&spo),
@@ -330,7 +330,7 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         .query(&ledger, &q_join)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 

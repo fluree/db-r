@@ -2,7 +2,7 @@
 //!
 //! Decodes ops directly into borrowed field references (`&str`) without
 //! constructing `Flake`, `Sid`, or `FlakeValue`. Designed for the dictionary
-//! resolution pipeline (Phase B of INDEX_BUILD_STRATEGY.md).
+//! resolution pipeline (Phase B of `INCREMENTAL_INDEXING_STRATEGY.md`).
 //!
 //! # Usage
 //!
