@@ -67,13 +67,24 @@ pub struct BindPattern {
 }
 
 impl BindPattern {
-    pub fn new(var: VarId, expr: Expression) -> Self {
-        let required_vars = expr.variables().into_iter().collect();
-        Self {
+    /// Construct a `BindPattern` only when all the expression's variables are
+    /// already present in `bound_vars`. Returns `None` when the expression
+    /// depends on variables not yet bound, avoiding the `expr.clone()` in
+    /// that case.
+    ///
+    /// `required_vars` is computed once from the expression and, on success,
+    /// moved directly into the resulting `BindPattern`.
+    pub fn when_eligible(
+        var: VarId,
+        expr: &Expression,
+        bound_vars: &HashSet<VarId>,
+    ) -> Option<Self> {
+        let required_vars: HashSet<VarId> = expr.variables().into_iter().collect();
+        required_vars.is_subset(bound_vars).then(|| Self {
             required_vars,
             var,
-            expr,
-        }
+            expr: expr.clone(),
+        })
     }
 }
 
@@ -464,11 +475,9 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
                 i += 1;
             }
             Pattern::Bind { var, expr } => {
-                let vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                if vars.is_subset(&bound_vars) {
-                    // Safe to move within block: inputs already bound.
-                    binds.push(BindPattern::new(*var, expr.clone()));
+                if let Some(bind) = BindPattern::when_eligible(*var, expr, &bound_vars) {
                     bound_vars.insert(*var);
+                    binds.push(bind);
                     i += 1;
                 } else {
                     // Unsafe to move this BIND: it depends on vars not yet bound.
