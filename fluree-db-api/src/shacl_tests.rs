@@ -1194,3 +1194,66 @@ async fn shacl_or_with_inline_anonymous_shapes() {
         .unwrap_err();
     assert_shacl_violation(err, "sh:or");
 }
+
+#[tokio::test]
+async fn shacl_and_with_inline_anonymous_shapes() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = json!([default_context(), {
+        "ex": "http://example.org/ns/"
+    }]);
+
+    // Shape requiring sh:and: value must be BOTH xsd:string AND have minLength 3
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:StrictNameShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:Entity"},
+        "sh:property": [{
+            "sh:path": {"@id": "schema:name"},
+            "sh:and": { "@list": [
+                {"sh:datatype": {"@id": "xsd:string"}},
+                {"sh:minLength": 3}
+            ]}
+        }]
+    });
+
+    // Valid: string with length >= 3
+    let ledger_ok = fluree
+        .create_ledger("shacl/and-inline-ok:main")
+        .await
+        .unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    let _ledger_ok = fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:e1",
+                "@type": "ex:Entity",
+                "schema:name": "Alice"
+            }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    // Invalid: string with length < 3 (violates minLength)
+    let ledger_bad = fluree
+        .create_ledger("shacl/and-inline-bad:main")
+        .await
+        .unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:e2",
+                "@type": "ex:Entity",
+                "schema:name": "Al"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "sh:and");
+}
