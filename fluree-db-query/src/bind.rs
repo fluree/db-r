@@ -140,6 +140,10 @@ impl Operator for BindOperator {
                 .map(|_| Vec::with_capacity(input_batch.len()))
                 .collect();
 
+            // Reusable buffer for filter evaluation (avoids per-row allocation)
+            let filter_row_cap = if self.filters.is_empty() { 0 } else { num_output_cols };
+            let mut filter_row = Vec::with_capacity(filter_row_cap);
+
             // Process each row
             for row_idx in 0..input_batch.len() {
                 let row_view = input_batch.row_view(row_idx).unwrap();
@@ -174,13 +178,16 @@ impl Operator for BindOperator {
 
                 // Evaluate inline filters against a row that includes the BIND output
                 if !self.filters.is_empty() {
-                    let mut row = row_view.to_vec();
-                    if self.is_new_var {
-                        row.push(computed.clone());
-                    } else {
-                        row[self.var_position] = computed.clone();
+                    filter_row.clear();
+                    for col in 0..child_num_cols {
+                        filter_row.push(input_batch.get_by_col(row_idx, col).clone());
                     }
-                    if !passes_filters(&self.filters, &self.schema, &row, Some(ctx)) {
+                    if self.is_new_var {
+                        filter_row.push(computed.clone());
+                    } else {
+                        filter_row[self.var_position] = computed.clone();
+                    }
+                    if !passes_filters(&self.filters, &self.schema, &filter_row, Some(ctx)) {
                         continue;
                     }
                 }
