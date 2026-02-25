@@ -112,6 +112,20 @@ report-json: ## Generate machine-readable JSON report for all tests
 	@echo "JSON report written to report.json"
 	@python3 -c "import json; r=json.load(open('report.json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Ignored: {r[\"ignored\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
 
+report-eval-json: ## Generate JSON report for SPARQL 1.1 eval tests
+	@echo "Running W3C SPARQL 1.1 eval tests (JSON output → report-eval.json)..."
+	@W3C_REPORT_JSON=report-eval.json $(CARGO) test sparql11_query_w3c_testsuite \
+		-- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
+	@echo "JSON report written to report-eval.json"
+	@python3 -c "import json; r=json.load(open('report-eval.json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Ignored: {r[\"ignored\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
+
+report-10-json: ## Generate JSON report for SPARQL 1.0 eval tests
+	@echo "Running W3C SPARQL 1.0 eval tests (JSON output → report-10.json)..."
+	@W3C_REPORT_JSON=report-10.json $(CARGO) test sparql10_query_eval \
+		-- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
+	@echo "JSON report written to report-10.json"
+	@python3 -c "import json; r=json.load(open('report-10.json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Ignored: {r[\"ignored\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
+
 failures: report ## Show only failing tests (extracted from report)
 	@echo ""
 	@awk '/failing test\(s\):/{found=1; print ""; print; next} found && /^test .*\.\.\. FAILED/{found=0; next} found{print}' $(REPORT) \
@@ -185,4 +199,4 @@ check: ## Run cargo check on the testsuite crate
 	$(CARGO) check
 
 clean: ## Remove generated report files
-	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt report.json
+	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt report.json report-eval.json report-10.json

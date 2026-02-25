@@ -10,6 +10,13 @@ pub struct TestEntry {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether this test failed due to a timeout (subprocess killed).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub timeout: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 /// Aggregate summary of a test run.

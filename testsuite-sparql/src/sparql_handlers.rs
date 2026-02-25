@@ -1,17 +1,15 @@
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
-use fluree_db_sparql::{parse_sparql, validate, Capabilities};
 
 use crate::evaluator::TestEvaluator;
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
 use crate::query_handler::evaluate_query_evaluation_test;
+use crate::subprocess::{run_in_subprocess, TestDescriptor};
 use crate::vocab::mf;
 
-/// Max time to wait for the SPARQL parser before declaring a timeout.
+/// Max time to wait for the SPARQL parser before killing the subprocess.
 const PARSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Register all SPARQL test handlers with the evaluator.
@@ -50,22 +48,25 @@ pub fn register_sparql_tests(evaluator: &mut TestEvaluator) {
 /// Handler for PositiveSyntaxTest / PositiveSyntaxTest11 / PositiveUpdateSyntaxTest11.
 ///
 /// The query/update file should parse successfully.
+/// Runs in a subprocess for timeout isolation — if the parser infinite-loops,
+/// the subprocess is killed cleanly.
 fn evaluate_positive_syntax_test(test: &Test) -> Result<()> {
     let query_url = test
         .action
         .as_deref()
         .context("Positive syntax test missing action (query file URL)")?;
 
-    let query_string = read_file_to_string(query_url)
-        .with_context(|| format!("Reading query file for test {}", test.id))?;
-
-    let has_errors = parse_with_timeout(&query_string, &test.id)?;
+    let has_errors = parse_in_subprocess(query_url, &test.id)?;
 
     if has_errors {
+        // Read the query for the error message (best-effort)
+        let query_preview = read_file_to_string(query_url)
+            .map(|s| format!("\n  Query: {}", s.lines().next().unwrap_or("(empty)")))
+            .unwrap_or_default();
         bail!(
             "Positive syntax test failed — parser rejected valid query.\n\
              Test: {}\n\
-             File: {query_url}",
+             File: {query_url}{query_preview}",
             test.id,
         );
     }
@@ -82,10 +83,7 @@ fn evaluate_negative_syntax_test(test: &Test) -> Result<()> {
         .as_deref()
         .context("Negative syntax test missing action (query file URL)")?;
 
-    let query_string = read_file_to_string(query_url)
-        .with_context(|| format!("Reading query file for test {}", test.id))?;
-
-    let has_errors = parse_with_timeout(&query_string, &test.id)?;
+    let has_errors = parse_in_subprocess(query_url, &test.id)?;
 
     ensure!(
         has_errors,
@@ -137,40 +135,21 @@ fn evaluate_not_applicable_test(test: &Test) -> Result<()> {
     )
 }
 
-/// Run `parse_sparql` + `validate` with a timeout on a dedicated thread.
+/// Run `parse_sparql` + `validate` in a subprocess with a timeout.
 ///
-/// Returns `Ok(has_errors)` or `Err` if the parser timed out or panicked.
+/// Returns `Ok(has_errors)` or `Err` if the subprocess timed out or crashed.
 ///
-/// Uses `thread::spawn` + `mpsc::recv_timeout` for reliable timeout behavior.
-/// This works even when the parser enters an infinite loop because the timeout
-/// is checked on the calling thread, independent of the parser thread.
-///
-/// When a parse times out, the spawned thread continues running until the
-/// process exits (Rust cannot kill threads). For a typical test suite run,
-/// a handful of timed-out threads is acceptable.
-fn parse_with_timeout(query_string: &str, test_id: &str) -> Result<bool> {
-    let query = query_string.to_string();
-    let (tx, rx) = mpsc::channel();
+/// Unlike the previous thread-based approach, a timeout here kills the child
+/// process — no zombie threads burning CPU.
+fn parse_in_subprocess(query_url: &str, test_id: &str) -> Result<bool> {
+    let descriptor = TestDescriptor::Syntax {
+        query_url: query_url.to_string(),
+        test_id: test_id.to_string(),
+    };
 
-    thread::spawn(move || {
-        let output = parse_sparql(&query);
-        let mut has_errors = output.has_errors();
-        // Run validation if parsing produced an AST
-        if !has_errors {
-            if let Some(ast) = &output.ast {
-                let val_diags = validate(ast, &Capabilities::default());
-                if val_diags.iter().any(|d| d.is_error()) {
-                    has_errors = true;
-                }
-            }
-        }
-        let _ = tx.send(has_errors);
-    });
+    let result = run_in_subprocess(&descriptor, PARSE_TIMEOUT)?;
 
-    match rx.recv_timeout(PARSE_TIMEOUT) {
-        Ok(has_errors) => Ok(has_errors),
-        Err(_) => {
-            bail!("Parser timeout (>{PARSE_TIMEOUT:?}) — likely infinite loop.\nTest: {test_id}")
-        }
-    }
+    result
+        .has_errors
+        .context("Subprocess did not return has_errors for syntax test")
 }

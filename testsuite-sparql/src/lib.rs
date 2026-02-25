@@ -6,9 +6,10 @@ pub mod report;
 pub mod result_comparison;
 pub mod result_format;
 pub mod sparql_handlers;
+pub mod subprocess;
 pub mod vocab;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use evaluator::TestEvaluator;
 use manifest::TestManifest;
@@ -54,10 +55,21 @@ pub fn check_testsuite(manifest_url: &str, ignored_tests: &[&str]) -> Result<()>
                 }
             }
         }
+        let is_timeout = result
+            .outcome
+            .as_ref()
+            .err()
+            .map(|e| {
+                let msg = format!("{e:#}");
+                msg.contains("timed out") || msg.contains("timeout")
+            })
+            .unwrap_or(false);
+
         report_entries.push(TestEntry {
             test_id: result.test.clone(),
             status: status.to_string(),
             error: result.outcome.as_ref().err().map(|e| format!("{e:#}")),
+            timeout: is_timeout,
         });
     }
 
@@ -85,12 +97,13 @@ pub fn check_testsuite(manifest_url: &str, ignored_tests: &[&str]) -> Result<()>
         )?;
     }
 
-    assert!(
-        failures.is_empty(),
-        "{} failing test(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
-    );
+    if !failures.is_empty() {
+        bail!(
+            "{} failing test(s):\n\n{}",
+            failures.len(),
+            failures.join("\n\n")
+        );
+    }
 
     Ok(())
 }

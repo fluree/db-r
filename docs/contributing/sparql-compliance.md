@@ -56,11 +56,14 @@ cd testsuite-sparql
 make test              # Run syntax tests (live output)
 make test-syntax11     # SPARQL 1.1 syntax tests only
 make test-syntax10     # SPARQL 1.0 syntax tests only
-make test-eval         # Full eval suite (~5 min, all 12 categories)
+make test-eval         # Full eval suite, all 12 categories
 make test-eval-cat CAT=functions
                        # Run one eval category
+make test-eval10       # Run SPARQL 1.0 eval tests
 make count-eval        # Quick pass/fail counts for eval tests
 make report-eval       # Run eval tests, save to report-eval.txt
+make report-eval-json  # JSON report for 1.1 eval tests
+make report-10-json    # JSON report for 1.0 eval tests
 make report            # Run syntax tests, save to report.txt
 make failures          # Show failing syntax tests with details
 make count             # Show syntax test pass/fail counts
@@ -166,7 +169,7 @@ for err in output.errors() {
 }
 ```
 
-Or use the `parse_with_timeout` pattern from `sparql_handlers.rs` if you suspect an infinite loop.
+If you suspect an infinite loop, the subprocess timeout will catch it automatically when run via the harness.
 
 ### Step 4: Investigate the Root Cause
 
@@ -287,6 +290,8 @@ When asking Claude Code for help, these files provide essential context:
 | Context Needed                                  | File(s)                                           |
 | ----------------------------------------------- | ------------------------------------------------- |
 | Test harness architecture                       | `testsuite-sparql/src/lib.rs`, `src/evaluator.rs` |
+| Subprocess timeout isolation                    | `testsuite-sparql/src/subprocess.rs`              |
+| Subprocess worker binary                        | `testsuite-sparql/src/bin/run_w3c_test.rs`        |
 | How manifests are parsed                        | `testsuite-sparql/src/manifest.rs`                |
 | Syntax test handlers                            | `testsuite-sparql/src/sparql_handlers.rs`         |
 | Eval test handler (data load + query + compare) | `testsuite-sparql/src/query_handler.rs`           |
@@ -331,8 +336,12 @@ testsuite-sparql/
 │   ├── evaluator.rs                # TestEvaluator: type → handler dispatch
 │   ├── sparql_handlers.rs          # Handler registration (syntax + eval)
 │   ├── query_handler.rs            # QueryEvaluationTest: load data, run query, compare
+│   ├── subprocess.rs               # Subprocess isolation for timeout enforcement
 │   ├── result_format.rs            # Parse .srx/.srj expected result files
-│   └── result_comparison.rs        # Isomorphic result comparison (blank node mapping)
+│   ├── result_comparison.rs        # Isomorphic result comparison (blank node mapping)
+│   ├── report.rs                   # JSON report generation
+│   └── bin/
+│       └── run_w3c_test.rs         # Subprocess worker binary
 ├── tests/
 │   └── w3c_sparql.rs               # Test entry points (syntax + 12 eval categories)
 └── rdf-tests/                      # Git submodule → github.com/w3c/rdf-tests
@@ -344,14 +353,15 @@ testsuite-sparql/
 
 **2. Handler Dispatch** (`evaluator.rs`): `TestEvaluator` maps test type URIs (e.g., `mf:PositiveSyntaxTest11`) to handler functions. For each test, it finds the matching handler and invokes it.
 
-**3. SPARQL Handlers** (`sparql_handlers.rs` + `query_handler.rs`): The Fluree-specific logic. For syntax tests, calls `fluree_db_sparql::parse_sparql()` with a 5-second timeout (to catch infinite loops) and checks whether parsing succeeded or failed. For evaluation tests, `query_handler.rs` creates an in-memory Fluree ledger, loads Turtle test data, executes the SPARQL query, and compares results against expected `.srx`/`.srj` files using isomorphic matching (handles blank node equivalence, unordered solution sets, and literal datatype normalization).
+**3. SPARQL Handlers** (`sparql_handlers.rs` + `query_handler.rs`): The Fluree-specific logic. Both syntax and evaluation tests run in isolated **subprocesses** via the `run-w3c-test` binary (`subprocess.rs`). For syntax tests, the subprocess calls `parse_sparql()` + `validate()` and reports whether errors were found (5-second timeout). For evaluation tests, the subprocess creates an in-memory Fluree ledger, loads Turtle test data, executes the SPARQL query, and compares results against expected `.srx`/`.srj` files using isomorphic matching (10-second timeout). If a test exceeds its timeout, the parent kills the child process — no zombie threads.
 
 **4. Test Entry Points** (`tests/w3c_sparql.rs`): Each test function is ~5 lines — just a manifest URL and a skip list. The harness does the rest.
 
 ### Key Design Decisions
 
+- **Subprocess isolation** for all test execution. Each syntax and eval test runs in a child process (`run-w3c-test` binary) that can be killed on timeout. This prevents zombie threads from parser infinite loops or runaway queries.
+- **Syntax timeout: 5 seconds, eval timeout: 10 seconds.** If a test exceeds its limit, the subprocess is killed and the test is marked as a timeout failure.
 - **Uses Fluree's own Turtle parser** for manifest files. If our parser can't handle well-formed W3C manifests, that's a bug worth knowing about.
-- **5-second timeout** on `parse_sparql()` catches infinite loops without blocking the suite.
 - **Fluree's `list_index`** approach (instead of `rdf:first/rdf:rest`) simplifies manifest list handling.
 - **`@base` prepended** to manifest files since they use `<>` (empty relative IRI) which requires a base.
 
