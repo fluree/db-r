@@ -826,6 +826,57 @@ mod inner {
         })
     }
 
+    /// Extract prefix→IRI mappings from a JSON-LD `@context` and register them
+    /// in the sink's namespace allocator via `on_prefix()`.
+    ///
+    /// JSON-LD `expand()` resolves `@context` prefixes internally, producing
+    /// fully-expanded IRIs that bypass the namespace trie. Pre-registering the
+    /// declared prefixes ensures:
+    /// - The trie has entries for the declared namespaces (optimal code allocation)
+    /// - `sid_for_iri()` hits the trie instead of the split heuristic
+    /// - Namespace codes match the intended prefix boundaries
+    ///
+    /// Handles both inline `@context` objects and arrays of contexts.
+    fn register_jsonld_prefixes(
+        doc: &serde_json::Value,
+        sink: &mut crate::import_sink::ImportSink,
+    ) {
+        use fluree_graph_ir::GraphSink;
+
+        fn visit_context(ctx: &serde_json::Value, sink: &mut crate::import_sink::ImportSink) {
+            match ctx {
+                serde_json::Value::Object(obj) => {
+                    for (key, val) in obj {
+                        // Skip JSON-LD keywords (@base, @language, @vocab, etc.)
+                        if key.starts_with('@') {
+                            continue;
+                        }
+                        // Simple string values are prefix → IRI mappings
+                        if let Some(iri) = val.as_str() {
+                            sink.on_prefix(key, iri);
+                        }
+                        // Object values with @id are also prefix → IRI mappings
+                        else if let Some(obj_val) = val.as_object() {
+                            if let Some(id) = obj_val.get("@id").and_then(|v| v.as_str()) {
+                                sink.on_prefix(key, id);
+                            }
+                        }
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        visit_context(item, sink);
+                    }
+                }
+                _ => {} // String contexts (remote URLs) — can't extract prefixes
+            }
+        }
+
+        if let Some(ctx) = doc.get("@context") {
+            visit_context(ctx, sink);
+        }
+    }
+
     /// Parse a JSON-LD document into a `ParsedChunk` using a shared allocator.
     ///
     /// Analogous to [`parse_chunk`] (Turtle) but for JSON-LD input. Uses
@@ -860,6 +911,15 @@ mod inner {
 
         let doc: serde_json::Value = serde_json::from_str(jsonld)
             .map_err(|e| TransactError::Parse(format!("JSON parse error: {}", e)))?;
+
+        // Register @context prefix→IRI mappings in the namespace trie BEFORE
+        // expansion. JSON-LD expand() resolves prefixes internally, but the
+        // resulting fully-expanded IRIs bypass the trie. Without pre-registration,
+        // every IRI falls through to the split heuristic, potentially allocating
+        // more namespace codes than necessary and losing alignment with the
+        // declared prefixes.
+        register_jsonld_prefixes(&doc, &mut sink);
+
         let expanded = fluree_graph_json_ld::expand(&doc)
             .map_err(|e| TransactError::Parse(format!("JSON-LD expand error: {}", e)))?;
         fluree_graph_json_ld::adapter::to_graph_events(&expanded, &mut sink)
