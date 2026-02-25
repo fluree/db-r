@@ -25,7 +25,7 @@
 //! - Filter patterns are preserved and applied post-R2RML scan
 
 use crate::ir::{Pattern, R2rmlPattern};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use fluree_db_core::LedgerSnapshot;
 
 /// Result of rewriting patterns for R2RML.
@@ -156,15 +156,11 @@ fn convert_triple_to_r2rml(
 ) -> Option<R2rmlPattern> {
     // Extract subject variable (must be a variable for basic R2RML support)
     let subject_var = match &tp.s {
-        Term::Var(v) => *v,
-        Term::Sid(_) | Term::Iri(_) => {
+        Ref::Var(v) => *v,
+        Ref::Sid(_) | Ref::Iri(_) => {
             // Subject is bound - we could support this with a filter,
             // but for now we return None to preserve the original pattern.
             // The GraphOperator will handle this case differently.
-            return None;
-        }
-        Term::Value(_) => {
-            // Subject can't be a literal value
             return None;
         }
     };
@@ -194,12 +190,11 @@ fn convert_triple_to_r2rml(
     }
 
     // Regular predicate pattern: ?s ex:name ?o
-    // Extract predicate IRI filter - handle both Term::Sid (decode) and Term::Iri (use directly)
+    // Extract predicate IRI filter - handle both Ref::Sid (decode) and Ref::Iri (use directly)
     let predicate_filter = match &tp.p {
-        Term::Sid(sid) => snapshot.decode_sid(sid),
-        Term::Iri(iri) => Some(iri.to_string()),
-        Term::Var(_) => None, // Predicate is variable - no filter
-        _ => None,
+        Ref::Sid(sid) => snapshot.decode_sid(sid),
+        Ref::Iri(iri) => Some(iri.to_string()),
+        Ref::Var(_) => None, // Predicate is variable - no filter
     };
 
     // Extract object variable
@@ -228,6 +223,7 @@ fn convert_triple_to_r2rml(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::triple::Ref;
     use crate::var_registry::VarId;
     use fluree_db_core::{is_rdf_type, Sid};
     use fluree_vocab::namespaces::RDF;
@@ -245,11 +241,7 @@ mod tests {
     #[test]
     fn test_convert_variable_only_pattern() {
         // ?s ?p ?o - all variables
-        let tp = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Var(VarId(1)),
-            Term::Var(VarId(2)),
-        );
+        let tp = TriplePattern::new(Ref::Var(VarId(0)), Ref::Var(VarId(1)), Term::Var(VarId(2)));
 
         // We need to test without a real DB, so we test the logic manually
         // The pattern should have subject_var, object_var, but no filters

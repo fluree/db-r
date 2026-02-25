@@ -5,9 +5,9 @@
 //! This module is shared between WHERE clause parsing and CONSTRUCT template parsing.
 
 use super::ast::{
-    UnresolvedIndexSearchPattern, UnresolvedIndexSearchTarget, UnresolvedPathExpr,
-    UnresolvedPattern, UnresolvedQuery, UnresolvedTerm, UnresolvedTriplePattern,
-    UnresolvedVectorSearchPattern, UnresolvedVectorSearchTarget,
+    UnresolvedDatatypeConstraint, UnresolvedIndexSearchPattern, UnresolvedIndexSearchTarget,
+    UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedTerm,
+    UnresolvedTriplePattern, UnresolvedVectorSearchPattern, UnresolvedVectorSearchTarget,
 };
 use super::error::{ParseError, Result};
 use super::PathAliasMap;
@@ -774,7 +774,7 @@ fn parse_property(
                     )?;
                 } else {
                     // Constant language constraint
-                    pattern = pattern.with_lang(lang.as_ref());
+                    pattern.dtc = Some(UnresolvedDatatypeConstraint::LangTag(lang));
                 }
             }
 

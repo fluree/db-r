@@ -16,7 +16,7 @@ use fluree_db_core::temporal::{
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::encode::IriEncoder;
-use fluree_db_query::pattern::{Term, TriplePattern};
+use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
 use fluree_vocab::namespaces::{RDF, XSD};
 use fluree_vocab::{rdf_names, xsd, xsd_names};
@@ -39,18 +39,18 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(TriplePattern::new(s, p, o))
     }
 
-    pub(super) fn lower_subject(&mut self, term: &SubjectTerm) -> Result<Term> {
+    pub(super) fn lower_subject(&mut self, term: &SubjectTerm) -> Result<Ref> {
         match term {
-            SubjectTerm::Var(v) => Ok(self.lower_var(v)),
-            SubjectTerm::Iri(iri) => self.lower_iri(iri),
+            SubjectTerm::Var(v) => Ok(self.lower_var_ref(v)),
+            SubjectTerm::Iri(iri) => self.lower_iri_ref(iri),
             SubjectTerm::BlankNode(bn) => match &bn.value {
                 BlankNodeValue::Labeled(label) => {
                     let var_id = self.vars.get_or_insert(&format!("_:{}", label));
-                    Ok(Term::Var(var_id))
+                    Ok(Ref::Var(var_id))
                 }
                 BlankNodeValue::Anon => {
                     let var_id = self.vars.get_or_insert(&format!("_:b{}", self.vars.len()));
-                    Ok(Term::Var(var_id))
+                    Ok(Ref::Var(var_id))
                 }
             },
             SubjectTerm::QuotedTriple(_qt) => {
@@ -74,10 +74,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    pub(super) fn lower_predicate(&mut self, term: &PredicateTerm) -> Result<Term> {
+    pub(super) fn lower_predicate(&mut self, term: &PredicateTerm) -> Result<Ref> {
         match term {
-            PredicateTerm::Var(v) => Ok(self.lower_var(v)),
-            PredicateTerm::Iri(iri) => self.lower_iri(iri),
+            PredicateTerm::Var(v) => Ok(self.lower_var_ref(v)),
+            PredicateTerm::Iri(iri) => self.lower_iri_ref(iri),
         }
     }
 
@@ -103,6 +103,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Term::Var(self.register_var(var))
     }
 
+    pub(super) fn lower_var_ref(&mut self, var: &Var) -> Ref {
+        Ref::Var(self.register_var(var))
+    }
+
     pub(super) fn lower_iri(&mut self, iri: &Iri) -> Result<Term> {
         let full_iri = self.expand_iri(iri)?;
         let sid = self
@@ -110,6 +114,15 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             .encode_iri(&full_iri)
             .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
         Ok(Term::Sid(sid))
+    }
+
+    pub(super) fn lower_iri_ref(&mut self, iri: &Iri) -> Result<Ref> {
+        let full_iri = self.expand_iri(iri)?;
+        let sid = self
+            .encoder
+            .encode_iri(&full_iri)
+            .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
+        Ok(Ref::Sid(sid))
     }
 
     fn lower_literal(&self, lit: &Literal) -> Result<Term> {

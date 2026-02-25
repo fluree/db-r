@@ -220,7 +220,7 @@ fn collect_vars_from_patterns(patterns: &[Pattern], vars: &mut HashSet<VarId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
 
     #[test]
@@ -233,8 +233,8 @@ mod tests {
 
         // MINUS pattern references ?s and ?age
         let minus_patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)), // ?s - shared
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)), // ?s - shared
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // ?age - not shared
         ))];
 

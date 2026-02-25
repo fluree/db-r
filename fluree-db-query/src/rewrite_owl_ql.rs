@@ -36,8 +36,8 @@
 //! ```
 
 use crate::ir::Pattern;
-use crate::pattern::{Term, TriplePattern};
 use crate::rewrite::{Diagnostics, PlanContext, RewriteResult};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{
     is_owl_equivalent_property, is_rdf_type, FlakeValue, GraphDbRef, IndexType, RangeMatch,
@@ -677,14 +677,14 @@ fn rewrite_owl_ql_triple(
     total_expansions: &mut usize,
 ) -> RewriteResult {
     // Check for type-query rewriting: ?s rdf:type Class
-    if let (Term::Sid(predicate), Term::Sid(class)) = (&tp.p, &tp.o) {
+    if let (Ref::Sid(predicate), Term::Sid(class)) = (&tp.p, &tp.o) {
         if is_rdf_type(predicate) {
             return expand_type_query_owl_ql(tp, class, ontology, ctx, diag, total_expansions);
         }
     }
 
     // Expand owl:equivalentProperty for non-rdf:type predicate patterns.
-    if let Term::Sid(predicate) = &tp.p {
+    if let Ref::Sid(predicate) = &tp.p {
         if !is_rdf_type(predicate) {
             let rewritten =
                 expand_equivalent_property(tp, predicate, ontology, ctx, diag, total_expansions);
@@ -695,7 +695,7 @@ fn rewrite_owl_ql_triple(
     }
 
     // Check for inverseOf expansion: ?s P ?o where P has inverses
-    if let Term::Sid(predicate) = &tp.p {
+    if let Ref::Sid(predicate) = &tp.p {
         if !is_rdf_type(predicate) {
             return expand_inverse_of(tp, predicate, ontology, ctx, diag, total_expansions);
         }
@@ -726,7 +726,7 @@ fn expand_equivalent_property(
     for eq in eqs {
         patterns.push(TriplePattern::new(
             tp.s.clone(),
-            Term::Sid(eq.clone()),
+            Ref::Sid(eq.clone()),
             tp.o.clone(),
         ));
     }
@@ -808,10 +808,14 @@ fn expand_inverse_of(
 
     for inverse in inverses {
         // Swap subject and object for inverse property
+        // tp.o (Term) moves to subject position (Ref) — must not be a Value
+        // tp.s (Ref) moves to object position (Term)
+        let new_subject =
+            Ref::try_from(tp.o.clone()).expect("inverse property object must be Var, Sid, or Iri");
         patterns.push(TriplePattern::new(
-            tp.o.clone(), // was object, now subject
-            Term::Sid(inverse.clone()),
-            tp.s.clone(), // was subject, now object
+            new_subject,
+            Ref::Sid(inverse.clone()),
+            tp.s.clone().into(), // Ref -> Term
         ));
     }
 
@@ -901,7 +905,7 @@ fn expand_type_query_owl_ql(
         let fresh_obj = mint_internal_var();
         patterns.push(TriplePattern::new(
             tp.s.clone(),
-            Term::Sid(prop.clone()),
+            Ref::Sid(prop.clone()),
             Term::Var(fresh_obj),
         ));
     }
@@ -910,9 +914,9 @@ fn expand_type_query_owl_ql(
     for prop in range_props {
         let fresh_subj = mint_internal_var();
         patterns.push(TriplePattern::new(
-            Term::Var(fresh_subj),
-            Term::Sid(prop.clone()),
-            tp.s.clone(),
+            Ref::Var(fresh_subj),
+            Ref::Sid(prop.clone()),
+            tp.s.clone().into(), // Ref -> Term for object position
         ));
     }
 
@@ -972,6 +976,7 @@ fn expand_type_query_owl_ql(
 mod tests {
     use super::*;
     use crate::rewrite::{EntailmentMode, PlanLimits};
+    use crate::triple::Ref;
     use fluree_db_core::SidInterner;
     use fluree_vocab::namespaces::RDF;
 
@@ -1024,8 +1029,8 @@ mod tests {
         let has_friend = interner.intern(100, "hasFriend");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_friend),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_friend),
             Term::Var(VarId(1)),
         ));
 
@@ -1043,8 +1048,8 @@ mod tests {
         let has_friend = interner.intern(100, "hasFriend");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_friend),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_friend),
             Term::Var(VarId(1)),
         ));
 
@@ -1070,8 +1075,8 @@ mod tests {
         let unknown_prop = interner.intern(100, "unknownProp");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(unknown_prop),
+            Ref::Var(VarId(0)),
+            Ref::Sid(unknown_prop),
             Term::Var(VarId(1)),
         ));
 
@@ -1090,8 +1095,8 @@ mod tests {
 
         // Query: ?s rdf:type Person
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(person),
         ));
 
@@ -1116,8 +1121,8 @@ mod tests {
 
         // Query: ?s rdf:type Location
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(location),
         ));
 
@@ -1141,8 +1146,8 @@ mod tests {
         let unknown_class = interner.intern(100, "UnknownClass");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(unknown_class),
         ));
 
@@ -1160,8 +1165,8 @@ mod tests {
         let has_friend = interner.intern(100, "hasFriend");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_friend),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_friend),
             Term::Var(VarId(1)),
         ));
 
@@ -1191,8 +1196,8 @@ mod tests {
         let has_friend = interner.intern(100, "hasFriend");
 
         let inner_pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_friend),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_friend),
             Term::Var(VarId(1)),
         ));
 

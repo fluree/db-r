@@ -30,8 +30,8 @@ use crate::error::{QueryError, Result};
 use crate::ir::Pattern;
 use crate::join::{BindInstruction, PatternPosition, UnifyInstruction};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::pattern::{Term, TriplePattern};
 use crate::seed::SeedOperator;
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::StatsView;
@@ -144,26 +144,32 @@ impl PatternOptionalBuilder {
         required_schema: &[VarId],
         pattern: &TriplePattern,
     ) -> Vec<BindInstruction> {
-        [
+        let mut instructions = Vec::new();
+
+        for (position, r) in [
             (PatternPosition::Subject, &pattern.s),
             (PatternPosition::Predicate, &pattern.p),
-            (PatternPosition::Object, &pattern.o),
-        ]
-        .into_iter()
-        .filter_map(|(position, term)| {
-            if let Term::Var(v) = term {
-                required_schema
-                    .iter()
-                    .position(|rv| rv == v)
-                    .map(|col| BindInstruction {
+        ] {
+            if let Ref::Var(v) = r {
+                if let Some(col) = required_schema.iter().position(|rv| rv == v) {
+                    instructions.push(BindInstruction {
                         position,
                         left_col: col,
-                    })
-            } else {
-                None
+                    });
+                }
             }
-        })
-        .collect()
+        }
+
+        if let Term::Var(v) = &pattern.o {
+            if let Some(col) = required_schema.iter().position(|rv| rv == v) {
+                instructions.push(BindInstruction {
+                    position: PatternPosition::Object,
+                    left_col: col,
+                });
+            }
+        }
+
+        instructions
     }
 
     /// Build unify instructions for shared vars that need equality checks
@@ -197,7 +203,8 @@ impl PatternOptionalBuilder {
 
     /// Substitute required bindings into pattern
     ///
-    /// For IriMatch bindings, uses `Term::Iri` to carry the canonical IRI.
+    /// For IriMatch bindings in subject/predicate positions, uses `Ref::Iri` to carry
+    /// the canonical IRI. For IriMatch bindings in object position, uses `Term::Iri`.
     /// The scan operator will encode this IRI for each target ledger's namespace
     /// table, enabling correct cross-ledger OPTIONAL matching.
     fn substitute_pattern(&self, required_batch: &Batch, row: usize) -> TriplePattern {
@@ -210,11 +217,11 @@ impl PatternOptionalBuilder {
                 PatternPosition::Subject => {
                     match binding {
                         Binding::Sid(sid) => {
-                            pattern.s = Term::Sid(sid.clone());
+                            pattern.s = Ref::Sid(sid.clone());
                         }
                         Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
-                            // Use Term::Iri so scan can encode for each target ledger
-                            pattern.s = Term::Iri(iri.clone());
+                            // Use Ref::Iri so scan can encode for each target ledger
+                            pattern.s = Ref::Iri(iri.clone());
                         }
                         _ => {
                             // Leave as variable
@@ -224,11 +231,11 @@ impl PatternOptionalBuilder {
                 PatternPosition::Predicate => {
                     match binding {
                         Binding::Sid(sid) => {
-                            pattern.p = Term::Sid(sid.clone());
+                            pattern.p = Ref::Sid(sid.clone());
                         }
                         Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
-                            // Use Term::Iri so scan can encode for each target ledger
-                            pattern.p = Term::Iri(iri.clone());
+                            // Use Ref::Iri so scan can encode for each target ledger
+                            pattern.p = Ref::Iri(iri.clone());
                         }
                         _ => {
                             // Leave as variable
@@ -893,8 +900,8 @@ mod tests {
     fn make_optional_pattern() -> TriplePattern {
         // ?s :email ?email
         TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(101, "email")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(101, "email")),
             Term::Var(VarId(2)),
         )
     }

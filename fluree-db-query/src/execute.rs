@@ -304,9 +304,9 @@ mod tests {
     use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
     use crate::parse::{ParsedQuery, SelectMode};
-    use crate::pattern::{Term, TriplePattern};
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
+    use crate::triple::{Ref, Term, TriplePattern};
     use crate::var_registry::VarId;
     use fluree_db_core::{FlakeValue, LedgerSnapshot, NoOverlay, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
@@ -319,8 +319,8 @@ mod tests {
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s_var),
-            Term::Sid(Sid::new(100, p_name)),
+            Ref::Var(s_var),
+            Ref::Sid(Sid::new(100, p_name)),
             Term::Var(o_var),
         )
     }
@@ -451,13 +451,13 @@ mod tests {
                 Expression::Const(FilterValue::Double(0.4)),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(score),
-                Term::Sid(Sid::new(100, "refersInstance")),
+                Ref::Var(score),
+                Ref::Sid(Sid::new(100, "refersInstance")),
                 Term::Var(concept),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(concept),
-                Term::Sid(Sid::new(100, "notation")),
+                Ref::Var(concept),
+                Ref::Sid(Sid::new(100, "notation")),
                 Term::Value(FlakeValue::String("LVL1".to_string())),
             )),
         ];

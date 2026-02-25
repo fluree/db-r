@@ -8,7 +8,7 @@ use crate::format::iri::IriCompactor;
 use crate::query::helpers::parse_sparql_to_ir;
 use fluree_db_core::{is_rdf_type, StatsView};
 use fluree_db_query::{
-    parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern, Term, TriplePattern,
+    parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern, Ref, Term, TriplePattern,
     VarRegistry,
 };
 use serde_json::{json, Map, Value as JsonValue};
@@ -20,22 +20,27 @@ fn status_to_str(s: OptimizationStatus) -> &'static str {
     }
 }
 
+fn ref_to_user_string(r: &Ref, vars: &VarRegistry, compactor: &IriCompactor) -> String {
+    match r {
+        Ref::Var(v) => vars.name(*v).to_string(),
+        Ref::Sid(sid) => compactor.compact_vocab_iri(
+            &compactor
+                .decode_sid(sid)
+                .unwrap_or_else(|_| sid.name.to_string()),
+        ),
+        Ref::Iri(iri) => compactor.compact_vocab_iri(iri),
+    }
+}
+
 fn term_to_user_string(term: &Term, vars: &VarRegistry, compactor: &IriCompactor) -> String {
     match term {
         Term::Var(v) => vars.name(*v).to_string(),
-        Term::Sid(sid) => {
-            // Use @type for rdf:type predicate in user output when it appears in property position.
-            // For other Sids, compact as vocab IRI.
-            compactor.compact_vocab_iri(
-                &compactor
-                    .decode_sid(sid)
-                    .unwrap_or_else(|_| sid.name.to_string()),
-            )
-        }
-        Term::Iri(iri) => {
-            // IRI term (from cross-ledger joins) - compact to user-friendly form
-            compactor.compact_vocab_iri(iri)
-        }
+        Term::Sid(sid) => compactor.compact_vocab_iri(
+            &compactor
+                .decode_sid(sid)
+                .unwrap_or_else(|_| sid.name.to_string()),
+        ),
+        Term::Iri(iri) => compactor.compact_vocab_iri(iri),
         Term::Value(v) => match v {
             fluree_db_core::FlakeValue::String(s) => s.clone(),
             _ => format!("{:?}", v),
@@ -48,18 +53,18 @@ fn triple_pattern_to_user_object(
     vars: &VarRegistry,
     compactor: &IriCompactor,
 ) -> JsonValue {
-    let property = if let Term::Sid(pred) = &tp.p {
+    let property = if let Ref::Sid(pred) = &tp.p {
         if is_rdf_type(pred) {
             "@type".to_string()
         } else {
-            term_to_user_string(&tp.p, vars, compactor)
+            ref_to_user_string(&tp.p, vars, compactor)
         }
     } else {
-        term_to_user_string(&tp.p, vars, compactor)
+        ref_to_user_string(&tp.p, vars, compactor)
     };
 
     json!({
-        "subject": term_to_user_string(&tp.s, vars, compactor),
+        "subject": ref_to_user_string(&tp.s, vars, compactor),
         "property": property,
         "object": term_to_user_string(&tp.o, vars, compactor),
     })
@@ -183,8 +188,17 @@ fn explain_from_parsed(
     let compactor = IriCompactor::new(&snapshot.namespace_codes, &parsed.context);
 
     // Extract triple patterns in query order.
-    // Normalize any `Term::Iri` terms into `Term::Sid` when possible so that
+    // Normalize any IRI terms into SID when possible so that
     // stats lookups (which are SID-keyed) work for explain/optimization parity.
+    let normalize_ref = |r: &Ref| -> Ref {
+        match r {
+            Ref::Iri(iri) => snapshot
+                .encode_iri(iri)
+                .map(Ref::Sid)
+                .unwrap_or_else(|| r.clone()),
+            _ => r.clone(),
+        }
+    };
     let normalize_term = |t: &Term| -> Term {
         match t {
             Term::Iri(iri) => snapshot
@@ -200,11 +214,10 @@ fn explain_from_parsed(
         .iter()
         .filter_map(|p| match p {
             Pattern::Triple(tp) => Some(TriplePattern {
-                s: normalize_term(&tp.s),
-                p: normalize_term(&tp.p),
+                s: normalize_ref(&tp.s),
+                p: normalize_ref(&tp.p),
                 o: normalize_term(&tp.o),
-                dt: tp.dt.clone(),
-                lang: tp.lang.clone(),
+                dtc: tp.dtc.clone(),
             }),
             _ => None,
         })

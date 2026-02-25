@@ -13,8 +13,8 @@ use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
-use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::seed::EmptyOperator;
+use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::values::ValuesOperator;
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
@@ -26,8 +26,8 @@ fn make_test_snapshot() -> LedgerSnapshot {
 
 fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
     TriplePattern::new(
-        Term::Var(s_var),
-        Term::Sid(Sid::new(100, p_name)),
+        Ref::Var(s_var),
+        Ref::Sid(Sid::new(100, p_name)),
         Term::Var(o_var),
     )
 }

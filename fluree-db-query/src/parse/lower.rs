@@ -5,10 +5,10 @@
 
 use super::ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedExpression, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
-    UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
-    UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
-    UnresolvedTriplePattern, UnresolvedValue,
+    UnresolvedDatatypeConstraint, UnresolvedExpression, UnresolvedGraphSelectSpec,
+    UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPathExpr, UnresolvedPattern,
+    UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
+    UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
 };
 use super::encode::IriEncoder;
 use super::error::{ParseError, Result};
@@ -23,8 +23,8 @@ use crate::vector::DistanceMetric;
 // Re-export graph select types for external use
 pub use crate::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
 use crate::options::QueryOptions;
-use crate::pattern::{Term, TriplePattern};
 use crate::sort::{SortDirection, SortSpec};
+use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;
@@ -526,40 +526,32 @@ fn lower_triple_pattern<E: IriEncoder>(
     encoder: &E,
     vars: &mut VarRegistry,
 ) -> Result<TriplePattern> {
-    let s = lower_term(&pattern.s, encoder, vars)?;
-    let p = lower_term(&pattern.p, encoder, vars)?;
+    let s = lower_ref_term(&pattern.s, encoder, vars)?;
+    let p = lower_ref_term(&pattern.p, encoder, vars)?;
     let mut o = lower_term(&pattern.o, encoder, vars)?;
 
-    // Handle datatype
-    let dt = if let Some(dt_iri) = &pattern.dt_iri {
-        let dt_sid = encoder
-            .encode_iri(dt_iri)
-            .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
+    // Lower constraint (datatype or language tag)
+    let dtc = match &pattern.dtc {
+        Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
+            let dt_sid = encoder
+                .encode_iri(dt_iri)
+                .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
 
-        // Coerce literal values based on datatype
-        if let Term::Value(ref value) = o {
-            let coerced = coerce_value_by_datatype(value.clone(), dt_iri)?;
-            o = Term::Value(coerced);
+            // Coerce literal values based on datatype
+            if let Term::Value(ref value) = o {
+                let coerced = coerce_value_by_datatype(value.clone(), dt_iri)?;
+                o = Term::Value(coerced);
+            }
+
+            Some(DatatypeConstraint::Explicit(dt_sid))
         }
-
-        Some(dt_sid)
-    } else {
-        None
+        Some(UnresolvedDatatypeConstraint::LangTag(tag)) => {
+            Some(DatatypeConstraint::LangTag(tag.clone()))
+        }
+        None => None,
     };
 
-    // Build pattern with dt and lang
-    let mut tp = if let Some(dt) = dt {
-        TriplePattern::with_dt(s, p, o, dt)
-    } else {
-        TriplePattern::new(s, p, o)
-    };
-
-    // Add language constraint if present (can be a constant or a variable like "?lang")
-    if let Some(lang) = &pattern.lang {
-        tp = tp.with_lang(lang.as_ref());
-    }
-
-    Ok(tp)
+    Ok(TriplePattern { s, p, o, dtc })
 }
 
 /// Lower a property path pattern (from `@path` alias) to resolved Pattern(s).
@@ -580,19 +572,8 @@ fn lower_path_to_patterns<E: IriEncoder>(
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
-    let s = lower_term(subject, encoder, vars)?;
-    if matches!(s, Term::Value(_)) {
-        return Err(ParseError::InvalidWhere(
-            "Property path subject cannot be a literal value".to_string(),
-        ));
-    }
-
-    let o = lower_term(object, encoder, vars)?;
-    if matches!(o, Term::Value(_)) {
-        return Err(ParseError::InvalidWhere(
-            "Property path object cannot be a literal value".to_string(),
-        ));
-    }
+    let s = lower_ref_term(subject, encoder, vars)?;
+    let o = lower_ref_term(object, encoder, vars)?;
 
     // Rewrite complex inverses (^(a/b), ^(a|b), ^(^x)) before dispatching.
     let rewritten;
@@ -641,8 +622,8 @@ fn lower_path_to_patterns<E: IriEncoder>(
                 let iri = expect_simple_iri(inner)?;
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     o,
-                    Term::Iri(iri.clone()),
-                    s,
+                    Ref::Iri(iri.clone()),
+                    s.into(),
                 ))])
             }
         },
@@ -741,9 +722,9 @@ const MAX_SEQUENCE_EXPANSION: usize = 64;
 /// Alternative steps (`(a|b)`) are distributed into a `Union` of simple chains.
 /// All other step types are rejected with a clear error.
 fn lower_sequence_chain(
-    s: &Term,
+    s: &Ref,
     steps: &[UnresolvedPathExpr],
-    o: &Term,
+    o: &Ref,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -792,7 +773,7 @@ fn lower_sequence_chain(
         } else {
             let var_name = format!("?__pp{}", *pp_counter);
             *pp_counter += 1;
-            Term::Var(vars.get_or_insert(&var_name))
+            Ref::Var(vars.get_or_insert(&var_name))
         };
 
         let triple = lower_sequence_step_triple(step, &prev, &next)?;
@@ -852,9 +833,9 @@ fn cartesian_product<'a>(
 /// Expands the Cartesian product of step choices into individual simple chains,
 /// each becoming a branch of a `Pattern::Union`.
 fn lower_distributed_sequence(
-    s: &Term,
+    s: &Ref,
     step_choices: &[Vec<&UnresolvedPathExpr>],
-    o: &Term,
+    o: &Ref,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -880,9 +861,9 @@ fn lower_distributed_sequence(
 /// Each step must be `Iri(p)` or `Inverse(Iri(p))`. Adjacent steps are joined
 /// by generated intermediate variables (`?__pp{n}`).
 fn lower_simple_sequence_chain(
-    s: &Term,
+    s: &Ref,
     steps: &[&UnresolvedPathExpr],
-    o: &Term,
+    o: &Ref,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -896,7 +877,7 @@ fn lower_simple_sequence_chain(
         } else {
             let var_name = format!("?__pp{}", *pp_counter);
             *pp_counter += 1;
-            Term::Var(vars.get_or_insert(&var_name))
+            Ref::Var(vars.get_or_insert(&var_name))
         };
 
         let triple = lower_sequence_step_triple(step, &prev, &next)?;
@@ -917,18 +898,18 @@ fn lower_simple_sequence_chain(
 /// `lower_sequence_chain` before this function is called.
 fn lower_sequence_step_triple(
     step: &UnresolvedPathExpr,
-    prev: &Term,
-    next: &Term,
+    prev: &Ref,
+    next: &Ref,
 ) -> Result<TriplePattern> {
     match step {
         UnresolvedPathExpr::Iri(iri) => {
-            let p = Term::Iri(iri.clone());
-            Ok(TriplePattern::new(prev.clone(), p, next.clone()))
+            let p = Ref::Iri(iri.clone());
+            Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
         }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(iri) => {
-                let p = Term::Iri(iri.clone());
-                Ok(TriplePattern::new(next.clone(), p, prev.clone()))
+                let p = Ref::Iri(iri.clone());
+                Ok(TriplePattern::new(next.clone(), p, prev.clone().into()))
             }
             other => Err(ParseError::InvalidWhere(format!(
                 "Sequence (/) steps must be simple predicates, inverse simple \
@@ -947,7 +928,7 @@ fn lower_sequence_step_triple(
 }
 
 /// Lower a degenerate single-step sequence to a pattern list.
-fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Term, o: &Term) -> Result<Vec<Pattern>> {
+fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Ref, o: &Ref) -> Result<Vec<Pattern>> {
     let triple = lower_sequence_step_triple(step, s, o)?;
     Ok(vec![Pattern::Triple(triple)])
 }
@@ -960,27 +941,27 @@ fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Term, o: &Term) -> Result<
 /// - `Sequence([...])` → chain of `Pattern::Triple` joined by `?__pp{n}` variables
 fn lower_alternative_branch(
     alt: &UnresolvedPathExpr,
-    s: &Term,
-    o: &Term,
+    s: &Ref,
+    o: &Ref,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
     match alt {
         UnresolvedPathExpr::Iri(iri) => {
-            let p = Term::Iri(iri.clone());
+            let p = Ref::Iri(iri.clone());
             Ok(vec![Pattern::Triple(TriplePattern::new(
                 s.clone(),
                 p,
-                o.clone(),
+                o.clone().into(),
             ))])
         }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(iri) => {
-                let p = Term::Iri(iri.clone());
+                let p = Ref::Iri(iri.clone());
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     o.clone(),
                     p,
-                    s.clone(),
+                    s.clone().into(),
                 ))])
             }
             other => Err(ParseError::InvalidWhere(format!(
@@ -1403,6 +1384,27 @@ fn lower_term<E: IriEncoder>(
     }
 }
 
+/// Lower an unresolved term to a Ref (subject/predicate position).
+///
+/// Like `lower_term`, but rejects literal values since they are not valid
+/// in subject or predicate positions.
+fn lower_ref_term<E: IriEncoder>(
+    term: &UnresolvedTerm,
+    _encoder: &E,
+    vars: &mut VarRegistry,
+) -> Result<Ref> {
+    match term {
+        UnresolvedTerm::Var(name) => {
+            let var_id = vars.get_or_insert(name);
+            Ok(Ref::Var(var_id))
+        }
+        UnresolvedTerm::Iri(iri) => Ok(Ref::Iri(iri.clone())),
+        UnresolvedTerm::Literal(_) => Err(ParseError::InvalidWhere(
+            "Literal values are not valid in subject or predicate position".to_string(),
+        )),
+    }
+}
+
 /// Convert a LiteralValue to a FlakeValue
 fn lower_literal(lit: &LiteralValue) -> FlakeValue {
     match lit {
@@ -1589,13 +1591,11 @@ mod tests {
 
         let lowered = lower_triple_pattern(&pattern, &encoder, &mut vars).unwrap();
 
-        assert!(matches!(lowered.s, Term::Var(VarId(0))));
-        // Predicate IRI is lowered to Term::Iri for deferred encoding
-        assert!(
-            matches!(lowered.p, Term::Iri(ref iri) if iri.as_ref() == "http://schema.org/name")
-        );
+        assert_eq!(lowered.s.as_var(), Some(VarId(0)));
+        // Predicate IRI is lowered to Ref::Iri for deferred encoding
+        assert_eq!(lowered.p.as_iri(), Some("http://schema.org/name"));
         assert!(matches!(lowered.o, Term::Var(VarId(1))));
-        assert!(lowered.dt.is_none());
+        assert!(lowered.dtc.is_none());
     }
 
     #[test]
@@ -1612,10 +1612,11 @@ mod tests {
 
         let lowered = lower_triple_pattern(&pattern, &encoder, &mut vars).unwrap();
 
-        assert!(lowered.dt.is_some());
-        let dt = lowered.dt.unwrap();
-        assert_eq!(dt.namespace_code, 2);
-        assert_eq!(dt.name.as_ref(), "integer");
+        let DatatypeConstraint::Explicit(sid) = lowered.dtc.expect("should have dtc") else {
+            panic!("should be Explicit");
+        };
+        assert_eq!(sid.namespace_code, 2);
+        assert_eq!(sid.name.as_ref(), "integer");
     }
 
     #[test]
@@ -1883,8 +1884,8 @@ mod tests {
         if let Pattern::PropertyPath(pp) = &results[0] {
             assert!(matches!(pp.modifier, PathModifier::OneOrMore));
             // Subject/object are swapped: pp.subject = ?o, pp.object = ?s
-            assert!(matches!(&pp.subject, Term::Var(vid) if vars.name(*vid) == "?o"));
-            assert!(matches!(&pp.object, Term::Var(vid) if vars.name(*vid) == "?s"));
+            assert_eq!(pp.subject.as_var().map(|v| vars.name(v)), Some("?o"));
+            assert_eq!(pp.object.as_var().map(|v| vars.name(v)), Some("?s"));
         } else {
             panic!("Expected PropertyPath, got {:?}", results[0]);
         }
@@ -1913,8 +1914,8 @@ mod tests {
         if let Pattern::PropertyPath(pp) = &results[0] {
             assert!(matches!(pp.modifier, PathModifier::ZeroOrMore));
             // Subject/object swapped
-            assert!(matches!(&pp.subject, Term::Var(vid) if vars.name(*vid) == "?o"));
-            assert!(matches!(&pp.object, Term::Var(vid) if vars.name(*vid) == "?s"));
+            assert_eq!(pp.subject.as_var().map(|v| vars.name(v)), Some("?o"));
+            assert_eq!(pp.object.as_var().map(|v| vars.name(v)), Some("?s"));
         } else {
             panic!("Expected PropertyPath, got {:?}", results[0]);
         }
@@ -1967,14 +1968,14 @@ mod tests {
 
         // First triple: ?s --ex:friend--> ?__pp0
         let t0 = extract_triple(&results[0]);
-        assert!(matches!(&t0.s, Term::Var(_)));
-        assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/friend"));
+        assert!(t0.s.is_var());
+        assert_eq!(t0.p.as_iri(), Some("http://example.org/friend"));
         assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
 
         // Second triple: ?__pp0 --ex:name--> ?name
         let t1 = extract_triple(&results[1]);
-        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
-        assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+        assert_eq!(t1.p.as_iri(), Some("http://example.org/name"));
         assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?name"));
 
         assert_eq!(pp_counter, 1);
@@ -2004,12 +2005,12 @@ mod tests {
 
         // Second: ?__pp0 --b--> ?__pp1
         let t1 = extract_triple(&results[1]);
-        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
         assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
 
         // Third: ?__pp1 --c--> ?o
         let t2 = extract_triple(&results[2]);
-        assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+        assert_eq!(t2.s.as_var().map(|v| vars.name(v)), Some("?__pp1"));
         assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?o"));
 
         assert_eq!(pp_counter, 2);
@@ -2037,14 +2038,14 @@ mod tests {
 
         // First triple is inverse: ?__pp0 --ex:parent--> ?s (swapped)
         let t0 = extract_triple(&results[0]);
-        assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
-        assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/parent"));
+        assert_eq!(t0.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+        assert_eq!(t0.p.as_iri(), Some("http://example.org/parent"));
         assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
 
         // Second triple is forward: ?__pp0 --ex:name--> ?name
         let t1 = extract_triple(&results[1]);
-        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
-        assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+        assert_eq!(t1.p.as_iri(), Some("http://example.org/name"));
     }
 
     #[test]
@@ -2071,12 +2072,12 @@ mod tests {
 
         // First: ?__pp0 --a--> ?s (swapped)
         let t0 = extract_triple(&results[0]);
-        assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert_eq!(t0.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
         assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
 
         // Second: ?o --b--> ?__pp0 (swapped)
         let t1 = extract_triple(&results[1]);
-        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?o"));
         assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
     }
 
@@ -2133,25 +2134,25 @@ mod tests {
             // Branch 0: a/c → Triple(?s, a, ?__pp0), Triple(?__pp0, c, ?o)
             assert_eq!(branches[0].len(), 2);
             let t0 = extract_triple(&branches[0][0]);
-            assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?s"));
-            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            assert_eq!(t0.s.as_var().map(|v| vars.name(v)), Some("?s"));
+            assert_eq!(t0.p.as_iri(), Some("http://example.org/a"));
             assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
 
             let t1 = extract_triple(&branches[0][1]);
-            assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
-            assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+            assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+            assert_eq!(t1.p.as_iri(), Some("http://example.org/c"));
             assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?o"));
 
             // Branch 1: b/c → Triple(?s, b, ?__pp1), Triple(?__pp1, c, ?o)
             assert_eq!(branches[1].len(), 2);
             let t2 = extract_triple(&branches[1][0]);
-            assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?s"));
-            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert_eq!(t2.s.as_var().map(|v| vars.name(v)), Some("?s"));
+            assert_eq!(t2.p.as_iri(), Some("http://example.org/b"));
             assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
 
             let t3 = extract_triple(&branches[1][1]);
-            assert!(matches!(&t3.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
-            assert!(matches!(&t3.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+            assert_eq!(t3.s.as_var().map(|v| vars.name(v)), Some("?__pp1"));
+            assert_eq!(t3.p.as_iri(), Some("http://example.org/c"));
             assert!(matches!(&t3.o, Term::Var(vid) if vars.name(*vid) == "?o"));
         } else {
             panic!("Expected Pattern::Union, got {:?}", results[0]);
@@ -2204,21 +2205,19 @@ mod tests {
 
             // First branch: ?s --friend--> ?__pp0 --name--> ?name
             let t0 = extract_triple(&branches[0][0]);
-            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/friend"));
+            assert_eq!(t0.p.as_iri(), Some("http://example.org/friend"));
             assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
             let t1 = extract_triple(&branches[0][1]);
-            assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
-            assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+            assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+            assert_eq!(t1.p.as_iri(), Some("http://example.org/name"));
 
             // Second branch: ?s --colleague--> ?__pp1 --name--> ?name
             let t2 = extract_triple(&branches[1][0]);
-            assert!(
-                matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/colleague")
-            );
+            assert_eq!(t2.p.as_iri(), Some("http://example.org/colleague"));
             assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
             let t3 = extract_triple(&branches[1][1]);
-            assert!(matches!(&t3.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
-            assert!(matches!(&t3.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+            assert_eq!(t3.s.as_var().map(|v| vars.name(v)), Some("?__pp1"));
+            assert_eq!(t3.p.as_iri(), Some("http://example.org/name"));
         } else {
             panic!("Expected Union, got {:?}", results[0]);
         }
@@ -2346,11 +2345,11 @@ mod tests {
 
             // Branch 0 middle step should use predicate b
             let t0_mid = extract_triple(&branches[0][1]);
-            assert!(matches!(&t0_mid.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert_eq!(t0_mid.p.as_iri(), Some("http://example.org/b"));
 
             // Branch 1 middle step should use predicate c
             let t1_mid = extract_triple(&branches[1][1]);
-            assert!(matches!(&t1_mid.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+            assert_eq!(t1_mid.p.as_iri(), Some("http://example.org/c"));
         } else {
             panic!("Expected Pattern::Union, got {:?}", results[0]);
         }
@@ -2394,11 +2393,11 @@ mod tests {
                     let t0 = extract_triple(&branch[0]);
                     let t1 = extract_triple(&branch[1]);
                     let p0 = match &t0.p {
-                        Term::Iri(iri) => iri.to_string(),
+                        Ref::Iri(iri) => iri.to_string(),
                         _ => panic!("Expected IRI"),
                     };
                     let p1 = match &t1.p {
-                        Term::Iri(iri) => iri.to_string(),
+                        Ref::Iri(iri) => iri.to_string(),
                         _ => panic!("Expected IRI"),
                     };
                     (p0, p1)
@@ -2456,14 +2455,14 @@ mod tests {
 
             // Branch 0: a/c → Triple(?s, a, ?__pp0), Triple(?__pp0, c, ?o)
             let t0 = extract_triple(&branches[0][0]);
-            assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?s"));
-            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            assert_eq!(t0.s.as_var().map(|v| vars.name(v)), Some("?s"));
+            assert_eq!(t0.p.as_iri(), Some("http://example.org/a"));
 
             // Branch 1: ^b/c → Triple(?__pp1, b, ?s), Triple(?__pp1, c, ?o)
             // Inverse swaps: subject=next(?__pp1), object=prev(?s)
             let t2 = extract_triple(&branches[1][0]);
-            assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
-            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert_eq!(t2.s.as_var().map(|v| vars.name(v)), Some("?__pp1"));
+            assert_eq!(t2.p.as_iri(), Some("http://example.org/b"));
             assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?s"));
         } else {
             panic!("Expected Pattern::Union, got {:?}", results[0]);
@@ -2817,14 +2816,14 @@ mod tests {
 
         // Step 0: ^b — Triple(?pp0, b, ?s) [inverse swaps]
         let tp0 = extract_triple(&results[0]);
-        assert!(matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+        assert_eq!(tp0.p.as_iri(), Some("http://example.org/b"));
         // Inverse: subject = next (?pp0), object = prev (?s)
         assert!(matches!(&tp0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
 
         // Step 1: ^a — Triple(?o, a, ?pp0) [inverse swaps]
         let tp1 = extract_triple(&results[1]);
-        assert!(matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
-        assert!(matches!(&tp1.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+        assert_eq!(tp1.p.as_iri(), Some("http://example.org/a"));
+        assert_eq!(tp1.s.as_var().map(|v| vars.name(v)), Some("?o"));
     }
 
     #[test]
@@ -2853,15 +2852,15 @@ mod tests {
                 assert_eq!(branch.len(), 1);
                 let tp = extract_triple(&branch[0]);
                 // Inverse: subject = ?o, object = ?s
-                assert!(matches!(&tp.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+                assert_eq!(tp.s.as_var().map(|v| vars.name(v)), Some("?o"));
                 assert!(matches!(&tp.o, Term::Var(vid) if vars.name(*vid) == "?s"));
             }
             // Branch 0 predicate: a
             let tp0 = extract_triple(&branches[0][0]);
-            assert!(matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            assert_eq!(tp0.p.as_iri(), Some("http://example.org/a"));
             // Branch 1 predicate: b
             let tp1 = extract_triple(&branches[1][0]);
-            assert!(matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert_eq!(tp1.p.as_iri(), Some("http://example.org/b"));
         } else {
             panic!("Expected Union, got {:?}", results[0]);
         }

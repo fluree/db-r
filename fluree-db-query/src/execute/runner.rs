@@ -12,9 +12,9 @@ use crate::ir::Pattern;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::ParsedQuery;
-use crate::pattern::{Term, TriplePattern};
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_binary_index::{BinaryIndexStore, FulltextArena};
 use fluree_db_core::dict_novelty::DictNovelty;
@@ -165,6 +165,16 @@ pub async fn prepare_execution(
         // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
         // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
         // we can safely encode IRIs to SIDs here.
+        fn encode_ref(snapshot: &LedgerSnapshot, r: &Ref) -> Ref {
+            match r {
+                Ref::Iri(iri) => match snapshot.encode_iri(iri) {
+                    Some(sid) => Ref::Sid(sid),
+                    None => r.clone(),
+                },
+                other => other.clone(),
+            }
+        }
+
         fn encode_term(snapshot: &LedgerSnapshot, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => snapshot
@@ -183,11 +193,10 @@ pub async fn prepare_execution(
                 .iter()
                 .map(|p| match p {
                     Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(snapshot, &tp.s),
-                        p: encode_term(snapshot, &tp.p),
+                        s: encode_ref(snapshot, &tp.s),
+                        p: encode_ref(snapshot, &tp.p),
                         o: encode_term(snapshot, &tp.o),
-                        dt: tp.dt.clone(),
-                        lang: tp.lang.clone(),
+                        dtc: tp.dtc.clone(),
                     }),
                     Pattern::Optional(inner) => {
                         Pattern::Optional(encode_patterns_for_reasoning(snapshot, inner))

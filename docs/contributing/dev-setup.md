@@ -385,20 +385,22 @@ perf report
 ```text
 fluree-db-query/
 ├── src/
-│   ├── lib.rs           # Public API
+│   ├── lib.rs           # Public API and re-exports
+│   ├── triple.rs        # TriplePattern, Ref, Term, DatatypeConstraint
 │   ├── parse/           # Query parsing
 │   │   ├── mod.rs
-│   │   ├── ast.rs
-│   │   └── lower.rs
+│   │   ├── ast.rs       # Unresolved AST (before IRI resolution)
+│   │   ├── lower.rs     # AST → IR lowering
+│   │   └── node_map.rs  # JSON-LD node-map → AST
 │   ├── execute/         # Query execution
 │   │   ├── mod.rs
-│   │   └── runner.rs
+│   │   ├── runner.rs
+│   │   ├── operator_tree.rs
+│   │   └── where_plan.rs  # WHERE-clause planning (pattern types, reordering)
 │   ├── bind.rs          # Variable binding
 │   └── filter.rs        # Filter evaluation
 ├── tests/               # Integration tests
-│   └── query_tests.rs
 └── benches/             # Benchmarks
-    └── query_bench.rs
 ```
 
 ### Import Organization

@@ -12,7 +12,7 @@ use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::parse::{
     ConstructTemplate as QueryConstructTemplate, ParsedQuery, SelectMode,
 };
-use fluree_db_query::pattern::TriplePattern;
+use fluree_db_query::triple::TriplePattern;
 
 use super::{LoweringContext, Result};
 

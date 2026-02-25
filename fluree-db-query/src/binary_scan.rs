@@ -29,7 +29,7 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::expression::passes_filters;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -80,11 +80,11 @@ fn schema_from_pattern(
     let mut p_var_pos = None;
     let mut o_var_pos = None;
 
-    if let Term::Var(v) = &pattern.s {
+    if let Ref::Var(v) = &pattern.s {
         s_var_pos = Some(schema_vec.len());
         schema_vec.push(*v);
     }
-    if let Term::Var(v) = &pattern.p {
+    if let Ref::Var(v) = &pattern.p {
         p_var_pos = Some(schema_vec.len());
         schema_vec.push(*v);
     }
@@ -202,7 +202,7 @@ impl BinaryScanOperator {
         }
 
         let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
-        let p_is_var = matches!(pattern.p, Term::Var(_));
+        let p_is_var = pattern.p.is_var();
 
         Self {
             pattern,
@@ -660,14 +660,14 @@ impl BinaryScanOperator {
     /// Returns (s_sid, p_sid, o_val) as owned optionals for use with translate_range.
     fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
         let s_sid = match &self.pattern.s {
-            Term::Sid(s) => Some(s.clone()),
-            Term::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
+            Ref::Sid(s) => Some(s.clone()),
+            Ref::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
             _ => None,
         };
 
         let p_sid = match &self.pattern.p {
-            Term::Sid(s) => Some(s.clone()),
-            Term::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
+            Ref::Sid(s) => Some(s.clone()),
+            Ref::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
             _ => None,
         };
 
@@ -1609,7 +1609,7 @@ impl RangeScanOperator {
         object_bounds: Option<ObjectBounds>,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
-        let p_is_var = matches!(pattern.p, Term::Var(_));
+        let p_is_var = pattern.p.is_var();
         let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
 
         Self {
@@ -1632,8 +1632,8 @@ impl RangeScanOperator {
         let mut rm = RangeMatch::new();
 
         match &self.pattern.s {
-            Term::Sid(sid) => rm.s = Some(sid.clone()),
-            Term::Iri(iri) => {
+            Ref::Sid(sid) => rm.s = Some(sid.clone()),
+            Ref::Iri(iri) => {
                 if let Some(sid) = snapshot.encode_iri(iri) {
                     rm.s = Some(sid);
                 }
@@ -1642,8 +1642,8 @@ impl RangeScanOperator {
         }
 
         match &self.pattern.p {
-            Term::Sid(sid) => rm.p = Some(sid.clone()),
-            Term::Iri(iri) => {
+            Ref::Sid(sid) => rm.p = Some(sid.clone()),
+            Ref::Iri(iri) => {
                 if let Some(sid) = snapshot.encode_iri(iri) {
                     rm.p = Some(sid);
                 }
@@ -1662,8 +1662,8 @@ impl RangeScanOperator {
             _ => {}
         }
 
-        if let Some(dt) = &self.pattern.dt {
-            rm.dt = Some(dt.clone());
+        if let Some(dtc) = &self.pattern.dtc {
+            rm.dt = Some(dtc.datatype().clone());
         }
 
         rm
@@ -1745,8 +1745,8 @@ impl RangeScanOperator {
     /// overlay-only genesis path), so we post-filter here.
     fn flake_matches(&self, f: &Flake, snapshot: &LedgerSnapshot) -> bool {
         match &self.pattern.s {
-            Term::Sid(sid) if &f.s != sid => return false,
-            Term::Iri(iri) => match snapshot.encode_iri(iri) {
+            Ref::Sid(sid) if &f.s != sid => return false,
+            Ref::Iri(iri) => match snapshot.encode_iri(iri) {
                 Some(sid) if f.s != sid => return false,
                 None => return false,
                 _ => {}
@@ -1755,8 +1755,8 @@ impl RangeScanOperator {
         }
 
         match &self.pattern.p {
-            Term::Sid(sid) if &f.p != sid => return false,
-            Term::Iri(iri) => match snapshot.encode_iri(iri) {
+            Ref::Sid(sid) if &f.p != sid => return false,
+            Ref::Iri(iri) => match snapshot.encode_iri(iri) {
                 Some(sid) if f.p != sid => return false,
                 None => return false,
                 _ => {}
@@ -1779,8 +1779,8 @@ impl RangeScanOperator {
             _ => {}
         }
 
-        if let Some(dt) = &self.pattern.dt {
-            if !dt_compatible(dt, &f.dt) {
+        if let Some(dtc) = &self.pattern.dtc {
+            if !dt_compatible(dtc.datatype(), &f.dt) {
                 return false;
             }
         }

@@ -28,8 +28,8 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::join::NestedLoopJoinOperator;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::pattern::{Term, TriplePattern};
 use crate::seed::EmptyOperator;
+use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -76,9 +76,9 @@ pub struct PropertyJoinOperator {
     /// The shared subject variable
     subject_var: VarId,
     /// Predicates and their corresponding object variables
-    /// Each entry is (predicate_term, object_var, optional datatype constraint)
-    /// predicate_term can be Term::Sid or Term::Iri depending on how the query was lowered.
-    predicates: Vec<(Term, VarId, Option<Sid>)>,
+    /// Each entry is (predicate_ref, object_var, optional datatype constraint)
+    /// predicate_ref can be Ref::Sid or Ref::Iri depending on how the query was lowered.
+    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)>,
     /// Output schema: [subject_var, obj_var_1, obj_var_2, ...]
     output_schema: Arc<[VarId]>,
     /// Operator state
@@ -167,24 +167,24 @@ impl PropertyJoinOperator {
 
         // Extract subject var (guaranteed same for all by is_property_join)
         let subject_var = match &patterns[0].s {
-            Term::Var(v) => *v,
+            Ref::Var(v) => *v,
             _ => panic!("Property-join requires variable subject"),
         };
 
-        // Extract (predicate_term, object_var, dt) triples
-        // Predicate can be Term::Sid or Term::Iri depending on lowering
-        let predicates: Vec<(Term, VarId, Option<Sid>)> = patterns
+        // Extract (predicate_ref, object_var, dt) triples
+        // Predicate can be Ref::Sid or Ref::Iri depending on lowering
+        let predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)> = patterns
             .iter()
             .map(|p| {
-                let pred_term = match &p.p {
-                    Term::Sid(_) | Term::Iri(_) => p.p.clone(),
+                let pred_ref = match &p.p {
+                    Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
                     _ => panic!("Property-join requires bound predicates (Sid or Iri)"),
                 };
                 let obj_var = match &p.o {
                     Term::Var(v) => *v,
                     _ => panic!("Property-join requires variable objects"),
                 };
-                (pred_term, obj_var, p.dt.clone())
+                (pred_ref, obj_var, p.dtc.clone())
             })
             .collect();
 
@@ -213,7 +213,7 @@ impl PropertyJoinOperator {
     }
 
     /// Get the predicates with their object variables
-    pub fn predicates(&self) -> &[(Term, VarId, Option<Sid>)] {
+    pub fn predicates(&self) -> &[(Ref, VarId, Option<DatatypeConstraint>)] {
         &self.predicates
     }
 
@@ -379,21 +379,21 @@ impl Operator for PropertyJoinOperator {
             let mut scan_rows_total: u64 = 0;
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, dt) = &self.predicates[pred_idx];
+                let (pred_term, obj_var, dtc) = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
                     && ctx.has_binary_store()
-                    && dt.is_none();
+                    && dtc.is_none();
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
                     let pred_sid = match pred_term {
-                        Term::Sid(s) => Some(s.clone()),
-                        Term::Iri(iri) => Some(store.encode_iri(iri)),
-                        _ => None,
+                        Ref::Sid(s) => Some(s.clone()),
+                        Ref::Iri(iri) => Some(store.encode_iri(iri)),
+                        Ref::Var(_) => None,
                     };
 
                     if let Some(pred_sid) = pred_sid {
@@ -432,8 +432,8 @@ impl Operator for PropertyJoinOperator {
 
                                 // Probe: ?s <pred> ?o
                                 let right_pattern = TriplePattern::new(
-                                    Term::Var(self.subject_var),
-                                    Term::Sid(pred_sid.clone()),
+                                    Ref::Var(self.subject_var),
+                                    Ref::Sid(pred_sid.clone()),
                                     Term::Var(TEMP_OBJECT_VAR),
                                 );
 
@@ -473,20 +473,12 @@ impl Operator for PropertyJoinOperator {
                 }
 
                 // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
-                // pred_term is already a Term (Sid or Iri) so use it directly
-                let pattern = if let Some(dt) = dt {
-                    TriplePattern::with_dt(
-                        Term::Var(self.subject_var),
-                        pred_term.clone(),
-                        Term::Var(TEMP_OBJECT_VAR),
-                        dt.clone(),
-                    )
-                } else {
-                    TriplePattern::new(
-                        Term::Var(self.subject_var),
-                        pred_term.clone(),
-                        Term::Var(TEMP_OBJECT_VAR),
-                    )
+                // pred_term is already a Ref (Sid or Iri) so use it directly
+                let pattern = TriplePattern {
+                    s: Ref::Var(self.subject_var),
+                    p: pred_term.clone(),
+                    o: Term::Var(TEMP_OBJECT_VAR),
+                    dtc: dtc.clone(),
                 };
 
                 // Create scan with optional bounds pushdown for this object variable.
@@ -628,13 +620,13 @@ mod tests {
     fn make_property_join_patterns() -> Vec<TriplePattern> {
         vec![
             TriplePattern::new(
-                Term::Var(VarId(0)),
-                Term::Sid(Sid::new(100, "name")),
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "name")),
                 Term::Var(VarId(1)),
             ),
             TriplePattern::new(
-                Term::Var(VarId(0)),
-                Term::Sid(Sid::new(101, "age")),
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(101, "age")),
                 Term::Var(VarId(2)),
             ),
         ]
@@ -743,13 +735,13 @@ mod tests {
         // Different subjects - not a valid property-join
         let patterns = vec![
             TriplePattern::new(
-                Term::Var(VarId(0)),
-                Term::Sid(Sid::new(100, "name")),
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "name")),
                 Term::Var(VarId(1)),
             ),
             TriplePattern::new(
-                Term::Var(VarId(2)), // Different subject!
-                Term::Sid(Sid::new(101, "age")),
+                Ref::Var(VarId(2)), // Different subject!
+                Ref::Sid(Sid::new(101, "age")),
                 Term::Var(VarId(3)),
             ),
         ];

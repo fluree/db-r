@@ -33,10 +33,10 @@ pub mod where_clause;
 
 pub use ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedExpression, UnresolvedFilterValue, UnresolvedGraphSelectSpec,
-    UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern, UnresolvedQuery,
-    UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec,
-    UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
+    UnresolvedDatatypeConstraint, UnresolvedExpression, UnresolvedFilterValue,
+    UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern,
+    UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
+    UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
 };
 pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};
@@ -1389,10 +1389,8 @@ mod tests {
 
         // query.patterns now contains Pattern, not TriplePattern
         if let crate::ir::Pattern::Triple(tp) = &query.patterns[0] {
-            // Predicate IRI is lowered to Term::Iri for deferred encoding
-            assert!(
-                matches!(tp.p, crate::pattern::Term::Iri(ref iri) if iri.as_ref() == "http://example.org/name")
-            );
+            // Predicate IRI is lowered to Ref::Iri for deferred encoding
+            assert_eq!(tp.p.as_iri(), Some("http://example.org/name"));
         } else {
             panic!("Expected Pattern::Triple");
         }
@@ -1413,9 +1411,9 @@ mod tests {
         let (ast, _) = parse_query_ast(&json).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
-        assert!(pattern.dt_iri.is_some());
+        assert!(pattern.dtc.is_some());
         assert_eq!(
-            pattern.dt_iri.as_ref().map(|s| s.as_ref()),
+            pattern.dtc.as_ref().map(|c| c.datatype_iri()),
             Some("http://www.w3.org/2001/XMLSchema#integer")
         );
     }

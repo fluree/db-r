@@ -429,7 +429,7 @@ impl Operator for GraphOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
 
     // Helper test struct for creating operators with specific schemas
@@ -462,8 +462,8 @@ mod tests {
         });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // New variable
         ))];
 
@@ -487,8 +487,8 @@ mod tests {
         });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
             Term::Var(VarId(1)),
         ))];
 

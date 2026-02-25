@@ -16,10 +16,10 @@ use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, SelectMode};
-use crate::pattern::Term;
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
+use crate::triple::{Ref, Term};
 use crate::var_registry::VarId;
 use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
@@ -44,10 +44,10 @@ fn detect_stats_count_by_predicate(
     };
 
     // All three positions must be variables
-    let Term::Var(s_var) = &tp.s else {
+    let Ref::Var(s_var) = &tp.s else {
         return None;
     };
-    let Term::Var(p_var) = &tp.p else {
+    let Ref::Var(p_var) = &tp.p else {
         return None;
     };
     let Term::Var(o_var) = &tp.o else {
@@ -109,7 +109,7 @@ fn detect_stats_count_by_predicate(
 fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(VarId, Vec<(crate::pattern::Term, VarId)>, VarId)> {
+) -> Option<(VarId, Vec<(crate::triple::Ref, VarId)>, VarId)> {
     if query.select_mode == SelectMode::Construct {
         return None;
     }
@@ -135,7 +135,7 @@ fn detect_property_join_count_all(
     }
 
     let mut subject_var: Option<VarId> = None;
-    let mut preds: Vec<(crate::pattern::Term, VarId)> = Vec::with_capacity(query.patterns.len());
+    let mut preds: Vec<(Ref, VarId)> = Vec::with_capacity(query.patterns.len());
     let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
 
     for p in &query.patterns {
@@ -144,7 +144,7 @@ fn detect_property_join_count_all(
         };
 
         // Subject must be a variable, shared across all patterns.
-        let crate::pattern::Term::Var(s) = &tp.s else {
+        let Ref::Var(s) = &tp.s else {
             return None;
         };
         match subject_var {
@@ -155,13 +155,13 @@ fn detect_property_join_count_all(
 
         // Predicates must be bound, objects must be vars, and no dt/lang constraints.
         let pred = match &tp.p {
-            crate::pattern::Term::Sid(_) | crate::pattern::Term::Iri(_) => tp.p.clone(),
+            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
             _ => return None,
         };
-        let crate::pattern::Term::Var(o) = &tp.o else {
+        let Term::Var(o) = &tp.o else {
             return None;
         };
-        if tp.dt.is_some() || tp.lang.is_some() {
+        if tp.dtc.is_some() {
             return None;
         }
         // Object vars must be distinct; otherwise join is not a cartesian product.
@@ -479,15 +479,15 @@ mod tests {
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
     use crate::parse::ParsedQuery;
-    use crate::pattern::{Term, TriplePattern};
     use crate::sort::SortSpec;
+    use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
     use fluree_graph_json_ld::ParsedContext;
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s_var),
-            Term::Sid(Sid::new(100, p_name)),
+            Ref::Var(s_var),
+            Ref::Sid(Sid::new(100, p_name)),
             Term::Var(o_var),
         )
     }

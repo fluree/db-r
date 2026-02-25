@@ -10,8 +10,8 @@
 //! - The planner chooses physical join operators based on pattern analysis
 
 use crate::binding::Binding;
-use crate::pattern::{Term, TriplePattern};
 use crate::sort::SortSpec;
+use crate::triple::{Ref, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::Sid;
 
@@ -299,19 +299,19 @@ pub enum PathModifier {
 /// `{"@context": {"knowsPlus": {"@path": "ex:knows+"}}, "where": [{"@id": "ex:alice", "knowsPlus": "?who"}]}`
 #[derive(Debug, Clone)]
 pub struct PropertyPathPattern {
-    /// Subject term (Var or Sid - literals not allowed)
-    pub subject: Term,
+    /// Subject ref (Var or Sid — literals not allowed)
+    pub subject: Ref,
     /// Predicate to traverse (always resolved to Sid)
     pub predicate: Sid,
     /// Path modifier (+ or *)
     pub modifier: PathModifier,
-    /// Object term (Var or Sid - literals not allowed)
-    pub object: Term,
+    /// Object ref (Var or Sid — literals not allowed)
+    pub object: Ref,
 }
 
 impl PropertyPathPattern {
     /// Create a new property path pattern
-    pub fn new(subject: Term, predicate: Sid, modifier: PathModifier, object: Term) -> Self {
+    pub fn new(subject: Ref, predicate: Sid, modifier: PathModifier, object: Ref) -> Self {
         Self {
             subject,
             predicate,
@@ -323,10 +323,10 @@ impl PropertyPathPattern {
     /// Get variables from subject and object
     pub fn variables(&self) -> Vec<VarId> {
         let mut vars = Vec::with_capacity(2);
-        if let Term::Var(v) = &self.subject {
+        if let Ref::Var(v) = &self.subject {
             vars.push(*v);
         }
-        if let Term::Var(v) = &self.object {
+        if let Ref::Var(v) = &self.object {
             vars.push(*v);
         }
         vars
@@ -1908,13 +1908,13 @@ pub enum Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::Term;
+    use crate::triple::{Ref, Term};
     use fluree_db_core::Sid;
 
     fn test_pattern() -> TriplePattern {
         TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
             Term::Var(VarId(1)),
         )
     }
@@ -1940,13 +1940,13 @@ mod tests {
     #[test]
     fn test_query_triple_patterns() {
         let p1 = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
             Term::Var(VarId(1)),
         );
         let p2 = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(101, "age")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(101, "age")),
             Term::Var(VarId(2)),
         );
 
