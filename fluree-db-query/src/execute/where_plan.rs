@@ -39,6 +39,7 @@ use super::pushdown::extract_bounds_from_filters;
 // ============================================================================
 
 /// A single VALUES pattern: its bound variables and constant rows.
+#[derive(Debug, Clone)]
 pub struct ValuesPattern {
     pub vars: Vec<VarId>,
     pub rows: Vec<Vec<crate::binding::Binding>>,
