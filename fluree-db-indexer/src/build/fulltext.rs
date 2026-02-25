@@ -3,58 +3,17 @@
 //! Groups fulltext entries by `(g_id, p_id)`, builds one `FulltextArena` per
 //! group using the BM25 text analyzer, and uploads FTA1 blobs to CAS.
 //!
-//! The text analysis pipeline (tokenize → stopwords → stem) matches the one
-//! in `fluree-db-query/src/bm25/analyzer.rs` for scoring consistency.
+//! Text analysis uses the shared pipeline from `fluree_db_binary_index::analyzer`
+//! to ensure scoring consistency between index-time and query-time.
 
+use fluree_db_binary_index::analyzer::analyze_to_term_freqs;
 use fluree_db_binary_index::arena::fulltext::FulltextArena;
 use fluree_db_binary_index::FulltextArenaRefV5;
 use fluree_db_core::{ContentId, ContentKind, GraphId, Storage};
-use once_cell::sync::Lazy;
-use regex::Regex;
-use rust_stemmers::{Algorithm, Stemmer};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::error::{IndexerError, Result};
 use crate::fulltext_hook::FulltextEntry;
-
-// ============================================================================
-// Minimal text analyzer (mirrors fluree-db-query/src/bm25/analyzer.rs)
-// ============================================================================
-
-/// Regex for splitting on non-word characters (Clojure parity).
-static WORD_SPLIT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w]+").expect("Invalid regex"));
-
-/// English stopwords loaded from the shared resource file.
-static ENGLISH_STOPWORDS: Lazy<HashSet<String>> = Lazy::new(|| {
-    include_str!("../../../fluree-db-query/resources/stopwords/en.txt")
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
-        .map(|line| line.trim().to_lowercase())
-        .collect()
-});
-
-/// English Snowball stemmer.
-static ENGLISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::English));
-
-/// Analyze text into term frequencies (lowercase → split → stopwords → stem → count).
-fn analyze_to_term_freqs(text: &str) -> HashMap<String, u32> {
-    let lowered = text.to_lowercase();
-    let mut freqs = HashMap::new();
-    for token in WORD_SPLIT.split(&lowered) {
-        if token.is_empty() {
-            continue;
-        }
-        if ENGLISH_STOPWORDS.contains(token) {
-            continue;
-        }
-        let stemmed = ENGLISH_STEMMER.stem(token).into_owned();
-        if stemmed.is_empty() {
-            continue;
-        }
-        *freqs.entry(stemmed).or_insert(0) += 1;
-    }
-    freqs
-}
 
 // ============================================================================
 // Build + upload pipeline
