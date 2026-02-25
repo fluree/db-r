@@ -9,7 +9,7 @@ use crate::error::BuilderErrors;
 use crate::graph::Graph;
 use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::tx_builder::{commit_with_handle, Staged, TransactCore, TransactOperation};
-use crate::view::FlureeView;
+use crate::view::GraphDb;
 use crate::{
     ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
     TrackedTransactionInput, Tracker, TrackingOptions, TransactResultRef,
@@ -226,12 +226,12 @@ where
                 .await?
         };
 
-        // Pre-build the FlureeView from staged so query() can borrow it
+        // Pre-build the GraphDb from staged so query() can borrow it
         let staged = Staged {
             view: stage_result.view,
             ns_registry: stage_result.ns_registry,
         };
-        let staged_view = FlureeView::from_staged(&staged)?;
+        let staged_view = GraphDb::from_staged(&staged)?;
 
         Ok(StagedGraph {
             fluree: self.graph.fluree,
@@ -265,7 +265,7 @@ where
 pub struct StagedGraph<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
     staged: Staged,
-    staged_view: FlureeView,
+    staged_view: GraphDb,
 }
 
 impl<'a, S, N> StagedGraph<'a, S, N>

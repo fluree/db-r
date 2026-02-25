@@ -71,7 +71,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r1, json!([["ex:halie", "Halie"]]));
 
@@ -84,7 +84,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r2, json!([]));
 
@@ -97,7 +97,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r3, json!([["ex:john", 3]]));
 }
@@ -120,7 +120,7 @@ async fn datatype_query_explicit_typed_value_object_matches() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // NOTE(parity): Rust currently normalizes numeric datatypes so untyped integers and
     // explicitly-typed integer-family values share `xsd:integer`. This means both Homer
@@ -151,7 +151,7 @@ async fn datatype_bind_datatype_function_includes_dt_in_results() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // Marge's age was inserted with xsd:int - preserved for data fidelity
     // Non-default datatypes are wrapped in value objects per JSON-LD spec
@@ -187,7 +187,7 @@ async fn datatype_filter_with_datatype_function() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([["Homer", 36, "xsd:integer"]]));
 }
@@ -231,7 +231,7 @@ async fn datatype_filter_value_object_by_type_constant() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([["Bart", "forever 10"]]));
 }
@@ -265,7 +265,7 @@ async fn language_binding_lang_function() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let set: std::collections::HashSet<Vec<JsonValue>> = rows
         .as_array()
@@ -317,7 +317,7 @@ async fn language_binding_value_object_language_variable() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let set: std::collections::HashSet<Vec<JsonValue>> = rows
         .as_array()
@@ -384,7 +384,7 @@ async fn json_datatype_insert_query_and_filter() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let rows_arr = rows.as_array().unwrap();
     assert_eq!(rows_arr.len(), 2, "should return both documents");
@@ -437,7 +437,7 @@ async fn json_datatype_insert_query_and_filter() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         rows2,
@@ -464,7 +464,7 @@ async fn value_type_binding_variable_in_value_object() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     // Convert to set for order-insensitive comparison
@@ -536,7 +536,7 @@ async fn transaction_binding_at_t_variable() {
         .query(&ledger2, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     let arr = rows.as_array().expect("Should be an array");
 
@@ -620,7 +620,7 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -694,7 +694,7 @@ async fn decimal_json_number_input_becomes_double() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -757,7 +757,7 @@ async fn decimal_sort_order_with_mixed_numeric_types() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -799,7 +799,7 @@ async fn decimal_equality_across_types() {
     // Test that querying for 3 (Long) matches 3.0 (Double) and "3.00" (BigDecimal)
     // This works because:
     // - FlakeValue::Ord uses numeric_cmp for cross-type comparison
-    // - The B-tree index uses this ordering, so Long(3), Double(3.0), BigDecimal(3) are adjacent
+    // - Range scans use this ordering, so Long(3), Double(3.0), BigDecimal(3) are adjacent
     // - trim_to_range includes all flakes where cmp(flake, bound) == Equal
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "decimal-test:equality");
@@ -829,7 +829,7 @@ async fn decimal_equality_across_types() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().expect("Result should be an array");
 
@@ -902,7 +902,7 @@ async fn decimal_filter_comparison_across_types() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -1060,7 +1060,7 @@ async fn values_typed_literal_string_to_integer_coercion() {
     });
 
     let result = fluree.query(&ledger, &q).await;
-    let rows = result.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = result.unwrap().to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // Should match ex:item1 because "42" coerced to Long(42)
@@ -1149,7 +1149,7 @@ async fn values_decimal_string_becomes_bigdecimal() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = rows.as_array().unwrap();
 

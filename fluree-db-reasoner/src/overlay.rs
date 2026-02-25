@@ -13,7 +13,7 @@
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::Sid;
+use fluree_db_core::{GraphId, Sid};
 use std::sync::Arc;
 
 use crate::same_as::FrozenSameAs;
@@ -139,6 +139,7 @@ impl OverlayProvider for DerivedFactsOverlay {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -146,6 +147,11 @@ impl OverlayProvider for DerivedFactsOverlay {
         to_t: i64,
         callback: &mut dyn FnMut(&Flake),
     ) {
+        // Derived facts from reasoning are default-graph only
+        if g_id != 0 {
+            return;
+        }
+
         let flakes = self.flakes(index);
         if flakes.is_empty() {
             return;
@@ -294,16 +300,16 @@ mod tests {
 
         let overlay = builder.build(FrozenSameAs::empty(), 1);
 
-        // Collect all flakes with to_t = 3
+        // Collect all flakes with to_t = 3 (g_id=0 for default graph)
         let mut collected = Vec::new();
-        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 3, &mut |f| {
+        overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 3, &mut |f| {
             collected.push(f.clone())
         });
         assert_eq!(collected.len(), 3);
 
         // Collect with to_t = 2 (should exclude t=3 flake)
         collected.clear();
-        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 2, &mut |f| {
+        overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 2, &mut |f| {
             collected.push(f.clone())
         });
         assert_eq!(collected.len(), 2);

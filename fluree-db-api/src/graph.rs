@@ -73,7 +73,7 @@ where
     pub async fn load(&self) -> Result<GraphSnapshot<'a, S, N>> {
         let view = self
             .fluree
-            .load_view_at(&self.ledger_id, self.time_spec.clone())
+            .load_graph_db_at(&self.ledger_id, self.time_spec.clone())
             .await?;
         Ok(GraphSnapshot::new(self.fluree, view))
     }

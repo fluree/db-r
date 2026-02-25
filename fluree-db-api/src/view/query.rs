@@ -1,4 +1,4 @@
-//! Query execution against FlureeView
+//! Query execution against GraphDb
 //!
 //! Provides `query_view` and related methods that execute queries against
 //! a composed view, respecting policy and reasoning wrappers.
@@ -8,10 +8,10 @@ use crate::query::helpers::{
     prepare_for_execution, status_for_query_error, tracker_for_limits,
     tracker_for_tracked_endpoint,
 };
-use crate::view::{FlureeView, QueryInput};
+use crate::view::{GraphDb, QueryInput};
 use crate::{
-    ApiError, DataSource, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
-    Tracker, TrackingOptions,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
+    TrackingOptions,
 };
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
@@ -34,7 +34,7 @@ where
     /// ```ignore
     /// use serde_json::json;
     ///
-    /// let view = fluree.view("mydb:main").await?
+    /// let view = fluree.db("mydb:main").await?
     ///     .with_reasoning(ReasoningModes::owl2ql());
     ///
     /// // JSON-LD query
@@ -47,12 +47,12 @@ where
     ///
     /// # SPARQL Dataset Clause Restriction
     ///
-    /// A `FlureeView` represents a single ledger. SPARQL queries with
+    /// A `GraphDb` represents a single ledger. SPARQL queries with
     /// `FROM` or `FROM NAMED` clauses will be rejected. Use
     /// `query_connection_sparql` for multi-ledger queries.
     pub async fn query_view(
         &self,
-        view: &FlureeView,
+        view: &GraphDb,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -61,12 +61,12 @@ where
         let parse_start = std::time::Instant::now();
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &view.db, view.default_context.as_ref())?
+                parse_jsonld_query(json, &view.snapshot, view.default_context.as_ref())?
             }
             QueryInput::Sparql(sparql) => {
                 // Validate no dataset clauses
                 self.validate_sparql_for_view(sparql)?;
-                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref())?
+                parse_sparql_to_ir(sparql, &view.snapshot, view.default_context.as_ref())?
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
@@ -101,9 +101,9 @@ where
             vars,
             parsed,
             batches,
-            view.to_t,
+            view.t,
             Some(view.overlay.clone()),
-            view.binary_store.clone(),
+            view.binary_graph(),
         ))
     }
 
@@ -112,7 +112,7 @@ where
     /// Returns a tracked response with fuel, time, and policy statistics.
     pub(crate) async fn query_view_tracked(
         &self,
-        view: &FlureeView,
+        view: &GraphDb,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -127,15 +127,17 @@ where
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &view.db, view.default_context.as_ref()).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                })?
+                parse_jsonld_query(json, &view.snapshot, view.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
             }
             QueryInput::Sparql(sparql) => {
                 self.validate_sparql_for_view(sparql).map_err(|e| {
                     crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?;
-                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref()).map_err(
+                parse_sparql_to_ir(sparql, &view.snapshot, view.default_context.as_ref()).map_err(
                     |e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                     },
@@ -162,21 +164,21 @@ where
             vars,
             parsed,
             batches,
-            view.to_t,
+            view.t,
             Some(view.overlay.clone()),
-            view.binary_store.clone(),
+            view.binary_graph(),
         );
 
         // Format with tracking
         let result_json = match view.policy() {
             Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(&view.db, policy, &tracker)
+                .to_jsonld_async_with_policy_tracked(view.as_graph_db_ref(), policy, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .to_jsonld_async_tracked(&view.db, &tracker)
+                .to_jsonld_async_tracked(view.as_graph_db_ref(), &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -195,7 +197,7 @@ where
 
     /// Validate that SPARQL doesn't have dataset clauses (FROM/FROM NAMED).
     ///
-    /// A FlureeView is single-ledger; dataset clauses would conflict with
+    /// A GraphDb is single-ledger; dataset clauses would conflict with
     /// the view's ledger alias.
     fn validate_sparql_for_view(&self, sparql: &str) -> Result<()> {
         let ast = parse_and_validate_sparql(sparql)?;
@@ -222,7 +224,7 @@ where
     /// Build an ExecutableQuery with optional reasoning override from view wrapper.
     fn build_executable_for_view(
         &self,
-        view: &FlureeView,
+        view: &GraphDb,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         // Start with the standard executable
@@ -250,14 +252,17 @@ where
     /// `ScanOperator` can use `BinaryScanOperator` when available.
     pub(crate) async fn execute_view_internal(
         &self,
-        view: &FlureeView,
+        view: &GraphDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        let prepared = prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t)
+        let db = view.as_graph_db_ref();
+        let prepared = prepare_execution(db, executable)
             .await
             .map_err(query_error_to_api_error)?;
+
+        let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -265,17 +270,12 @@ where
             binary_store: view.binary_store.clone(),
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            db: &view.db,
-            overlay: view.overlay.as_ref(),
-            to_t: view.to_t,
-            from_t: None,
-        };
-        execute_prepared(source, vars, prepared, config)
+        execute_prepared(db, vars, prepared, config)
             .await
             .map_err(query_error_to_api_error)
     }
@@ -285,13 +285,15 @@ where
     /// Uses tracked execution functions to properly record fuel/time/policy stats.
     pub(crate) async fn execute_view_tracked(
         &self,
-        view: &FlureeView,
+        view: &GraphDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
-        let prepared =
-            prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t).await?;
+        let db = view.as_graph_db_ref();
+        let prepared = prepare_execution(db, executable).await?;
+
+        let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -299,17 +301,12 @@ where
             binary_store: view.binary_store.clone(),
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            db: &view.db,
-            overlay: view.overlay.as_ref(),
-            to_t: view.to_t,
-            from_t: None,
-        };
-        execute_prepared(source, vars, prepared, config).await
+        execute_prepared(db, vars, prepared, config).await
     }
 }
 
@@ -347,7 +344,7 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Query via view (using object format for where)
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let query = json!({
             "select": ["?name"],
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
@@ -372,7 +369,7 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Query via view with SPARQL (using full IRIs)
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let result = fluree
             .query_view(
                 &view,
@@ -389,7 +386,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
 
         // SPARQL with FROM clause should be rejected
         let result = fluree
@@ -418,7 +415,7 @@ mod tests {
         });
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let query = json!({
             "select": ["?name"],
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
@@ -450,7 +447,7 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Query at t=0 (before insert)
-        let view = fluree.view_at_t("testdb:main", 0).await.unwrap();
+        let view = fluree.db_at_t("testdb:main", 0).await.unwrap();
         let query = json!({
             "select": ["?name"],
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
@@ -459,7 +456,7 @@ mod tests {
         assert!(result.batches.is_empty() || result.batches[0].is_empty());
 
         // Query at t=1 (after insert)
-        let view = fluree.view_at_t("testdb:main", 1).await.unwrap();
+        let view = fluree.db_at_t("testdb:main", 1).await.unwrap();
         let result = fluree.query_view(&view, &query).await.unwrap();
         assert!(!result.batches.is_empty());
     }

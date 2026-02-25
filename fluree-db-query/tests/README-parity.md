@@ -18,7 +18,7 @@ This repo already has:
 ### Practical implementation sketch
 
 - **Rust**:
-  - Load DB with `load_db(&storage, &root_id, "ledger/main").await?` (see `fluree_db_core::load_db`).
+  - Load DB with `load_ledger_snapshot(&storage, &root_id, "ledger/main").await?` (see `fluree_db_core::load_ledger_snapshot`).
   - Parse query JSON via `parse::parse_query(...)` (already supports `FILTER` and `OPTIONAL`).
   - Execute via your planned “query runner” (if you don’t have a single entrypoint yet, it’s worth adding one small `execute_query(db, parsed_query, vars)` wrapper that builds the operator tree and collects rows).
   - Normalize results:

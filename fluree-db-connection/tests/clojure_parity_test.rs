@@ -6,7 +6,7 @@
 //! Run with: cargo test -p fluree-db-connection --test clojure_parity_test -- --ignored
 
 use fluree_db_connection::{connect, ConnectionConfig, ConnectionHandle, StorageType};
-use fluree_db_core::{ContentId, ContentKind};
+use fluree_db_core::{ContentId, ContentKind, GraphDbRef, NoOverlay};
 use fluree_db_query::{execute_pattern, RowAccess, Term, TriplePattern, VarRegistry};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -109,7 +109,7 @@ async fn test_connection_parity() {
 
     let db = match conn {
         ConnectionHandle::File(c) => c
-            .load_db_fresh_cache(&root_id, TEST_LEDGER_ID)
+            .load_ledger_snapshot_fresh_cache(&root_id, TEST_LEDGER_ID)
             .await
             .unwrap(),
         _ => panic!("Expected FileConnection"),
@@ -127,7 +127,9 @@ async fn test_connection_parity() {
     let o = vars.get_or_insert("?o");
 
     let pattern = TriplePattern::new(Term::Var(s), Term::Var(p), Term::Var(o));
-    let batches = execute_pattern(&db, &vars, pattern).await.unwrap();
+    let no_overlay = NoOverlay;
+    let db_ref = GraphDbRef::new(&db, 0, &no_overlay, db.t);
+    let batches = execute_pattern(db_ref, &vars, pattern).await.unwrap();
 
     assert!(!batches.is_empty(), "Should have at least one batch");
     let total: usize = batches.iter().map(|b| b.len()).sum();

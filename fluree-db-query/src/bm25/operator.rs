@@ -240,8 +240,8 @@ impl Bm25SearchOperator {
                     ..
                 }) => {
                     // Late materialization: decode only when BM25 needs the target string.
-                    if let Some(store) = ctx.binary_store.as_deref() {
-                        let val = store.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
+                    if let Some(gv) = ctx.graph_view() {
+                        let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
                             crate::error::QueryError::Internal(format!(
                                 "decode EncodedLit for BM25: {}",
                                 e
@@ -622,7 +622,7 @@ mod tests {
     use crate::ir::{IndexSearchTarget, Pattern};
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     #[derive(Debug, Default)]
     struct TestProvider {
@@ -647,17 +647,18 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> Db {
-        let mut db = Db::genesis("test/main");
+    fn make_test_snapshot() -> LedgerSnapshot {
+        let mut snapshot = LedgerSnapshot::genesis("test/main");
         // Ensure example IRIs used by BM25 tests are encodable to SIDs.
-        db.namespace_codes
+        snapshot
+            .namespace_codes
             .insert(100, "http://example.org/".to_string());
-        db
+        snapshot
     }
 
     #[tokio::test]
     async fn test_bm25_operator_seeded_const_target() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
         let score = vars.get_or_insert("?score");
@@ -692,7 +693,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();
@@ -706,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bm25_operator_dedup_terms_and_blank_target() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
 
@@ -733,7 +734,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();

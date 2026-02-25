@@ -70,7 +70,7 @@ fluree.graph("mydb:main")
 Create a policy-wrapped view using an identity IRI:
 
 ```rust
-use fluree_db_api::{wrap_identity_policy_view, FlureeBuilder, FlureeView};
+use fluree_db_api::{wrap_identity_policy_view, FlureeBuilder, GraphDb};
 
 let fluree = FlureeBuilder::memory().build_memory();
 let ledger = fluree.ledger("mydb:main").await?;
@@ -86,7 +86,7 @@ let wrapped = wrap_identity_policy_view(
 assert!(!wrapped.is_root(), "Should not be root/unrestricted");
 
 // Create a view with the policy applied, then query using the builder
-let view = FlureeView::from_ledger_state(&ledger)
+let view = GraphDb::from_ledger_state(&ledger)
     .with_policy(std::sync::Arc::new(wrapped.policy().clone()));
 
 let query = json!({
@@ -278,7 +278,7 @@ Policies can also be applied to transactions using the builder API:
 use fluree_db_api::policy_builder;
 
 let policy_ctx = policy_builder::build_policy_context_from_opts(
-    &ledger.db,
+    &ledger.snapshot,
     ledger.novelty.as_ref(),
     Some(ledger.novelty.as_ref()),
     ledger.t(),
@@ -311,14 +311,14 @@ match result {
 For time-travel queries with policy, load a historical graph and apply policy as a view overlay:
 
 ```rust
-use fluree_db_api::{FlureeView, QueryConnectionOptions};
+use fluree_db_api::{GraphDb, QueryConnectionOptions};
 
 // Load a historical view
 let graph = fluree.view_at_t("mydb:main", 100).await?;
 
 // Apply policy to create a view
 let policy_ctx = policy_builder::build_policy_context_from_opts(
-    &ledger.db,
+    &ledger.snapshot,
     ledger.novelty.as_ref(),
     Some(ledger.novelty.as_ref()),
     ledger.t(),
@@ -339,11 +339,11 @@ let result = view.query(&fluree)
 ### wrap_identity_policy_view
 
 ```rust
-pub async fn wrap_identity_policy_view<'a, S: Storage + Clone + 'static>(
-    ledger: &'a LedgerState<S>,
+pub async fn wrap_identity_policy_view<'a>(
+    ledger: &'a LedgerState,
     identity_iri: &str,
     default_allow: bool,
-) -> Result<PolicyWrappedView<'a, S>>
+) -> Result<PolicyWrappedView<'a>>
 ```
 
 Creates a policy-wrapped view using identity-based `f:policyClass` lookup.
@@ -356,10 +356,10 @@ Creates a policy-wrapped view using identity-based `f:policyClass` lookup.
 ### wrap_policy_view
 
 ```rust
-pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static>(
-    ledger: &'a LedgerState<S>,
+pub async fn wrap_policy_view<'a>(
+    ledger: &'a LedgerState,
     opts: &QueryConnectionOptions,
-) -> Result<PolicyWrappedView<'a, S>>
+) -> Result<PolicyWrappedView<'a>>
 ```
 
 Creates a policy-wrapped view from query connection options.
@@ -419,7 +419,7 @@ let wrapped = wrap_identity_policy_view(&ledger, identity, false).await?;
 ### 4. Handle Policy Errors
 
 ```rust
-let graph = FlureeView::from_ledger_state(&ledger)
+let graph = GraphDb::from_ledger_state(&ledger)
     .with_policy(std::sync::Arc::new(policy_ctx));
 
 match graph.query(&fluree).jsonld(&query).execute().await {

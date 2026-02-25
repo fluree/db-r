@@ -32,11 +32,11 @@ use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use async_trait::async_trait;
-use fluree_db_core::FlakeValue;
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
-use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
+    RunSortOrder,
 };
+use fluree_db_core::FlakeValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -91,13 +91,14 @@ impl PropertyJoinCountAllOperator {
 
     fn build_cursor_for_predicate(
         ctx: &ExecutionContext<'_>,
-        store: Arc<BinaryIndexStore>,
+        gv: &BinaryGraphView,
         pred_term: &Term,
     ) -> Result<Option<BinaryCursor>> {
         let order = RunSortOrder::Psot;
-        let g_id = ctx.binary_g_id;
+        let store = gv.store();
+        let g_id = gv.g_id();
 
-        let Some(pred_sid) = Self::predicate_sid(&store, pred_term) else {
+        let Some(pred_sid) = Self::predicate_sid(store, pred_term) else {
             return Ok(None);
         };
         let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
@@ -115,7 +116,15 @@ impl PropertyJoinCountAllOperator {
         filter.p_id = Some(p_id);
 
         // We do NOT need Region 2 (dt/lang/i/t) for counting; Region 1 is sufficient.
-        let mut cursor = BinaryCursor::new(store, order, g_id, &min_key, &max_key, filter, false);
+        let mut cursor = BinaryCursor::new(
+            gv.clone_store(),
+            order,
+            g_id,
+            &min_key,
+            &max_key,
+            filter,
+            false,
+        );
         cursor.set_to_t(ctx.to_t);
 
         // Overlay merge (novelty) if present.
@@ -127,15 +136,13 @@ impl PropertyJoinCountAllOperator {
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(
-                ctx.binary_store.as_ref().unwrap().clone(),
-                dn,
-            );
+            let dict_gv = BinaryGraphView::new(gv.clone_store(), g_id);
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(dict_gv, dn);
             let mut ops = crate::binary_scan::translate_overlay_flakes(
                 ctx.overlay(),
                 &mut dict_ov,
                 ctx.to_t,
-                ctx.binary_g_id,
+                g_id,
             );
             if !ops.is_empty() {
                 // Epoch is required for cache correctness.
@@ -279,13 +286,13 @@ impl Operator for PropertyJoinCountAllOperator {
             return self.open_fallback(ctx).await;
         }
 
-        let store = ctx.binary_store.as_ref().unwrap().clone();
+        let gv = ctx.graph_view().unwrap();
 
         // Build cursors (PSOT predicate scans). If any predicate is absent from the index,
         // the join result is empty, so COUNT(*) = 0.
         let mut streams: Vec<SubjectCountStream> = Vec::with_capacity(self.patterns.len());
         for tp in &self.patterns {
-            let Some(cursor) = Self::build_cursor_for_predicate(ctx, store.clone(), &tp.p)? else {
+            let Some(cursor) = Self::build_cursor_for_predicate(ctx, &gv, &tp.p)? else {
                 self.result = Some(0);
                 self.emitted = false;
                 self.state = OperatorState::Open;
@@ -408,17 +415,17 @@ mod tests {
     use crate::parse::{ParsedQuery, SelectMode};
     use crate::pattern::{Term, TriplePattern};
     use crate::var_registry::VarRegistry;
+    use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+    use fluree_db_binary_index::BinaryIndexStore;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{DatatypeDictId, Db, Sid};
+    use fluree_db_core::{DatatypeDictId, LedgerSnapshot, Sid};
     use fluree_db_indexer::run_index::dict_io::{
         write_language_dict, write_predicate_dict, write_subject_index,
     };
     use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict, SubjectDict};
     use fluree_db_indexer::run_index::index_build::build_all_indexes;
     use fluree_db_indexer::run_index::run_file::write_run_file;
-    use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-    use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_graph_json_ld::ParsedContext;
 
     #[tokio::test]
@@ -750,8 +757,8 @@ mod tests {
 
         let op = build_operator_tree(&query, &options, None).unwrap();
 
-        let db = Db::genesis("test:main");
-        let mut ctx = ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut ctx = ExecutionContext::new(&snapshot, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 
         let batches = run_operator(op, &ctx).await.unwrap();

@@ -6,11 +6,11 @@
 //! - HAVING filter on aggregated results
 //! - Full pipeline execution
 
-use fluree_db_core::{Db, FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, GraphDbRef, LedgerSnapshot, NoOverlay, Sid};
 use fluree_db_query::aggregate::{AggregateFn, AggregateSpec};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
-use fluree_db_query::execute::{execute, ExecutableQuery};
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::groupby::GroupByOperator;
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db {
-    Db::genesis("test/main")
+fn make_test_snapshot() -> LedgerSnapshot {
+    LedgerSnapshot::genesis("test/main")
 }
 
 fn xsd_long() -> Sid {
@@ -52,7 +52,7 @@ fn make_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
 ///            GROUP BY ?city
 #[tokio::test]
 async fn test_group_by_with_count() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // Create input data via VALUES:
@@ -99,8 +99,9 @@ async fn test_group_by_with_count() {
             output_var: VarId(1),      // AS ?count (replaces ?person col)
         }]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Expect 2 groups: NYC (count=2), LA (count=3)
     let total_rows: usize = results.iter().map(|b| b.len()).sum();
@@ -134,7 +135,7 @@ async fn test_group_by_with_count() {
 /// Test GROUP BY with SUM aggregate
 #[tokio::test]
 async fn test_group_by_with_sum() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // Create input data via VALUES:
@@ -171,8 +172,9 @@ async fn test_group_by_with_sum() {
             output_var: VarId(1),
         }]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Collect results
     let mut sums: Vec<(String, i64)> = Vec::new();
@@ -207,7 +209,7 @@ async fn test_group_by_with_sum() {
 ///            HAVING (COUNT(?person) > 2)
 #[tokio::test]
 async fn test_group_by_with_having() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // Same data as test_group_by_with_count
@@ -253,8 +255,9 @@ async fn test_group_by_with_having() {
             Expression::Const(FilterValue::Long(2)),
         ));
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Only LA should remain (count=3 > 2)
     let total_rows: usize = results.iter().map(|b| b.len()).sum();
@@ -272,7 +275,7 @@ async fn test_group_by_with_having() {
 /// Test no GROUP BY but with aggregates (implicit single group)
 #[tokio::test]
 async fn test_aggregates_without_group_by() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // Input: 3 values
@@ -299,8 +302,9 @@ async fn test_aggregates_without_group_by() {
             output_var: VarId(0),
         }]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Should have 1 row with sum=60
     let total_rows: usize = results.iter().map(|b| b.len()).sum();
@@ -317,9 +321,9 @@ async fn test_aggregates_without_group_by() {
 /// Test GROUP BY operator directly with multiple group keys
 #[tokio::test]
 async fn test_group_by_multiple_keys() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create batch: ?region, ?city, ?amount
     // East, NYC, 100
@@ -407,7 +411,7 @@ async fn test_group_by_multiple_keys() {
 /// Test AVG aggregate
 #[tokio::test]
 async fn test_aggregate_avg() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     let query = make_query(
@@ -439,8 +443,9 @@ async fn test_aggregate_avg() {
             output_var: VarId(1),
         }]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Should have 1 row with avg=20.0
     let avg = results[0].get_by_col(0, 1);
@@ -454,7 +459,7 @@ async fn test_aggregate_avg() {
 /// Test MIN/MAX aggregates
 #[tokio::test]
 async fn test_aggregate_min_max() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     let query = make_query(
@@ -496,8 +501,9 @@ async fn test_aggregate_min_max() {
             },
         ]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let results = execute(&db, &vars, &executable).await.unwrap();
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Should have 1 row with min=10, max=50
     let min = results[0].get_by_col(0, 1);
@@ -519,7 +525,7 @@ async fn test_aggregate_min_max() {
 /// ORDER BY on a grouped (non-key, non-aggregate) var should error.
 #[tokio::test]
 async fn test_order_by_on_grouped_var_errors() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // VALUES ?city ?person ...
@@ -546,8 +552,11 @@ async fn test_order_by_on_grouped_var_errors() {
         .with_group_by(vec![VarId(0)])
         .with_order_by(vec![fluree_db_query::sort::SortSpec::asc(VarId(1))]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let err = execute(&db, &vars, &executable).await.unwrap_err();
+    let err = execute_with_overlay(db, &vars, &executable)
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("Cannot ORDER BY"),
         "unexpected error: {err}"
@@ -557,7 +566,7 @@ async fn test_order_by_on_grouped_var_errors() {
 /// Aggregating a GROUP BY key var should error (it is not Grouped in this model).
 #[tokio::test]
 async fn test_aggregate_on_group_by_key_errors() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     let query = make_query(
@@ -586,8 +595,11 @@ async fn test_aggregate_on_group_by_key_errors() {
             output_var: VarId(0),
         }]);
 
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
     let executable = ExecutableQuery::new(query, options);
-    let err = execute(&db, &vars, &executable).await.unwrap_err();
+    let err = execute_with_overlay(db, &vars, &executable)
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("GROUP BY key"),
         "unexpected error: {err}"

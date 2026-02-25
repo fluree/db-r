@@ -59,7 +59,7 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
         ..Default::default()
     };
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),

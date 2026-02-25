@@ -252,14 +252,14 @@ impl FlureeInstance {
 
                 match self {
                     FlureeInstance::File(f) => {
-                        let view = f.view_with_policy(ledger_id, &opts).await?;
+                        let view = f.db_with_policy(ledger_id, &opts).await?;
                         view.query(f.as_ref())
                             .sparql(sparql)
                             .execute_formatted()
                             .await
                     }
                     FlureeInstance::Proxy(p) => {
-                        let view = p.view_with_policy(ledger_id, &opts).await?;
+                        let view = p.db_with_policy(ledger_id, &opts).await?;
                         view.query(p.as_ref())
                             .sparql(sparql)
                             .execute_formatted()

@@ -142,7 +142,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, FlakeValue, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -222,9 +222,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_within_first_batch() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_test_batch(schema.clone(), 10, 0);
@@ -256,9 +256,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_skips_entire_batch() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch1 = make_test_batch(schema.clone(), 5, 0);
@@ -287,9 +287,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_spans_batches() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch1 = make_test_batch(schema.clone(), 5, 0);
@@ -328,9 +328,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_larger_than_input() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_test_batch(schema.clone(), 5, 0);
@@ -346,9 +346,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_zero() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_test_batch(schema.clone(), 5, 0);
@@ -365,9 +365,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_preserves_schema() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
         let batch = make_test_batch(schema.clone(), 10, 0);
@@ -403,9 +403,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_state_transitions() {
-        let db = Db::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_test_batch(schema.clone(), 5, 0);

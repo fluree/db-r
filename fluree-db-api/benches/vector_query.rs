@@ -211,7 +211,7 @@ async fn setup_dataset_indexed(
     n_articles: usize,
 ) -> (
     BenchFluree,
-    fluree_db_api::view::FlureeView,
+    fluree_db_api::view::GraphDb,
     JsonValue,
     JsonValue,
     usize,
@@ -228,7 +228,7 @@ async fn setup_dataset_indexed(
         .unwrap();
 
     // Reload as a view so queries can use the binary store (no commit replay).
-    let view = fluree.view(&ledger_id).await.unwrap();
+    let view = fluree.db(&ledger_id).await.unwrap();
 
     (fluree, view, query_all, query_filtered, n_recent)
 }

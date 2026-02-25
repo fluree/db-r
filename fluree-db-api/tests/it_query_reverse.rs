@@ -89,7 +89,7 @@ async fn reverse_predicate_in_where_selects_inverse_edges() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -117,7 +117,7 @@ async fn reverse_predicate_in_where_finds_kid() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(normalize_rows(&rows), normalize_rows(&json!(["ex:kid"])));
 }
@@ -142,7 +142,7 @@ async fn reverse_at_type_in_where_finds_classes() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -167,7 +167,7 @@ async fn forward_at_type_in_where_finds_classes() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -194,7 +194,7 @@ async fn context_reverse_select_one_graph_crawl() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -219,7 +219,7 @@ async fn context_reverse_select_one_graph_crawl() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -244,7 +244,7 @@ async fn context_reverse_select_one_graph_crawl() {
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
 
@@ -279,7 +279,7 @@ async fn reverse_predicate_in_where_selects_parents() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -310,13 +310,13 @@ async fn type_reverse_and_forward_agree_on_classes() {
         .query(&ledger, &q_reverse)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let rows_forward = fluree
         .query(&ledger, &q_forward)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     assert_eq!(

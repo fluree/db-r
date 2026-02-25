@@ -3,7 +3,7 @@
 //! This module provides helpers for integrating OWL2-RL materialization
 //! with query execution, including overlay composition for derived facts.
 
-use fluree_db_core::{Flake, IndexType, OverlayProvider};
+use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider};
 use fluree_db_reasoner::{DerivedFactsOverlay, ReasoningCache};
 use std::sync::Arc;
 
@@ -48,6 +48,7 @@ impl<'a> OverlayProvider for ReasoningOverlay<'a> {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -60,12 +61,12 @@ impl<'a> OverlayProvider for ReasoningOverlay<'a> {
         let mut derived_flakes: Vec<Flake> = Vec::new();
 
         self.base
-            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
                 base_flakes.push(f.clone())
             });
 
         self.derived
-            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
                 derived_flakes.push(f.clone())
             });
 

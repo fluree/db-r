@@ -90,7 +90,7 @@ async fn geo_point_roundtrip_preserves_wkt_format() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     // Should return Paris with its location as WKT POINT
@@ -156,7 +156,7 @@ async fn geof_distance_in_filter_finds_nearby_cities() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     // Should find Paris (0km) and London (~343km), but not Berlin (~878km) or Tokyo (~9700km)
@@ -207,7 +207,7 @@ async fn geof_distance_in_bind_calculates_distances() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     let rows = result.as_array().expect("result should be array");
@@ -251,7 +251,7 @@ async fn geof_distance_with_literal_wkt_points() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     let rows = result.as_array().expect("result should be array");
@@ -300,7 +300,7 @@ async fn non_point_wkt_stored_as_string() {
         .query(&ledger, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     let rows = result.as_array().expect("result should be array");
@@ -353,7 +353,7 @@ async fn geof_distance_via_sparql() {
         .query_sparql(&ledger, sparql)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     let rows = result.as_array().expect("result should be array");

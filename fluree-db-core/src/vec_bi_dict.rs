@@ -114,6 +114,31 @@ impl<Id: DictId> VecBiDict<Id> {
         }
     }
 
+    /// Reconstruct a dictionary from an ordered list of entries.
+    ///
+    /// Entry at index `i` gets ID = `base_id + i`. Directly populates the
+    /// entries Vec and reverse HashMap without any path-dependent lookup logic.
+    ///
+    /// This is the safe way to seed a `VecBiDict` from persisted data (e.g.,
+    /// an `IndexRootV5`'s inline dictionary vectors) — it guarantees ID
+    /// stability regardless of insertion order.
+    pub fn from_ordered_vec(base_id: Id, entries: Vec<Arc<str>>) -> Self {
+        let mut reverse = HashMap::with_capacity(entries.len());
+        let mut next_id = base_id;
+        for entry in &entries {
+            reverse.insert(Arc::clone(entry), next_id);
+            next_id = next_id
+                .checked_add(Id::one())
+                .expect("DictId overflow in from_ordered_vec");
+        }
+        Self {
+            entries,
+            reverse,
+            base_id,
+            next_id,
+        }
+    }
+
     /// Look up or assign an ID for `value`.
     ///
     /// If `value` is already present, returns the existing ID.
@@ -282,5 +307,62 @@ mod tests {
         let d = VecBiDict::<u32>::new(1);
         assert!(d.is_empty());
         assert_eq!(d.len(), 0);
+    }
+
+    #[test]
+    fn test_from_ordered_vec() {
+        let entries: Vec<Arc<str>> =
+            vec![Arc::from("alpha"), Arc::from("beta"), Arc::from("gamma")];
+        let d = VecBiDict::<u32>::from_ordered_vec(0, entries);
+
+        assert_eq!(d.len(), 3);
+        assert_eq!(d.base_id(), 0);
+
+        // Forward lookups
+        assert_eq!(d.resolve(0), Some("alpha"));
+        assert_eq!(d.resolve(1), Some("beta"));
+        assert_eq!(d.resolve(2), Some("gamma"));
+        assert_eq!(d.resolve(3), None);
+
+        // Reverse lookups
+        assert_eq!(d.find("alpha"), Some(0));
+        assert_eq!(d.find("beta"), Some(1));
+        assert_eq!(d.find("gamma"), Some(2));
+        assert_eq!(d.find("delta"), None);
+    }
+
+    #[test]
+    fn test_from_ordered_vec_with_base_id() {
+        let entries: Vec<Arc<str>> = vec![Arc::from("en"), Arc::from("fr")];
+        let d = VecBiDict::<u16>::from_ordered_vec(1, entries);
+
+        assert_eq!(d.resolve(1), Some("en"));
+        assert_eq!(d.resolve(2), Some("fr"));
+        assert_eq!(d.resolve(0), None); // below base_id
+        assert_eq!(d.find("en"), Some(1));
+        assert_eq!(d.find("fr"), Some(2));
+    }
+
+    #[test]
+    fn test_from_ordered_vec_then_insert() {
+        let entries: Vec<Arc<str>> = vec![Arc::from("a"), Arc::from("b")];
+        let mut d = VecBiDict::<u32>::from_ordered_vec(0, entries);
+
+        // Existing entry returns existing ID
+        assert_eq!(d.assign_or_lookup("a"), 0);
+        assert_eq!(d.assign_or_lookup("b"), 1);
+
+        // New entry gets next sequential ID
+        let c_id = d.assign_or_lookup("c");
+        assert_eq!(c_id, 2);
+        assert_eq!(d.len(), 3);
+        assert_eq!(d.resolve(2), Some("c"));
+    }
+
+    #[test]
+    fn test_from_ordered_vec_empty() {
+        let d = VecBiDict::<u32>::from_ordered_vec(5, Vec::new());
+        assert!(d.is_empty());
+        assert_eq!(d.base_id(), 5);
     }
 }

@@ -88,7 +88,7 @@ async fn policy_applies_to_named_graph_queries() {
                 .query_connection(&q_private_ssn_no_policy)
                 .await
                 .expect("query private ssn (no policy)");
-            let jsonld_private = out_private.to_jsonld(&ledger.db).expect("to_jsonld private");
+            let jsonld_private = out_private.to_jsonld(&ledger.snapshot).expect("to_jsonld private");
             assert_eq!(jsonld_private, json!(["111-11-1111"]));
 
             let q_public_name_no_policy = json!({
@@ -101,7 +101,7 @@ async fn policy_applies_to_named_graph_queries() {
                 .query_connection(&q_public_name_no_policy)
                 .await
                 .expect("query public name (no policy)");
-            let jsonld_public = out_public.to_jsonld(&ledger.db).expect("to_jsonld public");
+            let jsonld_public = out_public.to_jsonld(&ledger.snapshot).expect("to_jsonld public");
             assert_eq!(jsonld_public, json!(["Alice"]));
 
             // 1) Structured from: named graph + denied property
@@ -117,7 +117,7 @@ async fn policy_applies_to_named_graph_queries() {
                 .query_connection(&q_private_ssn)
                 .await
                 .expect("query private ssn");
-            let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+            let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             assert_eq!(
                 jsonld,
                 json!([]),
@@ -137,7 +137,7 @@ async fn policy_applies_to_named_graph_queries() {
                 .query_connection(&q_public_name)
                 .await
                 .expect("query public name");
-            let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+            let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             assert_eq!(jsonld, json!(["Alice"]));
 
             // 3) Structured from: public graph still returns name with policy (sanity)
@@ -153,7 +153,7 @@ async fn policy_applies_to_named_graph_queries() {
                 .query_connection(&q_public_name_structured)
                 .await
                 .expect("query public structured name");
-            let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+            let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             assert_eq!(jsonld, json!(["Alice"]));
         })
         .await;

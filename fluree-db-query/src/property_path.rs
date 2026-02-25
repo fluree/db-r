@@ -170,6 +170,7 @@ impl PropertyPathOperator {
 
             let flakes = range_with_overlay(
                 db,
+                ctx.binary_g_id,
                 overlay,
                 IndexType::Spot,
                 RangeTest::Eq,
@@ -247,6 +248,7 @@ impl PropertyPathOperator {
 
             let flakes = range_with_overlay(
                 db,
+                ctx.binary_g_id,
                 overlay,
                 IndexType::Post,
                 RangeTest::Eq,
@@ -285,6 +287,7 @@ impl PropertyPathOperator {
         let opts = RangeOptions::new().with_to_t(to_t);
         let flakes = range_with_overlay(
             db,
+            ctx.binary_g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,

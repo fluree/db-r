@@ -72,7 +72,7 @@ async fn subjects_as_predicates_variable_predicate_scan() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -109,7 +109,7 @@ async fn subjects_as_predicates_reverse_crawl_without_star() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     let arr = rows.as_array().expect("rows array");
@@ -170,7 +170,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows1),
@@ -188,7 +188,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows2),
@@ -206,7 +206,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows3),
@@ -229,7 +229,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         .query(&ledger, &q4)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -314,7 +314,7 @@ async fn rdfs_subpropertyof_expansion() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows1),
@@ -333,7 +333,7 @@ async fn rdfs_subpropertyof_expansion() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows2),
@@ -357,7 +357,7 @@ async fn rdfs_subpropertyof_expansion() {
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows3, json!([]));
 }

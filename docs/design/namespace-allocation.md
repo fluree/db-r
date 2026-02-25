@@ -5,8 +5,8 @@ Fluree encodes IRIs as compact **SIDs**: a `(ns_code, local)` pair where:
 - `ns_code` is a `u16` namespace code that identifies an IRI prefix
 - `local` is the remaining suffix (bytes) after removing the matched prefix
 
-The database maintains a **namespace table** (`Db.namespace_codes`: `ns_code -> prefix string`).
-That table is embedded in the published index root and is loaded whenever a `Db` is opened.
+The database maintains a **namespace table** (`LedgerSnapshot.namespace_codes`: `ns_code -> prefix string`).
+That table is embedded in the published index root and is loaded whenever a `LedgerSnapshot` is opened.
 
 This document describes how Fluree chooses a namespace prefix for an IRI, and how it mitigates
 datasets that would otherwise allocate an excessive number of distinct namespace prefixes.
@@ -83,7 +83,7 @@ transactions**, we also need “outlier mode” to persist so new IRIs do not re
 
 Fluree derives this from the DB’s namespace table at open time:
 
-- When a `Db` is opened, `NamespaceRegistry::from_db(db)` loads `db.namespace_codes`.
+- When a `LedgerSnapshot` is opened, `NamespaceRegistry::from_db(db)` loads `db.namespace_codes`.
 - If the DB has already allocated namespace codes beyond the u8-ish threshold (>255), the registry
   sets its fallback mode to `HostOnly`.
 

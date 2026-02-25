@@ -14,8 +14,8 @@ preserving fine-grained decompression and caching at the leaflet level.
 A binary index build produces:
 
 - **Per-graph, per-sort-order fact indexes**:
-  - a content-addressed **branch manifest** (`FBR1`, file extension `.fbr`)
-  - a set of content-addressed **leaf files** (`FLI1`, file extension `.fli`)
+  - a content-addressed **branch manifest** (`FBR2`, file extension `.fbr`)
+  - a set of content-addressed **leaf files** (`FLI2`, file extension `.fli`)
   - each leaf contains multiple **leaflets** (compressed blocks with independently compressed regions)
 - **Shared dictionary artifacts**:
   - small dictionaries (predicates, graphs, datatypes, languages) embedded in the **index root** (CAS) and/or persisted as flat files in local builds
@@ -117,7 +117,7 @@ At a high level the root contains:
 - **Default graph routing** (inline leaf entries per sort order)
 - **Named graph routing** (branch CIDs per sort order per graph)
 
-## Branch manifest (`FBR1`, `.fbr`)
+## Branch manifest (`FBR2`, `.fbr`)
 
 A branch manifest is a single-level index mapping key ranges to leaf files. It is written per graph
 per order and read via binary search to route a lookup/range scan.
@@ -126,7 +126,7 @@ per order and read via binary search to route a lookup/range scan.
 
 ```text
 [BranchHeader: 16 bytes]
-  magic: "FBR1" (4B)
+  magic: "FBR2" (4B)
   version: u8
   _pad: [u8; 3]
   leaf_count: u32
@@ -151,7 +151,7 @@ Notes:
 **[1] Key encoding note (internal)**: the 44-byte key is the `RunRecord` wire layout used by the import/index-build
 pipeline and stored here only for routing. It is an internal build artifact detail (not a core runtime fact type).
 
-## Leaf file (`FLI1`, `.fli`)
+## Leaf file (`FLI2`, `.fli`)
 
 A leaf file groups multiple leaflets into a single blob, and includes a small directory so leaflets can
 be accessed without scanning the entire file.
@@ -160,7 +160,7 @@ be accessed without scanning the entire file.
 
 ```text
 [LeafHeader: variable size]
-  magic: "FLI1" (4B)
+  magic: "FLI2" (4B)
   version: u8
   leaflet_count: u8
   dt_width: u8    (currently 1; may widen to 2)
@@ -412,8 +412,8 @@ The `u16` big-endian prefix ensures that lexicographic byte comparisons match lo
 ## Versioning notes
 
 - Fact artifacts:
-  - branch: magic `FBR1`, version `1`
-  - leaf: magic `FLI1`, version `1`
+  - branch: magic `FBR2`, version `1`
+  - leaf: magic `FLI2`, version `2`
 - Dictionary tree artifacts:
   - branch: magic `DTB1`
   - leaves: magic `DLF1` / `DLR1`

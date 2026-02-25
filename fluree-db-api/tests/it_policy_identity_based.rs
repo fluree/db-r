@@ -99,7 +99,7 @@ async fn inline_policy_with_identity_binding() {
     });
 
     let result1 = fluree.query_connection(&query1).await.expect("query1");
-    let result1_json = result1.to_jsonld(&ledger.db).expect("to_jsonld");
+    let result1_json = result1.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should only return Alice's SSN
     assert_eq!(
@@ -141,7 +141,7 @@ async fn inline_policy_with_identity_binding() {
     });
 
     let result2 = fluree.query_connection(&query2).await.expect("query2");
-    let result2_json = result2.to_jsonld(&ledger.db).expect("to_jsonld");
+    let result2_json = result2.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return empty (John's SSN is not accessible to Alice)
     assert_eq!(
@@ -250,7 +250,7 @@ async fn identity_based_policy_lookup() {
     });
 
     let result = fluree.query_connection(&query).await.expect("query");
-    let result_json = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let result_json = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should only return Alice's SSN (John's is restricted by policy)
     assert_eq!(
@@ -278,7 +278,7 @@ async fn identity_based_policy_lookup() {
     });
 
     let result2 = fluree.query_connection(&query2).await.expect("query2");
-    let result2_json = result2.to_jsonld(&ledger.db).expect("to_jsonld");
+    let result2_json = result2.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return empty (John's SSN is not accessible via policy)
     assert_eq!(
@@ -386,7 +386,7 @@ async fn wrap_identity_policy_view_api() {
         .query_with_policy(&ledger, &query, wrapped.policy())
         .await
         .expect("query_with_policy");
-    let result_json = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let result_json = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should only return Alice's SSN (John's is restricted by policy)
     assert_eq!(

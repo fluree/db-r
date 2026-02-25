@@ -40,7 +40,7 @@ pub async fn run(
                 .sparql("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")
                 .execute()
                 .await?;
-            let json = result.to_construct(&ledger.db)?;
+            let json = result.to_construct(&ledger.snapshot)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string())
@@ -53,7 +53,7 @@ pub async fn run(
                 .sparql("SELECT ?s ?p ?o WHERE { ?s ?p ?o }")
                 .execute()
                 .await?;
-            let json = result.to_sparql_json(&ledger.db)?;
+            let json = result.to_sparql_json(&ledger.snapshot)?;
             let output = format_ntriples(&json);
             print!("{output}");
         }

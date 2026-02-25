@@ -8,9 +8,9 @@
 use axum::body::Body;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
+use fluree_db_binary_index::IndexRootV5;
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
 use fluree_db_core::{ContentId, ContentKind, StorageRead};
-use fluree_db_indexer::run_index::IndexRootV5;
 use fluree_db_server::{
     config::{ServerRole, StorageAccessMode},
     routes::build_router,

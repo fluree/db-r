@@ -217,7 +217,7 @@ Practical guidelines:
 
 ### Ledger vs Db vs Graph (internal meaning)
 - **Ledger**: the durable identity + commit chain + publication state (nameservice record).
-- **Db**: the indexed snapshot value used for range/scan (hot path).
+- **LedgerSnapshot**: the indexed snapshot value used for range/scan (hot path).
 - **Graph**: query scoping mechanism (active graph, dataset graph selection, `GRAPH` operator).
 
 Avoid using "graph" as a synonym for "db" in code comments. Prefer:

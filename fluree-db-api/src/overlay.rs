@@ -3,7 +3,7 @@
 //! Currently used to support dataset (multi-ledger) graph crawl formatting by
 //! composing multiple novelty overlays into a single `OverlayProvider`.
 
-use fluree_db_core::{Flake, IndexType, OverlayProvider};
+use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider};
 
 /// Composite overlay that merges multiple overlay providers.
 ///
@@ -34,6 +34,7 @@ impl OverlayProvider for CompositeOverlay {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -47,7 +48,7 @@ impl OverlayProvider for CompositeOverlay {
 
         let mut flakes: Vec<Flake> = Vec::new();
         for overlay in &self.overlays {
-            overlay.for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+            overlay.for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
                 flakes.push(f.clone())
             });
         }

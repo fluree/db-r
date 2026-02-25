@@ -8,7 +8,7 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{LedgerSnapshot, Sid};
 use serde_json::json;
 use std::io::Write;
 
@@ -105,7 +105,7 @@ ex:cam a ex:User ;
         .query(&ledger, &query)
         .await
         .expect("query after import");
-    let json = qr.to_jsonld(&ledger.db).expect("format jsonld");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
     let names = extract_sorted_strings(&json);
 
     assert_eq!(names, vec!["Alice", "Bob", "Cam"]);
@@ -191,7 +191,7 @@ async fn import_pre_split_chunks_then_query() {
         .query(&ledger, &query_names)
         .await
         .expect("query names");
-    let json = qr.to_jsonld(&ledger.db).expect("format jsonld");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
     let names = extract_sorted_strings(&json);
     assert_eq!(names, vec!["Alice", "Bob", "Cam", "Dave"]);
 
@@ -212,7 +212,7 @@ async fn import_pre_split_chunks_then_query() {
         .query(&ledger, &query_friends)
         .await
         .expect("query friends");
-    let json2 = qr2.to_jsonld(&ledger.db).expect("format jsonld");
+    let json2 = qr2.to_jsonld(&ledger.snapshot).expect("format jsonld");
     let friends = extract_sorted_strings(&json2);
     assert_eq!(friends, vec!["Alice", "Bob"]);
 }
@@ -221,13 +221,13 @@ async fn import_pre_split_chunks_then_query() {
 // Stats helpers
 // ============================================================================
 
-/// Look up the count for a property IRI in db.stats.
-fn property_count(db: &Db, iri: &str) -> Option<u64> {
-    let stats = db.stats.as_ref()?;
+/// Look up the count for a property IRI in the snapshot's stats.
+fn property_count(snapshot: &LedgerSnapshot, iri: &str) -> Option<u64> {
+    let stats = snapshot.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
         let sid = Sid::new(p.sid.0, &p.sid.1);
-        if let Some(full) = db.decode_sid(&sid) {
+        if let Some(full) = snapshot.decode_sid(&sid) {
             if full == iri {
                 return Some(p.count);
             }
@@ -282,25 +282,25 @@ ex:bob a ex:User ;
     // Load and verify stats are populated
     let ledger = fluree.ledger("test/import-stats:main").await.expect("load");
 
-    // Stats should be present in the loaded Db
+    // Stats should be present in the loaded LedgerSnapshot
     assert!(
-        ledger.db.stats.is_some(),
+        ledger.snapshot.stats.is_some(),
         "stats should be populated after import with collect_id_stats=true"
     );
-    let stats = ledger.db.stats.as_ref().unwrap();
+    let stats = ledger.snapshot.stats.as_ref().unwrap();
     assert!(stats.flakes > 0, "should have flake count in stats");
 
     // Property stats: schema:name should have count=2 (Alice, Bob)
-    let name_count = property_count(&ledger.db, "http://schema.org/name");
+    let name_count = property_count(&ledger.snapshot, "http://schema.org/name");
     assert_eq!(name_count, Some(2), "schema:name should have count=2");
 
     // Property stats: schema:age should have count=2
-    let age_count = property_count(&ledger.db, "http://schema.org/age");
+    let age_count = property_count(&ledger.snapshot, "http://schema.org/age");
     assert_eq!(age_count, Some(2), "schema:age should have count=2");
 
     // Class stats: currently disabled (see build_and_upload `if true` guard).
     // When re-enabled, ex:User should have count=2.
-    // let user_count = class_count(&ledger.db, "http://example.org/ns/User");
+    // let user_count = class_count(&ledger.snapshot, "http://example.org/ns/User");
     // assert_eq!(user_count, Some(2), "ex:User class should have count=2");
 
     // Basic query still works
@@ -314,7 +314,7 @@ ex:bob a ex:User ;
     });
 
     let qr = fluree.query(&ledger, &query).await.expect("query");
-    let json = qr.to_jsonld(&ledger.db).expect("jsonld");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("jsonld");
     let names = extract_sorted_strings(&json);
     assert_eq!(names, vec!["Alice", "Bob"]);
 }
@@ -386,7 +386,7 @@ ex:bob a ex:User ;
         .query(&ledger, &query_names)
         .await
         .expect("query names");
-    let json = qr.to_jsonld(&ledger.db).expect("jsonld");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("jsonld");
     let names = extract_sorted_strings(&json);
     assert_eq!(names, vec!["Alice", "Bob"]);
 
@@ -407,7 +407,7 @@ ex:bob a ex:User ;
         .query(&ledger, &query_age_filter)
         .await
         .expect("query age filter");
-    let json2 = qr2.to_jsonld(&ledger.db).expect("jsonld");
+    let json2 = qr2.to_jsonld(&ledger.snapshot).expect("jsonld");
     let older = extract_sorted_strings(&json2);
     assert_eq!(older, vec!["Alice"], "only Alice is older than 30");
 
@@ -428,7 +428,7 @@ ex:bob a ex:User ;
         .query(&ledger, &query_active)
         .await
         .expect("query active");
-    let json3 = qr3.to_jsonld(&ledger.db).expect("jsonld");
+    let json3 = qr3.to_jsonld(&ledger.snapshot).expect("jsonld");
     let active = extract_sorted_strings(&json3);
     assert_eq!(active, vec!["Alice"], "only Alice is active");
 
@@ -449,7 +449,7 @@ ex:bob a ex:User ;
         .query(&ledger, &query_score)
         .await
         .expect("query score");
-    let json4 = qr4.to_jsonld(&ledger.db).expect("jsonld");
+    let json4 = qr4.to_jsonld(&ledger.snapshot).expect("jsonld");
     let high_scorers = extract_sorted_strings(&json4);
     assert_eq!(high_scorers, vec!["Alice"], "only Alice scores above 80");
 }
@@ -495,9 +495,9 @@ ex:bob a ex:User ;
     assert!(result.t > 0, "should have at least one commit");
     assert!(result.root_id.is_some(), "index should have been built");
 
-    // Query the txn-meta graph via view (same path as CLI: fluree.view("alias#txn-meta"))
+    // Query the txn-meta graph via db (same path as CLI: fluree.db("alias#txn-meta"))
     let view = fluree
-        .view("test/import-txn-meta:main#txn-meta")
+        .db("test/import-txn-meta:main#txn-meta")
         .await
         .expect("load txn-meta view");
 

@@ -102,7 +102,7 @@ async fn aggregates_explicit_grouping_count() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
         normalize_rows(&json_rows),
@@ -133,7 +133,7 @@ async fn aggregates_with_bind_ucase_and_count() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
         normalize_rows(&json_rows),
@@ -162,7 +162,7 @@ async fn aggregates_singular_selector_count_per_group() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     let mut counts = extract_single_column_numbers(&json_rows);
     counts.sort();
@@ -184,7 +184,7 @@ async fn aggregates_implicit_grouping_count_all() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(json_rows, json!([4]));
 }
 
@@ -203,7 +203,7 @@ async fn aggregates_min_implicit_grouping() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(json_rows, json!([5]));
 }
 
@@ -223,7 +223,7 @@ async fn aggregates_max_date_implicit_grouping() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         json_rows,
         json!([{"@value": "2011-09-26", "@type": "xsd:date"}])
@@ -247,7 +247,7 @@ async fn aggregates_with_ordering_on_count() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Verify multiset of results
     assert_eq!(
@@ -284,7 +284,7 @@ async fn aggregates_count_all_favnums_implicit_grouping() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(json_rows, json!([8]));
 }
 
@@ -304,7 +304,7 @@ async fn aggregates_groupconcat_default_separator() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Note: concatenation order depends on underlying binding order; compare as sets of acceptable strings.
     // We assert the exact strings for this dataset after sorting numbers ascending in storage is not guaranteed,
@@ -336,7 +336,7 @@ async fn aggregates_groupconcat_custom_separator() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
         normalize_rows(&json_rows),
@@ -368,7 +368,7 @@ async fn aggregates_groupby_multiple_vars_with_grouped_selects() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Note: grouped lists have no guaranteed ordering.
     // We normalize by sorting rows, and within each grouped list by JSON string.
@@ -415,7 +415,7 @@ async fn aggregates_count_star() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
         normalize_rows(&json_rows),
@@ -447,7 +447,7 @@ async fn aggregates_count_star_direct() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Same expected results as the emulated version
     assert_eq!(

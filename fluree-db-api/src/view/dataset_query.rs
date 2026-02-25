@@ -1,4 +1,4 @@
-//! Query execution against FlureeDataSetView
+//! Query execution against DataSetDb
 //!
 //! Provides `query_dataset_view` for multi-ledger queries.
 
@@ -7,12 +7,13 @@ use crate::query::helpers::{
     prepare_for_execution, status_for_query_error, tracker_for_limits,
     tracker_for_tracked_endpoint,
 };
-use crate::view::{FlureeDataSetView, QueryInput};
+use crate::view::{DataSetDb, QueryInput};
 use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
 };
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
+use fluree_db_core::GraphDbRef;
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 // ============================================================================
 // Dataset Query Execution
@@ -31,10 +32,10 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// let view1 = fluree.view("ledger1:main").await?;
-    /// let view2 = fluree.view("ledger2:main").await?;
+    /// let view1 = fluree.db("ledger1:main").await?;
+    /// let view2 = fluree.db("ledger2:main").await?;
     ///
-    /// let dataset = FlureeDataSetView::new()
+    /// let dataset = DataSetDb::new()
     ///     .with_default(view1)
     ///     .with_default(view2);
     ///
@@ -42,7 +43,7 @@ where
     /// ```
     pub async fn query_dataset_view(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -88,12 +89,12 @@ where
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref())?
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
             }
             QueryInput::Sparql(sparql) => {
                 // For dataset view, SPARQL FROM/FROM NAMED are allowed
                 // (they were validated when building the dataset)
-                parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref())?
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
             }
         };
 
@@ -118,14 +119,14 @@ where
             batches,
             dataset.max_t(),
             dataset.composite_overlay(),
-            primary.binary_store.clone(),
+            primary.binary_graph(),
         ))
     }
 
     /// Execute a dataset query with tracking.
     pub(crate) async fn query_dataset_view_tracked(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -145,18 +146,16 @@ where
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref()).map_err(
-                    |e| {
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    },
-                )?
+                    })?
             }
             QueryInput::Sparql(sparql) => {
-                parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref()).map_err(
-                    |e| {
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    },
-                )?
+                    })?
             }
         };
 
@@ -183,19 +182,19 @@ where
             batches,
             dataset.max_t(),
             None,
-            primary.binary_store.clone(),
+            primary.binary_graph(),
         );
 
         // Format with tracking
         let result_json = match primary.policy() {
             Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(&primary.db, policy, &tracker)
+                .to_jsonld_async_with_policy_tracked(primary.as_graph_db_ref(), policy, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .to_jsonld_async_tracked(&primary.db, &tracker)
+                .to_jsonld_async_tracked(primary.as_graph_db_ref(), &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -217,7 +216,7 @@ where
     /// Applies reasoning from the primary view if set.
     fn build_executable_for_dataset(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         let mut executable = prepare_for_execution(parsed);
@@ -246,14 +245,14 @@ where
     /// `ExecutionContext` for `BinaryScanOperator`.
     async fn execute_dataset_internal(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
         // Primary default graph drives planning/optimization.
         //
-        // NOTE: We pass `primary.db` to the query engine as the "planning db".
+        // NOTE: We pass `primary.snapshot` to the query engine as the "planning db".
         // The engine will attach `runtime_dataset` to the ExecutionContext and scans
         // will union across all default graphs, but planning (including stats-based
         // reordering) is intentionally based on this primary graph for now.
@@ -263,19 +262,21 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(
-            &primary.db,
-            primary.overlay.as_ref(),
-            executable,
-            primary.to_t,
-        )
-        .await
-        .map_err(query_error_to_api_error)?;
+        let db = primary.as_graph_db_ref();
+
+        let prepared = prepare_execution(db, executable)
+            .await
+            .map_err(query_error_to_api_error)?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
-            None => (None, primary.to_t, false),
+            None => (None, primary.t, false),
         };
+
+        let spatial_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
@@ -288,18 +289,15 @@ where
             binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             history_mode,
+            from_t,
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            db: &primary.db,
-            overlay: primary.overlay.as_ref(),
-            to_t,
-            from_t,
-        };
-        execute_prepared(source, vars, prepared, config)
+        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        execute_prepared(exec_db, vars, prepared, config)
             .await
             .map_err(query_error_to_api_error)
     }
@@ -309,7 +307,7 @@ where
     /// Threads `binary_store` from the primary view into the execution context.
     async fn execute_dataset_tracked(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -320,18 +318,19 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(
-            &primary.db,
-            primary.overlay.as_ref(),
-            executable,
-            primary.to_t,
-        )
-        .await?;
+        let db = primary.as_graph_db_ref();
+
+        let prepared = prepare_execution(db, executable).await?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
-            None => (None, primary.to_t, false),
+            None => (None, primary.t, false),
         };
+
+        let spatial_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -340,18 +339,15 @@ where
             binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             history_mode,
+            from_t,
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            db: &primary.db,
-            overlay: primary.overlay.as_ref(),
-            to_t,
-            from_t,
-        };
-        execute_prepared(source, vars, prepared, config).await
+        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        execute_prepared(exec_db, vars, prepared, config).await
     }
 }
 
@@ -362,7 +358,7 @@ fn query_error_to_api_error(err: fluree_db_query::QueryError) -> ApiError {
 #[cfg(test)]
 mod tests {
 
-    use crate::view::FlureeDataSetView;
+    use crate::view::DataSetDb;
     use crate::FlureeBuilder;
     use serde_json::json;
 
@@ -381,8 +377,8 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Query via dataset view (single ledger)
-        let view = fluree.view("testdb:main").await.unwrap();
-        let dataset = FlureeDataSetView::single(view);
+        let view = fluree.db("testdb:main").await.unwrap();
+        let dataset = DataSetDb::single(view);
 
         let query = json!({
             "select": ["?name"],
@@ -406,8 +402,8 @@ mod tests {
         });
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
-        let view = fluree.view("testdb:main").await.unwrap();
-        let dataset = FlureeDataSetView::single(view);
+        let view = fluree.db("testdb:main").await.unwrap();
+        let dataset = DataSetDb::single(view);
 
         let query = json!({
             "select": ["?name"],
@@ -447,12 +443,10 @@ mod tests {
         });
         let _ledger2 = fluree.update(ledger2, &txn2).await.unwrap().ledger;
 
-        let view1 = fluree.view("db1:main").await.unwrap();
-        let view2 = fluree.view("db2:main").await.unwrap();
+        let view1 = fluree.db("db1:main").await.unwrap();
+        let view2 = fluree.db("db2:main").await.unwrap();
 
-        let dataset = FlureeDataSetView::new()
-            .with_default(view1)
-            .with_default(view2);
+        let dataset = DataSetDb::new().with_default(view1).with_default(view2);
 
         let query = json!({
             "select": ["?s", "?name"],
@@ -472,7 +466,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let dataset: FlureeDataSetView = FlureeDataSetView::new();
+        let dataset: DataSetDb = DataSetDb::new();
         let query = json!({ "select": ["?s"], "where": {"@id": "?s"} });
 
         let result = fluree.query_dataset_view(&dataset, &query).await;

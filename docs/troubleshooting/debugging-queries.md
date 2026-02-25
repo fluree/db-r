@@ -243,7 +243,7 @@ Look for:
 2. **Check indexing lag:**
    ```bash
    curl http://localhost:8090/ledgers/mydb:main
-   # High novelty_count slows queries
+   # High indexing lag (commit_t - index_t) can slow queries
    ```
 
 3. **Add LIMIT:**

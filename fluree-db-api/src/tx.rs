@@ -408,7 +408,7 @@ where
         trig_meta: Option<&RawTrigMeta>,
         named_graphs: &[NamedGraphBlock],
     ) -> Result<StageResult> {
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
         // Handle case where default graph is empty but named graphs are present
         // (e.g., TriG with only GRAPH blocks and no default graph triples)
@@ -448,9 +448,9 @@ where
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
-            // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
+            // Use as_graph_db_ref to include novelty flakes (shapes committed but not yet indexed)
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
                     .await
                     .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
@@ -492,7 +492,7 @@ where
         txn: fluree_db_transact::Txn,
         index_config: Option<&IndexConfig>,
     ) -> Result<StageResult> {
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
         // Extract txn_meta and graph_delta before staging consumes the Txn
         let txn_meta = txn.txn_meta.clone();
@@ -501,7 +501,7 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
                     .await
                     .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
@@ -537,7 +537,7 @@ where
         index_config: Option<&IndexConfig>,
         tracker: &Tracker,
     ) -> std::result::Result<StageResult, TrackedErrorResponse> {
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let txn = {
             let parse_span = tracing::debug_span!("txn_parse", txn_type = ?input.txn_type);
             let _guard = parse_span.enter();
@@ -564,9 +564,9 @@ where
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
-            // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
+            // Use as_graph_db_ref to include novelty flakes (shapes committed but not yet indexed)
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
                     .await
                     .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
             let shacl_cache = engine.cache().clone();
@@ -1111,7 +1111,7 @@ where
         );
         let _guard = span.enter();
 
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let new_t = ledger.t() + 1;
         let txn_id = generate_txn_id();
 
@@ -1373,7 +1373,7 @@ where
             ..Default::default()
         };
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
-            &ledger.db,
+            &ledger.snapshot,
             ledger.novelty.as_ref(),
             Some(ledger.novelty.as_ref()),
             ledger.t(),

@@ -68,7 +68,7 @@ async fn owl2rl_same_as_symmetry() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -114,7 +114,7 @@ async fn owl2rl_same_as_transitivity() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -169,7 +169,7 @@ async fn owl2rl_symmetric_property() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         rows,
@@ -210,7 +210,7 @@ async fn owl2rl_transitive_property() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -250,7 +250,7 @@ async fn owl2rl_inverse_of() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows1, json!(["ex:son"]), "mom's child should be son");
 
@@ -265,7 +265,7 @@ async fn owl2rl_inverse_of() {
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows2, json!(["ex:alice"]), "bob's parent should be alice");
 }
@@ -302,7 +302,7 @@ async fn owl2rl_domain_rule() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -348,7 +348,7 @@ async fn owl2rl_range_rule() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -404,7 +404,7 @@ async fn owl2rl_functional_property() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -450,7 +450,7 @@ async fn owl2rl_inverse_functional_property() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -492,7 +492,7 @@ async fn owl2rl_sub_property_of() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -538,7 +538,7 @@ async fn owl2rl_property_chain_axiom() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -588,7 +588,7 @@ async fn owl2rl_has_key() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -640,7 +640,7 @@ async fn owl2rl_subclass_of() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -681,7 +681,7 @@ async fn owl2rl_equivalent_class() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -736,7 +736,7 @@ async fn owl2rl_has_value_forward() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         rows,
@@ -789,7 +789,7 @@ async fn owl2rl_has_value_backward() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -846,7 +846,7 @@ async fn owl2rl_some_values_from() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -902,7 +902,7 @@ async fn owl2rl_all_values_from() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -957,7 +957,7 @@ async fn owl2rl_max_cardinality() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -1012,7 +1012,7 @@ async fn owl2rl_intersection_of() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -1074,7 +1074,7 @@ async fn owl2rl_union_of() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -1129,7 +1129,7 @@ async fn owl2rl_one_of() {
         .query(&ledger1, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -1172,7 +1172,7 @@ async fn owl2rl_disabled_shows_no_derived_facts() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     // Without reasoning, person-b does NOT live with person-a (symmetric inference not applied)

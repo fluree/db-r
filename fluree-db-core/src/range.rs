@@ -1,7 +1,7 @@
 //! Range query implementation
 //!
 //! This module provides the public `range` API for querying flakes from an index.
-//! All queries delegate to the `RangeProvider` attached to the `Db`.
+//! All queries delegate to the `RangeProvider` attached to the `LedgerSnapshot`.
 //!
 //! ## Example
 //!
@@ -9,7 +9,7 @@
 //! use fluree_db_core::{range, IndexType, RangeTest, RangeMatch, RangeOptions};
 //!
 //! let flakes = range(
-//!     &db,
+//!     &snapshot,
 //!     IndexType::Spot,
 //!     RangeTest::Eq,
 //!     RangeMatch::subject(subject_sid),
@@ -21,10 +21,11 @@
 pub use crate::query_bounds::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 
 use crate::comparator::IndexType;
-use crate::db::Db;
+use crate::db::LedgerSnapshot;
 use crate::dt_compatible;
 use crate::error::Result;
 use crate::flake::Flake;
+use crate::ids::GraphId;
 use crate::overlay::{NoOverlay, OverlayProvider};
 use crate::sid::Sid;
 use crate::value::FlakeValue;
@@ -41,27 +42,32 @@ pub const BATCHED_JOIN_SIZE: usize = 100_000;
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `snapshot` - The database snapshot to query
 /// * `index` - Which index to use
 /// * `test` - Comparison operator (=, <, <=, >, >=)
 /// * `match_val` - Components to match
 /// * `opts` - Query options (limits, offset)
 pub async fn range(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
+    g_id: GraphId,
     index: IndexType,
     test: RangeTest,
     match_val: RangeMatch,
     opts: RangeOptions,
 ) -> Result<Vec<Flake>> {
-    range_with_overlay(db, &NoOverlay, index, test, match_val, opts).await
+    range_with_overlay(snapshot, g_id, &NoOverlay, index, test, match_val, opts).await
 }
 
 /// Execute a range query with an overlay provider (novelty).
 ///
-/// Delegates to the `RangeProvider` attached to the `Db`.  For genesis
+/// Delegates to the `RangeProvider` attached to the `LedgerSnapshot`.  For genesis
 /// databases (t=0, no provider), returns overlay-only flakes.
+///
+/// The overlay is graph-aware: per-graph novelty returns only flakes belonging
+/// to the requested `g_id`, so no post-filtering is needed.
 pub async fn range_with_overlay<O>(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
+    g_id: GraphId,
     overlay: &O,
     index: IndexType,
     test: RangeTest,
@@ -71,19 +77,20 @@ pub async fn range_with_overlay<O>(
 where
     O: OverlayProvider + ?Sized,
 {
-    match db.range_provider.as_ref() {
+    match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
-                .range(index, test, &match_val, &opts, &overlay_ref)
+                .range(g_id, index, test, &match_val, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
-        None if db.t == 0 => {
+        None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
-            let to_t = opts.to_t.unwrap_or(db.t);
-            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            // Per-graph novelty returns only the requested graph's flakes.
+            let to_t = opts.to_t.unwrap_or(i64::MAX);
+            let mut flakes = collect_overlay_only(overlay, g_id, index, to_t);
             // Apply RangeMatch filtering — collect_overlay_only returns all
-            // overlay flakes; narrow them to the requested range.
+            // overlay flakes for this graph; narrow them to the requested range.
             apply_range_filter(&mut flakes, test, &match_val);
             // Apply RangeOptions semantics for overlay-only path (object bounds, offset, limits).
             //
@@ -107,7 +114,8 @@ where
 ///
 /// Delegates to `RangeProvider::range_bounded`.
 pub async fn range_bounded_with_overlay<O>(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
+    g_id: GraphId,
     overlay: &O,
     index: IndexType,
     start_bound: Flake,
@@ -117,19 +125,21 @@ pub async fn range_bounded_with_overlay<O>(
 where
     O: OverlayProvider + ?Sized,
 {
-    match db.range_provider.as_ref() {
+    match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
-                .range_bounded(index, &start_bound, &end_bound, &opts, &overlay_ref)
+                .range_bounded(g_id, index, &start_bound, &end_bound, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
-        None if db.t == 0 => {
-            let to_t = opts.to_t.unwrap_or(db.t);
+        None if snapshot.t == 0 => {
+            // Genesis Db: no base data, return overlay flakes only.
+            // Per-graph novelty returns only the requested graph's flakes.
+            let to_t = opts.to_t.unwrap_or(i64::MAX);
             let cmp = index.comparator();
-            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            let mut flakes = collect_overlay_only(overlay, g_id, index, to_t);
             // Apply start/end bounds — collect_overlay_only returns all
-            // overlay flakes; narrow to the [start_bound, end_bound] range.
+            // overlay flakes for this graph; narrow to the [start_bound, end_bound] range.
             flakes.retain(|f| {
                 cmp(f, &start_bound) != std::cmp::Ordering::Less
                     && cmp(f, &end_bound) != std::cmp::Ordering::Greater
@@ -156,6 +166,7 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
     }
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -164,7 +175,7 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
         callback: &mut dyn FnMut(&Flake),
     ) {
         self.0
-            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback)
     }
 }
 
@@ -174,13 +185,13 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
 
 /// Apply range match filtering to overlay flakes.
 ///
-/// The genesis Db path collects all overlay flakes; this narrows them
+/// The genesis LedgerSnapshot path collects all overlay flakes; this narrows them
 /// to the requested range.  For `RangeTest::Eq` every specified component
 /// of `match_val` must match exactly.  Other test modes currently pass
 /// through unfiltered (callers post-filter as needed).
 fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &RangeMatch) {
     if test != RangeTest::Eq {
-        // Non-equality tests are uncommon on genesis Db; callers
+        // Non-equality tests are uncommon on genesis LedgerSnapshot; callers
         // post-filter so returning the full set is safe.
         return;
     }
@@ -214,7 +225,7 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
     });
 }
 
-/// Apply RangeOptions to the overlay-only (genesis Db) path.
+/// Apply RangeOptions to the overlay-only (genesis LedgerSnapshot) path.
 ///
 /// The overlay-only path bypasses the index `RangeProvider`, so we must manually
 /// apply options that providers typically enforce (object bounds, offset, limits).
@@ -240,23 +251,24 @@ fn apply_overlay_only_options(flakes: &mut Vec<Flake>, opts: &RangeOptions) {
 }
 
 // ============================================================================
-// Overlay-only collection (genesis Db fallback)
+// Overlay-only collection (genesis LedgerSnapshot fallback)
 // ============================================================================
 
-/// Collect overlay flakes for a genesis Db (no base data).
+/// Collect overlay flakes for a genesis LedgerSnapshot (no base data).
 ///
-/// Queries the overlay for all flakes matching the index, applies time
+/// Queries the overlay for all flakes matching the graph and index, applies time
 /// filtering, sorts by index comparator, and removes stale flakes.
 fn collect_overlay_only<O: OverlayProvider + ?Sized>(
     overlay: &O,
+    g_id: GraphId,
     index: IndexType,
     to_t: i64,
 ) -> Vec<Flake> {
     let cmp = index.comparator();
     let mut flakes: Vec<Flake> = Vec::new();
 
-    // Request all overlay flakes for this index (leftmost=true, rhs=None → full range).
-    overlay.for_each_overlay_flake(index, None, None, true, to_t, &mut |f| {
+    // Request all overlay flakes for this graph+index (leftmost=true, rhs=None → full range).
+    overlay.for_each_overlay_flake(g_id, index, None, None, true, to_t, &mut |f| {
         if f.t <= to_t {
             flakes.push(f.clone());
         }

@@ -60,7 +60,7 @@ async fn datalog_grandparent_rule() {
         .query(&ledger, &rule_check)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let rule_results = normalize_rows(&rule_rows);
     eprintln!("Found rules: {:?}", rule_results);
@@ -93,7 +93,7 @@ async fn datalog_grandparent_rule() {
         .query(&ledger, &data_check)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let data_results = normalize_rows(&data_rows);
     eprintln!("Alice's parents: {:?}", data_results);
@@ -116,7 +116,7 @@ async fn datalog_grandparent_rule() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -186,7 +186,7 @@ async fn datalog_sibling_rule() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -230,7 +230,7 @@ async fn datalog_no_rules_returns_empty() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -306,7 +306,7 @@ async fn datalog_combined_with_owl2rl() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -388,7 +388,7 @@ async fn datalog_recursive_ancestor_rule() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -580,7 +580,7 @@ async fn datalog_chains_off_owl_entailments() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -656,7 +656,7 @@ async fn datalog_filter_expression() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -743,7 +743,7 @@ async fn datalog_filter_less_than() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -808,7 +808,7 @@ async fn datalog_query_time_rules() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -858,7 +858,7 @@ async fn datalog_query_time_rules_with_id() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -915,7 +915,7 @@ async fn datalog_query_time_rules_multiple() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -969,7 +969,7 @@ async fn datalog_query_time_rules_with_filter() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 
@@ -1051,7 +1051,7 @@ async fn datalog_query_time_rules_merged_with_db_rules() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let results = normalize_rows(&rows);
 

@@ -153,7 +153,7 @@ impl ServiceOperator {
             ds.find_by_ledger_id(full_ledger_ref)
         } else {
             // No dataset - check if alias matches the current db
-            if ctx.db.ledger_id != full_ledger_ref {
+            if ctx.snapshot.ledger_id != full_ledger_ref {
                 if self.service.silent {
                     // SILENT: return empty result for unknown ledgers
                     return Ok(());
@@ -454,7 +454,7 @@ impl Operator for ServiceOperator {
                                 }
                             } else {
                                 // No dataset - use current db as only service
-                                let ledger_id = &ctx.db.ledger_id;
+                                let ledger_id = &ctx.snapshot.ledger_id;
                                 let endpoint_iri = format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_id);
                                 self.execute_against_ledger(
                                     ctx,

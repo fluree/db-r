@@ -54,7 +54,10 @@ async fn list_container_serialization_test() {
     });
 
     let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&loaded_ledger.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Verify the data was correctly saved and loaded
     assert!(
@@ -121,7 +124,10 @@ async fn list_container_multiple_values_test() {
     });
 
     let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&loaded_ledger.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     assert!(!jsonld.is_null(), "Database should load successfully");
     let thing = &jsonld.as_array().unwrap()[0];
@@ -183,7 +189,10 @@ async fn list_container_with_objects_test() {
     });
 
     let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&loaded_ledger.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     assert!(!jsonld.is_null(), "Database should load successfully");
 

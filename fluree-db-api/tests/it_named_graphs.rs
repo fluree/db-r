@@ -79,7 +79,7 @@ async fn test_trig_named_graph_basic() {
                 .await
                 .expect("query default");
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find Alice in default graph");
             assert_eq!(arr[0], "Alice");
@@ -97,7 +97,7 @@ async fn test_trig_named_graph_basic() {
                 .query_connection(&query)
                 .await
                 .expect("query named graph");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find event in named graph");
             assert_eq!(arr[0], "User login");
@@ -162,7 +162,7 @@ async fn test_trig_multiple_named_graphs() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query users");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             // Should have 2 names (Alice, Bob)
             assert_eq!(arr.len(), 2, "should find 2 users: {:?}", arr);
@@ -180,7 +180,7 @@ async fn test_trig_multiple_named_graphs() {
                 .query_connection(&query)
                 .await
                 .expect("query products");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find product");
             assert_eq!(arr[0], "Widget");
@@ -289,7 +289,7 @@ async fn test_default_graph_isolation() {
                 .query_connection(&query)
                 .await
                 .expect("query default");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(
                 arr.is_empty(),
@@ -310,7 +310,7 @@ async fn test_default_graph_isolation() {
                 .query_connection(&query)
                 .await
                 .expect("query private");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find secret in named graph");
             assert_eq!(arr[0], "confidential");
@@ -379,7 +379,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
                 .query_connection(&query)
                 .await
                 .expect("query default");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find Alice in default graph");
             assert_eq!(arr[0], "Alice");
@@ -397,7 +397,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
                 .query_connection(&query)
                 .await
                 .expect("query txn-meta");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find batch in txn-meta");
             assert_eq!(arr[0], "batch-123");
@@ -412,7 +412,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query audit");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find action in audit graph");
             assert_eq!(arr[0], "user created");
@@ -506,7 +506,7 @@ async fn test_named_graph_update_and_query_current() {
                 .query_connection(&query)
                 .await
                 .expect("query current");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             // Should have 3 items with updated stock
@@ -622,7 +622,7 @@ async fn test_named_graph_time_travel() {
                 .await
                 .expect("query debug");
             let results_debug = results_debug
-                .to_jsonld(&ledger.db)
+                .to_jsonld(&ledger.snapshot)
                 .expect("to_jsonld debug");
             eprintln!(
                 "DEBUG current via fragment: {}",
@@ -642,7 +642,7 @@ async fn test_named_graph_time_travel() {
                 .await
                 .expect("query debug2");
             let results_debug2 = results_debug2
-                .to_jsonld(&ledger.db)
+                .to_jsonld(&ledger.snapshot)
                 .expect("to_jsonld debug2");
             eprintln!(
                 "DEBUG current via structured: {}",
@@ -663,7 +663,7 @@ async fn test_named_graph_time_travel() {
             });
 
             let results = fluree.query_connection(&query_t1).await.expect("query t=1");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             assert_eq!(arr.len(), 2, "should have 2 products at t=1");
@@ -698,7 +698,7 @@ async fn test_named_graph_time_travel() {
             });
 
             let results = fluree.query_connection(&query_t2).await.expect("query t=2");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             eprintln!(
                 "DEBUG query_t2 results: {}",
                 serde_json::to_string_pretty(&results).unwrap()
@@ -736,7 +736,7 @@ async fn test_named_graph_time_travel() {
                 .query_connection(&query_current)
                 .await
                 .expect("query current");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             eprintln!(
                 "DEBUG query_current results: {}",
                 serde_json::to_string_pretty(&results).unwrap()
@@ -831,7 +831,7 @@ async fn test_named_graph_retraction() {
                 .query_connection(&query)
                 .await
                 .expect("query current");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             assert_eq!(
@@ -871,7 +871,7 @@ async fn test_named_graph_retraction() {
             });
 
             let results = fluree.query_connection(&query_t1).await.expect("query t=1");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             assert_eq!(arr.len(), 3, "should have 3 active users at t=1: {:?}", arr);

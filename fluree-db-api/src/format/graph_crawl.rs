@@ -23,9 +23,9 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{RangeMatch, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Tracker};
+use fluree_db_core::{Flake, GraphDbRef, Sid, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -179,7 +179,7 @@ pub fn format(result: &QueryResult, _compactor: &IriCompactor) -> Result<JsonVal
 /// When `policy` is `None`, no filtering is applied (zero overhead).
 pub async fn format_async(
     result: &QueryResult,
-    db: &Db,
+    db: GraphDbRef<'_>,
     compactor: &IriCompactor,
     _config: &FormatterConfig,
     policy: Option<&PolicyContext>,
@@ -189,15 +189,7 @@ pub async fn format_async(
         FormatError::InvalidBinding("Graph crawl format called without graph_select spec".into())
     })?;
 
-    let no_overlay = NoOverlay;
-    let overlay: &dyn OverlayProvider = result
-        .novelty
-        .as_deref()
-        .map(|n| n as &dyn OverlayProvider)
-        .unwrap_or(&no_overlay);
-
-    let formatter =
-        GraphCrawlFormatter::new(db, overlay, compactor, spec, result.t, policy, tracker);
+    let formatter = GraphCrawlFormatter::new(db, compactor, spec, policy, tracker);
 
     // Shared cache across all rows
     let mut cache: HashMap<CacheKey, JsonValue> = HashMap::new();
@@ -297,11 +289,9 @@ pub async fn format_async(
 
 /// Graph crawl formatter with async DB access
 struct GraphCrawlFormatter<'a> {
-    db: &'a Db,
-    overlay: &'a dyn OverlayProvider,
+    db: GraphDbRef<'a>,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
-    to_t: i64,
     /// Optional policy context for access control filtering.
     /// When None, no policy filtering is applied (zero overhead).
     policy: Option<&'a PolicyContext>,
@@ -311,20 +301,16 @@ struct GraphCrawlFormatter<'a> {
 
 impl<'a> GraphCrawlFormatter<'a> {
     fn new(
-        db: &'a Db,
-        overlay: &'a dyn OverlayProvider,
+        db: GraphDbRef<'a>,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,
-        to_t: i64,
         policy: Option<&'a PolicyContext>,
         tracker: Option<&'a Tracker>,
     ) -> Self {
         Self {
             db,
-            overlay,
             compactor,
             spec,
-            to_t,
             policy,
             tracker,
         }
@@ -905,18 +891,17 @@ impl<'a> GraphCrawlFormatter<'a> {
     /// When policy is set, filters flakes according to view policies.
     /// When policy is None, returns all flakes (zero overhead).
     async fn fetch_subject_properties(&self, sid: &Sid) -> Result<Vec<Flake>> {
-        let flakes = range_with_overlay(
-            self.db,
-            self.overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch::subject(sid.clone()),
-            RangeOptions::default().with_to_t(self.to_t),
-        )
-        .await
-        .map_err(|e| {
-            FormatError::InvalidBinding(format!("Failed to fetch subject properties: {}", e))
-        })?;
+        let flakes = self
+            .db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject(sid.clone()),
+            )
+            .await
+            .map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to fetch subject properties: {}", e))
+            })?;
 
         // Policy filtering: only when policy is Some and not root
         // Zero overhead when policy is None (common case)
@@ -935,18 +920,17 @@ impl<'a> GraphCrawlFormatter<'a> {
     /// When policy is set, filters flakes according to view policies.
     /// When policy is None, returns all flakes (zero overhead).
     async fn fetch_reverse_properties(&self, object_sid: &Sid, pred: &Sid) -> Result<Vec<Flake>> {
-        let flakes = range_with_overlay(
-            self.db,
-            self.overlay,
-            IndexType::Post,
-            RangeTest::Eq,
-            RangeMatch::predicate_object(pred.clone(), FlakeValue::Ref(object_sid.clone())),
-            RangeOptions::default().with_to_t(self.to_t),
-        )
-        .await
-        .map_err(|e| {
-            FormatError::InvalidBinding(format!("Failed to fetch reverse properties: {}", e))
-        })?;
+        let flakes = self
+            .db
+            .range(
+                IndexType::Post,
+                RangeTest::Eq,
+                RangeMatch::predicate_object(pred.clone(), FlakeValue::Ref(object_sid.clone())),
+            )
+            .await
+            .map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to fetch reverse properties: {}", e))
+            })?;
 
         // Policy filtering: only when policy is Some and not root
         // Zero overhead when policy is None (common case)

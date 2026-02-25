@@ -182,7 +182,7 @@ async fn s3_testcontainers_basic_test() {
         .query(&ledger1, &q)
         .await
         .expect("query")
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -196,7 +196,7 @@ async fn s3_testcontainers_basic_test() {
         .query(&reloaded, &q)
         .await
         .expect("query reload")
-        .to_jsonld_async(&reloaded.db)
+        .to_jsonld_async(reloaded.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(results, reload_results);

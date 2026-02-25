@@ -16,8 +16,8 @@ use std::collections::HashSet;
 use chrono::{TimeZone, Utc};
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::{
-    range_bounded_with_overlay, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
-    RangeMatch, RangeOptions, RangeTest, Sid,
+    range_bounded_with_overlay, range_with_overlay, Flake, FlakeValue, IndexType, LedgerSnapshot,
+    ObjectBounds, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::db::TIME as LEDGER_TIME;
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB};
@@ -49,7 +49,7 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `snapshot` - The database snapshot to query
 /// * `overlay` - Optional overlay provider (novelty) for uncommitted data
 /// * `target_epoch_ms` - Target timestamp in epoch milliseconds
 /// * `current_t` - Current head transaction number (used as fallback)
@@ -58,7 +58,7 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 ///
 /// Returns an error if the target timestamp is before the earliest commit.
 pub async fn datetime_to_t<O>(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: Option<&O>,
     target_epoch_ms: i64,
     current_t: i64,
@@ -83,7 +83,8 @@ where
 
     let earliest_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
-            db,
+            snapshot,
+            0,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -93,7 +94,8 @@ where
         .await?
     } else {
         range_with_overlay(
-            db,
+            snapshot,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -139,7 +141,8 @@ where
 
     let after_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
-            db,
+            snapshot,
+            0,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -149,7 +152,8 @@ where
         .await?
     } else {
         range_with_overlay(
-            db,
+            snapshot,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -194,7 +198,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `snapshot` - The database snapshot to query
 /// * `overlay` - Optional overlay provider (novelty) for uncommitted data
 /// * `commit_prefix` - Commit CID prefix to match (hex digest, with or without standard prefixes)
 /// * `current_t` - Current head transaction number
@@ -205,7 +209,7 @@ where
 /// - If no commit matches the prefix
 /// - If multiple commits match (ambiguous prefix)
 pub async fn commit_to_t<O>(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: Option<&O>,
     commit_prefix: &str,
     current_t: i64,
@@ -254,10 +258,20 @@ where
         .with_flake_limit(32);
 
     let flakes = if let Some(ovl) = overlay {
-        range_bounded_with_overlay(db, ovl, IndexType::Spot, start_bound, end_bound, opts).await?
+        range_bounded_with_overlay(
+            snapshot,
+            0,
+            ovl,
+            IndexType::Spot,
+            start_bound,
+            end_bound,
+            opts,
+        )
+        .await?
     } else {
         range_bounded_with_overlay(
-            db,
+            snapshot,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Spot,
             start_bound,

@@ -11,8 +11,8 @@ use crate::{
     OverlayProvider, PolicyContext, QueryResult, Result, Storage, Tracker, TrackingOptions,
     TrackingTally, VarRegistry,
 };
-use fluree_db_indexer::run_index::BinaryIndexStore;
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 impl<S, N> Fluree<S, N>
 where
@@ -21,8 +21,11 @@ where
 {
     /// Execute a JSON-LD query against a ledger
     pub async fn query(&self, ledger: &LedgerState, query_json: &JsonValue) -> Result<QueryResult> {
-        let (vars, parsed) =
-            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) = parse_jsonld_query(
+            query_json,
+            &ledger.snapshot,
+            ledger.default_context.as_ref(),
+        )?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = tracker_for_limits(query_json);
 
@@ -30,10 +33,11 @@ where
             .execute_query_internal(ledger, &vars, &executable, &tracker)
             .await?;
 
-        let binary_store = ledger
+        let binary_graph = ledger
             .binary_store
             .as_ref()
-            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())
+            .map(|store| BinaryGraphView::new(store, 0));
 
         Ok(build_query_result(
             vars,
@@ -41,7 +45,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
-            binary_store,
+            binary_graph,
         ))
     }
 
@@ -62,10 +66,11 @@ where
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
-        let prepared =
-            prepare_execution(&ledger.db, ledger.novelty.as_ref(), executable, ledger.t()).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let prepared = prepare_execution(db, executable).await?;
 
         let r2rml_provider = NoOpR2rmlProvider::new();
+        let spatial_map = binary_store.as_ref().map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -76,29 +81,24 @@ where
             } else {
                 None
             },
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            db: &ledger.db,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
-        let batches = execute_prepared(source, vars, prepared, config).await?;
+        let batches = execute_prepared(db, vars, prepared, config).await?;
 
         Ok(batches)
     }
 
     /// Explain a JSON-LD query (query optimization plan).
     pub async fn explain(&self, ledger: &LedgerState, query_json: &JsonValue) -> Result<JsonValue> {
-        crate::explain::explain_jsonld(&ledger.db, query_json).await
+        crate::explain::explain_jsonld(&ledger.snapshot, query_json).await
     }
 
     /// Explain a SPARQL query (query optimization plan).
     pub async fn explain_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<JsonValue> {
-        crate::explain::explain_sparql(&ledger.db, sparql).await
+        crate::explain::explain_sparql(&ledger.snapshot, sparql).await
     }
 
     /// Execute a JSON-LD query and return formatted JSON-LD output.
@@ -108,7 +108,7 @@ where
         query_json: &JsonValue,
     ) -> Result<JsonValue> {
         let result = self.query(ledger, query_json).await?;
-        Ok(result.to_jsonld_async(&ledger.db).await?)
+        Ok(result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?)
     }
 
     /// Clojure-parity alias: tracked query entrypoint for a loaded ledger.
@@ -130,22 +130,21 @@ where
     {
         let tracker = tracker_from_query_json(query_json);
 
-        let (vars, parsed) =
-            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref()).map_err(
-                |e| crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally()),
-            )?;
+        let (vars, parsed) = parse_jsonld_query(
+            query_json,
+            &ledger.snapshot,
+            ledger.default_context.as_ref(),
+        )
+        .map_err(|e| {
+            crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+        })?;
 
         let executable = prepare_for_execution(&parsed);
         let r2rml_provider = NoOpR2rmlProvider::new();
 
-        let source = DataSource {
-            db: &ledger.db,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
+        let db = ledger.as_graph_db_ref(0);
         let batches = crate::execute_with_r2rml(
-            source,
+            db,
             &vars,
             &executable,
             &tracker,
@@ -171,7 +170,7 @@ where
         );
 
         let result_json = query_result
-            .to_jsonld_async_tracked(&ledger.db, &tracker)
+            .to_jsonld_async_tracked(ledger.as_graph_db_ref(0), &tracker)
             .await
             .map_err(|e| {
                 crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -191,7 +190,9 @@ where
         config: &FormatterConfig,
     ) -> Result<JsonValue> {
         let result = self.query(ledger, query_json).await?;
-        Ok(result.format_async(&ledger.db, config).await?)
+        Ok(result
+            .format_async(ledger.as_graph_db_ref(0), config)
+            .await?)
     }
 
     /// Execute a JSON-LD query with policy enforcement
@@ -201,18 +202,15 @@ where
         query_json: &JsonValue,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
-        let (vars, parsed) =
-            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) = parse_jsonld_query(
+            query_json,
+            &ledger.snapshot,
+            ledger.default_context.as_ref(),
+        )?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
-        let source = DataSource {
-            db: &ledger.db,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
-        let batches =
-            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_query_result(
             vars,
@@ -232,17 +230,11 @@ where
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
         let (vars, parsed) =
-            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+            parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
-        let source = DataSource {
-            db: &ledger.db,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
-        let batches =
-            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_sparql_result(
             vars,
@@ -261,22 +253,16 @@ where
         vars: &VarRegistry,
         pattern: crate::TriplePattern,
     ) -> Result<Vec<crate::Batch>> {
-        let batches = crate::execute_pattern_with_overlay_at(
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            vars,
-            pattern,
-            ledger.t(),
-            None,
-        )
-        .await?;
+        let batches =
+            crate::execute_pattern_with_overlay_at(ledger.as_graph_db_ref(0), vars, pattern, None)
+                .await?;
         Ok(batches)
     }
 
     /// Execute a SPARQL query against a ledger
     pub async fn query_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<QueryResult> {
         let (vars, parsed) =
-            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+            parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = Tracker::disabled();
 
@@ -303,7 +289,7 @@ where
     ) -> Result<(QueryResult, Option<TrackingTally>)> {
         let tracker = Tracker::new(options);
         let (vars, parsed) =
-            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+            parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let batches = self
@@ -331,44 +317,21 @@ where
         view: &HistoricalLedgerView,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_jsonld_query(query_json, &view.db, None)?;
+        let (vars, parsed) = parse_jsonld_query(query_json, &view.snapshot, None)?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let r2rml_provider = NoOpR2rmlProvider::new();
         let tracker = Tracker::disabled();
 
-        let batches = if let Some(novelty) = view.overlay() {
-            let source = DataSource {
-                db: &view.db,
-                overlay: novelty.as_ref(),
-                to_t: view.to_t(),
-                from_t: None,
-            };
-            crate::execute_with_r2rml(
-                source,
-                &vars,
-                &executable,
-                &tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
-            .await?
-        } else {
-            let source = DataSource {
-                db: &view.db,
-                overlay: &fluree_db_core::NoOverlay,
-                to_t: view.to_t(),
-                from_t: None,
-            };
-            crate::execute_with_r2rml(
-                source,
-                &vars,
-                &executable,
-                &tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
-            .await?
-        };
+        let db = view.as_graph_db_ref(0);
+        let batches = crate::execute_with_r2rml(
+            db,
+            &vars,
+            &executable,
+            &tracker,
+            &r2rml_provider,
+            &r2rml_provider,
+        )
+        .await?;
 
         Ok(build_query_result(
             vars,

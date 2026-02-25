@@ -2309,6 +2309,7 @@ dependencies = [
  "criterion",
  "dirs 5.0.1",
  "ed25519-dalek",
+ "fluree-db-binary-index",
  "fluree-db-connection",
  "fluree-db-core",
  "fluree-db-credential",
@@ -2355,6 +2356,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluree-db-binary-index"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal 0.4.10",
+ "chrono",
+ "fluree-db-core",
+ "fluree-db-spatial",
+ "hex",
+ "memmap2",
+ "moka",
+ "num-bigint",
+ "num-traits",
+ "once_cell",
+ "parking_lot",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
 name = "fluree-db-cli"
 version = "0.1.0"
 dependencies = [
@@ -2367,9 +2394,9 @@ dependencies = [
  "colored",
  "comfy-table",
  "fluree-db-api",
+ "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-credential",
- "fluree-db-indexer",
  "fluree-db-nameservice",
  "fluree-db-nameservice-sync",
  "fluree-db-novelty",
@@ -2523,6 +2550,7 @@ dependencies = [
  "async-trait",
  "bigdecimal 0.4.10",
  "chrono",
+ "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-ledger",
  "fluree-db-nameservice",
@@ -2538,10 +2566,12 @@ dependencies = [
  "num-traits",
  "once_cell",
  "parking_lot",
+ "rayon",
  "rustc-hash",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2675,6 +2705,7 @@ dependencies = [
  "bigdecimal 0.4.10",
  "chrono",
  "criterion",
+ "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-indexer",
  "fluree-db-policy",
@@ -2762,10 +2793,10 @@ dependencies = [
  "dashmap",
  "ed25519-dalek",
  "fluree-db-api",
+ "fluree-db-binary-index",
  "fluree-db-connection",
  "fluree-db-core",
  "fluree-db-credential",
- "fluree-db-indexer",
  "fluree-db-nameservice",
  "fluree-db-nameservice-sync",
  "fluree-db-novelty",
@@ -2902,6 +2933,7 @@ dependencies = [
  "async-trait",
  "bigdecimal 0.4.10",
  "chrono",
+ "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-indexer",
  "fluree-db-ledger",
