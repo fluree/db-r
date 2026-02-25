@@ -116,55 +116,115 @@ struct PendingFilter {
     expr: Expression,
 }
 
-/// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
+/// Partition pending filters into those ready for inline evaluation and those still waiting.
 ///
-/// Returns the updated operator and the remaining pending items.
-fn apply_ready_binds_and_filters(
+/// Filters consumed by pushdown are silently dropped. Filters whose required
+/// variables are all in `bound` are returned as the first element (ready);
+/// the rest are returned as the second element (still pending).
+fn partition_ready_filters(
+    filters: Vec<PendingFilter>,
+    bound: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<Expression>, Vec<PendingFilter>) {
+    let mut ready = Vec::new();
+    let mut pending = Vec::new();
+    for pf in filters {
+        if filter_idxs_consumed.contains(&pf.original_idx) {
+            continue;
+        }
+        if pf.required_vars.is_subset(bound) {
+            ready.push(pf.expr);
+        } else {
+            pending.push(pf);
+        }
+    }
+    (ready, pending)
+}
+
+/// Apply eligible BINDs whose required variables are all bound.
+///
+/// Each ready BIND is fused with any filters that become ready once the BIND's
+/// target variable enters `bound`.  Returns the updated operator, any BINDs
+/// whose dependencies are not yet satisfied, and the remaining pending filters.
+fn apply_eligible_binds(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<PendingBind>,
-    pending_filters: Vec<PendingFilter>,
+    mut pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
     let mut remaining_binds = Vec::new();
-    let mut remaining_filters = Vec::new();
 
-    // Apply ready BINDs
     for pending in pending_binds {
         if pending.required_vars.is_subset(bound) {
-            child = Box::new(BindOperator::new(child, pending.target_var, pending.expr));
             bound.insert(pending.target_var);
+
+            let (bind_filters, still_pending) =
+                partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
+            pending_filters = still_pending;
+
+            child = Box::new(BindOperator::new(
+                child,
+                pending.target_var,
+                pending.expr,
+                bind_filters,
+            ));
         } else {
             remaining_binds.push(pending);
         }
     }
 
-    // Apply ready FILTERs (skip those consumed by pushdown)
-    for pending in pending_filters {
-        if filter_idxs_consumed.contains(&pending.original_idx) {
-            continue;
-        }
-        if pending.required_vars.is_subset(bound) {
-            child = Box::new(FilterOperator::new(child, pending.expr));
-        } else {
-            remaining_filters.push(pending);
-        }
+    (child, remaining_binds, pending_filters)
+}
+
+/// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
+///
+/// Returns the updated operator and the remaining pending items.
+fn apply_deferred_patterns(
+    child: BoxedOperator,
+    bound: &mut HashSet<VarId>,
+    pending_binds: Vec<PendingBind>,
+    pending_filters: Vec<PendingFilter>,
+    filter_idxs_consumed: &[usize],
+) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
+    let (mut child, remaining_binds, pending_filters) = apply_eligible_binds(
+        child,
+        bound,
+        pending_binds,
+        pending_filters,
+        filter_idxs_consumed,
+    );
+
+    let (ready, remaining_filters) =
+        partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
+    for expr in ready {
+        child = Box::new(FilterOperator::new(child, expr));
     }
 
     (child, remaining_binds, remaining_filters)
 }
 
-/// Apply all remaining BINDs and FILTERs (assumes all vars are now bound).
+/// Apply all remaining BINDs and FILTERs at the end of a block.
+///
+/// Filters are fused into each BindOperator when the BIND's target variable
+/// is the last dependency the filter was waiting on.  Any filters still
+/// pending after all BINDs are applied as standalone FilterOperators.
 fn apply_all_remaining(
-    mut child: BoxedOperator,
+    child: BoxedOperator,
     pending_binds: Vec<PendingBind>,
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
-    for pending in pending_binds {
-        child = Box::new(BindOperator::new(child, pending.target_var, pending.expr));
-    }
-    for pending in pending_filters {
+    let mut bound: HashSet<VarId> = child.schema().iter().copied().collect();
+
+    let (mut child, _, remaining_filters) = apply_eligible_binds(
+        child,
+        &mut bound,
+        pending_binds,
+        pending_filters,
+        filter_idxs_consumed,
+    );
+    for pending in remaining_filters {
         if !filter_idxs_consumed.contains(&pending.original_idx) {
             child = Box::new(FilterOperator::new(child, pending.expr));
         }
@@ -355,7 +415,12 @@ pub fn build_where_operators_seeded(
                     match &patterns[start] {
                         Pattern::Bind { var, expr } => {
                             let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(BindOperator::new(child, *var, expr.clone())));
+                            operator = Some(Box::new(BindOperator::new(
+                                child,
+                                *var,
+                                expr.clone(),
+                                vec![],
+                            )));
                             i = start + 1;
                             continue;
                         }
@@ -497,7 +562,7 @@ pub fn build_where_operators_seeded(
                     // Apply any BINDs/FILTERs that are ready after property join + VALUES.
                     bound = bound_vars_from_operator(&operator);
                     if let Some(child) = operator.take() {
-                        let (child, _, _) = apply_ready_binds_and_filters(
+                        let (child, _, _) = apply_deferred_patterns(
                             child,
                             &mut bound,
                             pending_binds,
@@ -556,7 +621,7 @@ pub fn build_where_operators_seeded(
                         // Filters have already been extracted above, so only binds
                         // remain to be applied here.
                         if let Some(child) = operator.take() {
-                            let (child, new_binds, new_filters) = apply_ready_binds_and_filters(
+                            let (child, new_binds, new_filters) = apply_deferred_patterns(
                                 child,
                                 &mut bound,
                                 pending_binds,
@@ -1584,5 +1649,39 @@ mod tests {
         let schema = op.schema();
         assert!(schema.contains(&VarId(0)));
         assert!(schema.contains(&VarId(1)));
+    }
+
+    #[test]
+    fn test_bind_with_post_filter_builds_successfully() {
+        // ?s :age ?x . BIND(?x + 10 AS ?y) . FILTER(?y > 25)
+        // The filter depends on ?y which is the BIND output.
+        // It should be fused into the BindOperator.
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
+            Pattern::Bind {
+                var: VarId(2),
+                expr: Expression::add(
+                    Expression::Var(VarId(1)),
+                    Expression::Const(FilterValue::Long(10)),
+                ),
+            },
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(2)),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "BIND + post-BIND FILTER should build: {:?}",
+            result.err()
+        );
+
+        let op = result.unwrap();
+        let schema = op.schema();
+        assert!(schema.contains(&VarId(0)), "subject var present");
+        assert!(schema.contains(&VarId(1)), "?x var present");
+        assert!(schema.contains(&VarId(2)), "?y (BIND output) var present");
     }
 }

@@ -16,6 +16,7 @@
 
 # Claude Code — track commands/ (team skills) but not local settings
 .claude/settings.local.json
+.claude/dev-docs/
 
 # Fluree data
 .fluree/

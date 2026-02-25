@@ -83,6 +83,8 @@ struct NoveltyDocEntry {
 
 #[derive(Clone)]
 struct NoveltyCacheKey {
+    /// Hash of the ledger ID — discriminates across ledgers sharing the process.
+    ledger_id_hash: u64,
     epoch: u64,
     to_t: i64,
     g_id: fluree_db_core::GraphId,
@@ -92,7 +94,8 @@ struct NoveltyCacheKey {
 
 impl PartialEq for NoveltyCacheKey {
     fn eq(&self, other: &Self) -> bool {
-        self.epoch == other.epoch
+        self.ledger_id_hash == other.ledger_id_hash
+            && self.epoch == other.epoch
             && self.to_t == other.to_t
             && self.g_id == other.g_id
             && self.p_id == other.p_id
@@ -103,6 +106,7 @@ impl Eq for NoveltyCacheKey {}
 
 impl Hash for NoveltyCacheKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ledger_id_hash.hash(state);
         self.epoch.hash(state);
         self.to_t.hash(state);
         self.g_id.hash(state);
@@ -275,7 +279,15 @@ fn get_or_build_delta(
     let pred_iri = binary_store.resolve_predicate_iri(p_id)?;
     let target_p_sid = binary_store.encode_iri(pred_iri);
 
+    // Hash the ledger_id to discriminate across ledgers sharing the process cache.
+    let ledger_id_hash = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ctx.snapshot.ledger_id.hash(&mut h);
+        h.finish()
+    };
+
     let key = NoveltyCacheKey {
+        ledger_id_hash,
         epoch,
         to_t: ctx.to_t,
         g_id,
