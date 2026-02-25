@@ -277,6 +277,10 @@ where
             .binary_store
             .as_ref()
             .map(|s| s.spatial_provider_map());
+        let fulltext_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
@@ -290,6 +294,7 @@ where
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
+            fulltext_providers: fulltext_map.as_ref(),
             history_mode,
             from_t,
             strict_bind_errors: true,
@@ -331,6 +336,10 @@ where
             .binary_store
             .as_ref()
             .map(|s| s.spatial_provider_map());
+        let fulltext_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -340,6 +349,7 @@ where
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
+            fulltext_providers: fulltext_map.as_ref(),
             history_mode,
             from_t,
             strict_bind_errors: true,

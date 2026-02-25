@@ -1840,6 +1840,57 @@ async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger 
         .ledger
 }
 
+/// STR() on a custom-namespace predicate variable must return the full IRI,
+/// not the internal `{code}:{name}` form.
+#[tokio::test]
+async fn sparql_str_expands_custom_namespace_predicate() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_custom_ns(&fluree, "custom_ns:main").await;
+
+    // Query all predicates for ex:item1 and apply STR() to the predicate variable
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (STR(?p) AS ?predicate)
+        WHERE {
+            ex:item1 ?p ?o .
+        }
+    "#;
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("STR() query should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows_json = normalize_rows(&jsonld);
+    let rows: Vec<String> = rows_json
+        .iter()
+        .map(|v| serde_json::to_string(v).unwrap())
+        .collect();
+
+    // STR(?p) must produce full IRIs, never internal code:name format like "21:packageType"
+    for row in &rows {
+        assert!(
+            !row.contains("\"21:") && !row.contains("\"20:"),
+            "STR() returned internal namespace code form: {}",
+            row
+        );
+    }
+    // Verify the custom namespace predicates are present as full IRIs
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("https://taxo.cbcrc.ca/ns/packageType")),
+        "Expected cust:packageType as full IRI in STR() output, got: {:?}",
+        rows
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("https://taxo.cbcrc.ca/ns/category")),
+        "Expected cust:category as full IRI in STR() output, got: {:?}",
+        rows
+    );
+}
+
 /// SPARQL queries using full IRI predicates (angle-bracket syntax) must match
 /// data stored under custom namespace codes.
 #[tokio::test]

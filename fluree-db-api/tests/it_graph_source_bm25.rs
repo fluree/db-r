@@ -78,7 +78,7 @@ async fn bm25_search_returns_scored_results() {
         .unwrap();
 
     // Analyze query and score
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let query_terms = analyzer.analyze_to_strings("rust programming");
     let term_refs: Vec<&str> = query_terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
@@ -343,7 +343,7 @@ async fn bm25_recreate_after_drop() {
         .load_bm25_index(&created.graph_source_id)
         .await
         .unwrap();
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("original");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
@@ -448,7 +448,7 @@ async fn bm25_federated_query_via_provider() {
         .expect("provider should load BM25 index");
 
     // Test 2: Search for "rust programming" returns scored results
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust programming");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
@@ -566,7 +566,7 @@ async fn bm25_file_backed_storage() {
         .expect("load index");
     assert_eq!(idx.num_docs(), 3, "loaded index should have 3 docs");
 
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
@@ -710,7 +710,7 @@ async fn bm25_query_connection_with_idx_pattern() {
     assert_eq!(idx.num_docs(), 3, "index should have 3 docs");
 
     // Test 4: Direct search via provider (validates BM25 scorer)
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
@@ -761,7 +761,7 @@ async fn bm25_federated_query_with_aggregation() {
         .load_bm25_index(&created.graph_source_id)
         .await
         .unwrap();
-    let analyzer = Analyzer::clojure_parity_english();
+    let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);

@@ -5,50 +5,52 @@ Insert data into a ledger.
 ## Usage
 
 ```bash
-fluree insert [LEDGER] [FILE] [OPTIONS]
+fluree insert [LEDGER] [DATA] [OPTIONS]
 ```
 
 ## Arguments
 
 | Arguments | Behavior |
 |-----------|----------|
-| (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger ID + stdin/-e |
-| `<ledger> <file>` | Specified ledger + file |
+| (none) | Active ledger; provide data via `-e`, `-f`, or stdin |
+| `<arg>` | Auto-detected: if it looks like data (JSON, Turtle), uses it inline with the active ledger; if it's an existing file, reads from it; otherwise treats it as a ledger name |
+| `<ledger> <data>` | Specified ledger + inline data |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `-e, --expr <EXPR>` | Inline data expression |
+| `-e, --expr <EXPR>` | Inline data expression (alternative to positional) |
+| `-f, --file <FILE>` | Read data from a file |
 | `-m, --message <MSG>` | Commit message |
 | `--format <FORMAT>` | Data format: `turtle` or `jsonld` (auto-detected if omitted) |
 
 ## Description
 
 Inserts RDF data into a ledger. Supports both Turtle and JSON-LD formats. Data can come from:
-- A file (positional argument)
-- Inline expression (`-e`)
-- Standard input (pipe or interactive)
+- A positional argument (inline data)
+- `-e` flag (inline expression)
+- `-f` flag (file)
+- Standard input (pipe)
 
 ## Examples
 
 ```bash
-# Insert from file
-fluree insert data.ttl
-
 # Insert inline Turtle
-fluree insert -e '@prefix ex: <http://example.org/> .
+fluree insert '@prefix ex: <http://example.org/> .
 ex:alice a ex:Person ; ex:name "Alice" .'
 
 # Insert inline JSON-LD
-fluree insert -e '{"@id": "ex:bob", "ex:name": "Bob"}'
+fluree insert '{"@id": "ex:bob", "ex:name": "Bob"}'
+
+# Insert from file
+fluree insert -f data.ttl
 
 # Insert with commit message
-fluree insert data.ttl -m "Added initial users"
+fluree insert -f data.ttl -m "Added initial users"
 
 # Insert into specific ledger
-fluree insert production data.ttl
+fluree insert production '<http://example.org/x> a <http://example.org/Thing> .'
 
 # Pipe from stdin
 cat data.ttl | fluree insert

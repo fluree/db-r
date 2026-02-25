@@ -24,7 +24,7 @@ pub mod text;
 
 // Re-export commonly used types
 pub use analyzer::{
-    Analyzer, ClojureParityTokenizer, SnowballStemmerFilter, StopwordFilter, Token,
+    Analyzer, DefaultEnglishTokenizer, SnowballStemmerFilter, StopwordFilter, Token,
 };
 pub use builder::{
     Bm25IndexBuilder, BuilderError, IncrementalUpdateResult, IncrementalUpdater,

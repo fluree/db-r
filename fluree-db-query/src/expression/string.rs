@@ -22,7 +22,15 @@ pub fn eval_str<R: RowAccess>(
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "STR")?;
     let val = args[0].eval_to_comparable(row, ctx)?;
-    Ok(val.and_then(|v| v.into_string_value()))
+    Ok(val.and_then(|v| match &v {
+        ComparableValue::Sid(..) => {
+            // Expand SID to full IRI using namespace codes from execution context.
+            // Per W3C SPARQL spec, STR() on an IRI must return the full IRI string.
+            let namespaces = ctx.map(|c| c.snapshot.namespaces());
+            v.into_string_value_with_namespaces(namespaces)
+        }
+        _ => v.into_string_value(),
+    }))
 }
 
 pub fn eval_lang<R: RowAccess>(

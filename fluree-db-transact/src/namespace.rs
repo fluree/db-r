@@ -528,6 +528,39 @@ impl SharedNamespaceAllocator {
         self.inner.read().names.get(&code).cloned()
     }
 
+    /// Synchronize codes from a `NamespaceRegistry` into this allocator.
+    ///
+    /// Used after serial import paths where namespace codes were allocated
+    /// in the registry but not in the shared allocator. Preserves exact code
+    /// assignments from the registry.
+    pub fn sync_from_registry(&self, reg: &NamespaceRegistry) {
+        let mut inner = self.inner.write();
+        for (prefix, &code) in &reg.codes {
+            if let Some(&existing_code) = inner.codes.get(prefix.as_str()) {
+                debug_assert_eq!(
+                    existing_code, code,
+                    "namespace code conflict for prefix {:?}: shared has {}, registry has {}",
+                    prefix, existing_code, code
+                );
+            } else if let Some(existing_prefix) = inner.names.get(&code) {
+                debug_assert_eq!(
+                    existing_prefix, prefix,
+                    "namespace code {} conflict: shared has {:?}, registry has {:?}",
+                    code, existing_prefix, prefix
+                );
+            } else {
+                inner.codes.insert(prefix.clone(), code);
+                inner.names.insert(code, prefix.clone());
+                if !prefix.is_empty() {
+                    inner.trie.insert(prefix, code);
+                }
+                if code >= inner.next_code {
+                    inner.next_code = code + 1;
+                }
+            }
+        }
+    }
+
     /// Take a snapshot of the current state for worker initialization.
     ///
     /// Returns `(codes, trie, next_code)`. Workers use the trie for local

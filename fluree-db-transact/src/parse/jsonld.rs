@@ -793,6 +793,9 @@ fn parse_expanded_objects(
                             vars,
                             ns_registry,
                             object_var_parsing,
+                            templates,
+                            graph_ids,
+                            blank_counter,
                         )?;
                         results.extend(list_items);
                         continue;
@@ -883,7 +886,16 @@ fn parse_expanded_value(
 
             // Check for @list (ordered collection)
             if let Some(list_val) = obj.get("@list") {
-                return parse_list_value(list_val, context, vars, ns_registry, object_var_parsing);
+                return parse_list_value(
+                    list_val,
+                    context,
+                    vars,
+                    ns_registry,
+                    object_var_parsing,
+                    templates,
+                    graph_ids,
+                    blank_counter,
+                );
             }
 
             if let Some(var_val) = obj.get("@variable") {
@@ -1019,6 +1031,8 @@ fn parse_literal_value_with_meta(
             // through the standard vector coercion path.
             let resolved_type = if type_iri == "@vector" {
                 fluree_vocab::fluree::EMBEDDING_VECTOR
+            } else if type_iri == "@fulltext" {
+                fluree_vocab::fluree::FULL_TEXT
             } else {
                 type_iri
             };
@@ -1159,12 +1173,16 @@ fn convert_typed_value_with_meta(
 /// This function only handles the fallback case and returns the first element.
 /// Empty lists produce an error here since we can't return "no value" - the proper
 /// empty list handling happens in `parse_expanded_objects` via `parse_list_values`.
+#[allow(clippy::too_many_arguments)]
 fn parse_list_value(
     list_val: &Value,
     context: &ParsedContext,
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    templates: &mut Vec<TripleTemplate>,
+    graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     // @list should contain an array
     let items = match list_val {
@@ -1189,18 +1207,31 @@ fn parse_list_value(
 
     // Parse the first element with index 0
     let first = &items[0];
-    let mut parsed = parse_single_list_item(first, context, vars, ns_registry, object_var_parsing)?;
+    let mut parsed = parse_single_list_item(
+        first,
+        context,
+        vars,
+        ns_registry,
+        object_var_parsing,
+        templates,
+        graph_ids,
+        blank_counter,
+    )?;
     parsed.list_index = Some(0);
     Ok(parsed)
 }
 
 /// Parse list items from a @list value, returning all elements with their indices
+#[allow(clippy::too_many_arguments)]
 fn parse_list_values(
     list_val: &Value,
     context: &ParsedContext,
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    templates: &mut Vec<TripleTemplate>,
+    graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     // @list should contain an array
     let items = match list_val {
@@ -1220,8 +1251,16 @@ fn parse_list_values(
     // Parse each item with its index
     let mut results = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let mut parsed =
-            parse_single_list_item(item, context, vars, ns_registry, object_var_parsing)?;
+        let mut parsed = parse_single_list_item(
+            item,
+            context,
+            vars,
+            ns_registry,
+            object_var_parsing,
+            templates,
+            graph_ids,
+            blank_counter,
+        )?;
         parsed.list_index = Some(index as i32);
         results.push(parsed);
     }
@@ -1230,43 +1269,40 @@ fn parse_list_values(
 }
 
 /// Parse a single item from a @list array
+///
+/// For `Value::Object` items, delegates to `parse_expanded_value` which already
+/// handles all object shapes: `@id` refs, `@value` literals, `@list`, `@variable`,
+/// and blank node objects (nested objects without JSON-LD keywords).
+#[allow(clippy::too_many_arguments)]
 fn parse_single_list_item(
     item: &Value,
     context: &ParsedContext,
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    templates: &mut Vec<TripleTemplate>,
+    graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match item {
         Value::Object(obj) => {
-            // Check for @id (reference)
-            if let Some(id) = obj.get("@id") {
-                return Ok(ParsedValue::new(parse_expanded_id(id, vars, ns_registry)?));
-            }
-
-            // Check for @value (literal)
-            if let Some(val) = obj.get("@value") {
-                return parse_literal_value_with_meta(
-                    val,
-                    obj,
-                    context,
-                    vars,
-                    ns_registry,
-                    object_var_parsing,
-                );
-            }
-
-            // Nested @list not supported
-            if obj.get("@list").is_some() {
+            // Nested @list inside a list item is not supported (would silently
+            // lose data because parse_list_value only returns the first element).
+            if obj.contains_key("@list") {
                 return Err(TransactError::Parse(
                     "Nested @list not supported".to_string(),
                 ));
             }
-
-            Err(TransactError::Parse(format!(
-                "Unsupported list item: {:?}",
-                item
-            )))
+            parse_expanded_value(
+                item,
+                context,
+                vars,
+                ns_registry,
+                templates,
+                object_var_parsing,
+                graph_ids,
+                blank_counter,
+            )
         }
         // Direct values
         Value::String(s) => {
@@ -1529,8 +1565,20 @@ mod tests {
 
         // Parse a @list with three string items
         let list_val = json!(["a", "b", "c"]);
-        let results =
-            parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let mut templates = Vec::new();
+        let mut graph_ids = GraphIdAssigner::new();
+        let mut blank_counter = 0usize;
+        let results = parse_list_values(
+            &list_val,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            true,
+            &mut templates,
+            &mut graph_ids,
+            &mut blank_counter,
+        )
+        .unwrap();
 
         assert_eq!(results.len(), 3);
 
@@ -1562,8 +1610,20 @@ mod tests {
 
         // Empty @list produces zero ParsedValues
         let list_val = json!([]);
-        let results =
-            parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let mut templates = Vec::new();
+        let mut graph_ids = GraphIdAssigner::new();
+        let mut blank_counter = 0usize;
+        let results = parse_list_values(
+            &list_val,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            true,
+            &mut templates,
+            &mut graph_ids,
+            &mut blank_counter,
+        )
+        .unwrap();
         assert!(results.is_empty());
     }
 

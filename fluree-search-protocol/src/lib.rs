@@ -49,12 +49,12 @@ pub use response::{SearchHit, SearchResponse};
 /// Protocol version string included in all requests and responses.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
-/// BM25 analyzer version for parity verification between embedded and remote.
+/// BM25 analyzer version for compatibility verification between embedded and remote.
 ///
 /// Both embedded and remote search must use identical analyzer configuration
-/// to ensure score parity. This version string is included in the capabilities
-/// response so clients can verify compatibility.
-pub const BM25_ANALYZER_VERSION: &str = "clojure_parity_english_v1";
+/// to ensure comparable scoring. This version string is included in the
+/// capabilities response so clients can verify compatibility.
+pub const BM25_ANALYZER_VERSION: &str = "english_default_v1";
 
 /// Default limit for search requests if not specified.
 pub const DEFAULT_LIMIT: usize = 10;

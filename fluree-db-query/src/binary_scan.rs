@@ -566,6 +566,7 @@ impl BinaryScanOperator {
                 lang,
                 t: Some(t),
                 op: None,
+                p_id: Some(p_id),
             },
         };
 
@@ -842,9 +843,15 @@ impl Operator for BinaryScanOperator {
                                 // Create bounds for this specific subject
                                 use fluree_db_binary_index::RunRecord;
                                 use fluree_db_core::subject_id::SubjectId;
+                                // Use DictOverlay (not store.sid_to_p_id) so that
+                                // predicates introduced after import get resolved
+                                // via ephemeral p_id allocation. store.sid_to_p_id
+                                // only checks the persisted index, returning None
+                                // for novelty-only predicates, which caused the
+                                // bounds to span p_id 0..u32::MAX (wildcard).
                                 let p_id = p_sid
                                     .as_ref()
-                                    .and_then(|p| self.graph_view.store().sid_to_p_id(p));
+                                    .map(|p| dict_ov.assign_predicate_id_from_sid(p));
 
                                 let (min_o_kind, min_o_key, max_o_kind, max_o_key) =
                                     if let Some(val) = &o_val {
@@ -1811,6 +1818,7 @@ impl RangeScanOperator {
                     // outside history mode when explicitly requested via `@t`.
                     t: Some(f.t),
                     op: if history_mode { Some(f.op) } else { None },
+                    p_id: None,
                 },
             };
             row.push(binding);

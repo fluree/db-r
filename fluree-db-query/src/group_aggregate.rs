@@ -119,6 +119,7 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
                         lang: meta.and_then(|m| m.lang.map(Arc::from)),
                         t: Some(*t),
                         op: None,
+                        p_id: Some(*p_id),
                     }
                 }
                 Err(_) => binding.clone(), // Decode error - keep encoded

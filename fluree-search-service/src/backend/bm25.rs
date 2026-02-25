@@ -108,7 +108,7 @@ impl<L: IndexLoader> Bm25Backend<L> {
                 Duration::from_secs(config.cache_ttl_secs),
             ),
             load_semaphore: Semaphore::new(config.max_concurrent_loads),
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
             config,
         }
     }

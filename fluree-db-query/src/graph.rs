@@ -203,6 +203,7 @@ impl GraphOperator {
                             lang: None,
                             t: None,
                             op: None,
+                            p_id: None,
                         };
                         merged_row.push(binding);
                     } else {
@@ -509,6 +510,7 @@ mod tests {
             lang: None,
             t: None,
             op: None,
+            p_id: None,
         };
         let iri = GraphOperator::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, Some(Arc::from("http://example.org/graph1")));
@@ -520,6 +522,7 @@ mod tests {
             lang: None,
             t: None,
             op: None,
+            p_id: None,
         };
         let iri = GraphOperator::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, None);

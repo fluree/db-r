@@ -9,6 +9,7 @@
 //!
 //! - **Turtle**: Default graph triples only
 //! - **TriG**: Default graph + named GRAPH blocks with g_id allocation
+//! - **JSON-LD**: Expanded JSON-LD documents via GraphSink adapter
 //!
 //! See the Phase 3 plan for full semantics documentation.
 
@@ -825,6 +826,123 @@ mod inner {
         })
     }
 
+    /// Extract prefix→IRI mappings from a JSON-LD `@context` and register them
+    /// in the sink's namespace allocator via `on_prefix()`.
+    ///
+    /// JSON-LD `expand()` resolves `@context` prefixes internally, producing
+    /// fully-expanded IRIs that bypass the namespace trie. Pre-registering the
+    /// declared prefixes ensures:
+    /// - The trie has entries for the declared namespaces (optimal code allocation)
+    /// - `sid_for_iri()` hits the trie instead of the split heuristic
+    /// - Namespace codes match the intended prefix boundaries
+    ///
+    /// Handles both inline `@context` objects and arrays of contexts.
+    fn register_jsonld_prefixes(
+        doc: &serde_json::Value,
+        sink: &mut crate::import_sink::ImportSink,
+    ) {
+        use fluree_graph_ir::GraphSink;
+
+        fn visit_context(ctx: &serde_json::Value, sink: &mut crate::import_sink::ImportSink) {
+            match ctx {
+                serde_json::Value::Object(obj) => {
+                    for (key, val) in obj {
+                        // Skip JSON-LD keywords (@base, @language, @vocab, etc.)
+                        if key.starts_with('@') {
+                            continue;
+                        }
+                        // Simple string values are prefix → IRI mappings
+                        if let Some(iri) = val.as_str() {
+                            sink.on_prefix(key, iri);
+                        }
+                        // Object values with @id are also prefix → IRI mappings
+                        else if let Some(obj_val) = val.as_object() {
+                            if let Some(id) = obj_val.get("@id").and_then(|v| v.as_str()) {
+                                sink.on_prefix(key, id);
+                            }
+                        }
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        visit_context(item, sink);
+                    }
+                }
+                _ => {} // String contexts (remote URLs) — can't extract prefixes
+            }
+        }
+
+        if let Some(ctx) = doc.get("@context") {
+            visit_context(ctx, sink);
+        }
+    }
+
+    /// Parse a JSON-LD document into a `ParsedChunk` using a shared allocator.
+    ///
+    /// Analogous to [`parse_chunk`] (Turtle) but for JSON-LD input. Uses
+    /// `SharedNamespaceAllocator` via `WorkerCache` so that namespace codes are
+    /// visible to the spool pipeline during the same parse pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn parse_jsonld_chunk(
+        jsonld: &str,
+        alloc: &Arc<SharedNamespaceAllocator>,
+        t: i64,
+        ledger_id: &str,
+        compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
+    ) -> Result<ParsedChunk> {
+        let txn_id = format!("{}-{}", ledger_id, t);
+
+        let _parse_span =
+            tracing::debug_span!("parse_jsonld_chunk", t, jsonld_bytes = jsonld.len(),).entered();
+
+        let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
+        let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
+        let doc: serde_json::Value = serde_json::from_str(jsonld)
+            .map_err(|e| TransactError::Parse(format!("JSON parse error: {}", e)))?;
+
+        // Register @context prefix→IRI mappings in the namespace trie BEFORE
+        // expansion. JSON-LD expand() resolves prefixes internally, but the
+        // resulting fully-expanded IRIs bypass the trie. Without pre-registration,
+        // every IRI falls through to the split heuristic, potentially allocating
+        // more namespace codes than necessary and losing alignment with the
+        // declared prefixes.
+        register_jsonld_prefixes(&doc, &mut sink);
+
+        let expanded = fluree_graph_json_ld::expand(&doc)
+            .map_err(|e| TransactError::Parse(format!("JSON-LD expand error: {}", e)))?;
+        fluree_graph_json_ld::adapter::to_graph_events(&expanded, &mut sink)
+            .map_err(|e| TransactError::Parse(format!("JSON-LD adapter error: {}", e)))?;
+        drop(_parse_span);
+
+        let (writer, prefix_map, spool_ctx) = sink
+            .finish()
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+        let op_count = writer.op_count();
+        let new_codes = worker_cache.into_new_codes();
+
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+
+        Ok(ParsedChunk {
+            writer,
+            op_count,
+            new_codes,
+            prefix_map,
+            spool_result,
+        })
+    }
+
     /// Finalize a parsed chunk: build envelope, store blob, update state.
     ///
     /// Must be called **serially in chunk order** because each commit
@@ -906,6 +1024,6 @@ mod inner {
 }
 
 pub use inner::{
-    finalize_parsed_chunk, import_commit, import_commit_with_prelude, import_trig_commit,
-    parse_chunk, parse_chunk_with_prelude, ImportCommitResult, ImportState, ParsedChunk,
+    finalize_parsed_chunk, import_commit_with_prelude, import_trig_commit, parse_chunk,
+    parse_chunk_with_prelude, parse_jsonld_chunk, ImportCommitResult, ImportState, ParsedChunk,
 };

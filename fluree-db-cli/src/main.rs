@@ -304,6 +304,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Insert {
             args,
             expr,
+            file,
             message,
             format,
             remote,
@@ -312,6 +313,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::insert::run(
                 &args,
                 expr.as_deref(),
+                file.as_deref(),
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
@@ -324,6 +326,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Upsert {
             args,
             expr,
+            file,
             message,
             format,
             remote,
@@ -332,6 +335,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::upsert::run(
                 &args,
                 expr.as_deref(),
+                file.as_deref(),
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
@@ -344,6 +348,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Query {
             args,
             expr,
+            file,
             format,
             bench,
             sparql,
@@ -355,6 +360,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::query::run(
                 &args,
                 expr.as_deref(),
+                file.as_deref(),
                 &format,
                 bench,
                 sparql,

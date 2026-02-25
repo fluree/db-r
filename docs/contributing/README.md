@@ -23,6 +23,25 @@ Testing guide:
 - Benchmarking
 - Continuous integration
 
+### [Adding Tracing Spans](tracing-guide.md)
+
+How to instrument new code paths with tracing spans:
+- The two-tier span strategy (info / debug / trace)
+- Code patterns for sync and async spans
+- Deferred field recording
+- Testing spans with SpanCaptureLayer
+- Common gotchas (`!Send` guards, OTEL floods, etc.)
+
+### [W3C SPARQL Compliance Suite](sparql-compliance.md)
+
+Guide to the manifest-driven W3C compliance test suite:
+- Running and interpreting results
+- Debugging failures
+- From failure to issue/PR workflow
+- Using Claude Code for compliance work
+- Architecture overview
+
+
 ### [Design Notes](design-notes.md)
 
 Links to design documents:

@@ -130,5 +130,9 @@ name = "vector_query"
 harness = false
 
 [[bench]]
+name = "fulltext_query"
+harness = false
+
+[[bench]]
 name = "insert_formats"
 harness = false

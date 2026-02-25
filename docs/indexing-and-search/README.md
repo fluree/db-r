@@ -22,9 +22,18 @@ Manual index rebuilding for recovery and maintenance:
 - Resume after interruption
 - Index configuration options
 
+### [Inline Fulltext Search](fulltext.md)
+
+Inline BM25-ranked text scoring using the `@fulltext` datatype:
+- `@fulltext` datatype annotation (analogous to `@vector`)
+- `fulltext(?var, "query")` scoring function in `bind` expressions
+- Automatic per-predicate fulltext arena construction during background indexing
+- Unified scoring across indexed and novelty documents
+- Works immediately (no-index fallback) with optimal performance after indexing
+
 ### [BM25 Full-Text Search](bm25.md)
 
-Integrated full-text search using BM25 ranking:
+Dedicated full-text search indexes using BM25 ranking (for large-scale corpora):
 - Creating BM25 indexes via Rust API
 - Query-based field selection (indexing query defines what to index)
 - BM25 scoring with configurable k1/b parameters
@@ -87,7 +96,40 @@ Transaction → Commit → Background Indexer → Index Published
 
 See [Background Indexing](background-indexing.md) for details.
 
-## Full-Text Search (BM25)
+## Inline Fulltext Search
+
+For small-to-medium corpora (up to hundreds of thousands of documents per predicate), inline fulltext search provides BM25-ranked scoring with zero configuration:
+
+**Annotate data:**
+```json
+{
+  "@id": "ex:article-1",
+  "ex:content": {
+    "@value": "Rust is a systems programming language focused on safety",
+    "@type": "@fulltext"
+  }
+}
+```
+
+**Query with scoring:**
+```json
+{
+  "select": ["?title", "?score"],
+  "where": [
+    { "@id": "?doc", "ex:content": "?content", "ex:title": "?title" },
+    ["bind", "?score", "(fulltext ?content \"Rust programming\")"],
+    ["filter", "(> ?score 0)"]
+  ],
+  "orderBy": [["desc", "?score"]],
+  "limit": 10
+}
+```
+
+See [Inline Fulltext Search](fulltext.md) for details.
+
+## Full-Text Search (BM25 Graph Source)
+
+For larger corpora (1M+ documents) with strict latency requirements, the BM25 graph source pipeline provides WAND-based top-k pruning, chunked posting lists, and incremental updates:
 
 BM25 provides ranked full-text search:
 
@@ -216,6 +258,14 @@ let result = fluree.drop_full_text_index("products-search:main").await?;
 ```
 
 ## Performance Characteristics
+
+### Inline Fulltext Search
+
+- **Indexed throughput**: ~625,000 docs/sec (50K paragraph-length docs in 80ms)
+- **Novelty throughput**: ~85,000 docs/sec (50K docs in ~600ms, no index required)
+- **Indexed speedup**: 7-7.5x faster than novelty-only
+- **Scaling**: Near-linear; ~625K docs within a 1-second query budget
+- **Arena build**: Adds minimal overhead to the normal binary index build
 
 ### BM25 Search
 
@@ -398,7 +448,8 @@ The `Bm25MaintenanceWorker` watches for source ledger commits and syncs indexes 
 ### 1. Choose Appropriate Index Type
 
 - **Structured queries**: Use core graph indexes
-- **Keyword search**: Use BM25
+- **Keyword search (< 500K docs)**: Use inline `@fulltext` for zero-config BM25 scoring
+- **Keyword search (1M+ docs)**: Use the BM25 graph source for WAND-optimized top-k retrieval
 - **Semantic similarity**: Use vector search
 - **Hybrid**: Combine multiple indexes
 
@@ -460,7 +511,8 @@ Limit results for performance:
 ## Related Documentation
 
 - [Background Indexing](background-indexing.md) - Core index details
-- [BM25](bm25.md) - Full-text search
+- [Inline Fulltext Search](fulltext.md) - `@fulltext` datatype and `fulltext()` scoring
+- [BM25](bm25.md) - Dedicated full-text search graph source
 - [Vector Search](vector-search.md) - Similarity search
 - [Graph Sources](../graph-sources/README.md) - Graph source concepts
 - [Query](../query/README.md) - Query syntax

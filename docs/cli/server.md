@@ -139,10 +139,10 @@ Use the `--direct` global flag to bypass auto-routing and execute directly via t
 
 ```bash
 # Route through server (default when server is running)
-fluree query -e 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
+fluree query 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
 
 # Bypass server, execute directly
-fluree query --direct -e 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
+fluree query --direct 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
 ```
 
 ### Crash detection

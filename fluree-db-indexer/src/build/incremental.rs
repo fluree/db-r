@@ -775,6 +775,7 @@ where
     // and patching any (g_id, p_id) that have new/extended data.
     {
         use fluree_db_binary_index::format::index_root::{GraphArenaRefsV5, VectorDictRefV5};
+        use fluree_db_binary_index::FulltextArenaRefV5;
         use std::collections::BTreeMap;
 
         // Index base arenas by g_id for efficient lookup.
@@ -795,8 +796,13 @@ where
             .spatial_hook
             .as_ref()
             .is_some_and(|h| !h.is_empty());
+        let has_new_fulltext = novelty
+            .shared
+            .fulltext_hook
+            .as_ref()
+            .is_some_and(|h| !h.is_empty());
 
-        if has_new_numbigs || has_new_vectors || has_new_spatial {
+        if has_new_numbigs || has_new_vectors || has_new_spatial || has_new_fulltext {
             // ---- NumBig arena upload ----
             for (&g_id, per_pred) in &novelty.shared.numbigs {
                 let ga = arenas_by_gid
@@ -806,6 +812,7 @@ where
                         numbig: Vec::new(),
                         vectors: Vec::new(),
                         spatial: Vec::new(),
+                        fulltext: vec![],
                     });
 
                 for (&p_id, arena) in per_pred {
@@ -860,6 +867,7 @@ where
                         numbig: Vec::new(),
                         vectors: Vec::new(),
                         spatial: Vec::new(),
+                        fulltext: vec![],
                     });
 
                 for (&p_id, arena) in per_pred {
@@ -1375,6 +1383,7 @@ where
                             numbig: Vec::new(),
                             vectors: Vec::new(),
                             spatial: Vec::new(),
+                            fulltext: vec![],
                         });
 
                     if let Some(pos) = ga.spatial.iter().position(|s| s.p_id == p_id) {
@@ -1403,10 +1412,150 @@ where
                 }
             }
 
+            // ---- Fulltext arena incremental update (per affected predicate) ----
+            //
+            // For each (g_id, p_id) with novelty fulltext entries:
+            // 1. Load the prior FTA1 arena from CAS (if any)
+            // 2. Merge prior + novelty into a new arena (handles term_id remapping)
+            // 3. Encode FTA1, upload, update arena refs
+            // Unchanged fulltext arenas carry forward by CID.
+            if has_new_fulltext {
+                let fulltext_entries = novelty
+                    .shared
+                    .fulltext_hook
+                    .as_ref()
+                    .map(|h| h.entries())
+                    .unwrap_or(&[]);
+
+                // Group novelty entries by (g_id, p_id).
+                let mut ft_grouped: BTreeMap<
+                    (u16, u32),
+                    Vec<&crate::fulltext_hook::FulltextEntry>,
+                > = BTreeMap::new();
+                for entry in fulltext_entries {
+                    ft_grouped
+                        .entry((entry.g_id, entry.p_id))
+                        .or_default()
+                        .push(entry);
+                }
+
+                for ((g_id, p_id), group_entries) in ft_grouped {
+                    // Load prior FTA1 arena from CAS (if this (g_id, p_id) was indexed before).
+                    let ga = arenas_by_gid.get(&g_id);
+                    let existing_ref = ga.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+
+                    let prior_arena = if let Some(ft_ref) = existing_ref {
+                        match content_store.get(&ft_ref.arena_cid).await {
+                            Ok(blob) => {
+                                match fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
+                                    &blob,
+                                ) {
+                                    Ok(arena) => arena,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            g_id,
+                                            p_id,
+                                            %e,
+                                            "failed to decode prior FTA1 arena; \
+                                             rebuilding from novelty only"
+                                        );
+                                        fluree_db_binary_index::arena::fulltext::FulltextArena::new(
+                                        )
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    g_id,
+                                    p_id,
+                                    %e,
+                                    "failed to load prior FTA1 arena; \
+                                     rebuilding from novelty only"
+                                );
+                                fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                            }
+                        }
+                    } else {
+                        fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                    };
+
+                    // Build incremental arena (merges prior + novelty, handles term_id remap).
+                    let arena = super::fulltext::build_incremental_fulltext_arena(
+                        &prior_arena,
+                        &group_entries,
+                        &novelty.fulltext_string_bytes,
+                    );
+
+                    if arena.is_empty() {
+                        // All entries retracted — remove from arena refs.
+                        if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
+                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                                let old = &ga.fulltext[pos];
+                                root_builder.add_replaced_cids([old.arena_cid.clone()]);
+                                ga.fulltext.remove(pos);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Encode FTA1 and upload to CAS.
+                    let blob = arena.encode();
+                    let cas_result = storage
+                        .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
+                        .await
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("fulltext CAS write: {}", e))
+                        })?;
+
+                    let codec = ContentKind::IndexLeaf.to_codec();
+                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
+                        .ok_or_else(|| {
+                            IndexerError::Other(format!(
+                                "invalid fulltext arena hash: {}",
+                                cas_result.content_hash
+                            ))
+                        })?;
+
+                    let new_ref = FulltextArenaRefV5 { p_id, arena_cid };
+
+                    // Replace or insert in graph arenas.
+                    let ga = arenas_by_gid
+                        .entry(g_id)
+                        .or_insert_with(|| GraphArenaRefsV5 {
+                            g_id,
+                            numbig: Vec::new(),
+                            vectors: Vec::new(),
+                            spatial: Vec::new(),
+                            fulltext: vec![],
+                        });
+
+                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                        // GC old fulltext CID.
+                        let old = &ga.fulltext[pos];
+                        root_builder.add_replaced_cids([old.arena_cid.clone()]);
+                        ga.fulltext[pos] = new_ref;
+                    } else {
+                        ga.fulltext.push(new_ref);
+                        ga.fulltext.sort_by_key(|f| f.p_id);
+                    }
+
+                    tracing::info!(
+                        g_id,
+                        p_id,
+                        docs = arena.doc_count(),
+                        terms = arena.terms().len(),
+                        bytes = blob.len(),
+                        "fulltext arena rebuilt for (graph, predicate)"
+                    );
+                }
+            }
+
             let updated_arenas: Vec<GraphArenaRefsV5> = arenas_by_gid.into_values().collect();
             root_builder.set_graph_arenas(updated_arenas);
 
-            tracing::info!("Phase 4.5 complete: arena updates (numbig + vectors + spatial)");
+            tracing::info!(
+                "Phase 4.5 complete: arena updates (numbig + vectors + spatial + fulltext)"
+            );
         }
     }
 

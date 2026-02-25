@@ -96,6 +96,7 @@
 - [Indexing and search](indexing-and-search/README.md)
   - [Background indexing](indexing-and-search/background-indexing.md)
   - [Reindex API](indexing-and-search/reindex.md)
+  - [Inline fulltext search](indexing-and-search/fulltext.md)
   - [BM25](indexing-and-search/bm25.md)
   - [Vector search](indexing-and-search/vector-search.md)
   - [Geospatial](indexing-and-search/geospatial.md)
@@ -130,6 +131,6 @@
 - [Contributing](contributing/README.md)
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
+  - [W3C SPARQL compliance suite](contributing/sparql-compliance.md)
   - [Adding tracing spans](contributing/tracing-guide.md)
   - [Design notes (repo docs)](contributing/design-notes.md)
-

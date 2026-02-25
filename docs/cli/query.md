@@ -5,22 +5,23 @@ Query a ledger.
 ## Usage
 
 ```bash
-fluree query [LEDGER] [FILE] [OPTIONS]
+fluree query [LEDGER] [QUERY] [OPTIONS]
 ```
 
 ## Arguments
 
 | Arguments | Behavior |
 |-----------|----------|
-| (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger ID + stdin/-e |
-| `<ledger> <file>` | Specified ledger + file |
+| (none) | Active ledger; provide query via `-e`, `-f`, or stdin |
+| `<arg>` | Auto-detected: if it looks like a query, uses it inline with the active ledger; if it's an existing file, reads from it; otherwise treats it as a ledger name |
+| `<ledger> <query>` | Specified ledger + inline query |
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `-e, --expr <EXPR>` | Inline query expression |
+| `-e, --expr <EXPR>` | Inline query expression (alternative to positional) |
+| `-f, --file <FILE>` | Read query from a file |
 | `--format <FORMAT>` | Output format: `json`, `table`, or `csv` (default: `json`) |
 | `--sparql` | Force SPARQL query format |
 | `--jsonld` | Force JSON-LD query format |
@@ -35,13 +36,13 @@ Executes a query against a ledger. Supports both SPARQL and JSON-LD query format
 ### SPARQL
 
 ```bash
-fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
+fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 
 ### JSON-LD Query
 
 ```bash
-fluree query --jsonld -e '{"select": ["?name"], "where": {"http://example.org/name": "?name"}}'
+fluree query '{"select": ["?name"], "where": {"http://example.org/name": "?name"}}'
 ```
 
 Format is auto-detected if not specified:
@@ -53,7 +54,7 @@ Format is auto-detected if not specified:
 ### JSON (default)
 
 ```bash
-fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
+fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 ```json
 {
@@ -65,7 +66,7 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 ### Table
 
 ```bash
-fluree query --sparql --format table -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
+fluree query --format table 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 ```
 ┌───────┐
@@ -79,7 +80,7 @@ fluree query --sparql --format table -e 'SELECT ?name WHERE { ?s <http://example
 ### CSV
 
 ```bash
-fluree query --sparql --format csv -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
+fluree query --format csv 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 ```
 name
@@ -93,29 +94,35 @@ Query historical states with `--at`:
 
 ```bash
 # Query at transaction 5
-fluree query --at 5 --sparql -e 'SELECT * WHERE { ?s ?p ?o }'
+fluree query --at 5 'SELECT * WHERE { ?s ?p ?o }'
 
 # Query at specific commit
-fluree query --at abc123def --sparql -e 'SELECT * WHERE { ?s ?p ?o }'
+fluree query --at abc123def 'SELECT * WHERE { ?s ?p ?o }'
 
 # Query at ISO-8601 timestamp
-fluree query --at 2024-01-15T10:30:00Z --sparql -e 'SELECT * WHERE { ?s ?p ?o }'
+fluree query --at 2024-01-15T10:30:00Z 'SELECT * WHERE { ?s ?p ?o }'
 ```
 
 ## Examples
 
 ```bash
-# SPARQL query from file
-fluree query --sparql query.rq
+# Inline SPARQL query (most common)
+fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 
 # JSON-LD query inline
-fluree query -e '{"select": {"?s": ["*"]}, "where": {"@id": "?s"}}'
+fluree query '{"select": {"?s": ["*"]}, "where": {"@id": "?s"}}'
 
 # Query specific ledger with CSV output
-fluree query production --sparql --format csv -e 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+fluree query production --format csv 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+
+# SPARQL query from file
+fluree query -f query.rq
 
 # Time travel query
-fluree query --at 3 --sparql -e 'SELECT * WHERE { ?s ?p ?o }'
+fluree query --at 3 'SELECT * WHERE { ?s ?p ?o }'
+
+# Pipe from stdin
+cat query.rq | fluree query
 ```
 
 ## See Also

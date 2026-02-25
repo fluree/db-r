@@ -13,6 +13,7 @@
 
 pub(crate) mod commit_chain;
 pub(crate) mod dicts;
+pub(crate) mod fulltext;
 pub(crate) mod incremental;
 pub(crate) mod rebuild;
 pub(crate) mod root_assembly;

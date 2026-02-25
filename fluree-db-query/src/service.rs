@@ -238,6 +238,7 @@ impl ServiceOperator {
                             lang: None,
                             t: None,
                             op: None,
+                            p_id: None,
                         };
                         merged_row.push(binding);
                     } else {

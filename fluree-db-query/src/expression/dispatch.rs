@@ -11,8 +11,8 @@ use super::value::ComparableValue;
 use crate::ir::{ArithmeticOp, CompareOp};
 
 use super::{
-    arithmetic, conditional, datetime, fluree, geo, hash, logical, numeric, rdf, string, types,
-    uuid, vector,
+    arithmetic, conditional, datetime, fluree, fulltext, geo, hash, logical, numeric, rdf, string,
+    types, uuid, vector,
 };
 
 impl Function {
@@ -124,6 +124,9 @@ impl Function {
 
             // Geospatial functions
             Function::GeofDistance => geo::eval_geof_distance(args, row, ctx),
+
+            // Fulltext scoring
+            Function::Fulltext => fulltext::eval_fulltext(args, row, ctx),
 
             // Fluree-specific functions
             Function::T => fluree::eval_t(args, row),

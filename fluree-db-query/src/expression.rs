@@ -21,6 +21,7 @@ mod datetime;
 mod dispatch;
 mod eval;
 mod fluree;
+mod fulltext;
 mod geo;
 mod hash;
 mod helpers;

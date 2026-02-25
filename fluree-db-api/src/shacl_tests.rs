@@ -1127,3 +1127,133 @@ async fn shacl_xone_constraint() {
         .unwrap_err();
     assert_shacl_violation(err, "sh:xone");
 }
+
+#[tokio::test]
+async fn shacl_or_with_inline_anonymous_shapes() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = json!([default_context(), {
+        "skosxl": "http://www.w3.org/2008/05/skos-xl#",
+        "ex": "http://example.org/ns/"
+    }]);
+
+    // Shape with sh:or containing inline anonymous constraint shapes:
+    // the value of skosxl:literalForm must be either rdf:langString or xsd:string.
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:LabelShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "skosxl:Label"},
+        "sh:property": [{
+            "sh:path": {"@id": "skosxl:literalForm"},
+            "sh:minCount": 1,
+            "sh:maxCount": 1,
+            "sh:or": { "@list": [
+                {"sh:datatype": {"@id": "rdf:langString"}},
+                {"sh:datatype": {"@id": "xsd:string"}}
+            ]}
+        }]
+    });
+
+    // Valid: plain string value (matches xsd:string)
+    let ledger_ok = fluree
+        .create_ledger("shacl/or-inline-ok:main")
+        .await
+        .unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    let _ledger_ok = fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:label1",
+                "@type": "skosxl:Label",
+                "skosxl:literalForm": "hello"
+            }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    // Invalid: integer value (matches neither rdf:langString nor xsd:string)
+    let ledger_bad = fluree
+        .create_ledger("shacl/or-inline-bad:main")
+        .await
+        .unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:label2",
+                "@type": "skosxl:Label",
+                "skosxl:literalForm": 42
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "sh:or");
+}
+
+#[tokio::test]
+async fn shacl_and_with_inline_anonymous_shapes() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = json!([default_context(), {
+        "ex": "http://example.org/ns/"
+    }]);
+
+    // Shape requiring sh:and: value must be BOTH xsd:string AND have minLength 3
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:StrictNameShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:Entity"},
+        "sh:property": [{
+            "sh:path": {"@id": "schema:name"},
+            "sh:and": { "@list": [
+                {"sh:datatype": {"@id": "xsd:string"}},
+                {"sh:minLength": 3}
+            ]}
+        }]
+    });
+
+    // Valid: string with length >= 3
+    let ledger_ok = fluree
+        .create_ledger("shacl/and-inline-ok:main")
+        .await
+        .unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    let _ledger_ok = fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:e1",
+                "@type": "ex:Entity",
+                "schema:name": "Alice"
+            }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    // Invalid: string with length < 3 (violates minLength)
+    let ledger_bad = fluree
+        .create_ledger("shacl/and-inline-bad:main")
+        .await
+        .unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:e2",
+                "@type": "ex:Entity",
+                "schema:name": "Al"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "sh:and");
+}

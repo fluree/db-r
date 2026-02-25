@@ -73,6 +73,10 @@ pub struct IncrementalNovelty {
     /// If arena.len() == base count, no new entries were added and we can
     /// reuse the existing CID instead of re-uploading.
     pub base_numbig_counts: HashMap<(u16, u32), usize>,
+    /// String text bytes for fulltext assertion entries (global_string_id → bytes).
+    /// Captured during reconciliation so the fulltext incremental builder can
+    /// analyze text for BoW construction without loading the forward string dict.
+    pub fulltext_string_bytes: HashMap<u32, Vec<u8>>,
 }
 
 /// Errors specific to incremental resolution.
@@ -166,6 +170,9 @@ pub async fn resolve_incremental_commits(
     // If any are collected, the incremental path bails (spatial index updates
     // are not yet supported incrementally — results would be silently stale).
     shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
+
+    // Enable fulltext hook to collect @fulltext-typed string entries.
+    shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
 
     // 3a. Pre-seed numbig arenas so handles continue from existing values.
     // NumBig arenas are small (kilobytes), so loading them fully is cheap.
@@ -278,6 +285,7 @@ pub async fn resolve_incremental_commits(
             delta_retracts,
             base_vector_counts,
             base_numbig_counts,
+            fulltext_string_bytes: HashMap::new(),
         });
     }
 
@@ -290,13 +298,47 @@ pub async fn resolve_incremental_commits(
         base_string_watermark,
     )?;
 
-    // 7. Remap all records in-place
+    // 7. Remap fulltext hook entries from chunk-local to global string IDs
+    //    and capture string text bytes for assertion entries (needed by the
+    //    incremental fulltext arena builder for text analysis).
+    let fulltext_string_bytes: HashMap<u32, Vec<u8>> = {
+        let chunk_forward = chunk.strings.forward_entries();
+        if let Some(ref mut ft) = shared.fulltext_hook {
+            let mut map = HashMap::new();
+            for entry in ft.entries_mut() {
+                let local_id = entry.string_id as usize;
+                let global_id = match reconcile.string_remap.get(local_id) {
+                    Some(&id) => id,
+                    None => {
+                        tracing::warn!(local_id, "fulltext entry string_id remap miss; skipping");
+                        // Poison the entry so it's effectively skipped.
+                        entry.is_assert = false;
+                        entry.string_id = u32::MAX;
+                        continue;
+                    }
+                };
+                // Capture text bytes for assertions (needed for BoW analysis).
+                if entry.is_assert {
+                    if let Some(bytes) = chunk_forward.get(local_id) {
+                        map.entry(global_id).or_insert_with(|| bytes.clone());
+                    }
+                }
+                // Remap to global ID.
+                entry.string_id = global_id;
+            }
+            map
+        } else {
+            HashMap::new()
+        }
+    };
+
+    // 8. Remap all records in-place
     let mut records = chunk.records;
     for record in &mut records {
         remap_record(record, &reconcile.subject_remap, &reconcile.string_remap)?;
     }
 
-    // 7a. Offset vector handles: new vectors got handles 0..N during
+    // 8a. Offset vector handles: new vectors got handles 0..N during
     // resolution, but the base root already has vectors 0..base_count.
     // Shift new handles by base_count so they don't collide.
     if !base_vector_counts.is_empty() {
@@ -310,7 +352,7 @@ pub async fn resolve_incremental_commits(
         }
     }
 
-    // 8. Sort by (g_id, SPOT)
+    // 9. Sort by (g_id, SPOT)
     let spot_cmp = cmp_for_order(RunSortOrder::Spot);
     records.sort_unstable_by(|a, b| a.g_id.cmp(&b.g_id).then_with(|| spot_cmp(a, b)));
 
@@ -328,6 +370,7 @@ pub async fn resolve_incremental_commits(
         delta_retracts,
         base_vector_counts,
         base_numbig_counts,
+        fulltext_string_bytes,
     })
 }
 

@@ -52,7 +52,7 @@ impl<'a, P: Bm25IndexProvider> EmbeddedBm25SearchProvider<'a, P> {
     pub fn new(index_provider: &'a P) -> Self {
         Self {
             index_provider,
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
         }
     }
 }
