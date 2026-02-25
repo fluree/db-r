@@ -1,7 +1,6 @@
 //! `QueryEvaluationTest` handler: create an in-memory Fluree ledger, load
 //! test data, execute a SPARQL query, and compare against expected results.
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -13,21 +12,16 @@ use crate::result_comparison::{are_results_isomorphic, format_results_diff};
 use crate::result_format::{
     fluree_construct_to_sparql_results, fluree_json_to_sparql_results, parse_expected_results,
 };
+use crate::subprocess::{run_in_subprocess, TestDescriptor};
 
 /// Max time for a single query evaluation test (data load + query + compare).
-const EVAL_TIMEOUT: Duration = Duration::from_secs(30);
+const EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Handler for `mf:QueryEvaluationTest`.
 ///
-/// 1. Creates a dedicated `current_thread` Tokio runtime (cheap, ~1ms)
-/// 2. Runs the async eval work on a separate thread
-/// 3. Uses `mpsc::recv_timeout` for reliable timeout enforcement
-///
-/// Each eval test gets its own runtime and thread. This ensures:
-/// - No shared state between tests (safe when cargo runs tests in parallel)
-/// - Timeouts work even if query execution blocks on synchronous code
-///   (e.g., parser infinite loops inside `query_sparql`)
-/// - `current_thread` runtime avoids spawning extra worker threads
+/// Runs the test in an isolated subprocess for reliable timeout enforcement.
+/// If the test exceeds `EVAL_TIMEOUT`, the subprocess is killed — no zombie
+/// threads, no CPU leak.
 pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
     let test_id = test.id.clone();
     let query_url = test
@@ -41,47 +35,28 @@ pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
         .context("QueryEvaluationTest missing mf:result (expected result file)")?;
     let graph_data = test.graph_data.clone();
 
-    let (tx, rx) = mpsc::channel();
-    let test_id_for_error = test.id.clone();
+    let descriptor = TestDescriptor::Eval {
+        test_id,
+        query_url,
+        data_url,
+        result_url,
+        graph_data,
+    };
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime");
+    let result = run_in_subprocess(&descriptor, EVAL_TIMEOUT)?;
 
-        let outcome = rt.block_on(async {
-            run_eval_test(
-                &test_id,
-                &query_url,
-                data_url.as_deref(),
-                &result_url,
-                &graph_data,
-            )
-            .await
-        });
-        let _ = tx.send(outcome);
-    });
-
-    match rx.recv_timeout(EVAL_TIMEOUT) {
-        Ok(outcome) => outcome,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            bail!(
-                "Query evaluation test timed out (>{EVAL_TIMEOUT:?}).\nTest: {}",
-                test_id_for_error
-            )
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            bail!(
-                "Query evaluation test panicked.\nTest: {}",
-                test_id_for_error
-            )
-        }
+    if !result.passed {
+        let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+        bail!("{error_msg}");
     }
+
+    Ok(())
 }
 
 /// Inner async function that does the actual test work.
-async fn run_eval_test(
+///
+/// Public for use by the `run-w3c-test` subprocess binary.
+pub async fn run_eval_test(
     test_id: &str,
     query_url: &str,
     data_url: Option<&str>,
