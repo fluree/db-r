@@ -15,6 +15,7 @@
 use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::expression::passes_filters;
 use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -34,6 +35,10 @@ pub struct BindOperator {
     var: VarId,
     /// Expression to evaluate
     expr: Expression,
+    /// Inline filters evaluated after computing the BIND value.
+    /// Rows that fail any filter are dropped before materialization,
+    /// eliminating the overhead of a separate FilterOperator.
+    filters: Vec<Expression>,
     /// Output schema (child schema with var added if new)
     schema: Arc<[VarId]>,
     /// Position of var in output schema
@@ -52,7 +57,14 @@ impl BindOperator {
     /// * `child` - Child operator providing input solutions
     /// * `var` - Variable to bind the computed value to
     /// * `expr` - Expression to evaluate
-    pub fn new(child: BoxedOperator, var: VarId, expr: Expression) -> Self {
+    /// * `filters` - Inline filter expressions evaluated after computing the
+    ///   BIND value; rows failing any filter are dropped before materialization
+    pub fn new(
+        child: BoxedOperator,
+        var: VarId,
+        expr: Expression,
+        filters: Vec<Expression>,
+    ) -> Self {
         let child_schema = child.schema();
 
         // Check if var already exists in child schema
@@ -80,6 +92,7 @@ impl BindOperator {
             child,
             var,
             expr,
+            filters,
             schema,
             var_position,
             is_new_var,
@@ -127,6 +140,14 @@ impl Operator for BindOperator {
                 .map(|_| Vec::with_capacity(input_batch.len()))
                 .collect();
 
+            // Reusable buffer for filter evaluation (avoids per-row allocation)
+            let filter_row_cap = if self.filters.is_empty() {
+                0
+            } else {
+                num_output_cols
+            };
+            let mut filter_row = Vec::with_capacity(filter_row_cap);
+
             // Process each row
             for row_idx in 0..input_batch.len() {
                 let row_view = input_batch.row_view(row_idx).unwrap();
@@ -157,6 +178,22 @@ impl Operator for BindOperator {
                 if !keep_row {
                     // Clobber detected - drop this row
                     continue;
+                }
+
+                // Evaluate inline filters against a row that includes the BIND output
+                if !self.filters.is_empty() {
+                    filter_row.clear();
+                    for col in 0..child_num_cols {
+                        filter_row.push(input_batch.get_by_col(row_idx, col).clone());
+                    }
+                    if self.is_new_var {
+                        filter_row.push(computed.clone());
+                    } else {
+                        filter_row[self.var_position] = computed.clone();
+                    }
+                    if !passes_filters(&self.filters, &self.schema, &filter_row, Some(ctx)) {
+                        continue;
+                    }
                 }
 
                 // Copy child columns
@@ -221,7 +258,7 @@ mod tests {
         });
 
         let expr = Expression::Const(FilterValue::Long(42));
-        let op = BindOperator::new(child, VarId(1), expr);
+        let op = BindOperator::new(child, VarId(1), expr, vec![]);
 
         // Output schema should be [?a, ?b]
         assert_eq!(op.schema().len(), 2);
@@ -239,7 +276,7 @@ mod tests {
         });
 
         let expr = Expression::Const(FilterValue::Long(42));
-        let op = BindOperator::new(child, VarId(0), expr);
+        let op = BindOperator::new(child, VarId(0), expr, vec![]);
 
         // Schema should stay [?a, ?b]
         assert_eq!(op.schema().len(), 2);
