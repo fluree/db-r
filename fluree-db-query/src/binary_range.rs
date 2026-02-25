@@ -299,6 +299,18 @@ fn binary_range_eq(
                 if let Some(p_id) = p_id {
                     filter.p_id = Some(p_id);
                 }
+                // Resolve object via DictOverlay to narrow the BinaryFilter for
+                // exact-match queries on novelty-only values. Note: this narrows
+                // the overlay-flake filter, not the B-tree cursor range (min/max
+                // keys still span the full o range). For string/ref values,
+                // value_to_obj_pair may allocate an ephemeral dict entry, which
+                // is harmless but worth noting.
+                if let Some(ref o) = match_val.o {
+                    if let Ok((o_kind, o_key)) = dict_ov.value_to_obj_pair(o) {
+                        filter.o_kind = Some(o_kind.as_u8());
+                        filter.o_key = Some(o_key.as_u64());
+                    }
+                }
 
                 let min_key = RunRecord {
                     g_id,
