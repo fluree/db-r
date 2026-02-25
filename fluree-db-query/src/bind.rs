@@ -141,7 +141,11 @@ impl Operator for BindOperator {
                 .collect();
 
             // Reusable buffer for filter evaluation (avoids per-row allocation)
-            let filter_row_cap = if self.filters.is_empty() { 0 } else { num_output_cols };
+            let filter_row_cap = if self.filters.is_empty() {
+                0
+            } else {
+                num_output_cols
+            };
             let mut filter_row = Vec::with_capacity(filter_row_cap);
 
             // Process each row
