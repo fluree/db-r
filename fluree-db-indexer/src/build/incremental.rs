@@ -1270,13 +1270,10 @@ where
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    g_id,
-                                    p_id,
-                                    %e,
-                                    "failed to load prior spatial snapshot; \
-                                     rebuilding from novelty only"
-                                );
+                                return Err(IndexerError::IncrementalAbort(format!(
+                                    "spatial snapshot load failed for g_id={g_id}, p_id={p_id}: {e}; \
+                                     falling back to full rebuild for correctness"
+                                )));
                             }
                         }
                     }
@@ -1327,18 +1324,40 @@ where
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     let root_cid =
                         ContentId::from_hex_digest(spatial_codec, &root_cas.content_hash)
-                            .expect("valid hash");
+                            .ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial root hash for g_id={g_id}, p_id={p_id}: {}",
+                                    root_cas.content_hash
+                                ))
+                            })?;
                     let manifest_cid =
                         ContentId::from_hex_digest(spatial_codec, &write_result.manifest_address)
-                            .expect("valid hash");
+                            .ok_or_else(|| {
+                            IndexerError::StorageWrite(format!(
+                                "invalid spatial manifest hash for g_id={g_id}, p_id={p_id}: {}",
+                                write_result.manifest_address
+                            ))
+                        })?;
                     let arena_cid =
                         ContentId::from_hex_digest(spatial_codec, &write_result.arena_address)
-                            .expect("valid hash");
+                            .ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial arena hash for g_id={g_id}, p_id={p_id}: {}",
+                                    write_result.arena_address
+                                ))
+                            })?;
                     let leaflet_cids: Vec<ContentId> = write_result
                         .leaflet_addresses
                         .iter()
-                        .map(|h| ContentId::from_hex_digest(spatial_codec, h).expect("valid hash"))
-                        .collect();
+                        .enumerate()
+                        .map(|(i, h)| {
+                            ContentId::from_hex_digest(spatial_codec, h).ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial leaflet hash [{i}] for g_id={g_id}, p_id={p_id}: {h}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
 
                     let new_ref = SpatialArenaRefV5 {
                         p_id,
@@ -2395,11 +2414,10 @@ where
                     tracing::info!("Phase 4.7: incremental schema refreshed");
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        %e,
-                        "Phase 4.7: failed to load store for schema extraction; \
-                         carrying forward base schema"
-                    );
+                    return Err(IndexerError::IncrementalAbort(format!(
+                        "Phase 4.7: store load for schema extraction failed: {e}; \
+                         aborting incremental to ensure schema correctness"
+                    )));
                 }
             }
         }
