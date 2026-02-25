@@ -760,3 +760,111 @@ async fn import_serial_turtle_then_query() {
     let names = extract_sorted_strings(&json_result);
     assert_eq!(names, vec!["Alice"]);
 }
+
+/// Regression: after directory import, a subsequent insert with a custom namespace
+/// predicate must be queryable by full IRI in SPARQL. Previously, the predicate
+/// filter was silently dropped (acting as a wildcard) because the overlay-only
+/// bounds code used `store.sid_to_p_id()` which only checks the persisted index,
+/// returning None for novelty-only predicates and widening the scan to all p_ids.
+#[tokio::test]
+async fn import_then_insert_custom_ns_predicate_matches_sparql() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    // Phase 1: Create import data with a custom namespace
+    std::fs::write(
+        data_dir.path().join("01_schema.jsonld"),
+        r#"{
+            "@context": {
+                "skos": "http://www.w3.org/2004/02/skos/core#",
+                "sh": "http://www.w3.org/ns/shacl#",
+                "cust": "https://taxo.cbcrc.ca/ns/"
+            },
+            "@graph": [
+                {
+                    "@id": "cust:shape/ConceptShape",
+                    "@type": "sh:NodeShape",
+                    "sh:targetClass": {"@id": "skos:Concept"}
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.path().join("02_data.jsonld"),
+        r#"{
+            "@context": {"skos": "http://www.w3.org/2004/02/skos/core#"},
+            "@graph": [
+                {"@id": "http://example.org/c1", "@type": "skos:Concept", "skos:prefLabel": "One"},
+                {"@id": "http://example.org/c2", "@type": "skos:Concept", "skos:prefLabel": "Two"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Phase 2: Import directory
+    let import_result = fluree
+        .create("test/import-ns-bug:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("directory import should succeed");
+
+    assert!(import_result.flake_count > 0);
+
+    // Phase 3: Insert data with a custom namespace predicate
+    let ledger = fluree
+        .ledger("test/import-ns-bug:main")
+        .await
+        .expect("load ledger after import");
+
+    let insert_data = json!({
+        "@context": {"cust": "https://taxo.cbcrc.ca/ns/"},
+        "@id": "http://example.org/assoc1",
+        "@type": "cust:CoveragePackage",
+        "cust:packageType": "test-pkg"
+    });
+    let insert_result = fluree.insert(ledger, &insert_data).await.expect("insert");
+    assert!(insert_result.receipt.flake_count > 0);
+
+    // Phase 4: Reload ledger and query with SPARQL using the full predicate IRI.
+    // The predicate <https://taxo.cbcrc.ca/ns/packageType> must match ONLY the
+    // packageType triple, not all triples for the subject.
+    let ledger = fluree
+        .ledger("test/import-ns-bug:main")
+        .await
+        .expect("reload ledger");
+
+    let sparql = r#"SELECT ?o WHERE {
+        <http://example.org/assoc1> <https://taxo.cbcrc.ca/ns/packageType> ?o
+    }"#;
+
+    let qr = fluree
+        .query_sparql(&ledger, sparql)
+        .await
+        .expect("SPARQL query with custom namespace predicate");
+
+    let json = qr.to_sparql_json(&ledger.snapshot).expect("format json");
+    let bindings = json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    // Must return exactly 1 row (the packageType triple), not all triples for the subject
+    assert_eq!(
+        bindings.len(),
+        1,
+        "Expected 1 binding for packageType, got {}: {:?}",
+        bindings.len(),
+        bindings
+    );
+
+    let value = bindings[0]["o"]["value"]
+        .as_str()
+        .expect("binding value string");
+    assert_eq!(value, "test-pkg");
+}
