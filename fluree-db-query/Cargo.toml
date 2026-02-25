@@ -15,7 +15,7 @@ fluree-db-reasoner = { path = "../fluree-db-reasoner" }
 fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
-fluree-db-indexer = { path = "../fluree-db-indexer" }
+fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 fluree-db-spatial = { path = "../fluree-db-spatial" }
 memmap2 = "0.9"
 futures = { workspace = true }
@@ -70,6 +70,7 @@ native = ["fluree-db-core/native"]
 vector = ["dep:usearch"]
 
 [dev-dependencies]
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 # tokio is now a regular dependency
 criterion = "0.5"
 

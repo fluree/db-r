@@ -137,8 +137,8 @@ impl S2SearchOperator {
                         }
 
                         // Decode the literal using the binary store
-                        let store = ctx.binary_store.as_ref()?;
-                        match store.decode_value(*o_kind, *o_key, *p_id) {
+                        let gv = ctx.graph_view()?;
+                        match gv.decode_value(*o_kind, *o_key, *p_id) {
                             Ok(fluree_db_core::FlakeValue::String(s)) => {
                                 Some(QueryGeomResolved::Wkt(s.to_string()))
                             }

@@ -224,7 +224,7 @@ where
 
         // Capture namespace delta once:
         // - write into commit record for persistence
-        // - apply to returned in-memory Db so subsequent operations (e.g., SPARQL/JSON-LD queries)
+        // - apply to returned in-memory LedgerSnapshot so subsequent operations (e.g., SPARQL/JSON-LD queries)
         //   can encode IRIs without requiring a reload.
         let ns_delta = {
             let span = tracing::debug_span!("commit_namespace_delta");
@@ -232,10 +232,10 @@ where
             ns_registry.take_delta()
         };
 
-        // Apply namespace delta to the in-memory Db immediately (Clojure parity).
-        for (code, prefix) in &ns_delta {
-            base.db.namespace_codes.insert(*code, prefix.clone());
-        }
+        // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
+        // This must happen before novelty apply so encode_iri() works for graph routing.
+        base.snapshot
+            .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()));
 
         // Generate ISO 8601 timestamp
         // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
@@ -362,11 +362,12 @@ where
         {
             let span = tracing::debug_span!("commit_apply_to_novelty");
             let _g = span.enter();
-            Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
+            let reverse_graph = base.snapshot.build_reverse_graph()?;
+            Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 
         let new_state = LedgerState {
-            db: base.db,
+            snapshot: base.snapshot,
             novelty: new_novelty,
             dict_novelty,
             head_commit_id: Some(commit_cid.clone()),
@@ -495,14 +496,14 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -515,7 +516,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -544,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -552,7 +553,7 @@ mod tests {
 
         // Stage an empty transaction (no inserts)
         let txn = Txn::insert();
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -575,7 +576,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -589,7 +590,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -613,7 +614,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Bob".to_string())),
         ));
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
             .await
             .unwrap();
@@ -641,7 +642,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -655,7 +656,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String(big_value)),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();

@@ -53,7 +53,7 @@ async fn policy_applies_to_time_travel_queries() {
         .await
         .expect("query ssn t=1 baseline");
     let ledger = fluree.ledger(ledger_id).await.expect("ledger");
-    let jsonld = out.to_jsonld(&ledger.db).expect("to_jsonld baseline");
+    let jsonld = out.to_jsonld(&ledger.snapshot).expect("to_jsonld baseline");
     assert_eq!(jsonld, json!(["111-11-1111"]));
 
     // Policy: deny schema:ssn but allow everything else.
@@ -85,7 +85,7 @@ async fn policy_applies_to_time_travel_queries() {
         .query_connection(&q_ssn_t1_policy)
         .await
         .expect("query ssn t=1 policy");
-    let jsonld = out.to_jsonld(&ledger.db).expect("to_jsonld policy");
+    let jsonld = out.to_jsonld(&ledger.snapshot).expect("to_jsonld policy");
     assert_eq!(jsonld, json!([]));
 
     // With policy: non-ssn fields still visible at t=1.
@@ -100,6 +100,8 @@ async fn policy_applies_to_time_travel_queries() {
         .query_connection(&q_name_t1_policy)
         .await
         .expect("query name t=1 policy");
-    let jsonld = out.to_jsonld(&ledger.db).expect("to_jsonld name policy");
+    let jsonld = out
+        .to_jsonld(&ledger.snapshot)
+        .expect("to_jsonld name policy");
     assert_eq!(jsonld, json!(["Alice"]));
 }

@@ -17,7 +17,7 @@
 //! let conn = connect_file("/path/to/ledger/data");
 //!
 //! // Load a specific database snapshot
-//! let db = conn.load_db_fresh_cache(&root_id, "ledger/main").await?;
+//! let db = conn.load_ledger_snapshot_fresh_cache(&root_id, "ledger/main").await?;
 //! ```
 //!
 //! ## AWS/S3 Connections
@@ -42,7 +42,7 @@
 //!     ]
 //! });
 //! let conn = connect_async(&config).await?;
-//! let db = conn.load_db(&root_id, "mydb:main").await?;
+//! let db = conn.load_ledger_snapshot(&root_id, "mydb:main").await?;
 //! ```
 //!
 //! ## Configuration
@@ -90,7 +90,7 @@ pub use aws::{
 // Re-export core types commonly used with connections
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use fluree_db_core::FileStorage;
-pub use fluree_db_core::{Db, MemoryStorage};
+pub use fluree_db_core::{LedgerSnapshot, MemoryStorage};
 
 /// Create a memory-backed connection
 ///
@@ -102,7 +102,7 @@ pub use fluree_db_core::{Db, MemoryStorage};
 /// use fluree_db_connection::connect_memory;
 ///
 /// let conn = connect_memory();
-/// // conn.load_db(&root_id, "ledger/main").await?;
+/// // conn.load_ledger_snapshot(&root_id, "ledger/main").await?;
 /// ```
 pub fn connect_memory() -> MemoryConnection {
     let config = ConnectionConfig::memory();
@@ -122,7 +122,7 @@ pub fn connect_memory() -> MemoryConnection {
 /// use fluree_db_connection::connect_file;
 ///
 /// let conn = connect_file("/data/fluree");
-/// let db = conn.load_db_fresh_cache(&root_id, "mydb/main").await?;
+/// let db = conn.load_ledger_snapshot_fresh_cache(&root_id, "mydb/main").await?;
 /// ```
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn connect_file(base_path: &str) -> FileConnection {
@@ -163,7 +163,7 @@ impl ConnectionHandle {
     ///
     /// The storage address is derived from the `ContentId` and `ledger_id`
     /// using the storage backend's method identifier.
-    pub async fn load_db(
+    pub async fn load_ledger_snapshot(
         &self,
         root_id: &fluree_db_core::ContentId,
         ledger_id: &str,
@@ -171,17 +171,17 @@ impl ConnectionHandle {
         match self {
             #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
             ConnectionHandle::File(c) => {
-                let db = c.load_db(root_id, ledger_id).await?;
+                let db = c.load_ledger_snapshot(root_id, ledger_id).await?;
                 Ok(DynDb::File(db))
             }
             ConnectionHandle::Memory(c) => {
-                let db = c.load_db(root_id, ledger_id).await?;
+                let db = c.load_ledger_snapshot(root_id, ledger_id).await?;
                 Ok(DynDb::Memory(db))
             }
             #[cfg(feature = "aws")]
             ConnectionHandle::Aws(c) => {
                 let storage = c.index_storage().clone();
-                let db = fluree_db_core::load_db(&storage, root_id, ledger_id).await?;
+                let db = fluree_db_core::load_ledger_snapshot(&storage, root_id, ledger_id).await?;
                 Ok(DynDb::Aws(db))
             }
         }
@@ -193,12 +193,12 @@ impl ConnectionHandle {
 pub enum DynDb {
     /// File-backed database
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    File(Db),
+    File(LedgerSnapshot),
     /// Memory-backed database
-    Memory(Db),
+    Memory(LedgerSnapshot),
     /// AWS-backed database (S3 storage)
     #[cfg(feature = "aws")]
-    Aws(Db),
+    Aws(LedgerSnapshot),
 }
 
 /// Create connection from JSON config (auto-detects format)
@@ -262,7 +262,7 @@ pub fn connect(config_json: &serde_json::Value) -> Result<ConnectionHandle> {
 ///     ]
 /// });
 /// let conn = connect_async(&config).await?;
-/// let db = conn.load_db(&root_id, "mydb:main").await?;
+/// let db = conn.load_ledger_snapshot(&root_id, "mydb:main").await?;
 /// ```
 pub async fn connect_async(config_json: &serde_json::Value) -> Result<ConnectionHandle> {
     // Check if this is JSON-LD format

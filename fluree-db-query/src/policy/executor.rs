@@ -5,7 +5,7 @@
 use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, OverlayProvider, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, OverlayProvider, Sid};
 use fluree_db_policy::{
     PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult,
     UNBOUND_IDENTITY_PREFIX,
@@ -17,31 +17,47 @@ use std::collections::HashMap;
 /// This executor converts `PolicyQuery` to the query engine's IR and
 /// executes with a root context (no policy filtering).
 pub struct QueryPolicyExecutor<'a> {
-    /// The database to query
-    pub db: &'a Db,
+    /// The database snapshot to query
+    pub snapshot: &'a LedgerSnapshot,
     /// Optional overlay provider (for staged flakes)
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
     pub to_t: i64,
+    /// Graph ID for range queries (default: 0 = default graph)
+    pub g_id: GraphId,
 }
 
 impl<'a> QueryPolicyExecutor<'a> {
-    /// Create a new query executor
-    pub fn new(db: &'a Db) -> Self {
+    /// Create a new query executor for the default graph
+    pub fn new(snapshot: &'a LedgerSnapshot) -> Self {
         Self {
-            db,
+            snapshot,
             overlay: None,
-            to_t: db.t,
+            to_t: snapshot.t,
+            g_id: 0,
         }
     }
 
-    /// Create a query executor with overlay support
-    pub fn with_overlay(db: &'a Db, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    /// Create a query executor with overlay support for the default graph
+    pub fn with_overlay(
+        snapshot: &'a LedgerSnapshot,
+        overlay: &'a dyn OverlayProvider,
+        to_t: i64,
+    ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay: Some(overlay),
             to_t,
+            g_id: 0,
         }
+    }
+
+    /// Set the graph ID for range queries.
+    ///
+    /// Policy queries will execute against this graph instead of the default graph.
+    pub fn with_graph_id(mut self, g_id: GraphId) -> Self {
+        self.g_id = g_id;
+        self
     }
 }
 
@@ -111,7 +127,7 @@ impl<'a> QueryPolicyExecutor<'a> {
                 }
                 // Decode SID to IRI for JSON representation
                 let iri = self
-                    .db
+                    .snapshot
                     .decode_sid(sid)
                     .unwrap_or_else(|| sid.name.to_string());
                 serde_json::json!({"@id": iri})
@@ -151,22 +167,24 @@ impl<'a> QueryPolicyExecutor<'a> {
             vars.get_or_insert(var_name);
         }
 
-        let parsed = crate::parse::parse_query(&query_json, self.db, &mut vars).map_err(|e| {
-            fluree_db_policy::PolicyError::QueryExecution {
-                message: format!("Failed to parse policy query: {}", e),
-            }
-        })?;
+        let parsed =
+            crate::parse::parse_query(&query_json, self.snapshot, &mut vars).map_err(|e| {
+                fluree_db_policy::PolicyError::QueryExecution {
+                    message: format!("Failed to parse policy query: {}", e),
+                }
+            })?;
 
         let patterns = parsed.patterns;
 
         // Create the execution context WITHOUT policy (root context)
         // This is critical - policy queries must not be filtered by policy
         let ctx = if let Some(overlay) = self.overlay {
-            ExecutionContext::with_time_and_overlay(self.db, &vars, self.to_t, None, overlay)
+            ExecutionContext::with_time_and_overlay(self.snapshot, &vars, self.to_t, None, overlay)
+                .with_graph_id(self.g_id)
         } else {
-            ExecutionContext::with_time(self.db, &vars, self.to_t, None)
+            ExecutionContext::with_time(self.snapshot, &vars, self.to_t, None)
+                .with_graph_id(self.g_id)
         };
-        // Note: policy_enforcer is None by default (root context)
 
         // Build the where clause operators (VALUES is now part of parsed patterns)
         let mut operator = build_where_operators_seeded(None, &patterns, None).map_err(|e| {

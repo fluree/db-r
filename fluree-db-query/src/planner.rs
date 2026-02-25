@@ -2550,6 +2550,44 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_pushed_into_service() {
+        use crate::ir::{ServiceEndpoint, ServicePattern};
+
+        let s = VarId(0);
+        let age = VarId(1);
+
+        let patterns = vec![
+            Pattern::Service(ServicePattern::new(
+                false,
+                ServiceEndpoint::Iri(Arc::from("fluree:ledger:mydb:main")),
+                vec![Pattern::Triple(make_pattern(s, "age", age))],
+            )),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+        ];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        assert_eq!(
+            count_patterns(&reordered, is_filter),
+            0,
+            "filter should not remain at top level"
+        );
+
+        let service = reordered
+            .iter()
+            .find(|p| matches!(p, Pattern::Service(_)))
+            .expect("Service should be in result");
+        if let Pattern::Service(sp) = service {
+            assert!(
+                sp.patterns.iter().any(is_filter),
+                "Service inner patterns should contain the filter"
+            );
+        }
+    }
+
+    #[test]
     fn test_multiple_filters_only_relevant_ones_pushed() {
         let s = VarId(0);
         let name = VarId(1);

@@ -11,7 +11,7 @@ mod support;
 
 use fluree_db_api::{DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
-use fluree_db_core::{Db, StorageRead};
+use fluree_db_core::{LedgerSnapshot, StorageRead};
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
@@ -27,7 +27,7 @@ async fn drop_ledger_soft_mode_retracts_only() {
     let fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let ledger_id = "drop-soft-test:main";
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger = LedgerState::new(db, Novelty::new(0));
 
     let tx = json!({
@@ -85,7 +85,7 @@ async fn drop_ledger_hard_mode_deletes_files() {
     let fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let ledger_id = "drop-hard-test:main";
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger = LedgerState::new(db, Novelty::new(0));
 
     let tx = json!({
@@ -170,7 +170,7 @@ async fn drop_ledger_idempotent() {
     let fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let ledger_id = "drop-idem-test:main";
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger = LedgerState::new(db, Novelty::new(0));
 
     let tx = json!({
@@ -205,7 +205,7 @@ async fn drop_ledger_normalizes_alias() {
 
     // Create ledger with full alias
     let ledger_id = "normalize-test:main";
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger = LedgerState::new(db, Novelty::new(0));
 
     let tx = json!({
@@ -245,7 +245,7 @@ async fn drop_ledger_cancels_pending_indexing() {
     local
         .run_until(async move {
             let ledger_id = "drop-cancel-test:main";
-            let db = Db::genesis(ledger_id);
+            let db = LedgerSnapshot::genesis(ledger_id);
             let ledger = LedgerState::new(db, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -329,7 +329,7 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
     let fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let ledger_id = "drop-hard-retracted:main";
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger = LedgerState::new(db, Novelty::new(0));
 
     let tx = json!({

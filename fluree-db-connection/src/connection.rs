@@ -5,7 +5,7 @@ use crate::error::Result;
 use fluree_db_core::ContentId;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
-use fluree_db_core::{Db, MemoryStorage, Storage};
+use fluree_db_core::{LedgerSnapshot, MemoryStorage, Storage};
 
 /// A Fluree database connection
 ///
@@ -39,8 +39,12 @@ impl<S: Storage + Clone> Connection<S> {
     ///
     /// The `root_id` identifies the index root by its content hash.
     /// The `ledger_id` is needed to derive the storage address.
-    pub async fn load_db(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db> {
-        Ok(fluree_db_core::load_db(&self.storage, root_id, ledger_id).await?)
+    pub async fn load_ledger_snapshot(
+        &self,
+        root_id: &ContentId,
+        ledger_id: &str,
+    ) -> Result<LedgerSnapshot> {
+        Ok(fluree_db_core::load_ledger_snapshot(&self.storage, root_id, ledger_id).await?)
     }
 }
 
@@ -55,19 +59,23 @@ pub type MemoryConnection = Connection<MemoryStorage>;
 impl FileConnection {
     /// Load a database from a root content ID with a fresh storage instance
     ///
-    /// Creates a new storage instance for the returned Db. For shared storage,
-    /// use `load_db` instead.
-    pub async fn load_db_fresh_cache(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db> {
+    /// Creates a new storage instance for the returned LedgerSnapshot. For shared storage,
+    /// use `load_ledger_snapshot` instead.
+    pub async fn load_ledger_snapshot_fresh_cache(
+        &self,
+        root_id: &ContentId,
+        ledger_id: &str,
+    ) -> Result<LedgerSnapshot> {
         let storage = FileStorage::new(self.storage.base_path());
-        Ok(fluree_db_core::load_db(&storage, root_id, ledger_id).await?)
+        Ok(fluree_db_core::load_ledger_snapshot(&storage, root_id, ledger_id).await?)
     }
 }
 
-// Note: MemoryConnection does not have load_db_fresh_cache because MemoryStorage
+// Note: MemoryConnection does not have load_ledger_snapshot_fresh_cache because MemoryStorage
 // cannot be meaningfully cloned (it contains data). Users of MemoryConnection should
 // either:
 // 1. Use Arc<MemoryStorage> with a custom Connection type
-// 2. Call `fluree_db_core::load_db(&storage, root_id, ledger_id)` directly
+// 2. Call `fluree_db_core::load_ledger_snapshot(&storage, root_id, ledger_id)` directly
 // 3. Use a shared storage abstraction (future work)
 
 #[cfg(test)]

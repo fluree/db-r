@@ -15,6 +15,7 @@ members = [
     "fluree-db-novelty",
     "fluree-db-ledger",
     "fluree-db-transact",
+    "fluree-db-binary-index",
     "fluree-db-indexer",
     "fluree-db-spatial",
     "fluree-db-policy",
@@ -35,6 +36,9 @@ members = [
     "fluree-search-httpd",
     "fluree-db-cli",
     "bench-filter-query",
+]
+exclude = [
+    "testsuite-sparql",
 ]
 
 [workspace.package]
@@ -100,10 +104,17 @@ ryu = "1"
 # HTTP server dependencies
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "compression-gzip",
+] }
 
 # Concurrent collections
 dashmap = "6"
+
+# Data parallelism (used by fluree-db-indexer incremental leaf rewrites)
+rayon = "1"
 
 # API documentation
 utoipa = { version = "5", features = ["axum_extras"] }
@@ -118,7 +129,10 @@ http-body-util = "0.1"
 bytes = "1.4"
 
 # HTTP client for REST catalog (Iceberg)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
 urlencoding = "2"
 
 # JWT verification (standard OIDC JWT with JWKS support)

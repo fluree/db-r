@@ -16,7 +16,7 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
-use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -220,7 +220,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &ledger.db, &mut vars)?;
+        let parsed = parse_query(query_json, &ledger.snapshot, &mut vars)?;
 
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing
@@ -231,8 +231,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -246,10 +246,10 @@ where
             batches,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
-            binary_store: None,
+            binary_graph: None,
         };
 
-        let json = result.to_jsonld_async(&ledger.db).await?;
+        let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -267,7 +267,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &view.db, &mut vars)?;
+        let parsed = parse_query(query_json, &view.snapshot, &mut vars)?;
 
         // Execute with a wildcard select
         let mut parsed_for_exec = parsed.clone();
@@ -277,12 +277,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let overlay: &dyn fluree_db_core::OverlayProvider = view
-            .overlay()
-            .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
-            .unwrap_or(&fluree_db_core::NoOverlay);
-        let source = DataSource::new(&view.db, overlay, view.to_t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = view.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -298,10 +294,10 @@ where
             batches,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
-            binary_store: None,
+            binary_graph: None,
         };
 
-        let json = result.to_jsonld_async(&view.db).await?;
+        let json = result.to_jsonld_async(view.as_graph_db_ref(0)).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -508,7 +504,7 @@ where
     N: NameService + GraphSourcePublisher,
 {
     /// Get the shared leaflet cache from LedgerManager (if caching is enabled).
-    fn leaflet_cache(&self) -> Option<Arc<fluree_db_indexer::run_index::LeafletCache>> {
+    fn leaflet_cache(&self) -> Option<Arc<fluree_db_binary_index::LeafletCache>> {
         self.ledger_manager()
             .and_then(|lm| lm.leaflet_cache().cloned())
     }
@@ -590,7 +586,7 @@ where
         graph_source_id: &str,
         bytes: &[u8],
     ) -> Result<fluree_db_query::bm25::Bm25Index> {
-        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_binary_index::LeafletCache;
         use fluree_db_query::bm25::{
             assemble_from_chunked_root, deserialize, deserialize_chunked_root,
             deserialize_posting_leaflet, is_chunked_format, LeafletRef, PostingList,
@@ -676,7 +672,7 @@ where
         query_text: &str,
         limit: usize,
     ) -> Result<fluree_db_query::bm25::Bm25SearchResult> {
-        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_binary_index::LeafletCache;
         use fluree_db_query::bm25::{
             assemble_from_chunked_root, deserialize_chunked_root, deserialize_posting_leaflet,
             is_chunked_format, Analyzer, Bm25Scorer, Bm25SearchResult, LeafletRef, PostingList,
@@ -953,12 +949,13 @@ where
 
         // 5. Compile property deps for this ledger's namespace
         let compiled_deps = CompiledPropertyDeps::compile(&index.property_deps, |iri: &str| {
-            ledger.db.encode_iri(iri)
+            ledger.snapshot.encode_iri(iri)
         });
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let store = fluree_db_core::content_store_for(self.storage().clone(), &ledger.db.ledger_id);
+        let store =
+            fluree_db_core::content_store_for(self.storage().clone(), &ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -982,7 +979,12 @@ where
         // 7. Convert affected Sids to IRIs
         let affected_iris: HashSet<Arc<str>> = affected_sids
             .into_iter()
-            .filter_map(|sid| ledger.db.decode_sid(&sid).map(|s| Arc::from(s.as_str())))
+            .filter_map(|sid| {
+                ledger
+                    .snapshot
+                    .decode_sid(&sid)
+                    .map(|s| Arc::from(s.as_str()))
+            })
             .collect();
 
         info!(

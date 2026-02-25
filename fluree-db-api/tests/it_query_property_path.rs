@@ -80,7 +80,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         .query(&ledger, &sanity)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(sanity_rows, json!(["ex:f"]));
 
@@ -97,7 +97,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         .query(&ledger, &sanity_path)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert!(normalize_rows(&sanity_path_rows).contains(&json!("ex:f")));
 
@@ -113,7 +113,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         .query(&ledger, &q_non)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r_non, json!([]));
 
@@ -130,7 +130,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         .query(&ledger, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r_plus, json!([1]));
 }
@@ -149,7 +149,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         .query(&ledger1, &q_non)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(non, json!(["ex:b"]));
 
@@ -166,7 +166,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         .query(&ledger1, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus),
@@ -189,7 +189,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         .query(&ledger2, &q_plus2)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
@@ -211,7 +211,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         .query(&ledger1, &q_non)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(non, json!(["ex:d"]));
 
@@ -227,7 +227,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         .query(&ledger1, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus),
@@ -242,7 +242,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         .query(&ledger2, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
@@ -273,7 +273,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         .query(&ledger1, &q_non)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&non),
@@ -292,7 +292,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         .query(&ledger1, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus),
@@ -311,7 +311,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         .query(&ledger2, &q_plus)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
@@ -346,7 +346,7 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         .query(&ledger1, &q_star)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&star),
@@ -378,7 +378,7 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         .query(&ledger2, &q_xy)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&xy),
@@ -419,7 +419,7 @@ async fn property_path_array_form() {
         .query(&ledger1, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -495,7 +495,7 @@ async fn property_path_inverse_object_var() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["ex:a"])));
 }
@@ -518,7 +518,7 @@ async fn property_path_inverse_subject_var() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["ex:b"])));
 }
@@ -551,7 +551,7 @@ async fn property_path_alternative_object_var() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -577,7 +577,7 @@ async fn property_path_alternative_with_inverse() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -611,7 +611,7 @@ async fn property_path_alternative_array_form() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -646,7 +646,7 @@ async fn property_path_alternative_duplicate_semantics() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // Bag semantics: ex:b appears once per matching branch
     assert_eq!(
@@ -702,7 +702,7 @@ async fn property_path_sequence_two_step_string_form() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // alice's friend is bob, bob's name is "Bob"
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
@@ -726,7 +726,7 @@ async fn property_path_sequence_two_step_array_form() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
 }
@@ -751,7 +751,7 @@ async fn property_path_sequence_three_step() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // alice -> friend bob -> friend carol -> address addr1 -> city "Springfield"
     assert_eq!(
@@ -779,7 +779,7 @@ async fn property_path_sequence_with_inverse_step() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // alice <--parent-- bob, bob's name is "Bob"
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
@@ -803,7 +803,7 @@ async fn property_path_sequence_wildcard_hides_internal_vars() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = result.as_array().expect("Wildcard result should be array");
     assert!(!arr.is_empty(), "Should have at least one result");
@@ -888,7 +888,7 @@ async fn property_path_alternative_of_sequences() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -921,7 +921,7 @@ async fn property_path_alternative_mixed_simple_and_sequence() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -947,7 +947,7 @@ async fn property_path_alternative_of_sequences_wildcard_hides_vars() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = result.as_array().expect("Wildcard result should be array");
     assert!(!arr.is_empty(), "Should have at least one result");
@@ -993,7 +993,7 @@ async fn property_path_alternative_of_sequences_duplicate_semantics() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // Bag semantics: "Bob" appears once per matching branch
     assert_eq!(
@@ -1024,7 +1024,7 @@ async fn property_path_inverse_one_or_more() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1051,7 +1051,7 @@ async fn property_path_inverse_zero_or_more() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1102,7 +1102,7 @@ async fn property_path_sequence_with_alternative_step() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1128,7 +1128,7 @@ async fn property_path_sequence_with_alternative_step_array_form() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1154,7 +1154,7 @@ async fn property_path_sequence_with_alternative_step_wildcard() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let arr = result.as_array().expect("Expected array result");
     for row in arr {
@@ -1195,7 +1195,7 @@ async fn property_path_inverse_of_sequence() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1224,7 +1224,7 @@ async fn property_path_inverse_of_alternative() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),
@@ -1253,7 +1253,7 @@ async fn property_path_inverse_of_three_step_sequence() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&result),

@@ -15,7 +15,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
 use fluree_db_core::{is_rdf_type, ClassPropertyUsage, ClassStatEntry, IndexStats};
-use fluree_db_core::{Db, FlakeValue, IndexType, Sid};
+use fluree_db_core::{FlakeValue, GraphDbRef, IndexType, LedgerSnapshot, Sid};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -29,7 +29,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
 async fn augment_class_property_stats_from_novelty(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     mut stats: IndexStats,
@@ -54,7 +54,8 @@ async fn augment_class_property_stats_from_novelty(
 
     // Look up each subject's current classes as-of (db + overlay, to_t).
     let subjects: Vec<Sid> = subject_props.keys().cloned().collect();
-    let subject_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+    let db = fluree_db_core::GraphDbRef::new(snapshot, 0, overlay, to_t);
+    let subject_classes = fluree_db_policy::lookup_subject_classes(&subjects, db)
         .await
         .map_err(|e| ApiError::Internal(format!("policy class lookup failed: {}", e)))?;
 
@@ -92,6 +93,8 @@ async fn augment_class_property_stats_from_novelty(
                 .into_iter()
                 .map(|property_sid| ClassPropertyUsage {
                     property_sid,
+                    datatypes: Vec::new(),
+                    langs: Vec::new(),
                     ref_classes: Vec::new(),
                 })
                 .collect();
@@ -134,26 +137,26 @@ use fluree_vocab::{fluree, policy_iris};
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query against
+/// * `snapshot` - The database snapshot to query against
 /// * `overlay` - Overlay provider for query execution
 /// * `novelty_for_stats` - Optional novelty for computing current stats (needed for f:onClass)
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
 pub async fn build_policy_context_from_opts(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyContext> {
     // Build policy values map first (SID mappings for policy variables)
-    let mut policy_values = build_policy_values(db, &opts.policy_values)?;
+    let mut policy_values = build_policy_values(snapshot, &opts.policy_values)?;
 
     // Resolve identity SID (used for ?$identity binding)
     // Priority: opts.identity > policy_values["?$identity"]
     let identity_sid = if let Some(identity_iri) = &opts.identity {
         // Explicit identity option takes precedence
-        let sid = resolve_iri_to_sid(db, identity_iri)?;
+        let sid = resolve_iri_to_sid(snapshot, identity_iri)?;
         // Also add to policy_values so policy queries can bind ?$identity
         policy_values.insert("?$identity".to_string(), sid.clone());
         Some(sid)
@@ -178,13 +181,13 @@ pub async fn build_policy_context_from_opts(
     // For inline policies with identity binding, use policy_values["?$identity"] instead.
     let restrictions = if let Some(identity) = &opts.identity {
         // Identity-based: query for policies via f:policyClass (highest priority)
-        load_policies_by_identity(db, overlay, to_t, identity).await?
+        load_policies_by_identity(snapshot, overlay, to_t, identity).await?
     } else if let Some(classes) = &opts.policy_class {
         // Class-based: query for policies of given types
-        load_policies_by_class(db, overlay, to_t, classes).await?
+        load_policies_by_class(snapshot, overlay, to_t, classes).await?
     } else if let Some(policy_json) = &opts.policy {
         // Inline: parse policy JSON-LD (lowest priority)
-        parse_inline_policy(db, policy_json)?
+        parse_inline_policy(snapshot, policy_json)?
     } else {
         // No policy specified - return empty (will use default_allow)
         vec![]
@@ -201,10 +204,10 @@ pub async fn build_policy_context_from_opts(
     // We use current_stats() which merges indexed stats with novelty updates.
     // This ensures class→property relationships from uncommitted transactions are included.
     let mut stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
-        let indexed = db.stats.as_ref().cloned().unwrap_or_default();
+        let indexed = snapshot.stats.as_ref().cloned().unwrap_or_default();
         Some(fluree_db_novelty::current_stats(&indexed, novelty))
     } else {
-        db.stats.clone()
+        snapshot.stats.clone()
     };
 
     // Ensure class→property mappings include novelty property usage even when rdf:type
@@ -213,8 +216,10 @@ pub async fn build_policy_context_from_opts(
     if has_class_policies {
         if let (Some(novelty), Some(current)) = (novelty_for_stats, stats.take()) {
             stats = Some(
-                augment_class_property_stats_from_novelty(db, overlay, to_t, current, novelty)
-                    .await?,
+                augment_class_property_stats_from_novelty(
+                    snapshot, overlay, to_t, current, novelty,
+                )
+                .await?,
             );
         }
     }
@@ -254,14 +259,14 @@ pub async fn build_policy_context_from_opts(
 /// }
 /// ```
 async fn load_policies_by_identity(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     identity_iri: &str,
 ) -> Result<Vec<PolicyRestriction>> {
     // Step 1: Get policy classes for identity
-    let identity_sid = resolve_iri_to_sid(db, identity_iri)?;
-    let policy_class_sid = resolve_iri_to_sid(db, policy_iris::POLICY_CLASS)?;
+    let identity_sid = resolve_iri_to_sid(snapshot, identity_iri)?;
+    let policy_class_sid = resolve_iri_to_sid(snapshot, policy_iris::POLICY_CLASS)?;
 
     let mut vars = VarRegistry::new();
     let class_var = vars.get_or_insert("?class");
@@ -273,7 +278,8 @@ async fn load_policies_by_identity(
         Term::Var(class_var),
     );
 
-    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
+    let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     // Collect class SIDs
     let mut class_sids: Vec<Sid> = Vec::new();
@@ -292,7 +298,7 @@ async fn load_policies_by_identity(
     }
 
     // Step 2: Get policies of those classes
-    load_policies_of_classes(db, overlay, to_t, &class_sids).await
+    load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await
 }
 
 // ============================================================================
@@ -303,7 +309,7 @@ async fn load_policies_by_identity(
 ///
 /// Clojure equivalent: `wrap-class-policy`
 async fn load_policies_by_class(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_iris: &[String],
@@ -311,10 +317,10 @@ async fn load_policies_by_class(
     // Resolve class IRIs to SIDs
     let mut class_sids = Vec::with_capacity(class_iris.len());
     for iri in class_iris {
-        class_sids.push(resolve_iri_to_sid(db, iri)?);
+        class_sids.push(resolve_iri_to_sid(snapshot, iri)?);
     }
 
-    load_policies_of_classes(db, overlay, to_t, &class_sids).await
+    load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await
 }
 
 /// Load policies that are instances of the given classes.
@@ -327,12 +333,12 @@ async fn load_policies_by_class(
 /// ```
 /// Then load each policy's properties.
 async fn load_policies_of_classes(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_sids: &[Sid],
 ) -> Result<Vec<PolicyRestriction>> {
-    let rdf_type_sid = resolve_iri_to_sid(db, RDF_TYPE_IRI)?;
+    let rdf_type_sid = resolve_iri_to_sid(snapshot, RDF_TYPE_IRI)?;
 
     let mut vars = VarRegistry::new();
     let policy_var = vars.get_or_insert("?policy");
@@ -348,8 +354,8 @@ async fn load_policies_of_classes(
             Term::Sid(class_sid.clone()),
         );
 
-        let batches =
-            execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+        let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
+        let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
         for batch in &batches {
             for row in 0..batch.len() {
@@ -365,7 +371,9 @@ async fn load_policies_of_classes(
     // Load each policy's restrictions
     let mut restrictions = Vec::new();
     for policy_sid in policy_sids {
-        if let Some(restriction) = load_policy_restriction(db, overlay, to_t, &policy_sid).await? {
+        if let Some(restriction) =
+            load_policy_restriction(snapshot, overlay, to_t, &policy_sid).await?
+        {
             restrictions.push(restriction);
         }
     }
@@ -380,7 +388,7 @@ async fn load_policies_of_classes(
 /// when the predicate is a variable. Since all policy vocabulary predicates
 /// are in the `fluree:ledger` namespace, we must query them explicitly.
 async fn load_policy_restriction(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     policy_sid: &Sid,
@@ -397,13 +405,13 @@ async fn load_policy_restriction(
     let mut policy_query_json: Option<String> = None;
 
     // Resolve predicate SIDs we need to query
-    let view_sid = resolve_iri_to_sid(db, policy_iris::VIEW).ok();
-    let modify_sid = resolve_iri_to_sid(db, policy_iris::MODIFY).ok();
+    let view_sid = resolve_iri_to_sid(snapshot, policy_iris::VIEW).ok();
+    let modify_sid = resolve_iri_to_sid(snapshot, policy_iris::MODIFY).ok();
 
     // Query each policy predicate explicitly
     // f:allow
-    if let Ok(allow_sid) = resolve_iri_to_sid(db, policy_iris::ALLOW) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &allow_sid).await?;
+    if let Ok(allow_sid) = resolve_iri_to_sid(snapshot, policy_iris::ALLOW) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &allow_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::Boolean(b),
@@ -417,8 +425,8 @@ async fn load_policy_restriction(
     }
 
     // f:action - collect all action values to determine View, Modify, or Both
-    if let Ok(action_sid) = resolve_iri_to_sid(db, policy_iris::ACTION) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &action_sid).await?;
+    if let Ok(action_sid) = resolve_iri_to_sid(snapshot, policy_iris::ACTION) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &action_sid).await?;
         let mut has_view = false;
         let mut has_modify = false;
         for binding in bindings {
@@ -439,8 +447,8 @@ async fn load_policy_restriction(
     }
 
     // f:onProperty (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::ON_PROPERTY) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_PROPERTY) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_property.insert(sid.clone());
@@ -449,8 +457,8 @@ async fn load_policy_restriction(
     }
 
     // f:onSubject (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::ON_SUBJECT) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_SUBJECT) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_subject.insert(sid.clone());
@@ -459,8 +467,8 @@ async fn load_policy_restriction(
     }
 
     // f:onClass (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::ON_CLASS) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_CLASS) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_class.insert(sid.clone());
@@ -469,8 +477,8 @@ async fn load_policy_restriction(
     }
 
     // f:required
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::REQUIRED) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::REQUIRED) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::Boolean(b),
@@ -484,8 +492,8 @@ async fn load_policy_restriction(
     }
 
     // f:exMessage
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::EX_MESSAGE) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::EX_MESSAGE) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::String(s),
@@ -499,8 +507,8 @@ async fn load_policy_restriction(
     }
 
     // f:query
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::QUERY) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::QUERY) {
+        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             match binding {
                 Binding::Lit {
@@ -535,7 +543,7 @@ async fn load_policy_restriction(
     };
 
     // Decode policy SID to IRI for better tracking/debugging
-    let policy_id = db
+    let policy_id = snapshot
         .decode_sid(policy_sid)
         .unwrap_or_else(|| policy_sid.name.to_string());
 
@@ -602,7 +610,7 @@ async fn load_policy_restriction(
 /// Uses an explicit predicate SID (not a variable) to avoid the scan layer's
 /// filtering of internal `fluree:ledger` predicates.
 async fn query_predicate(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     subject_sid: &Sid,
@@ -617,7 +625,8 @@ async fn query_predicate(
         Term::Var(obj_var),
     );
 
-    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
+    let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     let mut results = Vec::new();
     for batch in &batches {
@@ -638,7 +647,10 @@ async fn query_predicate(
 /// Parse inline policy JSON-LD into restrictions.
 ///
 /// Clojure equivalent: `wrap-policy` with inline policy
-fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRestriction>> {
+fn parse_inline_policy(
+    snapshot: &LedgerSnapshot,
+    policy_json: &JsonValue,
+) -> Result<Vec<PolicyRestriction>> {
     // The inline policy can be a single object or an array of objects
     let policies = match policy_json {
         JsonValue::Array(arr) => arr.clone(),
@@ -718,7 +730,7 @@ fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRes
         {
             had_on_property = true;
             for iri in extract_iris(props) {
-                match resolve_iri_to_sid(db, &iri) {
+                match resolve_iri_to_sid(snapshot, &iri) {
                     Ok(sid) => {
                         on_property.insert(sid);
                     }
@@ -741,7 +753,7 @@ fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRes
         {
             had_on_subject = true;
             for iri in extract_iris(subjs) {
-                match resolve_iri_to_sid(db, &iri) {
+                match resolve_iri_to_sid(snapshot, &iri) {
                     Ok(sid) => {
                         on_subject.insert(sid);
                     }
@@ -764,7 +776,7 @@ fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRes
         {
             had_on_class = true;
             for iri in extract_iris(classes) {
-                match resolve_iri_to_sid(db, &iri) {
+                match resolve_iri_to_sid(snapshot, &iri) {
                     Ok(sid) => {
                         on_class.insert(sid);
                     }
@@ -878,14 +890,15 @@ fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRes
 // full feature support (e.g., FILTER patterns) in f:query policies.
 
 /// Resolve an IRI string to a SID using the database's encoding.
-fn resolve_iri_to_sid(db: &Db, iri: &str) -> Result<Sid> {
-    db.encode_iri(iri)
+fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
+    snapshot
+        .encode_iri(iri)
         .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{}'", iri)))
 }
 
 /// Build policy values map from JSON values.
 fn build_policy_values(
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     values: &Option<HashMap<String, JsonValue>>,
 ) -> Result<HashMap<String, Sid>> {
     let mut result = HashMap::new();
@@ -916,7 +929,7 @@ fn build_policy_values(
                 }
             };
 
-            if let Ok(sid) = resolve_iri_to_sid(db, &iri) {
+            if let Ok(sid) = resolve_iri_to_sid(snapshot, &iri) {
                 result.insert(key.clone(), sid);
             }
         }

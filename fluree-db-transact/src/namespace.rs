@@ -14,7 +14,7 @@
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
 //! with existing databases. User-supplied namespaces start at `USER_START`.
 
-use fluree_db_core::{Db, PrefixTrie, Sid};
+use fluree_db_core::{LedgerSnapshot, PrefixTrie, Sid};
 use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
 use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -93,7 +93,7 @@ fn default_namespaces() -> HashMap<u16, String> {
 /// During transaction processing, new IRIs may introduce prefixes not yet
 /// in the database's namespace table. This registry:
 /// 1. Starts with predefined codes for common namespaces
-/// 2. Loads existing codes from `db.namespace_codes`
+/// 2. Loads existing codes from `snapshot.namespace_codes`
 /// 3. Allocates new codes as needed (starting at USER_NS_START)
 /// 4. Tracks new allocations in `delta` for commit persistence
 ///
@@ -104,7 +104,7 @@ pub struct NamespaceRegistry {
     /// Prefix → code mapping (for exact lookups in get_or_allocate)
     codes: HashMap<String, u16>,
 
-    /// Code → prefix mapping (for encoding, matches Db.namespace_codes)
+    /// Code → prefix mapping (for encoding, matches LedgerSnapshot.namespace_codes)
     names: HashMap<u16, String>,
 
     /// Next available code for allocation (>= USER_NS_START)
@@ -155,12 +155,12 @@ impl NamespaceRegistry {
     ///
     /// This merges the database's codes with the predefined defaults,
     /// with the database taking precedence for any conflicts.
-    pub fn from_db(db: &Db) -> Self {
+    pub fn from_db(snapshot: &LedgerSnapshot) -> Self {
         // Start with defaults
         let mut names = default_namespaces();
 
         // Merge in database codes (overwriting defaults if needed)
-        for (code, prefix) in &db.namespace_codes {
+        for (code, prefix) in &snapshot.namespace_codes {
             names.insert(*code, prefix.clone());
         }
 
@@ -861,7 +861,7 @@ pub fn is_blank_node_id(iri: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_vocab::namespaces::{DID_KEY, EMPTY, JSON_LD, XSD};
 
     #[test]
@@ -992,11 +992,12 @@ mod tests {
     fn test_registry_from_db_enables_host_only_after_budget_crossed() {
         // Simulate a DB that has already allocated beyond the u8-ish namespace budget,
         // as would happen for outlier datasets after an import + index publish.
-        let mut db = Db::genesis("test:main");
-        db.namespace_codes
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot
+            .namespace_codes
             .insert(300, "http://already-allocated.example/".to_string());
 
-        let mut registry = NamespaceRegistry::from_db(&db);
+        let mut registry = NamespaceRegistry::from_db(&snapshot);
         assert_eq!(registry.fallback_mode(), NsFallbackMode::HostOnly);
 
         let iri = "http://some-unseen-host/blah/123/456";
@@ -1011,8 +1012,8 @@ mod tests {
     #[test]
     fn test_registry_from_db_defaults_to_last_slash_under_budget() {
         // Simulate a normal DB (no namespace explosion): fallback remains last-slash-or-hash.
-        let db = Db::genesis("test:main");
-        let mut registry = NamespaceRegistry::from_db(&db);
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut registry = NamespaceRegistry::from_db(&snapshot);
         assert_eq!(registry.fallback_mode(), NsFallbackMode::LastSlashOrHash);
 
         let iri = "http://some-unseen-host/blah/123/456";

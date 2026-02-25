@@ -20,9 +20,9 @@
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{Db, FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::{SelectMode, VarId};
 
@@ -61,27 +61,31 @@ impl Delimiter {
 // ---------------------------------------------------------------------------
 
 /// Format query results as TSV bytes.
-pub fn format_tsv_bytes(result: &QueryResult, db: &Db) -> Result<Vec<u8>> {
-    format_delimited_bytes(result, db, Delimiter::Tab)
+pub fn format_tsv_bytes(result: &QueryResult, snapshot: &LedgerSnapshot) -> Result<Vec<u8>> {
+    format_delimited_bytes(result, snapshot, Delimiter::Tab)
 }
 
 /// Format query results as a TSV string.
-pub fn format_tsv(result: &QueryResult, db: &Db) -> Result<String> {
-    format_delimited(result, db, Delimiter::Tab)
+pub fn format_tsv(result: &QueryResult, snapshot: &LedgerSnapshot) -> Result<String> {
+    format_delimited(result, snapshot, Delimiter::Tab)
 }
 
 /// Format TSV with a row limit. Returns `(tsv_bytes, total_row_count)`.
 pub fn format_tsv_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
-    format_delimited_bytes_limited(result, db, Delimiter::Tab, limit)
+    format_delimited_bytes_limited(result, snapshot, Delimiter::Tab, limit)
 }
 
 /// Format TSV string with a row limit. Returns `(tsv_string, total_row_count)`.
-pub fn format_tsv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result<(String, usize)> {
-    format_delimited_limited(result, db, Delimiter::Tab, limit)
+pub fn format_tsv_limited(
+    result: &QueryResult,
+    snapshot: &LedgerSnapshot,
+    limit: usize,
+) -> Result<(String, usize)> {
+    format_delimited_limited(result, snapshot, Delimiter::Tab, limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -89,38 +93,46 @@ pub fn format_tsv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result
 // ---------------------------------------------------------------------------
 
 /// Format query results as CSV bytes.
-pub fn format_csv_bytes(result: &QueryResult, db: &Db) -> Result<Vec<u8>> {
-    format_delimited_bytes(result, db, Delimiter::Comma)
+pub fn format_csv_bytes(result: &QueryResult, snapshot: &LedgerSnapshot) -> Result<Vec<u8>> {
+    format_delimited_bytes(result, snapshot, Delimiter::Comma)
 }
 
 /// Format query results as a CSV string.
-pub fn format_csv(result: &QueryResult, db: &Db) -> Result<String> {
-    format_delimited(result, db, Delimiter::Comma)
+pub fn format_csv(result: &QueryResult, snapshot: &LedgerSnapshot) -> Result<String> {
+    format_delimited(result, snapshot, Delimiter::Comma)
 }
 
 /// Format CSV with a row limit. Returns `(csv_bytes, total_row_count)`.
 pub fn format_csv_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
-    format_delimited_bytes_limited(result, db, Delimiter::Comma, limit)
+    format_delimited_bytes_limited(result, snapshot, Delimiter::Comma, limit)
 }
 
 /// Format CSV string with a row limit. Returns `(csv_string, total_row_count)`.
-pub fn format_csv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result<(String, usize)> {
-    format_delimited_limited(result, db, Delimiter::Comma, limit)
+pub fn format_csv_limited(
+    result: &QueryResult,
+    snapshot: &LedgerSnapshot,
+    limit: usize,
+) -> Result<(String, usize)> {
+    format_delimited_limited(result, snapshot, Delimiter::Comma, limit)
 }
 
 // ---------------------------------------------------------------------------
 // Shared implementation
 // ---------------------------------------------------------------------------
 
-fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Result<Vec<u8>> {
+fn format_delimited_bytes(
+    result: &QueryResult,
+    snapshot: &LedgerSnapshot,
+    delimiter: Delimiter,
+) -> Result<Vec<u8>> {
     reject_non_tabular(result, delimiter)?;
 
-    let compactor = IriCompactor::new(db.namespaces(), &result.context);
-    let store = result.binary_store.as_deref();
+    let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
+    let gv = result.binary_graph.as_ref();
     let select_vars = resolve_select_vars(result);
 
     let est_size = (result.row_count() + 1)
@@ -136,7 +148,7 @@ fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -
         result,
         &select_vars,
         &compactor,
-        store,
+        gv,
         delimiter,
         None,
     )?;
@@ -144,8 +156,12 @@ fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -
     Ok(out)
 }
 
-fn format_delimited(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Result<String> {
-    let bytes = format_delimited_bytes(result, db, delimiter)?;
+fn format_delimited(
+    result: &QueryResult,
+    snapshot: &LedgerSnapshot,
+    delimiter: Delimiter,
+) -> Result<String> {
+    let bytes = format_delimited_bytes(result, snapshot, delimiter)?;
     #[cfg(debug_assertions)]
     {
         Ok(String::from_utf8(bytes).expect("delimited output should always be valid UTF-8"))
@@ -161,14 +177,14 @@ fn format_delimited(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Resu
 
 fn format_delimited_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     delimiter: Delimiter,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
     reject_non_tabular(result, delimiter)?;
 
-    let compactor = IriCompactor::new(db.namespaces(), &result.context);
-    let store = result.binary_store.as_deref();
+    let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
+    let gv = result.binary_graph.as_ref();
     let select_vars = resolve_select_vars(result);
     let total = result.row_count();
 
@@ -185,7 +201,7 @@ fn format_delimited_bytes_limited(
         result,
         &select_vars,
         &compactor,
-        store,
+        gv,
         delimiter,
         Some(limit),
     )?;
@@ -195,11 +211,11 @@ fn format_delimited_bytes_limited(
 
 fn format_delimited_limited(
     result: &QueryResult,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
     delimiter: Delimiter,
     limit: usize,
 ) -> Result<(String, usize)> {
-    let (bytes, total) = format_delimited_bytes_limited(result, db, delimiter, limit)?;
+    let (bytes, total) = format_delimited_bytes_limited(result, snapshot, delimiter, limit)?;
     #[cfg(debug_assertions)]
     let s = String::from_utf8(bytes).expect("delimited output should always be valid UTF-8");
     #[cfg(not(debug_assertions))]
@@ -278,7 +294,7 @@ fn write_data_rows(
     result: &QueryResult,
     select_vars: &[VarId],
     compactor: &IriCompactor,
-    store: Option<&BinaryIndexStore>,
+    gv: Option<&BinaryGraphView>,
     delimiter: Delimiter,
     limit: Option<usize>,
 ) -> Result<()> {
@@ -310,7 +326,7 @@ fn write_data_rows(
                 }
                 cell_buf.clear();
                 let binding = batch.get_by_col(row, col);
-                write_binding_cell(&mut cell_buf, binding, compactor, store)?;
+                write_binding_cell(&mut cell_buf, binding, compactor, gv)?;
                 flush_cell(out, &cell_buf, delimiter);
             }
             out.push(b'\n');
@@ -333,7 +349,7 @@ fn write_binding_cell(
     cell: &mut Vec<u8>,
     binding: &Binding,
     compactor: &IriCompactor,
-    store: Option<&BinaryIndexStore>,
+    gv: Option<&BinaryGraphView>,
 ) -> Result<()> {
     match binding {
         Binding::Unbound | Binding::Poisoned => {
@@ -354,7 +370,8 @@ fn write_binding_cell(
             write_flake_value(cell, val, compactor);
         }
         Binding::EncodedSid { s_id } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
                 FormatError::InvalidBinding(format!(
                     "Failed to resolve subject IRI for s_id {}: {}",
@@ -365,7 +382,8 @@ fn write_binding_cell(
             cell.extend_from_slice(compacted.as_bytes());
         }
         Binding::EncodedPid { p_id } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             let iri = store.resolve_predicate_iri(*p_id).ok_or_else(|| {
                 FormatError::InvalidBinding(format!(
                     "Failed to resolve predicate IRI for p_id {}",
@@ -381,7 +399,8 @@ fn write_binding_cell(
             p_id,
             ..
         } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             if *o_kind == ObjKind::LEX_ID.as_u8() || *o_kind == ObjKind::JSON_ID.as_u8() {
                 store
                     .write_string_value_bytes(*o_key as u32, cell)
@@ -401,7 +420,7 @@ fn write_binding_cell(
                 let compacted = compactor.compact_vocab_iri(&iri);
                 cell.extend_from_slice(compacted.as_bytes());
             } else {
-                let val = store.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
+                let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
                     FormatError::InvalidBinding(format!(
                         "Failed to decode value (kind={}, key={}, p_id={}): {}",
                         o_kind, o_key, p_id, e
@@ -416,16 +435,16 @@ fn write_binding_cell(
                 if j > 0 {
                     cell.push(b';');
                 }
-                write_binding_cell(cell, val, compactor, store)?;
+                write_binding_cell(cell, val, compactor, gv)?;
             }
         }
     }
     Ok(())
 }
 
-/// Require a BinaryIndexStore for encoded binding resolution.
-fn require_store(store: Option<&BinaryIndexStore>) -> Result<&BinaryIndexStore> {
-    store.ok_or_else(|| {
+/// Require a BinaryGraphView for encoded binding resolution.
+fn require_graph_view(gv: Option<&BinaryGraphView>) -> Result<&BinaryGraphView> {
+    gv.ok_or_else(|| {
         FormatError::InvalidBinding(
             "Encountered encoded binding but QueryResult has no binary_store".to_string(),
         )
@@ -553,8 +572,8 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    fn make_test_db() -> Db {
-        let mut db = Db::genesis("test:main");
+    fn make_test_snapshot() -> LedgerSnapshot {
+        let mut db = LedgerSnapshot::genesis("test:main");
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());
         db
@@ -604,7 +623,7 @@ mod tests {
             select: var_ids,
             select_mode: SelectMode::Many,
             batches: vec![batch],
-            binary_store: None,
+            binary_graph: None,
             construct_template: None,
             graph_select: None,
         }
@@ -618,37 +637,37 @@ mod tests {
 
     #[test]
     fn test_tsv_empty_result() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(&["?s", "?name"], vec![]);
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "s\tname\n");
     }
 
     #[test]
     fn test_tsv_sid_binding_no_context() {
         // Without @context, Sid outputs full IRI (no compaction possible)
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(&["?s"], vec![vec![Binding::Sid(Sid::new(100, "alice"))]]);
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "s\nhttp://example.org/alice\n");
     }
 
     #[test]
     fn test_tsv_sid_binding_with_context() {
         // With @context that maps "ex" -> "http://example.org/", IRIs should be compacted
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result_with_context(
             &["?s"],
             vec![vec![Binding::Sid(Sid::new(100, "alice"))]],
             make_test_context(),
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "s\nex:alice\n");
     }
 
     #[test]
     fn test_tsv_literal_bindings() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?name", "?age"],
             vec![vec![
@@ -659,13 +678,13 @@ mod tests {
                 Binding::lit(FlakeValue::Long(30), Sid::new(2, "long")),
             ]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "name\tage\nAlice\t30\n");
     }
 
     #[test]
     fn test_tsv_sanitization() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?val"],
             vec![vec![Binding::lit(
@@ -673,24 +692,24 @@ mod tests {
                 Sid::new(2, "string"),
             )]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "val\nhello world foo bar\n");
     }
 
     #[test]
     fn test_tsv_unbound_binding() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?a", "?b"],
             vec![vec![Binding::Sid(Sid::new(100, "x")), Binding::Unbound]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "a\tb\nhttp://example.org/x\t\n");
     }
 
     #[test]
     fn test_tsv_multiple_rows() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?s"],
             vec![
@@ -699,7 +718,7 @@ mod tests {
                 vec![Binding::Sid(Sid::new(100, "c"))],
             ],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(
             tsv,
             "s\nhttp://example.org/a\nhttp://example.org/b\nhttp://example.org/c\n"
@@ -708,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_tsv_limited_output() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?s"],
             vec![
@@ -717,14 +736,14 @@ mod tests {
                 vec![Binding::Sid(Sid::new(100, "c"))],
             ],
         );
-        let (tsv, total) = format_tsv_limited(&result, &db, 2).unwrap();
+        let (tsv, total) = format_tsv_limited(&result, &snapshot, 2).unwrap();
         assert_eq!(total, 3);
         assert_eq!(tsv, "s\nhttp://example.org/a\nhttp://example.org/b\n");
     }
 
     #[test]
     fn test_tsv_boolean_and_double() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?flag", "?score"],
             vec![vec![
@@ -732,7 +751,7 @@ mod tests {
                 Binding::lit(FlakeValue::Double(3.125), Sid::new(2, "double")),
             ]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         let lines: Vec<&str> = tsv.lines().collect();
         assert_eq!(lines[0], "flag\tscore");
         assert!(lines[1].starts_with("true\t"));
@@ -740,31 +759,31 @@ mod tests {
 
     #[test]
     fn test_tsv_iri_binding() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?g"],
             vec![vec![Binding::Iri(Arc::from("http://example.org/graph1"))]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         // No context → full IRI
         assert_eq!(tsv, "g\nhttp://example.org/graph1\n");
     }
 
     #[test]
     fn test_tsv_iri_binding_with_context() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result_with_context(
             &["?g"],
             vec![vec![Binding::Iri(Arc::from("http://example.org/graph1"))]],
             make_test_context(),
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "g\nex:graph1\n");
     }
 
     #[test]
     fn test_tsv_grouped_binding() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?vals"],
             vec![vec![Binding::Grouped(vec![
@@ -773,7 +792,7 @@ mod tests {
                 Binding::lit(FlakeValue::Long(3), Sid::new(2, "long")),
             ])]],
         );
-        let tsv = format_tsv(&result, &db).unwrap();
+        let tsv = format_tsv(&result, &snapshot).unwrap();
         assert_eq!(tsv, "vals\n1;2;3\n");
     }
 
@@ -781,15 +800,15 @@ mod tests {
 
     #[test]
     fn test_csv_empty_result() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(&["?s", "?name"], vec![]);
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "s,name\n");
     }
 
     #[test]
     fn test_csv_basic() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?name", "?age"],
             vec![vec![
@@ -800,13 +819,13 @@ mod tests {
                 Binding::lit(FlakeValue::Long(30), Sid::new(2, "long")),
             ]],
         );
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "name,age\nAlice,30\n");
     }
 
     #[test]
     fn test_csv_quoting_comma() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?val"],
             vec![vec![Binding::lit(
@@ -814,13 +833,13 @@ mod tests {
                 Sid::new(2, "string"),
             )]],
         );
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "val\n\"hello, world\"\n");
     }
 
     #[test]
     fn test_csv_quoting_double_quotes() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?val"],
             vec![vec![Binding::lit(
@@ -828,13 +847,13 @@ mod tests {
                 Sid::new(2, "string"),
             )]],
         );
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "val\n\"say \"\"hello\"\"\"\n");
     }
 
     #[test]
     fn test_csv_quoting_newline() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?val"],
             vec![vec![Binding::lit(
@@ -842,25 +861,25 @@ mod tests {
                 Sid::new(2, "string"),
             )]],
         );
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "val\n\"line1\nline2\"\n");
     }
 
     #[test]
     fn test_csv_sid_with_context() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result_with_context(
             &["?s"],
             vec![vec![Binding::Sid(Sid::new(100, "alice"))]],
             make_test_context(),
         );
-        let csv = format_csv(&result, &db).unwrap();
+        let csv = format_csv(&result, &snapshot).unwrap();
         assert_eq!(csv, "s\nex:alice\n");
     }
 
     #[test]
     fn test_csv_limited() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let result = make_result(
             &["?n"],
             vec![
@@ -869,7 +888,7 @@ mod tests {
                 vec![Binding::lit(FlakeValue::Long(3), Sid::new(2, "long"))],
             ],
         );
-        let (csv, total) = format_csv_limited(&result, &db, 2).unwrap();
+        let (csv, total) = format_csv_limited(&result, &snapshot, 2).unwrap();
         assert_eq!(total, 3);
         assert_eq!(csv, "n\n1\n2\n");
     }

@@ -42,6 +42,11 @@ Design documents are located in the `/docs/design/` directory and various planni
 
 ### Testing and Quality
 
+**W3C SPARQL Compliance Test Suite:**
+- Developer guide: `/docs/contributing/sparql-compliance.md`
+- Test suite crate: `/testsuite-sparql/`
+- Covers: Manifest-driven W3C compliance testing, failure analysis workflow
+
 **Integration Tests Strategy:**
 - Location: `/INTEGRATION_TESTS_STRATEGY.md`
 - Covers: Test organization, coverage goals, CI/CD integration
@@ -217,7 +222,7 @@ Practical guidelines:
 
 ### Ledger vs Db vs Graph (internal meaning)
 - **Ledger**: the durable identity + commit chain + publication state (nameservice record).
-- **Db**: the indexed snapshot value used for range/scan (hot path).
+- **LedgerSnapshot**: the indexed snapshot value used for range/scan (hot path).
 - **Graph**: query scoping mechanism (active graph, dataset graph selection, `GRAPH` operator).
 
 Avoid using "graph" as a synonym for "db" in code comments. Prefer:

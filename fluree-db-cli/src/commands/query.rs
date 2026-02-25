@@ -149,9 +149,9 @@ pub async fn run(
             let view = match at {
                 Some(at_str) => {
                     let spec = parse_time_spec(at_str);
-                    fluree.view_at(&alias, spec).await?
+                    fluree.db_at(&alias, spec).await?
                 }
-                None => fluree.view(&alias).await?,
+                None => fluree.db(&alias).await?,
             };
 
             // Benchmark mode should measure query execution only (not view loading or result formatting).
@@ -190,7 +190,7 @@ pub async fn run(
                     detect::QueryFormat::Sparql => {
                         if let Some(output) = output::format_sparql_table_from_result(
                             &result,
-                            &view.db,
+                            &view.snapshot,
                             Some(BENCH_ROWS),
                         )? {
                             println!("{}", output.text);
@@ -198,7 +198,7 @@ pub async fn run(
                         } else {
                             // Rare fallback: GROUP BY produces grouped bindings requiring
                             // disaggregation, so fall back to the existing JSON-based formatter.
-                            let formatted_json = result.to_sparql_json(&view.db)?;
+                            let formatted_json = result.to_sparql_json(&view.snapshot)?;
                             let output = output::format_result(
                                 &formatted_json,
                                 OutputFormatKind::Table,
@@ -211,7 +211,8 @@ pub async fn run(
                     }
                     detect::QueryFormat::JsonLd => {
                         // JSON-LD can be nested; keep bench output in the lightweight TSV form.
-                        let (text, total_rows) = result.to_tsv_limited(&view.db, BENCH_ROWS)?;
+                        let (text, total_rows) =
+                            result.to_tsv_limited(&view.snapshot, BENCH_ROWS)?;
                         print!("{text}");
                         print_footer(total_rows, Some(BENCH_ROWS), elapsed);
                     }
@@ -226,9 +227,9 @@ pub async fn run(
                 let total_rows = result.row_count();
                 let fmt_timer = Instant::now();
                 let bytes = if output_format == OutputFormatKind::Tsv {
-                    result.to_tsv_bytes(&view.db)?
+                    result.to_tsv_bytes(&view.snapshot)?
                 } else {
-                    result.to_csv_bytes(&view.db)?
+                    result.to_csv_bytes(&view.snapshot)?
                 };
                 let fmt_elapsed = fmt_timer.elapsed();
                 use std::io::Write;
@@ -255,7 +256,7 @@ pub async fn run(
                 {
                     let render_timer = Instant::now();
                     if let Some(output) =
-                        output::format_sparql_table_from_result(&result, &view.db, None)?
+                        output::format_sparql_table_from_result(&result, &view.snapshot, None)?
                     {
                         let render_elapsed = render_timer.elapsed();
                         println!("{}", output.text);
@@ -272,8 +273,10 @@ pub async fn run(
                 // Full formatting path
                 let render_timer = Instant::now();
                 let formatted_json = match query_format {
-                    detect::QueryFormat::Sparql => result.to_sparql_json(&view.db)?,
-                    detect::QueryFormat::JsonLd => result.to_jsonld_async(&view.db).await?,
+                    detect::QueryFormat::Sparql => result.to_sparql_json(&view.snapshot)?,
+                    detect::QueryFormat::JsonLd => {
+                        result.to_jsonld_async(view.as_graph_db_ref()).await?
+                    }
                 };
                 let output =
                     output::format_result(&formatted_json, output_format, query_format, limit)?;

@@ -231,7 +231,7 @@ Enable background indexing and configure novelty backpressure thresholds:
 | Flag                  | Env Var                    | Default   | Description                                     |
 | --------------------- | -------------------------- | --------- | ----------------------------------------------- |
 | `--indexing-enabled`  | `FLUREE_INDEXING_ENABLED`  | `false`   | Enable background indexing                      |
-| `--reindex-min-bytes` | `FLUREE_REINDEX_MIN_BYTES` | `100000`  | Soft threshold (triggers background reindex)    |
+| `--reindex-min-bytes` | `FLUREE_REINDEX_MIN_BYTES` | `100000`  | Soft threshold (triggers background indexing)   |
 | `--reindex-max-bytes` | `FLUREE_REINDEX_MAX_BYTES` | `1000000` | Hard threshold (blocks commits until reindexed) |
 
 Config file equivalent:

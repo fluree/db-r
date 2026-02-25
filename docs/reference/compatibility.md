@@ -36,7 +36,7 @@ Fluree supports JSON-LD 1.1:
 
 ### SPARQL 1.1 Query
 
-**Status:** Fully compliant
+**Status:** In progress toward full compliance
 
 Supported SPARQL features:
 - SELECT queries
@@ -55,6 +55,8 @@ Supported SPARQL features:
 - LIMIT and OFFSET
 - Subqueries
 - Property paths (partial: `+`, `*`, `^`, `|`, `/`; see [SPARQL docs](../query/sparql.md#property-paths))
+
+**W3C Compliance Testing:** Fluree runs the official W3C SPARQL test suite via the `testsuite-sparql` crate. The suite automatically discovers and runs 700+ test cases from W3C manifest files. See the [compliance test guide](../contributing/sparql-compliance.md) for details.
 
 **Specification:** https://www.w3.org/TR/sparql11-query/
 

@@ -3,7 +3,7 @@
 //! These tests are designed to validate end-to-end operator semantics without
 //! requiring the on-disk `test-database` fixture.
 
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{LedgerSnapshot, Sid};
 use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::join::NestedLoopJoinOperator;
@@ -81,12 +81,12 @@ impl OptionalBuilder for NoMatchOptionalBuilder {
 #[tokio::test]
 async fn test_optional_poison_blocks_subsequent() {
     // Minimal db/context.
-    let db = Db::genesis("test/main");
+    let snapshot = LedgerSnapshot::genesis("test/main");
     let mut vars = VarRegistry::new();
     let s = vars.get_or_insert("?s");
     let opt = vars.get_or_insert("?opt");
     let o = vars.get_or_insert("?o");
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Required batch: one row with ?s bound.
     let required_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());

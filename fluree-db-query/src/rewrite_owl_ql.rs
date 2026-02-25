@@ -40,8 +40,8 @@ use crate::rewrite::{Diagnostics, PlanContext, RewriteResult};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{
-    is_owl_equivalent_property, is_rdf_type, range, Db, FlakeValue, IndexType, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid,
+    is_owl_equivalent_property, is_rdf_type, FlakeValue, GraphDbRef, IndexType, RangeMatch,
+    RangeTest, SchemaHierarchy, Sid,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -230,11 +230,12 @@ impl Ontology {
     ///
     /// # Arguments
     ///
-    /// * `db` - The database to query
-    /// * `epoch` - Schema epoch for cache validation (typically db.t or schema.t)
+    /// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
     ///
-    pub async fn from_db(db: &Db, epoch: u64) -> crate::error::Result<Self> {
+    pub async fn from_db(db: GraphDbRef<'_>) -> crate::error::Result<Self> {
         use fluree_vocab::namespaces::{OWL, RDFS};
+
+        let epoch = db.snapshot.t as u64;
 
         let mut inverse_of: HashMap<Sid, Vec<Sid>> = HashMap::new();
         let mut eq_edges: Vec<(Sid, Sid)> = Vec::new();
@@ -244,14 +245,13 @@ impl Ontology {
         // Query for owl:inverseOf assertions
         // Pattern: ?property owl:inverseOf ?inverse
         let inverse_of_pred = Sid::new(OWL, "inverseOf");
-        let inverse_flakes = range(
-            db,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch::predicate(inverse_of_pred),
-            RangeOptions::default(),
-        )
-        .await?;
+        let inverse_flakes = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch::predicate(inverse_of_pred),
+            )
+            .await?;
 
         for flake in inverse_flakes {
             if let FlakeValue::Ref(inverse_prop) = flake.o {
@@ -268,14 +268,13 @@ impl Ontology {
         // Query for owl:equivalentProperty assertions
         // Pattern: ?property owl:equivalentProperty ?equivalent
         let equivalent_prop_pred = Sid::new(OWL, "equivalentProperty");
-        let equivalent_flakes = range(
-            db,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch::predicate(equivalent_prop_pred),
-            RangeOptions::default(),
-        )
-        .await?;
+        let equivalent_flakes = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch::predicate(equivalent_prop_pred),
+            )
+            .await?;
 
         for flake in equivalent_flakes {
             if let FlakeValue::Ref(equiv_prop) = flake.o {
@@ -286,14 +285,13 @@ impl Ontology {
         // Query for rdfs:domain assertions
         // Pattern: ?property rdfs:domain ?class
         let domain_pred = Sid::new(RDFS, "domain");
-        let domain_flakes = range(
-            db,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch::predicate(domain_pred),
-            RangeOptions::default(),
-        )
-        .await?;
+        let domain_flakes = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch::predicate(domain_pred),
+            )
+            .await?;
 
         for flake in domain_flakes {
             if let FlakeValue::Ref(domain_class) = flake.o {
@@ -306,14 +304,13 @@ impl Ontology {
         // Query for rdfs:range assertions
         // Pattern: ?property rdfs:range ?class
         let range_pred = Sid::new(RDFS, "range");
-        let range_flakes = range(
-            db,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch::predicate(range_pred),
-            RangeOptions::default(),
-        )
-        .await?;
+        let range_flakes = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch::predicate(range_pred),
+            )
+            .await?;
 
         for flake in range_flakes {
             if let FlakeValue::Ref(range_class) = flake.o {
@@ -337,30 +334,35 @@ impl Ontology {
     /// In memory-backed tests, schema/ontology assertions often exist only in novelty (overlay)
     /// until background indexing runs. This helper merges `owl:equivalentProperty` assertions
     /// from the overlay into the persisted ontology snapshot.
-    pub async fn from_db_with_overlay(
-        db: &Db,
-        overlay: &dyn OverlayProvider,
-        epoch: u64,
-        to_t: i64,
-    ) -> crate::error::Result<Self> {
-        let base = Self::from_db(db, epoch).await?;
+    pub async fn from_db_with_overlay(db: GraphDbRef<'_>) -> crate::error::Result<Self> {
+        let base = Self::from_db(db).await?;
+
+        let epoch = db.snapshot.t as u64;
 
         let mut inverse_of = base.inner.inverse_of.clone();
         let mut eq_edges: Vec<(Sid, Sid)> = Vec::new();
         let domain = base.inner.domain.clone();
         let range = base.inner.range.clone();
 
-        overlay.for_each_overlay_flake(IndexType::Psot, None, None, true, to_t, &mut |flake| {
-            if !flake.op {
-                return;
-            }
-            if !is_owl_equivalent_property(&flake.p) {
-                return;
-            }
-            if let FlakeValue::Ref(eq_prop) = &flake.o {
-                eq_edges.push((flake.s.clone(), eq_prop.clone()));
-            }
-        });
+        db.overlay.for_each_overlay_flake(
+            0,
+            IndexType::Psot,
+            None,
+            None,
+            true,
+            db.t,
+            &mut |flake| {
+                if !flake.op {
+                    return;
+                }
+                if !is_owl_equivalent_property(&flake.p) {
+                    return;
+                }
+                if let FlakeValue::Ref(eq_prop) = &flake.o {
+                    eq_edges.push((flake.s.clone(), eq_prop.clone()));
+                }
+            },
+        );
 
         // Normalize: sort/dedup for determinism.
         for invs in inverse_of.values_mut() {

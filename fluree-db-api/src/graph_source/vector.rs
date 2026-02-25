@@ -28,7 +28,7 @@ use fluree_db_query::vector::usearch::{
     IncrementalVectorUpdater, VectorIndex, VectorIndexBuilder, VectorPropertyDeps,
 };
 #[cfg(feature = "vector")]
-use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
 #[cfg(feature = "vector")]
 use serde_json::Value as JsonValue;
 #[cfg(feature = "vector")]
@@ -246,7 +246,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &ledger.db, &mut vars)?;
+        let parsed = parse_query(query_json, &ledger.snapshot, &mut vars)?;
 
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing
@@ -257,8 +257,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -270,12 +270,12 @@ where
             select: parsed.select,
             select_mode: parsed.select_mode,
             batches,
-            binary_store: None,
+            binary_graph: None,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
         };
 
-        let json = result.to_jsonld_async(&ledger.db).await?;
+        let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -501,13 +501,13 @@ where
         // Convert VectorPropertyDeps to PropertyDeps for compilation
         let bm25_property_deps = index.property_deps.query_deps.clone();
         let compiled_deps = CompiledPropertyDeps::compile(&bm25_property_deps, |iri: &str| {
-            ledger.db.encode_iri(iri)
+            ledger.snapshot.encode_iri(iri)
         });
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
         let commit_store =
-            fluree_db_core::content_store_for(self.storage().clone(), &ledger.db.ledger_id);
+            fluree_db_core::content_store_for(self.storage().clone(), &ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(commit_store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -531,7 +531,12 @@ where
         // 7. Convert affected Sids to IRIs
         let affected_iris: HashSet<Arc<str>> = affected_sids
             .into_iter()
-            .filter_map(|sid| ledger.db.decode_sid(&sid).map(|s| Arc::from(s.as_str())))
+            .filter_map(|sid| {
+                ledger
+                    .snapshot
+                    .decode_sid(&sid)
+                    .map(|s| Arc::from(s.as_str()))
+            })
             .collect();
 
         info!(

@@ -1,4 +1,4 @@
-//! Query parameter types shared between b-tree and binary index paths.
+//! Query parameter types shared across query backends.
 //!
 //! These types define the query interface (what to match, how to compare,
 //! query options) and are independent of the underlying index implementation.

@@ -77,7 +77,7 @@ async fn staging_data_allow_false_values() {
     });
 
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger1.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
 
     assert_eq!(jsonld, json!([["ex:alice", "ex:isCool", false]]));
 }
@@ -107,7 +107,10 @@ async fn staging_data_mixed_data_types() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should return mixed array with ref and string
     let brian = &jsonld.as_array().unwrap()[0];
@@ -141,7 +144,10 @@ async fn staging_data_mixed_data_types_numeric() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should preserve ordered list with mixed types
     let wes = &jsonld.as_array().unwrap()[0];
@@ -171,7 +177,10 @@ async fn iri_value_maps() {
     });
 
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger1.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let expected = json!([{
         "@id": "http://example.com/foo",
@@ -215,7 +224,10 @@ async fn object_var_test() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let jane = &jsonld.as_array().unwrap()[0];
     assert_eq!(jane["@id"], "ex:jane");
@@ -270,7 +282,7 @@ async fn transact_api_test() {
         )
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -303,7 +315,7 @@ async fn transact_api_test() {
         )
         .await
         .unwrap()
-        .to_jsonld_async(&ledger3.db)
+        .to_jsonld_async(ledger3.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -340,7 +352,7 @@ async fn transact_api_test() {
         )
         .await
         .unwrap()
-        .to_jsonld_async(&ledger4.db)
+        .to_jsonld_async(ledger4.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -416,7 +428,7 @@ async fn base_and_vocab_test() {
         .query(&ledger1, &q_full)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -439,7 +451,7 @@ async fn base_and_vocab_test() {
         .query(&ledger1, &q_vocab)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -465,7 +477,7 @@ async fn base_and_vocab_test() {
         .query(&ledger3, &q_vocab)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger3.db)
+        .to_jsonld_async(ledger3.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -510,7 +522,7 @@ async fn json_objects() {
         .query(&ledger1, &q_graph)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -530,7 +542,7 @@ async fn json_objects() {
         .query(&ledger1, &q_select)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&r_select),
@@ -571,7 +583,10 @@ async fn no_where_solutions() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     let andrew = jsonld.as_object().unwrap();
     assert_eq!(andrew["@id"], "ex:andrew");
@@ -616,7 +631,7 @@ async fn transaction_iri_special_char() {
         .query(&ledger2, &q1)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -636,7 +651,7 @@ async fn transaction_iri_special_char() {
         .query(&ledger2, &q2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -688,7 +703,7 @@ async fn transact_with_explicit_commit() {
         .query(&ledger1, &query)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -711,12 +726,12 @@ fn ctx_ex_schema() -> serde_json::Value {
 #[tokio::test]
 async fn insert_data_then_query_names() {
     use fluree_db_api::{LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/transact-insert:basic";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let inserted = fluree
@@ -740,7 +755,9 @@ async fn insert_data_then_query_names() {
     });
 
     let result = fluree.query(&inserted.ledger, &query).await.expect("query");
-    let mut rows = result.to_jsonld(&inserted.ledger.db).expect("to_jsonld");
+    let mut rows = result
+        .to_jsonld(&inserted.ledger.snapshot)
+        .expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
     arr.sort_by_key(|a| a.to_string());
 
@@ -750,12 +767,12 @@ async fn insert_data_then_query_names() {
 #[tokio::test]
 async fn insert_invalid_type_literal_errors() {
     use fluree_db_api::{ApiError, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/transact-insert:invalid-type";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let txn = json!({
@@ -796,12 +813,12 @@ async fn insert_invalid_type_literal_errors() {
 #[tokio::test]
 async fn retract_property_removes_only_that_property() {
     use fluree_db_api::{LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/transact-retraction:prop";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let seeded = fluree
@@ -836,7 +853,7 @@ async fn retract_property_removes_only_that_property() {
     });
     let result = fluree.query(&updated.ledger, &q).await.expect("query");
     let jsonld = result
-        .to_jsonld_async(&updated.ledger.db)
+        .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -858,12 +875,12 @@ async fn retract_property_removes_only_that_property() {
 #[tokio::test]
 async fn retracting_ordered_lists_removes_list_values() {
     use fluree_db_api::{LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/transact-retraction:list";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let ctx = json!({
@@ -894,7 +911,7 @@ async fn retracting_ordered_lists_removes_list_values() {
         .await
         .expect("query before");
     let before_json = before
-        .to_jsonld_async(&seeded.ledger.db)
+        .to_jsonld_async(seeded.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async before");
 
@@ -924,7 +941,7 @@ async fn retracting_ordered_lists_removes_list_values() {
         .await
         .expect("query after");
     let after_json = after
-        .to_jsonld_async(&updated.ledger.db)
+        .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async after");
 
@@ -980,7 +997,7 @@ async fn turtle_insert() {
         .query(&ledger1, &query)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -1000,7 +1017,7 @@ async fn turtle_insert() {
         .query(&ledger1, &query2)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     let row2 = rows2.as_array().unwrap()[0].as_object().unwrap();
@@ -1021,7 +1038,7 @@ async fn turtle_insert() {
         .query(&ledger1, &query3)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .unwrap();
     let row3 = rows3.as_array().unwrap()[0].as_object().unwrap();
@@ -1067,7 +1084,7 @@ async fn turtle_insert_and_commit() {
         .query(&ledger2, &query)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -1108,7 +1125,7 @@ ex:foo ex:name "UPDATED Name" ;
         )
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -1152,7 +1169,7 @@ ex:foo ex:name "UPDATED Name" ;
         )
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(

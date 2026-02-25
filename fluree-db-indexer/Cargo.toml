@@ -18,6 +18,7 @@ fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-ledger = { path = "../fluree-db-ledger", optional = true }
 fluree-db-spatial = { path = "../fluree-db-spatial" }
+fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 
 # Core dependencies
 futures.workspace = true
@@ -48,7 +49,9 @@ uuid = { version = "1", features = ["v4"] }
 once_cell.workspace = true
 parking_lot = "0.12"
 libc = "0.2"
+rayon.workspace = true
 
 [dev-dependencies]
 # For HLL tests (proper hash distribution)
 xxhash-rust.workspace = true
+tempfile = "3"

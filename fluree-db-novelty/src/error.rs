@@ -24,6 +24,10 @@ pub enum NoveltyError {
     #[error("Invalid commit format: {0}")]
     InvalidCommit(String),
 
+    /// Unknown graph Sid — flake references a graph not in reverse_graph
+    #[error("Invalid graph: {0}")]
+    InvalidGraph(String),
+
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

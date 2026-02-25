@@ -300,7 +300,7 @@ impl Operator for GroupByOperator {
 mod tests {
     use super::*;
     use crate::seed::SeedOperator;
-    use fluree_db_core::{Db, FlakeValue, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
@@ -310,8 +310,8 @@ mod tests {
         Sid::new(2, "string")
     }
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_snapshot() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     #[test]
@@ -388,9 +388,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input with 3 rows, all same city
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
@@ -475,9 +475,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input with 4 rows, 2 cities
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
@@ -560,9 +560,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create an operator that produces zero rows
         struct NoRowsOperator {
@@ -603,9 +603,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input with 3 rows
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());

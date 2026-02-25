@@ -40,7 +40,7 @@ async fn insert_does_not_parse_bare_var_by_default() {
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger1.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["?age"]));
 }
 
@@ -81,7 +81,7 @@ async fn object_var_parsing_update_opt() {
         .query(&ledger1, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(jsonld, json!(["?age"]));
 
@@ -103,7 +103,7 @@ async fn object_var_parsing_update_opt() {
         .query(&ledger2, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(jsonld2, json!(["?age"]));
 }
@@ -144,7 +144,7 @@ async fn update_with_object_var_parsing_false_treats_bare_var_as_literal() {
         .query(&ledger1, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger1.db)
+        .to_jsonld(&ledger1.snapshot)
         .unwrap();
     assert_eq!(jsonld, json!(["?not-a-var"]));
 }
@@ -195,7 +195,7 @@ async fn update_explicit_variable_map_parses_when_flag_false_and_bound() {
         .query(&ledger2, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(jsonld, json!(["2020-01-01"]));
 }
@@ -240,7 +240,7 @@ async fn update_id_var_still_parses_when_flag_false() {
         .query(&ledger2, &query)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -289,7 +289,7 @@ async fn update_predicate_var_still_parses_when_flag_false() {
         .query(&ledger2, &query)
         .await
         .unwrap()
-        .to_jsonld(&ledger2.db)
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert!(jsonld.as_array().unwrap().contains(&json!("schema:text")));
 }
@@ -326,7 +326,7 @@ async fn insert_literal_qmark_string_has_xsd_string_type() {
     });
 
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger1.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
 
     // Should return the literal string "?not-a-var" with xsd:string type
     assert_eq!(jsonld, json!([["?not-a-var", "xsd:string"]]));
@@ -371,7 +371,10 @@ async fn upsert_literal_qmark_string_has_xsd_string_type() {
     });
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should return the literal string "?not-a-var" with xsd:string type
     assert_eq!(jsonld, json!([["?not-a-var", "xsd:string"]]));
@@ -399,7 +402,7 @@ async fn query_literal_qmark_string_with_flag_false_requires_literal_match() {
     });
 
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger1.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["ex:s"]));
 }
 
@@ -425,7 +428,7 @@ async fn query_explicit_variable_in_where_still_parses_when_flag_false() {
     });
 
     let result = fluree.query(&ledger1, &query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger1.db).unwrap();
+    let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["?not-a-var"]));
 }
 
@@ -470,7 +473,10 @@ async fn update_literal_qmark_string_where_binds_and_updates() {
         "where": [{"@id": "ex:s"}]
     });
     let result = fluree.query(&ledger2, &query).await.unwrap();
-    let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
     assert_eq!(
         jsonld,
         json!([{"@id": "ex:s", "ex:prop": "?not-a-var", "ex:newProp": "new"}])

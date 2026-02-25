@@ -167,6 +167,23 @@ impl IriCompactor {
         Ok(self.compact_for_display(iri))
     }
 
+    /// Try to encode a full IRI back into a `Sid` using namespace codes.
+    ///
+    /// Returns `None` if the IRI doesn't match any known namespace prefix.
+    /// This is the inverse of `decode_sid` and is used for schema index lookups
+    /// when the source data is a full IRI (e.g., from `BinaryIndexStore`).
+    pub fn try_encode_iri(&self, iri: &str) -> Option<Sid> {
+        // Try each namespace prefix (longest match wins)
+        let mut best: Option<(u16, &str, usize)> = None;
+        for (&code, prefix) in &self.namespace_codes {
+            if iri.starts_with(prefix.as_str()) && prefix.len() > best.map_or(0, |b| b.2) {
+                let local = &iri[prefix.len()..];
+                best = Some((code, local, prefix.len()));
+            }
+        }
+        best.map(|(code, local, _)| Sid::new(code, local))
+    }
+
     /// Check if a namespace code is registered
     pub fn has_namespace(&self, code: u16) -> bool {
         self.namespace_codes.contains_key(&code)

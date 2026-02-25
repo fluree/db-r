@@ -19,14 +19,14 @@ use crate::ir::{GeoSearchCenter, GeoSearchPattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, OverlayOp,
+    RunRecord, RunSortOrder,
+};
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
-use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, OverlayOp, RunRecord,
-};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -319,7 +319,7 @@ impl Operator for GeoSearchOperator {
         };
 
         // Check time-travel coverage: GeoSearch requires to_t >= base_t
-        // For historical queries before base_t, caller must use B-tree fallback.
+        // For historical queries before base_t, the binary index does not have coverage.
         let base_t = store.base_t();
         if ctx.to_t < base_t {
             return Err(QueryError::TimeRangeNotCovered {
@@ -343,7 +343,8 @@ impl Operator for GeoSearchOperator {
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store.clone(), dn);
+            let gv = BinaryGraphView::new(store.clone(), ctx.binary_g_id);
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
             let mut ops = crate::binary_scan::translate_overlay_flakes(
                 ovl,
                 &mut dict_ov,

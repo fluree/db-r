@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, DataSource, ExecutableQuery, FlureeBuilder, GraphSourcePublisher,
-    ParsedContext, Pattern, StorageWrite, VarRegistry,
+    execute_with_r2rml, ExecutableQuery, FlureeBuilder, GraphSourcePublisher, ParsedContext,
+    Pattern, StorageWrite, VarRegistry,
 };
-use fluree_db_core::{NoOverlay, Tracker};
+use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
@@ -394,7 +394,7 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     // Register example.org namespace
     ledger
-        .db
+        .snapshot
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
@@ -406,11 +406,11 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     // Register predicate IRIs
     let ex_name_sid = ledger
-        .db
+        .snapshot
         .encode_iri("http://example.org/name")
         .expect("namespace should be registered");
     let ex_country_sid = ledger
-        .db
+        .snapshot
         .encode_iri("http://example.org/country")
         .expect("namespace should be registered");
 
@@ -444,12 +444,7 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     // Execute query
     let result = execute_with_r2rml(
-        DataSource {
-            db: &ledger.db,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -575,7 +570,7 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     // Create a ledger for query execution
     let mut ledger = genesis_ledger(&fluree, "e2e-provider:main");
     ledger
-        .db
+        .snapshot
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
@@ -1052,7 +1047,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     // can encode subject IRIs produced by rr:template. Without this, encode_iri()
     // returns None and the operator will skip all rows as "IRI not encodable".
     ledger
-        .db
+        .snapshot
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
@@ -1071,7 +1066,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     // Use a real Sid for the predicate so the R2RML rewrite can apply predicate_filter
     // and we only materialize the ex:name predicate-object map (instead of all POMs).
     let ex_name_sid = ledger
-        .db
+        .snapshot
         .encode_iri("http://example.org/name")
         .expect("example.org namespace should be registered for Sid encoding");
     let inner_patterns = vec![Pattern::Triple(TriplePattern::new(
@@ -1096,12 +1091,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
 
     // Execute with our mock R2RML provider
     let batches = execute_with_r2rml(
-        DataSource {
-            db: &ledger.db,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -1221,12 +1211,7 @@ async fn engine_e2e_provider_method_calls() {
 
     // Execute query - should succeed
     let result = execute_with_r2rml(
-        DataSource {
-            db: &ledger.db,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -1824,7 +1809,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     // Register example.org namespace
     ledger
-        .db
+        .snapshot
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
@@ -1835,7 +1820,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     // Register predicate IRI
     let ex_operated_by_sid = ledger
-        .db
+        .snapshot
         .encode_iri("http://example.org/operatedBy")
         .expect("namespace should be registered");
 
@@ -1860,12 +1845,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     // Execute query
     let batches = execute_with_r2rml(
-        DataSource {
-            db: &ledger.db,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,

@@ -14,26 +14,51 @@ use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
-use fluree_db_core::ids::GraphId;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
-use fluree_db_core::{Flake, FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_core::{Flake, FlakeValue, GraphId, Sid};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_policy::{
     is_schema_flake, populate_class_cache, PolicyContext, PolicyDecision, PolicyError,
 };
 use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
-    execute_pattern_with_overlay_at, Batch, BinaryRangeProvider, Binding, Pattern,
-    QueryPolicyExecutor, Ref, Term, TriplePattern, VarId, VarRegistry,
+    Batch, Binding, Pattern, QueryPolicyExecutor, Ref, Term, TriplePattern, VarId, VarRegistry,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::Instrument;
 
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::{ShaclCache, ShaclEngine, ValidationReport};
+
+/// Build a reverse lookup from graph Sid → GraphId.
+///
+/// Given `graph_sids` (GraphId → Sid from `txn.graph_delta`), returns the
+/// inverse mapping. Used by SHACL/policy to determine which graph a flake
+/// belongs to based on its `Flake.g` field.
+fn build_reverse_graph_lookup(graph_sids: &HashMap<GraphId, Sid>) -> HashMap<Sid, GraphId> {
+    graph_sids
+        .iter()
+        .map(|(&g_id, sid)| (sid.clone(), g_id))
+        .collect()
+}
+
+/// Resolve a flake's graph ID from its `Flake.g` field.
+///
+/// - `None` → default graph (g_id = 0)
+/// - `Some(sid)` → looked up in `reverse_graph`; returns error if unknown
+fn resolve_flake_graph_id(flake: &Flake, reverse_graph: &HashMap<Sid, GraphId>) -> Result<GraphId> {
+    match &flake.g {
+        None => Ok(0),
+        Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
+            TransactError::FlakeGeneration(format!(
+                "staged flake references unknown graph Sid: {}",
+                g_sid
+            ))
+        }),
+    }
+}
 
 /// Options for transaction staging
 ///
@@ -52,6 +77,17 @@ pub struct StageOptions<'a> {
     /// Tracker for fuel accounting.
     /// If provided, fuel will be consumed for each staged flake.
     pub tracker: Option<&'a Tracker>,
+
+    /// Graph routing map for named-graph flakes.
+    ///
+    /// Maps `GraphId → Sid` so that `stage_flakes` can resolve each flake's
+    /// `Flake.g` to a `GraphId` for per-graph policy enforcement and SHACL validation.
+    ///
+    /// **Required** when any flake has `g != None`. If `None` is provided and
+    /// named-graph flakes are present, `stage_flakes` will return an error.
+    ///
+    /// The normal `stage()` path builds this internally from `txn.graph_delta`.
+    pub graph_sids: Option<&'a HashMap<GraphId, Sid>>,
 }
 
 impl<'a> StageOptions<'a> {
@@ -75,6 +111,12 @@ impl<'a> StageOptions<'a> {
     /// Set the tracker for fuel accounting
     pub fn with_tracker(mut self, tracker: &'a Tracker) -> Self {
         self.tracker = Some(tracker);
+        self
+    }
+
+    /// Set the graph routing map for named-graph flakes
+    pub fn with_graph_sids(mut self, graph_sids: &'a HashMap<GraphId, Sid>) -> Self {
+        self.graph_sids = Some(graph_sids);
         self
     }
 }
@@ -170,11 +212,12 @@ pub async fn stage(
         let txn_id = generate_txn_id();
 
         // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
-        let graph_sids: std::collections::HashMap<u16, Sid> = txn
+        let graph_sids: HashMap<GraphId, Sid> = txn
             .graph_delta
             .iter()
             .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
             .collect();
+        let reverse_graph = build_reverse_graph_lookup(&graph_sids);
 
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
@@ -192,7 +235,8 @@ pub async fn stage(
             // Clojure parity: DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
             // list-index meta from the currently asserted flake (if present).
-            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph)
+                .await?;
 
             // For Upsert: also generate deletions for existing values
             if txn.txn_type == TxnType::Upsert {
@@ -260,9 +304,18 @@ pub async fn stage(
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 let policy_span = tracing::debug_span!("policy_enforce");
-                async { enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await }
-                    .instrument(policy_span)
-                    .await?;
+                async {
+                    enforce_modify_policies(
+                        &flakes,
+                        policy,
+                        &ledger,
+                        options.tracker,
+                        &reverse_graph,
+                    )
+                    .await
+                }
+                .instrument(policy_span)
+                .await?;
             }
         }
 
@@ -277,7 +330,10 @@ pub async fn stage(
             "transaction staging completed"
         );
 
-        Ok((LedgerView::stage(ledger, flakes), ns_registry))
+        Ok((
+            LedgerView::stage(ledger, flakes, &reverse_graph)?,
+            ns_registry,
+        ))
     }
     .instrument(span)
     .await
@@ -289,10 +345,17 @@ pub async fn stage(
 /// constructed by [`FlakeSink`](crate::flake_sink::FlakeSink). No WHERE
 /// execution, template materialization, or cancellation is performed.
 ///
+/// # Named Graph Support
+///
+/// When flakes include named-graph data (`Flake.g = Some(_)`), the caller
+/// **must** provide `StageOptions.graph_sids` so that policy enforcement
+/// and SHACL validation can resolve each flake's graph. If named-graph flakes
+/// are present without a routing map, this function returns an error.
+///
 /// # Arguments
 /// * `ledger` - The ledger state (consumed)
 /// * `flakes` - Pre-built assertion flakes
-/// * `options` - Optional backpressure / policy / tracking configuration
+/// * `options` - Optional backpressure / policy / tracking / graph routing configuration
 pub async fn stage_flakes(
     ledger: LedgerState,
     flakes: Vec<Flake>,
@@ -308,16 +371,36 @@ pub async fn stage_flakes(
             }
         }
 
-        // 2. Policy enforcement
+        // 2. Build graph routing map.
+        //
+        // If the caller provided graph_sids (push/import path), use it.
+        // Otherwise, verify no named-graph flakes are present — stage_flakes
+        // cannot correctly enforce policy/SHACL without a routing map.
+        let reverse_graph: HashMap<Sid, GraphId> = match options.graph_sids {
+            Some(gs) => build_reverse_graph_lookup(gs),
+            None => {
+                if flakes.iter().any(|f| f.g.is_some()) {
+                    return Err(TransactError::FlakeGeneration(
+                        "stage_flakes received named-graph flakes but no graph_sids \
+                         routing map was provided in StageOptions"
+                            .to_string(),
+                    ));
+                }
+                HashMap::new()
+            }
+        };
+
+        // 3. Policy enforcement
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 tracing::debug!("enforcing modify policies on pre-built flakes");
-                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+                enforce_modify_policies(&flakes, policy, &ledger, options.tracker, &reverse_graph)
+                    .await?;
             }
         }
 
         tracing::info!(flake_count = flakes.len(), "stage_flakes completed");
-        Ok(LedgerView::stage(ledger, flakes))
+        Ok(LedgerView::stage(ledger, flakes, &reverse_graph)?)
     }
     .instrument(span)
     .await
@@ -326,6 +409,7 @@ pub async fn stage_flakes(
 async fn hydrate_list_index_meta_for_retractions(
     ledger: &LedgerState,
     retractions: &mut [Flake],
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
     for flake in retractions.iter_mut() {
         // Only retractions with no metadata are candidates.
@@ -336,6 +420,9 @@ async fn hydrate_list_index_meta_for_retractions(
             continue;
         }
 
+        // Resolve the correct graph for this retraction flake.
+        let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+
         // Find currently asserted matching flakes (db + novelty overlay) and copy list index meta if present.
         let rm = fluree_db_core::RangeMatch::new()
             .with_subject(flake.s.clone())
@@ -344,7 +431,8 @@ async fn hydrate_list_index_meta_for_retractions(
             .with_datatype(flake.dt.clone());
 
         let found = fluree_db_core::range_with_overlay(
-            &ledger.db,
+            &ledger.snapshot,
+            g_id,
             ledger.novelty.as_ref(),
             fluree_db_core::IndexType::Spot,
             fluree_db_core::RangeTest::Eq,
@@ -377,36 +465,35 @@ async fn enforce_modify_policies(
     policy: &PolicyContext,
     ledger: &LedgerState,
     tracker: Option<&Tracker>,
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
-    // Pre-populate class cache for f:onClass policy support
+    // Pre-populate class cache for f:onClass policy support, per graph.
     if policy.wrapper().has_class_policies() {
-        // Collect unique subjects from flakes
-        let unique_subjects: Vec<Sid> = flakes
-            .iter()
-            .map(|f| f.s.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        // Group subjects by graph to populate class cache with correct g_id.
+        let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
+        for flake in flakes {
+            let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+            subjects_by_graph
+                .entry(g_id)
+                .or_default()
+                .insert(flake.s.clone());
+        }
 
-        // Look up and cache rdf:type for each subject
-        populate_class_cache(
-            &unique_subjects,
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            ledger.t(),
-            policy,
-        )
-        .await
-        .map_err(|e| {
-            TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                "Failed to populate class cache: {}",
-                e
-            )))
-        })?;
+        for (g_id, subjects) in &subjects_by_graph {
+            let subject_vec: Vec<Sid> = subjects.iter().cloned().collect();
+            populate_class_cache(&subject_vec, ledger.as_graph_db_ref(*g_id), policy)
+                .await
+                .map_err(|e| {
+                    TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                        "Failed to populate class cache: {}",
+                        e
+                    )))
+                })?;
+        }
     }
 
     // Enforce modify policies with full f:query support
-    enforce_modify_policy_per_flake(flakes, policy, ledger, tracker).await
+    enforce_modify_policy_per_flake(flakes, policy, ledger, tracker, reverse_graph).await
 }
 
 /// Enforce modify policies on each flake individually
@@ -421,11 +508,11 @@ async fn enforce_modify_policy_per_flake(
     policy: &PolicyContext,
     ledger: &LedgerState,
     tracker: Option<&Tracker>,
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
-    // Build a QueryPolicyExecutor that runs f:query against the pre-txn ledger view.
-    // Clojure parity: modify policy queries see the state *before* this transaction.
-    let executor =
-        QueryPolicyExecutor::with_overlay(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+    // Build per-graph QueryPolicyExecutors so f:query policies execute against
+    // the correct graph. Cache executors to avoid rebuilding for every flake.
+    let mut executors: HashMap<GraphId, QueryPolicyExecutor<'_>> = HashMap::new();
 
     // Clojure parity: fuel is counted for work performed. For transactions, we count
     // one unit of fuel per staged (non-schema) flake, regardless of whether the
@@ -451,10 +538,18 @@ async fn enforce_modify_policy_per_flake(
         }
 
         // Get subject classes from cache (empty if not cached)
-        // Class cache is populated by stage() before this function is called
+        // Class cache is populated per-graph by enforce_modify_policies() above.
         let subject_classes = policy
             .get_cached_subject_classes(&flake.s)
             .unwrap_or_default();
+
+        // Resolve the graph for this flake and get/create a cached executor.
+        let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+        let executor = executors.entry(g_id).or_insert_with(|| {
+            // Clojure parity: modify policy queries see the state *before* this transaction.
+            QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t())
+                .with_graph_id(g_id)
+        });
 
         // Evaluate modify policies with full f:query support using detailed API
         let decision = policy
@@ -463,7 +558,7 @@ async fn enforce_modify_policy_per_flake(
                 &flake.p,
                 &flake.o,
                 &subject_classes,
-                &executor,
+                executor,
                 &async_tracker,
             )
             .await?;
@@ -484,9 +579,10 @@ async fn enforce_modify_policy_per_flake(
 /// This function lowers the `UnresolvedPattern` patterns (which use string IRIs)
 /// to `Pattern` (with encoded Sids), then executes them against the ledger.
 async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
-    // Lower UnresolvedPattern to Pattern using the ledger's Db as the IRI encoder.
+    // Lower UnresolvedPattern to Pattern using the ledger's LedgerSnapshot as the IRI encoder.
     // This also assigns VarIds to any variables referenced in WHERE patterns.
-    let mut query_patterns = lower_where_patterns(&txn.where_patterns, &ledger.db, &mut txn.vars)?;
+    let mut query_patterns =
+        lower_where_patterns(&txn.where_patterns, &ledger.snapshot, &mut txn.vars)?;
 
     // If VALUES clause present, prepend it as first pattern (seeds the join)
     if let Some(inline_values) = &txn.values {
@@ -504,11 +600,9 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     //
     // IMPORTANT: Execute "as of" the ledger's current t (which may be ahead of db.t when novelty exists).
     let batches = fluree_db_query::execute_where_with_overlay_at_strict(
-        &ledger.db,
-        ledger.novelty.as_ref(),
+        ledger.as_graph_db_ref(0),
         &txn.vars,
         &query_patterns,
-        ledger.t(),
         None,
     )
     .await
@@ -524,7 +618,7 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
 /// VarIds to variables using the provided VarRegistry (shared with INSERT/DELETE).
 fn lower_where_patterns(
     patterns: &[UnresolvedPattern],
-    db: &fluree_db_core::Db,
+    db: &fluree_db_core::LedgerSnapshot,
     vars: &mut VarRegistry,
 ) -> Result<Vec<Pattern>> {
     let mut pp_counter: u32 = 0;
@@ -679,6 +773,17 @@ async fn generate_upsert_deletions(
     let o_var = query_vars.get_or_insert("?o");
 
     for (subject, predicate, graph_id) in spg_tuples {
+        // IMPORTANT: `TripleTemplate.graph_id` is a transaction-local ID.
+        // It must be translated to a ledger-stable GraphId before we can query
+        // the correct per-graph index partition.
+        //
+        // txn_local_g_id -> graph IRI (txn.graph_delta) -> ledger g_id (GraphRegistry)
+        let ledger_g_id: Option<u16> = graph_id.and_then(|txn_g_id| {
+            txn.graph_delta
+                .get(&txn_g_id)
+                .and_then(|iri| ledger.snapshot.graph_registry.graph_id_for_iri(iri))
+        });
+
         // Query: <subject> <predicate> ?o
         let pattern = TriplePattern::new(
             Ref::Sid(subject.clone()),
@@ -686,44 +791,60 @@ async fn generate_upsert_deletions(
             Term::Var(o_var),
         );
 
-        let batches = if let Some(g_id) = graph_id {
-            // Named graph: attach a graph-scoped BinaryRangeProvider (if available)
-            // so we see *indexed* values in that graph and generate retractions.
-            if let Some(db) = db_with_graph_range_provider(ledger, g_id) {
-                execute_pattern_with_overlay_at(
-                    &db,
-                    ledger.novelty.as_ref(),
-                    &query_vars,
-                    pattern,
-                    ledger.t(),
-                    None,
-                )
-                .await?
-            } else {
-                // No binary store available (genesis / not indexed): scan novelty directly.
-                query_novelty_for_graph(ledger, &subject, &predicate, g_id, o_var, graph_sids)
+        let batches = if graph_id.is_some() {
+            // Named graph: translate txn-local g_id to ledger g_id before querying.
+            match ledger_g_id {
+                None => {
+                    // Graph is not yet in the ledger registry (new graph in this txn),
+                    // so there cannot be existing values to retract.
+                    Vec::new()
+                }
+                Some(g_id) => {
+                    if ledger.snapshot.range_provider.is_some() {
+                        fluree_db_query::execute_pattern_with_overlay_at(
+                            ledger.as_graph_db_ref(g_id),
+                            &query_vars,
+                            pattern,
+                            None,
+                        )
+                        .await?
+                    } else {
+                        // No binary store available (genesis / not indexed): scan novelty directly.
+                        query_novelty_for_graph(ledger, &subject, &predicate, g_id, o_var)
+                    }
+                }
             }
         } else {
             // Default graph: use standard query path through range_provider
-            execute_pattern_with_overlay_at(
-                &ledger.db,
-                ledger.novelty.as_ref(),
+            fluree_db_query::execute_pattern_with_overlay_at(
+                ledger.as_graph_db_ref(0),
                 &query_vars,
                 pattern,
-                ledger.t(),
                 None,
             )
             .await?
         };
 
-        // Convert each result to a retraction flake in the appropriate graph
-        let graph_sid = graph_id.and_then(|g_id| graph_sids.get(&g_id).cloned());
+        // Convert each result to a retraction flake in the appropriate graph.
+        // Here we use the txn-local g_id to look up the graph Sid (flake.g).
+        let graph_sid: Option<Sid> = match graph_id {
+            None => None,
+            Some(txn_g_id) => Some(
+                graph_sids.get(&txn_g_id).cloned().ok_or_else(|| {
+                    TransactError::FlakeGeneration(format!(
+                        "upsert deletion generation references graph_id {} but no graph Sid was provided; \
+                         this indicates a bug in graph delta/sid wiring",
+                        txn_g_id
+                    ))
+                })?,
+            ),
+        };
 
         for batch in batches.iter() {
             for row in 0..batch.len() {
                 if let Some((o, dt)) = batch.get(row, o_var).and_then(binding_to_flake_object) {
-                    let flake = if let Some(g) = graph_sid.clone() {
-                        Flake::new_in_graph(
+                    let flake = match graph_sid.clone() {
+                        Some(g) => Flake::new_in_graph(
                             g,
                             subject.clone(),
                             predicate.clone(),
@@ -732,9 +853,8 @@ async fn generate_upsert_deletions(
                             new_t,
                             false, // retraction
                             None,
-                        )
-                    } else {
-                        Flake::new(
+                        ),
+                        None => Flake::new(
                             subject.clone(),
                             predicate.clone(),
                             o,
@@ -742,7 +862,7 @@ async fn generate_upsert_deletions(
                             new_t,
                             false, // retraction
                             None,
-                        )
+                        ),
                     };
                     retractions.push(flake);
                 }
@@ -751,20 +871,6 @@ async fn generate_upsert_deletions(
     }
 
     Ok(retractions)
-}
-
-/// Build a cloned `Db` with a BinaryRangeProvider scoped to the given graph id.
-///
-/// Returns None if no binary store is attached (genesis / not yet indexed) or if
-/// the attached store isn't a `BinaryIndexStore`.
-fn db_with_graph_range_provider(ledger: &LedgerState, g_id: GraphId) -> Option<fluree_db_core::Db> {
-    let store: Arc<BinaryIndexStore> = ledger
-        .binary_store
-        .as_ref()
-        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())?;
-
-    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id);
-    Some(ledger.db.clone().with_range_provider(Arc::new(provider)))
 }
 
 /// Query novelty directly for a specific named graph
@@ -778,17 +884,13 @@ fn query_novelty_for_graph(
     predicate: &Sid,
     target_g_id: u16,
     o_var: VarId,
-    graph_sids: &std::collections::HashMap<u16, Sid>,
 ) -> Vec<Batch> {
     use fluree_db_core::IndexType;
 
-    let Some(target_graph_sid) = graph_sids.get(&target_g_id) else {
-        return Vec::new();
-    };
-
-    // Collect matching flakes from novelty
+    // Collect matching flakes from novelty for the target graph
     let mut matching_values = Vec::new();
     ledger.novelty.for_each_overlay_flake(
+        target_g_id,
         IndexType::Spot,
         None,
         None,
@@ -797,12 +899,7 @@ fn query_novelty_for_graph(
         &mut |flake| {
             // Check if flake matches (subject, predicate) and is an assertion
             if &flake.s == subject && &flake.p == predicate && flake.op {
-                // Check if flake is in the target graph
-                if let Some(g_sid) = &flake.g {
-                    if g_sid == target_graph_sid {
-                        matching_values.push((flake.o.clone(), flake.dt.clone()));
-                    }
-                }
+                matching_values.push((flake.o.clone(), flake.dt.clone()));
             }
         },
     );
@@ -850,8 +947,11 @@ pub async fn stage_with_shacl(
     options: StageOptions<'_>,
     shacl_cache: &ShaclCache,
 ) -> Result<(LedgerView, NamespaceRegistry)> {
+    // Capture graph_delta before stage() consumes the txn (needed for per-graph SHACL).
+    let graph_delta = txn.graph_delta.clone();
+
     // First, perform regular staging
-    let (view, ns_registry) = stage(ledger, txn, ns_registry, options).await?;
+    let (view, mut ns_registry) = stage(ledger, txn, ns_registry, options).await?;
 
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     // This ensures SHACL has *zero* transaction-time overhead unless rules exist.
@@ -859,12 +959,19 @@ pub async fn stage_with_shacl(
         return Ok((view, ns_registry));
     }
 
+    // Rebuild graph_sids from the cloned graph_delta + returned ns_registry.
+    // These IRIs were already resolved during stage(), so sid_for_iri will hit
+    // the trie cache — no new allocations.
+    let graph_sids: HashMap<GraphId, Sid> = graph_delta
+        .iter()
+        .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+        .collect();
+
     // Create SHACL engine from cache
     let engine = ShaclEngine::new(shacl_cache.clone());
 
-    // Validate staged flakes against shapes
-    // We need to validate nodes that were modified
-    let report = validate_staged_nodes(&view, &engine).await?;
+    // Validate staged flakes against shapes (per graph)
+    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids)).await?;
 
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
@@ -878,28 +985,45 @@ pub async fn stage_with_shacl(
 /// This is a helper for callers that already have pre-built flakes and stage them
 /// via [`stage_flakes`], but still want SHACL validation parity with [`stage_with_shacl`].
 ///
+/// `graph_sids` provides the `GraphId → Sid` mapping for per-graph validation.
+/// Pass `None` when the mapping is unavailable (e.g., commit-transfer path) —
+/// validation will fall back to the default graph (g_id=0).
+///
 /// Returns `Ok(())` when conforming, or `TransactError::ShaclViolation` when any
 /// violations are present.
 #[cfg(feature = "shacl")]
-pub async fn validate_view_with_shacl(view: &LedgerView, shacl_cache: &ShaclCache) -> Result<()> {
+pub async fn validate_view_with_shacl(
+    view: &LedgerView,
+    shacl_cache: &ShaclCache,
+    graph_sids: Option<&HashMap<GraphId, Sid>>,
+) -> Result<()> {
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     if shacl_cache.is_empty() {
         return Ok(());
     }
 
     let engine = ShaclEngine::new(shacl_cache.clone());
-    let report = validate_staged_nodes(view, &engine).await?;
+    let report = validate_staged_nodes(view, &engine, graph_sids).await?;
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
     }
     Ok(())
 }
 
-/// Validate staged nodes against SHACL shapes
+/// Validate staged nodes against SHACL shapes, per graph.
+///
+/// Groups staged subjects by their graph and validates each group with a
+/// `GraphDbRef` targeting the correct `g_id`. Shape compilation stays at
+/// g_id=0 (shapes are schema-level definitions in the default graph).
+///
+/// When `graph_sids` is `None` (e.g., commit-transfer path where the txn
+/// context is unavailable), falls back to validating all subjects against
+/// the default graph (g_id=0) — matching the previous behavior.
 #[cfg(feature = "shacl")]
 async fn validate_staged_nodes(
     view: &LedgerView,
     engine: &ShaclEngine,
+    graph_sids: Option<&HashMap<GraphId, Sid>>,
 ) -> Result<ValidationReport> {
     use fluree_vocab::namespaces::RDF;
     use fluree_vocab::rdf_names;
@@ -909,52 +1033,59 @@ async fn validate_staged_nodes(
         return Ok(ValidationReport::conforming());
     }
 
-    // Collect unique subjects from staged flakes
-    let staged_subjects: HashSet<Sid> = view.staged_flakes().iter().map(|f| f.s.clone()).collect();
-
-    if staged_subjects.is_empty() {
+    if !view.has_staged() {
         return Ok(ValidationReport::conforming());
     }
 
-    // Build a combined report from validating each modified node
+    // Group staged (subject, g_id) pairs. A subject may appear in multiple graphs.
+    let reverse_graph = graph_sids.map(build_reverse_graph_lookup);
+    let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
+    for flake in view.staged_flakes() {
+        let g_id = match &reverse_graph {
+            Some(rev) => resolve_flake_graph_id(flake, rev)?,
+            // No reverse map (commit-transfer path): fall back to default graph
+            None => 0,
+        };
+        subjects_by_graph
+            .entry(g_id)
+            .or_default()
+            .insert(flake.s.clone());
+    }
+
+    let snapshot = view.db();
     let mut all_results = Vec::new();
 
-    // Use the view as the overlay (LedgerView implements OverlayProvider)
-    let db = view.db();
+    for (g_id, subjects) in &subjects_by_graph {
+        // Build GraphDbRef for this graph.
+        // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t).
+        let db = fluree_db_core::GraphDbRef::new(snapshot, *g_id, view, view.staged_t());
 
-    // Use high to_t to include staged flakes (which have t > db.t)
-    let range_opts = fluree_db_core::RangeOptions::default().with_to_t(i64::MAX);
+        for subject in subjects {
+            // Get the node's types for shape targeting
+            let rdf_type = Sid::new(RDF, rdf_names::TYPE);
+            let type_flakes = db
+                .range(
+                    fluree_db_core::IndexType::Spot,
+                    fluree_db_core::RangeTest::Eq,
+                    fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
+                )
+                .await?;
 
-    for subject in staged_subjects {
-        // Get the node's types for shape targeting
-        let rdf_type = Sid::new(RDF, rdf_names::TYPE);
-        let type_flakes = fluree_db_core::range_with_overlay(
-            db,
-            view, // LedgerView implements OverlayProvider
-            fluree_db_core::IndexType::Spot,
-            fluree_db_core::RangeTest::Eq,
-            fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
-            range_opts.clone(),
-        )
-        .await?;
+            let node_types: Vec<Sid> = type_flakes
+                .iter()
+                .filter_map(|f| {
+                    if let fluree_db_core::FlakeValue::Ref(type_sid) = &f.o {
+                        Some(type_sid.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
-        let node_types: Vec<Sid> = type_flakes
-            .iter()
-            .filter_map(|f| {
-                if let fluree_db_core::FlakeValue::Ref(type_sid) = &f.o {
-                    Some(type_sid.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Validate this node (view implements OverlayProvider)
-        let report = engine
-            .validate_node(db, view, &subject, &node_types)
-            .await?;
-
-        all_results.extend(report.results);
+            // Validate this node (view implements OverlayProvider)
+            let report = engine.validate_node(db, subject, &node_types).await?;
+            all_results.extend(report.results);
+        }
     }
 
     // Check conformance
@@ -1011,7 +1142,7 @@ fn format_shacl_report(report: &ValidationReport) -> String {
 mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
     use fluree_db_novelty::Novelty;
     use fluree_db_query::parse::{UnresolvedTerm, UnresolvedTriplePattern};
 
@@ -1022,7 +1153,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_simple_insert() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1033,7 +1164,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1043,7 +1174,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_insert_multiple_triples() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1060,7 +1191,7 @@ mod tests {
                 TemplateTerm::Value(FlakeValue::Long(30)),
             ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1070,7 +1201,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_with_blank_nodes() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1081,7 +1212,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Anonymous".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1095,7 +1226,7 @@ mod tests {
     async fn test_stage_backpressure_at_max() {
         use fluree_db_core::Flake;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         // Create novelty that's at max size
         let mut novelty = Novelty::new(0);
@@ -1110,7 +1241,9 @@ mod tests {
                 true,
                 None,
             );
-            novelty.apply_commit(vec![flake], 1).unwrap();
+            novelty
+                .apply_commit(vec![flake], 1, &HashMap::new())
+                .unwrap();
         }
 
         let ledger = LedgerState::new(db, novelty);
@@ -1128,7 +1261,7 @@ mod tests {
         ));
 
         // Stage should fail with NoveltyAtMax
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let options = StageOptions::new().with_index_config(&config);
         let result = stage(ledger, txn, ns_registry, options).await;
         assert!(matches!(result, Err(TransactError::NoveltyAtMax)));
@@ -1138,7 +1271,7 @@ mod tests {
     async fn test_insert_with_blank_node_always_succeeds() {
         // Blank nodes are always new, so insert should succeed even if
         // the blank node was used before (it gets a new skolemized ID)
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1149,7 +1282,7 @@ mod tests {
         ));
 
         // Should succeed - blank nodes don't trigger existence check
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let result = stage(ledger, txn, ns_registry, StageOptions::default()).await;
         assert!(result.is_ok());
     }
@@ -1160,7 +1293,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1174,7 +1307,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1196,7 +1329,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alicia".to_string())),
         ));
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let (view2, _ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
             .await
             .unwrap();
@@ -1226,7 +1359,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_on_nonexistent_subject() {
         // Upsert on a subject that doesn't exist should just insert
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1236,7 +1369,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1255,7 +1388,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1265,7 +1398,7 @@ mod tests {
         // Commit 1: Insert schema:alice with schema:name="Alice"
         // Do NOT rely on pre-registered SCHEMA_ORG codes — this build intentionally keeps
         // the default namespace table minimal. Allocate via NamespaceRegistry.
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
         let txn1 = Txn::insert().with_insert(TripleTemplate::new(
@@ -1322,9 +1455,9 @@ mod tests {
             ))
             .with_vars(vars);
 
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         // Ensure schema.org prefix is present in the registry used for lowering.
-        // (Should already be in Db.namespace_codes via commit delta, but this makes the test robust.)
+        // (Should already be in LedgerSnapshot.namespace_codes via commit delta, but this makes the test robust.)
         let _ = ns_registry2.sid_for_iri("http://schema.org/alice");
         let _ = ns_registry2.sid_for_iri("http://schema.org/name");
         let (view2, _ns2) = stage(state1, txn2, ns_registry2, StageOptions::default())
@@ -1357,7 +1490,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1365,7 +1498,7 @@ mod tests {
         let config = IndexConfig::default();
 
         // Commit 1: Insert schema:alice with name="Alice" and age=30
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
         let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
@@ -1396,7 +1529,7 @@ mod tests {
         .unwrap();
 
         // Commit 2: Also insert schema:bob with only a name (no age)
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let schema_bob = ns_registry2.sid_for_iri("http://schema.org/bob");
         let schema_name2 = ns_registry2.sid_for_iri("http://schema.org/name");
         let txn2 = Txn::insert().with_insert(TripleTemplate::new(
@@ -1456,7 +1589,7 @@ mod tests {
             ))
             .with_vars(vars);
 
-        let mut ns_registry3 = NamespaceRegistry::from_db(&state2.db);
+        let mut ns_registry3 = NamespaceRegistry::from_db(&state2.snapshot);
         // Ensure schema.org prefix exists for lowering WHERE IRIs.
         let _ = ns_registry3.sid_for_iri("http://schema.org/age");
         let _ = ns_registry3.sid_for_iri("http://schema.org/name");
@@ -1502,7 +1635,7 @@ mod tests {
         // Which should create two triples with different subjects and names.
         use crate::ir::InlineValues;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1534,7 +1667,7 @@ mod tests {
             .with_values(values)
             .with_vars(vars);
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1572,7 +1705,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1580,7 +1713,7 @@ mod tests {
         let config = IndexConfig::default();
 
         // Insert data: alice has age 30, bob has age 25
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_bob = ns_registry.sid_for_iri("http://schema.org/bob");
         let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
@@ -1652,7 +1785,7 @@ mod tests {
             .with_values(values)
             .with_vars(vars);
 
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let _ = ns_registry2.sid_for_iri("http://schema.org/age");
         let result = stage(state1, txn2, ns_registry2, StageOptions::default()).await;
 

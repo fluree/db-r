@@ -52,7 +52,10 @@ async fn test_encrypted_memory_create_and_query() {
         .expect("Query should succeed");
 
     // Convert to JSON-LD for easy inspection
-    let jsonld = result.to_jsonld_async(&ledger.db).await.unwrap();
+    let jsonld = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
 
     // Should find Alice - jsonld is a JSON array
     let jsonld_array = jsonld.as_array().expect("Should be array");

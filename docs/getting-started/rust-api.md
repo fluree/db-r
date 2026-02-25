@@ -465,7 +465,7 @@ async fn main() -> Result<()> {
 
     // Get namespace registry from the ledger
     let snapshot = handle.snapshot().await;
-    let mut ns = NamespaceRegistry::from_db(&snapshot.db);
+    let mut ns = NamespaceRegistry::from_db(&snapshot.snapshot);
 
     // Lower SPARQL UPDATE to Txn IR
     let txn = lower_sparql_update(update_op, &ast.prologue, &mut ns, TxnOpts::default())?;
@@ -827,7 +827,7 @@ async fn main() -> Result<()> {
 ### Multi-Ledger Queries
 
 ```rust
-use fluree_db_api::{FlureeBuilder, FlureeDataSetView, Result};
+use fluree_db_api::{FlureeBuilder, DataSetDb, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -838,7 +838,7 @@ async fn main() -> Result<()> {
     let orders = fluree.view("orders:main").await?;
 
     // Compose a dataset from multiple graphs
-    let dataset = FlureeDataSetView::new()
+    let dataset = DataSetDb::new()
         .with_default(customers)
         .with_named("orders:main", orders);
 
@@ -1298,7 +1298,7 @@ let db = fluree.graph("mydb:main").load().await?;
 let r1 = db.query().sparql("...").execute().await?;
 let r2 = db.query().jsonld(&q).execute().await?;
 
-// Access the underlying FlureeView
+// Access the underlying GraphDb
 let view = db.view();
 ```
 
@@ -1358,13 +1358,13 @@ let result = fluree.graph("mydb:main")
 
 ### Multi-Ledger Queries (Dataset)
 
-For multi-ledger queries, use `FlureeView` directly:
+For multi-ledger queries, use `GraphDb` directly:
 
 ```rust
 let customers = fluree.view("customers:main").await?;
 let orders = fluree.view("orders:main").await?;
 
-let dataset = FlureeDataSetView::new()
+let dataset = DataSetDb::new()
     .with_default(customers)
     .with_named("orders:main", orders);
 

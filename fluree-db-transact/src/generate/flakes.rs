@@ -196,13 +196,14 @@ impl<'a> FlakeGenerator<'a> {
 
         // Create flake in named graph if template has graph_id
         let flake = if let Some(g_id) = template.graph_id {
-            if let Some(g_sid) = self.graph_sids.get(&g_id) {
-                Flake::new_in_graph(g_sid.clone(), s, p, o, dt, self.t, op, meta)
-            } else {
-                // graph_id not in map - this is a bug in the caller
-                // For robustness, fall back to default graph
-                Flake::new(s, p, o, dt, self.t, op, meta)
-            }
+            let g_sid = self.graph_sids.get(&g_id).ok_or_else(|| {
+                TransactError::FlakeGeneration(format!(
+                    "template references graph_id {} but no graph Sid was provided; \
+                     this indicates a bug in graph delta/sid wiring",
+                    g_id
+                ))
+            })?;
+            Flake::new_in_graph(g_sid.clone(), s, p, o, dt, self.t, op, meta)
         } else {
             Flake::new(s, p, o, dt, self.t, op, meta)
         };

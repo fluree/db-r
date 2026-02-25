@@ -141,11 +141,13 @@ async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
         .expect("sparql query should succeed");
 
     // Clojure parity default output (array rows).
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!([["ex:jdoe", "Jane Doe"]]));
 
     // SPARQL JSON output (Clojure parity uses compact IRIs).
-    let sparql_json = result.to_sparql_json(&ledger.db).expect("to_sparql_json");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
     assert_eq!(
         sparql_json,
         json!({
@@ -179,13 +181,15 @@ async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows_array(&jsonld),
         normalize_rows_array(&json!([["bbob", 23], ["jdoe", 42], ["jdoe", 99]]))
     );
 
-    let sparql_json = result.to_sparql_json(&ledger.db).expect("to_sparql_json");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
     // Order is not guaranteed; compare bindings as a set.
     assert_eq!(
         normalize_sparql_bindings(&sparql_json),
@@ -223,7 +227,7 @@ async fn sparql_count_star_counts_solutions() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     // Single-variable queries return flat array
     assert_eq!(jsonld, json!([4]));
 }
@@ -251,7 +255,7 @@ async fn sparql_count_distinct_with_group_by_and_order_by() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Expected: jbob has 7 distinct favNums, jdoe has 4, bbob has 1
     // fbueller has no favNums so won't appear
@@ -293,7 +297,7 @@ async fn sparql_delete_data_removes_specified_triples() {
     "#;
 
     let result = fluree.query_sparql(&ledger2, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger2.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger2.snapshot).expect("to_jsonld");
     // Single-variable queries return flat array
     assert_eq!(jsonld, json!([42, 99]));
 }
@@ -316,7 +320,7 @@ async fn sparql_select_star_returns_object_rows() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         {"?person": "ex:bbob", "?handle": "bbob", "?favNums": 23},
@@ -356,7 +360,7 @@ async fn sparql_lang_filter_limits_language_tagged_literals() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!([{"@value": "Heyyyy", "@language": "en"}]));
 }
 
@@ -379,7 +383,7 @@ async fn sparql_union_combines_unioned_patterns() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!(["Alice", "Bob"]));
 }
 
@@ -401,7 +405,7 @@ async fn sparql_optional_includes_unbound_values_as_null() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         ["ex:bbob", 23],
@@ -446,7 +450,7 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         ["ex:bbob", 23, null],
@@ -489,7 +493,7 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         ["ex:bbob", [23]],
@@ -523,7 +527,7 @@ async fn sparql_omitted_subjects_match_expanded_subject_bindings() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         ["ex:jdoe", "Jane Doe", 3],
@@ -552,7 +556,7 @@ async fn sparql_scalar_sha512_function_binds_values() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
         "f162b1f2b3a824f459164fe40ffc24a019993058061ca1bf90eca98a4652f98ccaa5f17496be3da45ce30a1f79f45d82d8b8b532c264d4455babc1359aaa461d",
@@ -581,7 +585,7 @@ async fn sparql_aggregate_avg_over_values() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let avg = jsonld
         .as_array()
@@ -607,7 +611,7 @@ async fn sparql_group_by_having_filters_groups() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let mut values: Vec<f64> = jsonld
         .as_array()
@@ -640,7 +644,7 @@ async fn sparql_having_with_multiple_string_constraints() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!([]));
 }
@@ -662,7 +666,7 @@ async fn sparql_having_aggregate_without_select_alias() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["ex:jbob"]));
 }
@@ -681,7 +685,7 @@ async fn sparql_multiple_select_expressions_with_aggregate_alias() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let rows = normalize_rows_array(&jsonld);
     assert_eq!(rows.len(), 1);
@@ -706,7 +710,7 @@ async fn sparql_group_concat_aggregate_per_group() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -731,7 +735,7 @@ async fn sparql_concat_function_formats_strings() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -763,7 +767,7 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let mut rows: Vec<(String, String, Vec<i64>, f64, i64)> = normalize_rows_array(&jsonld)
         .into_iter()
@@ -832,7 +836,7 @@ async fn sparql_count_aggregate_per_group() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -855,7 +859,7 @@ async fn sparql_count_star_per_group() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -878,7 +882,7 @@ async fn sparql_sample_aggregate_returns_one_value() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let rows = normalize_rows_array(&jsonld);
     assert_eq!(rows.len(), 3);
@@ -902,7 +906,7 @@ async fn sparql_sum_aggregate_per_group() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -925,7 +929,7 @@ async fn sparql_order_by_ascending_sorts_results() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["bbob", "dankeshön", "jbob", "jdoe"]));
 }
@@ -945,7 +949,7 @@ async fn sparql_order_by_descending_sorts_results() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["jdoe", "jbob", "dankeshön", "bbob"]));
 }
@@ -967,7 +971,7 @@ async fn sparql_values_filters_bindings() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -996,7 +1000,7 @@ async fn sparql_construct_query_outputs_jsonld_graph() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_construct(&ledger.db).expect("to_construct");
+    let jsonld = result.to_construct(&ledger.snapshot).expect("to_construct");
 
     let expected = json!({
         "@context": {
@@ -1052,7 +1056,7 @@ async fn sparql_construct_where_outputs_graph() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_construct(&ledger.db).expect("to_construct");
+    let jsonld = result.to_construct(&ledger.snapshot).expect("to_construct");
 
     let mut json_graph = jsonld
         .get("@graph")
@@ -1107,7 +1111,7 @@ async fn sparql_base_iri_compacts_relative_ids() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -1133,7 +1137,7 @@ async fn sparql_prefix_declarations_compact_ids() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -1158,7 +1162,9 @@ async fn sparql_sparql_json_language_tags() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let sparql_json = result.to_sparql_json(&ledger.db).expect("to_sparql_json");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
 
     let bindings = sparql_json
         .get("results")
@@ -1194,7 +1200,7 @@ async fn sparql_concat_with_langtag_argument() {
     "#;
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -1241,7 +1247,7 @@ async fn sparql_property_path_inverse_object_var() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse path query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["ex:a"])));
 }
 
@@ -1259,7 +1265,7 @@ async fn sparql_property_path_inverse_subject_var() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse path subject var query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["ex:b"])));
 }
 
@@ -1285,7 +1291,7 @@ async fn sparql_property_path_alternative_object_var() {
         .query_sparql(&ledger, query)
         .await
         .expect("alternative path query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:b", "ex:x"]))
@@ -1306,7 +1312,7 @@ async fn sparql_property_path_alternative_with_inverse() {
         .query_sparql(&ledger, query)
         .await
         .expect("alternative with inverse query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:a", "ex:c", "ex:d"]))
@@ -1336,7 +1342,7 @@ async fn sparql_property_path_alternative_three_way() {
         .query_sparql(&ledger, query)
         .await
         .expect("three-way alternative query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:b", "ex:c", "ex:d"]))
@@ -1366,7 +1372,7 @@ async fn sparql_property_path_alternative_duplicate_semantics() {
         .query_sparql(&ledger, query)
         .await
         .expect("duplicate semantics query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     // Bag semantics: ex:b appears once per matching branch
     assert_eq!(
         normalize_rows(&jsonld),
@@ -1449,7 +1455,7 @@ async fn sparql_property_path_sequence_two_step() {
         .query_sparql(&ledger, query)
         .await
         .expect("two-step sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Bob"])));
 }
 
@@ -1467,7 +1473,7 @@ async fn sparql_property_path_sequence_three_step() {
         .query_sparql(&ledger, query)
         .await
         .expect("three-step sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Carol"])));
 }
 
@@ -1485,7 +1491,7 @@ async fn sparql_property_path_sequence_with_inverse() {
         .query_sparql(&ledger, query)
         .await
         .expect("sequence with inverse query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Alice"])));
 }
 
@@ -1503,7 +1509,7 @@ async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
         .query_sparql(&ledger, query)
         .await
         .expect("wildcard sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Verify results contain ?name but no ?__pp* keys
     let arr = jsonld.as_array().expect("result should be array");
@@ -1561,7 +1567,7 @@ async fn sparql_property_path_inverse_one_or_more() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse one-or-more query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:a", "ex:b"]))
@@ -1583,7 +1589,7 @@ async fn sparql_property_path_inverse_zero_or_more() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse zero-or-more query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:a", "ex:b"]))
@@ -1629,7 +1635,7 @@ async fn sparql_property_path_alternative_of_sequences() {
         .query_sparql(&ledger, query)
         .await
         .expect("alternative-of-sequences query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Bob", "Carol"]))
@@ -1657,7 +1663,7 @@ async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
         .query_sparql(&ledger, query)
         .await
         .expect("mixed simple+sequence alternative query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Alice", "Bob"]))
@@ -1703,7 +1709,7 @@ async fn sparql_property_path_sequence_with_alternative_step() {
         .query_sparql(&ledger, query)
         .await
         .expect("alternative-in-sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Bob", "Bobby"]))
@@ -1745,7 +1751,7 @@ async fn sparql_property_path_sequence_with_middle_alternative() {
         .query_sparql(&ledger, query)
         .await
         .expect("three-step alternative-in-sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Carol", "Caz"]))
@@ -1768,7 +1774,7 @@ async fn sparql_property_path_inverse_of_sequence() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse-of-sequence query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:alice"]))
@@ -1791,7 +1797,7 @@ async fn sparql_property_path_inverse_of_alternative() {
         .query_sparql(&ledger, query)
         .await
         .expect("inverse-of-alternative query should succeed");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:alice"]))

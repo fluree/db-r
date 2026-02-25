@@ -13,7 +13,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerManagerConfig, LedgerState, Novelty};
-use fluree_db_core::{Db, MemoryStorage};
+use fluree_db_core::{LedgerSnapshot, MemoryStorage};
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
@@ -97,7 +97,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .await
         .expect("query_connection");
 
-    // Load the ledger to get Db for formatting (strip any @t: suffix and #fragment)
+    // Load the ledger to get LedgerSnapshot for formatting (strip any @t: suffix and #fragment)
     let ledger_id = from_spec
         .split('@')
         .next()
@@ -109,7 +109,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .ledger(ledger_id)
         .await
         .expect("ledger for formatting");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()
@@ -264,7 +264,7 @@ async fn time_travel_index_plus_novelty() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert first 2 transactions
@@ -425,7 +425,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Alice with age 30
@@ -483,7 +483,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             });
             let result = fluree.query_connection(&query_t1).await.expect("query t=1");
             let ledger_for_fmt = fluree.ledger(ledger_id).await.expect("ledger");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -500,7 +502,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 "where": {"@id": "ex:alice", "ex:age": "?age"}
             });
             let result = fluree.query_connection(&query_t2).await.expect("query t=2");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -520,7 +524,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .query_connection(&query_current)
                 .await
                 .expect("query current");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -554,7 +560,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Alice and Bob
@@ -709,7 +715,7 @@ async fn query_all_person_ages(fluree: &MemoryFluree, from_spec: &str) -> Vec<(S
 
     let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
     let ledger = fluree.ledger(ledger_id).await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()
@@ -740,7 +746,7 @@ async fn query_person_age(fluree: &MemoryFluree, from_spec: &str, person_id: &st
 
     let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
     let ledger = fluree.ledger(ledger_id).await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()
@@ -778,7 +784,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert many subjects to potentially span multiple leaves

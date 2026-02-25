@@ -109,8 +109,8 @@ pub use import::{
 };
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
-    FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
-    LedgerSnapshot, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
+    CachedLedgerState, FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager,
+    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
 };
 pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
@@ -130,7 +130,7 @@ pub use tx::{
     TransactResultRef,
 };
 pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
-pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
+pub use view::{DataSetDb, GraphDb, QueryInput, ReasoningModePrecedence};
 
 #[cfg(feature = "iceberg")]
 pub use graph_source::{
@@ -180,8 +180,8 @@ pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
-    execute_with_overlay, execute_with_overlay_tracked, execute_with_r2rml, Batch, DataSource,
-    ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryContextParams, QueryOptions, VarRegistry,
+    execute_with_overlay, execute_with_overlay_tracked, execute_with_r2rml, Batch, ExecutableQuery,
+    NoOpR2rmlProvider, Pattern, QueryContextParams, QueryOptions, VarRegistry,
 };
 // Re-export for lower-level pattern-based queries (internal/advanced use)
 pub use fluree_db_query::{Term, TriplePattern};
@@ -2278,7 +2278,7 @@ where
     ///     .await?;
     ///
     /// // Query normally after import
-    /// let view = fluree.view("mydb").await?;
+    /// let view = fluree.db("mydb").await?;
     /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
     /// ```
     pub fn create(&self, ledger_id: &str) -> import::CreateBuilder<'_, S, N> {
@@ -2487,7 +2487,7 @@ where
                 let state = self.ledger(ledger_id).await?;
                 let binary_store = state.binary_store.as_ref().and_then(|te| {
                     te.0.clone()
-                        .downcast::<fluree_db_indexer::run_index::BinaryIndexStore>()
+                        .downcast::<fluree_db_binary_index::BinaryIndexStore>()
                         .ok()
                 });
                 Ok(LedgerHandle::new(

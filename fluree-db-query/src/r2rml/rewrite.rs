@@ -26,7 +26,7 @@
 
 use crate::ir::{Pattern, R2rmlPattern};
 use crate::triple::{Ref, Term, TriplePattern};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 
 /// Result of rewriting patterns for R2RML.
 #[derive(Debug)]
@@ -49,7 +49,7 @@ pub struct R2rmlRewriteResult {
 ///
 /// * `patterns` - The patterns to rewrite
 /// * `graph_source_id` - The graph source alias (e.g., "airlines-gs:main")
-/// * `db` - Database for Sid-to-IRI conversion
+/// * `snapshot` - Database for Sid-to-IRI conversion
 ///
 /// # Returns
 ///
@@ -57,7 +57,7 @@ pub struct R2rmlRewriteResult {
 pub fn rewrite_patterns_for_r2rml(
     patterns: &[Pattern],
     graph_source_id: &str,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
 ) -> R2rmlRewriteResult {
     let mut result_patterns = Vec::with_capacity(patterns.len());
     let mut converted = 0;
@@ -66,7 +66,8 @@ pub fn rewrite_patterns_for_r2rml(
     for pattern in patterns {
         match pattern {
             Pattern::Triple(tp) => {
-                if let Some(r2rml_pattern) = convert_triple_to_r2rml(tp, graph_source_id, db) {
+                if let Some(r2rml_pattern) = convert_triple_to_r2rml(tp, graph_source_id, snapshot)
+                {
                     result_patterns.push(Pattern::R2rml(r2rml_pattern));
                     converted += 1;
                 } else {
@@ -76,7 +77,7 @@ pub fn rewrite_patterns_for_r2rml(
                 }
             }
             Pattern::Optional(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, snapshot);
                 result_patterns.push(Pattern::Optional(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
@@ -84,7 +85,8 @@ pub fn rewrite_patterns_for_r2rml(
             Pattern::Union(branches) => {
                 let mut new_branches = Vec::with_capacity(branches.len());
                 for branch in branches {
-                    let branch_result = rewrite_patterns_for_r2rml(branch, graph_source_id, db);
+                    let branch_result =
+                        rewrite_patterns_for_r2rml(branch, graph_source_id, snapshot);
                     new_branches.push(branch_result.patterns);
                     converted += branch_result.converted_count;
                     unconverted += branch_result.unconverted_count;
@@ -92,25 +94,26 @@ pub fn rewrite_patterns_for_r2rml(
                 result_patterns.push(Pattern::Union(new_branches));
             }
             Pattern::Minus(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, snapshot);
                 result_patterns.push(Pattern::Minus(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::Exists(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, snapshot);
                 result_patterns.push(Pattern::Exists(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::NotExists(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, snapshot);
                 result_patterns.push(Pattern::NotExists(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::Service(sp) => {
-                let inner_result = rewrite_patterns_for_r2rml(&sp.patterns, graph_source_id, db);
+                let inner_result =
+                    rewrite_patterns_for_r2rml(&sp.patterns, graph_source_id, snapshot);
                 result_patterns.push(Pattern::Service(crate::ir::ServicePattern::new(
                     sp.silent,
                     sp.endpoint.clone(),
@@ -149,7 +152,7 @@ pub fn rewrite_patterns_for_r2rml(
 fn convert_triple_to_r2rml(
     tp: &TriplePattern,
     graph_source_id: &str,
-    db: &Db,
+    snapshot: &LedgerSnapshot,
 ) -> Option<R2rmlPattern> {
     // Extract subject variable (must be a variable for basic R2RML support)
     let subject_var = match &tp.s {
@@ -170,9 +173,9 @@ fn convert_triple_to_r2rml(
         // rdf:type pattern: ?s rdf:type ex:Class
         // Extract the class IRI - handle both Term::Sid (decode) and Term::Iri (use directly)
         let class_filter = match &tp.o {
-            Term::Sid(sid) => db.decode_sid(sid),
+            Term::Sid(sid) => snapshot.decode_sid(sid),
             Term::Iri(iri) => Some(iri.to_string()),
-            Term::Value(fluree_db_core::FlakeValue::Ref(sid)) => db.decode_sid(sid),
+            Term::Value(fluree_db_core::FlakeValue::Ref(sid)) => snapshot.decode_sid(sid),
             Term::Var(_) => None, // Class is a variable - no filter
             _ => None,
         };
@@ -189,7 +192,7 @@ fn convert_triple_to_r2rml(
     // Regular predicate pattern: ?s ex:name ?o
     // Extract predicate IRI filter - handle both Ref::Sid (decode) and Ref::Iri (use directly)
     let predicate_filter = match &tp.p {
-        Ref::Sid(sid) => db.decode_sid(sid),
+        Ref::Sid(sid) => snapshot.decode_sid(sid),
         Ref::Iri(iri) => Some(iri.to_string()),
         Ref::Var(_) => None, // Predicate is variable - no filter
     };

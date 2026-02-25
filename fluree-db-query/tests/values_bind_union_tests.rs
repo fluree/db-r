@@ -5,10 +5,10 @@
 //! - BIND expression evaluation
 //! - UNION branch execution
 
-use fluree_db_core::{Db, FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, GraphDbRef, LedgerSnapshot, NoOverlay, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
-use fluree_db_query::execute::execute_query;
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db {
-    Db::genesis("test/main")
+fn make_test_snapshot() -> LedgerSnapshot {
+    LedgerSnapshot::genesis("test/main")
 }
 
 fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -57,7 +57,7 @@ fn xsd_long() -> Sid {
 /// 3. The join with subsequent patterns works
 #[tokio::test]
 async fn test_values_first_then_join() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // VALUES ?s { :sid1 :sid2 } followed by (?s :name ?n)
@@ -76,7 +76,9 @@ async fn test_values_first_then_join() {
     );
 
     // This should succeed even though VALUES is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -91,7 +93,7 @@ async fn test_values_first_then_join() {
 /// 3. The result is bound to the variable
 #[tokio::test]
 async fn test_bind_first() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // BIND(42 AS ?x) followed by (?s :age ?x)
@@ -107,7 +109,9 @@ async fn test_bind_first() {
     );
 
     // Should succeed even though BIND is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -122,7 +126,7 @@ async fn test_bind_first() {
 /// 3. The unified schema is correct
 #[tokio::test]
 async fn test_union_first() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // UNION { (?s :name ?n) } { (?s :email ?e) }
@@ -143,7 +147,9 @@ async fn test_union_first() {
     );
 
     // Should succeed even though UNION is at position 0
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results
     // but the query structure is valid
@@ -155,7 +161,7 @@ async fn test_union_first() {
 /// This verifies FILTER at position 0 works with empty seed support
 #[tokio::test]
 async fn test_filter_first_true() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // FILTER(1 = 1) followed by triple
@@ -171,7 +177,9 @@ async fn test_filter_first_true() {
     );
 
     // Should succeed - FILTER is on constants, passes for the empty seed row
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Empty database, so no triple matches
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -180,7 +188,7 @@ async fn test_filter_first_true() {
 /// Test FILTER at position 0 with false condition
 #[tokio::test]
 async fn test_filter_first_false() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     // FILTER(1 = 2) followed by triple - should filter out the empty seed
@@ -196,7 +204,9 @@ async fn test_filter_first_false() {
     );
 
     // The false filter should eliminate all rows
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // No results because the filter eliminates the empty seed row
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -205,9 +215,9 @@ async fn test_filter_first_false() {
 /// Test ValuesOperator directly with overlap compatibility
 #[tokio::test]
 async fn test_values_operator_overlap_compatibility() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create an EmptyOperator as the seed
     let empty = Box::new(EmptyOperator::new());
@@ -250,9 +260,9 @@ async fn test_bind_clobber_same_value() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a seed that already has ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -284,9 +294,9 @@ async fn test_bind_clobber_different_value() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a seed that already has ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -318,7 +328,7 @@ async fn test_bind_clobber_different_value() {
 /// - If uncorrelated, we'd incorrectly see ?s=2 in results
 #[tokio::test]
 async fn test_union_is_correlated_via_values_overlap() {
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
 
     let query = make_query(
@@ -346,7 +356,9 @@ async fn test_union_is_correlated_via_values_overlap() {
         ],
     );
 
-    let results = execute_query(&db, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
     let rows: Vec<Binding> = results
         .iter()
         .flat_map(|b| b.column_by_idx(0).unwrap_or(&[]).iter().cloned())
@@ -369,9 +381,9 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Seed row: ?x = 42
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -405,9 +417,9 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
 async fn test_bind_with_inline_filter() {
     use fluree_db_query::bind::BindOperator;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a VALUES operator producing three rows: ?x = 10, 20, 30
     let values_rows = vec![
@@ -463,9 +475,9 @@ async fn test_bind_with_inline_filter() {
 async fn test_bind_with_inline_filter_rejects_all() {
     use fluree_db_query::bind::BindOperator;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Single row: ?x = 5
     let seed = Box::new(ValuesOperator::new(
@@ -490,6 +502,79 @@ async fn test_bind_with_inline_filter_rejects_all() {
 
     let result = bind_op.next_batch(&ctx).await.unwrap();
     assert!(result.is_none(), "all rows filtered out should yield None");
+
+    bind_op.close();
+}
+
+/// Test BindOperator with multiple inline filters — only rows passing ALL filters survive.
+///
+/// All five rows pass filter1 (?y > 15), but only the middle three pass both
+/// filter1 AND filter2 (?y < 45). Validates conjunction semantics of the filters vec.
+#[tokio::test]
+async fn test_bind_with_multiple_inline_filters() {
+    use fluree_db_query::bind::BindOperator;
+
+    let snapshot = make_test_snapshot();
+    let vars = VarRegistry::new();
+    let ctx = ExecutionContext::new(&snapshot, &vars);
+
+    // Five rows: ?x = 10, 20, 30, 40, 50
+    let values_rows = vec![
+        vec![Binding::lit(FlakeValue::Long(10), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(20), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(40), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(50), xsd_long())],
+    ];
+    let seed = Box::new(ValuesOperator::new(
+        Box::new(EmptyOperator::new()),
+        vec![VarId(0)],
+        values_rows,
+    ));
+
+    // BIND(?x + 10 AS ?y) => ?y = 20, 30, 40, 50, 60
+    // filter1: ?y > 15  — all rows pass
+    // filter2: ?y < 45  — ?y=20,30,40 pass; ?y=50,60 fail
+    // Combined: only ?y=20,30,40 survive (the middle three input rows)
+    let bind_expr = Expression::add(
+        Expression::Var(VarId(0)),
+        Expression::Const(FilterValue::Long(10)),
+    );
+    let filter1 = Expression::gt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(15)),
+    );
+    let filter2 = Expression::lt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(45)),
+    );
+
+    let mut bind_op = BindOperator::new(seed, VarId(1), bind_expr, vec![filter1, filter2]);
+    bind_op.open(&ctx).await.unwrap();
+
+    let result = bind_op.next_batch(&ctx).await.unwrap();
+    assert!(result.is_some(), "should produce a batch");
+
+    let batch = result.unwrap();
+    assert_eq!(batch.len(), 3, "only three rows should pass both filters");
+
+    // Row 0: ?x=10, ?y=20
+    let (x0, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (y0, _, _) = batch.get_by_col(0, 1).as_lit().unwrap();
+    assert_eq!(*x0, FlakeValue::Long(10));
+    assert_eq!(*y0, FlakeValue::Long(20));
+
+    // Row 1: ?x=20, ?y=30
+    let (x1, _, _) = batch.get_by_col(1, 0).as_lit().unwrap();
+    let (y1, _, _) = batch.get_by_col(1, 1).as_lit().unwrap();
+    assert_eq!(*x1, FlakeValue::Long(20));
+    assert_eq!(*y1, FlakeValue::Long(30));
+
+    // Row 2: ?x=30, ?y=40
+    let (x2, _, _) = batch.get_by_col(2, 0).as_lit().unwrap();
+    let (y2, _, _) = batch.get_by_col(2, 1).as_lit().unwrap();
+    assert_eq!(*x2, FlakeValue::Long(30));
+    assert_eq!(*y2, FlakeValue::Long(40));
 
     bind_op.close();
 }

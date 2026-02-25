@@ -102,6 +102,11 @@ Key `IndexerConfig` fields:
 | `gc_min_time_mins` | 30 | Minimum age (minutes) before an index can be GC'd |
 | `run_budget_bytes` | 256 MB | Memory budget for sort buffers (split across all sort orders) |
 | `data_dir` | System temp dir | Base directory for index artifacts |
+| `incremental_enabled` | true | Background indexing: attempt incremental updates before full rebuild |
+| `incremental_max_commits` | 10,000 | Background indexing: max commit window for incremental indexing |
+| `incremental_max_concurrency` | 4 | Background indexing: max concurrent (graph, order) branch updates |
+
+Note: Reindex is a full rebuild. The `incremental_*` fields are used by background indexing and are not relevant to the semantics of a reindex operation.
 
 ## ReindexResult
 

@@ -17,10 +17,10 @@
 //! ## Example
 //!
 //! ```ignore
-//! use fluree_db_core::{Db, range, IndexType, RangeTest};
+//! use fluree_db_core::{LedgerSnapshot, range, IndexType, RangeTest};
 //!
 //! // Apps provide their own Storage implementation
-//! let db = load_db(&storage, &root_id, "ledger/main").await?;
+//! let db = load_ledger_snapshot(&storage, &root_id, "ledger/main").await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 
@@ -36,6 +36,8 @@ pub mod dict_novelty;
 pub mod error;
 pub mod flake;
 pub mod geo;
+pub mod graph_db_ref;
+pub mod graph_registry;
 pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
@@ -76,10 +78,12 @@ pub use content_kind::{
     CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
-pub use db::{load_db, Db, DbMetadata};
+pub use db::{load_ledger_snapshot, LedgerSnapshot, LedgerSnapshotMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};
+pub use graph_db_ref::GraphDbRef;
+pub use graph_registry::{txn_meta_graph_iri, GraphRegistry};
 pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 pub use index_stats::{

@@ -58,7 +58,7 @@ pub async fn run(
     // Execute the query via connection (required for from/to history support)
     let ledger_view = fluree.ledger(&alias).await?;
     let result = fluree.query_connection(&query).await?;
-    let json = result.to_jsonld(&ledger_view.db)?;
+    let json = result.to_jsonld(&ledger_view.snapshot)?;
 
     // Format output
     let output = format_history_result(&json, output_format)?;

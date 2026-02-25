@@ -174,12 +174,11 @@ Response:
 {
   "ledger_id": "mydb:main",
   "commit_t": 150,
-  "index_t": 140,
-  "novelty_count": 10
+  "index_t": 140
 }
 ```
 
-**Novelty Count:** `commit_t - index_t` = number of unindexed transactions
+**Indexing lag (txns):** `commit_t - index_t` = number of unindexed transactions
 
 ### Healthy vs Unhealthy
 
@@ -239,49 +238,20 @@ Large indexing lag affects:
 
 ## Tuning Indexing
 
-### 1. Adjust Index Interval
+Background indexing is controlled primarily by:
 
-Configure indexing frequency:
+- Enabling/disabling background indexing (`--indexing-enabled` / `FLUREE_INDEXING_ENABLED`)
+- Novelty thresholds that trigger indexing / apply backpressure (`--reindex-min-bytes`, `--reindex-max-bytes`)
 
-```bash
-./fluree-db-server --index-interval-ms 1000  # Index every 1 second
-```
-
-**Trade-offs:**
-- Shorter interval: Less lag, more overhead
-- Longer interval: More lag, less overhead
-
-### 2. Batch Size
-
-Control how many transactions indexed per batch:
-
-```bash
-./fluree-db-server --index-batch-size 10  # Index 10 transactions at once
-```
-
-**Trade-offs:**
-- Smaller batches: More frequent updates, smoother load
-- Larger batches: Fewer but longer indexing operations
-
-### 3. Resource Allocation
-
-Allocate more resources:
-
-```bash
-# Increase process priority
-nice -n -10 ./fluree-db-server
-
-# Allocate more memory
-./fluree-db-server --index-memory-mb 4096
-```
+See [Operations: Configuration](../operations/configuration.md#background-indexing) and [Background Indexing](../indexing-and-search/background-indexing.md) for the canonical settings and tuning guidance.
 
 ### 4. Dedicated Indexing Process
 
 For high-load deployments, run dedicated indexer:
 
 ```bash
-# Main server (transact only)
-./fluree-db-server --disable-indexing
+# Main server (transact only; background indexing disabled)
+fluree-server --indexing-enabled=false
 
 # Indexing server
 ./fluree-db-indexer --ledgers mydb:main,mydb:dev
@@ -320,7 +290,8 @@ For continuous write load:
 async function writeWithBackpressure(data) {
   const status = await checkIndexingStatus();
   
-  if (status.novelty_count > 100) {
+  const lag = status.commit_t - status.index_t;
+  if (lag > 100) {
     // Too much lag, slow down
     await sleep(1000);
   }
@@ -353,7 +324,8 @@ async function bulkImport(entities) {
 async function waitForIndexing() {
   while (true) {
     const status = await checkIndexingStatus();
-    if (status.novelty_count < 5) break;
+    const lag = status.commit_t - status.index_t;
+    if (lag < 5) break;
     await sleep(1000);
   }
 }
@@ -393,15 +365,16 @@ See [Vector Search](../indexing-and-search/vector-search.md) for details on HNSW
 
 ### 1. Monitor Novelty Layer
 
-Track novelty count:
+Track indexing lag:
 
 ```javascript
 setInterval(async () => {
   const status = await checkIndexingStatus();
-  metrics.gauge('novelty_count', status.novelty_count);
+  const lag = status.commit_t - status.index_t;
+  metrics.gauge('index_lag_txns', lag);
   
-  if (status.novelty_count > 100) {
-    logger.warn(`High novelty: ${status.novelty_count} transactions`);
+  if (lag > 100) {
+    logger.warn(`High indexing lag: ${lag} transactions`);
   }
 }, 10000);  // Check every 10 seconds
 ```
@@ -443,7 +416,8 @@ if (isOffPeakHours()) {
 Set up alerts for indexing lag:
 
 ```javascript
-if (status.novelty_count > 200) {
+const lag = status.commit_t - status.index_t;
+if (lag > 200) {
   alert('Critical: Indexing lag > 200 transactions');
 }
 ```
@@ -463,9 +437,9 @@ With 4× safety margin: ~50 flakes/second
 
 ## Troubleshooting
 
-### High Novelty Count
+### High indexing lag
 
-**Symptom:** novelty_count growing continuously
+**Symptom:** `commit_t - index_t` growing continuously
 
 **Causes:**
 - Transaction rate exceeds indexing capacity
@@ -486,7 +460,7 @@ With 4× safety margin: ~50 flakes/second
 
 **Check:**
 ```bash
-curl http://localhost:8090/ledgers/mydb:main | jq '.novelty_count'
+curl http://localhost:8090/ledgers/mydb:main | jq '.commit_t - .index_t'
 ```
 
 **Solution:** Wait for indexing or reduce write rate

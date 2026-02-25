@@ -246,7 +246,6 @@ curl -X POST http://localhost:8090/admin/compact?ledger=mydb:main
 
 ```bash
 ./fluree-db-server \
-  --index-memory-mb 4096 \
   --query-memory-mb 2048 \
   --cache-size-mb 1024
 ```
@@ -254,10 +253,10 @@ curl -X POST http://localhost:8090/admin/compact?ledger=mydb:main
 ### Indexing Tuning
 
 ```bash
-./fluree-db-server \
-  --index-interval-ms 5000 \
-  --index-batch-size 10 \
-  --index-threads 4
+fluree-server \
+  --indexing-enabled \
+  --reindex-min-bytes 100000 \
+  --reindex-max-bytes 1000000
 ```
 
 ### Query Tuning

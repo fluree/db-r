@@ -67,7 +67,7 @@ t=42: Transaction committed
 
 ### 2. Indexer Detection
 
-Background indexer polls for new commits:
+Background indexing is triggered when the ledger’s novelty exceeds the configured threshold (see Configuration below):
 
 ```text
 Indexer checks: commit_t=42, index_t=40
@@ -76,16 +76,18 @@ Indexer: Need to index t=41, t=42
 
 ### 3. Index Building
 
-For each transaction in gap:
+Background indexing builds a new index snapshot up to a specific `to_t` (typically the current `commit_t` when the job starts). During the job, new commits may arrive; those remain in novelty for the next cycle.
 
 ```text
-For t=41:
-  - Load flakes from transaction log
-  - For each flake:
-    - Update SPOT index
-    - Update POST index
-    - Update OPST index
-    - Update PSOT index
+Incremental indexing (default path):
+  - Load the existing index root (CAS CID) from nameservice
+  - Resolve only commits with t in (index_t, to_t]
+  - Merge resolved novelty into only the affected leaf blobs (Copy-on-Write)
+  - Update dictionaries (forward packs + reverse trees)
+  - Assemble a new root referencing mostly-unchanged CAS artifacts
+
+Fallback:
+  - If incremental indexing cannot safely proceed, fall back to a full rebuild
 ```
 
 ### 4. Index Publishing
@@ -93,9 +95,10 @@ For t=41:
 When complete:
 
 ```text
-  - Write index snapshot to storage
-  - Publish index_id to nameservice
-  - Update index_t to 42
+  - Upload new CAS blobs (leaves, branches, dict blobs) as needed
+  - Upload the new index root (CAS CID)
+  - Publish index_head_id to nameservice (atomic “commit point”)
+  - Update index_t to to_t
 ```
 
 ## Novelty Layer
@@ -134,53 +137,21 @@ Query for ex:alice's properties:
 
 ## Configuration
 
-### Index Interval
+Background indexing is enabled at the server level, and indexing is triggered based on novelty size thresholds:
 
-Control indexing frequency:
+- Enable/disable background indexing: `--indexing-enabled` / `FLUREE_INDEXING_ENABLED`
+- Trigger threshold (soft): `--reindex-min-bytes` / `FLUREE_REINDEX_MIN_BYTES`
+- Backpressure threshold (hard): `--reindex-max-bytes` / `FLUREE_REINDEX_MAX_BYTES`
 
-```bash
-./fluree-db-server --index-interval-ms 5000  # Index every 5 seconds
-```
+See [Operations: Configuration](../operations/configuration.md#background-indexing) for the canonical flag/env/config-file reference.
 
-**Trade-offs:**
-- Shorter: Less novelty, more overhead
-- Longer: More novelty, less overhead
+### Incremental parallelism (per ledger)
 
-Default: 5000ms (5 seconds)
+Within a single incremental indexing job, Fluree can update multiple `(graph, index-order)` branches concurrently. This is bounded by:
 
-### Batch Size
+- `IndexerConfig.incremental_max_concurrency` (default: 4)
 
-Transactions indexed per batch:
-
-```bash
-./fluree-db-server --index-batch-size 10
-```
-
-**Trade-offs:**
-- Smaller: More frequent updates
-- Larger: Fewer, longer indexing cycles
-
-Default: 10 transactions
-
-### Memory Allocation
-
-Memory for indexing process:
-
-```bash
-./fluree-db-server --index-memory-mb 2048
-```
-
-Default: 1024 MB
-
-### Concurrent Indexers
-
-Number of parallel indexing threads:
-
-```bash
-./fluree-db-server --index-threads 4
-```
-
-Default: 2 threads
+This setting is part of the Rust `IndexerConfig` used by the indexer pipeline; it is not a server CLI flag. Increasing it can improve throughput on multi-graph ledgers and can run the four main index orders (SPOT/PSOT/POST/OPST) in parallel, at the cost of higher peak memory.
 
 ## Monitoring
 
@@ -194,55 +165,37 @@ Response:
 ```json
 {
   "ledger_id": "mydb:main",
+  "branch": "main",
   "commit_t": 150,
   "index_t": 145,
-  "novelty_count": 5,
-  "last_index_duration_ms": 234
+  "commit_id": "bafy...headCommit",
+  "index_id": "bafy...indexRoot"
 }
 ```
 
 **Key Metrics:**
-- **novelty_count**: Number of unindexed transactions
-- **last_index_duration_ms**: Time to index last batch
+- **index lag (txns)**: `commit_t - index_t`
 
-### Index Metrics
-
-```bash
-curl http://localhost:8090/metrics/indexing
-```
-
-Response:
-```json
-{
-  "total_indexed": 145,
-  "avg_index_time_ms": 187,
-  "current_novelty": 5,
-  "index_rate_per_second": 2.3,
-  "pending_ledgers": 0
-}
-```
+For byte-level novelty size and indexing trigger decisions, see the `indexing` block returned by transaction and replication endpoints (e.g. `POST /push/<ledger>`), documented in [API Endpoints](../api/endpoints.md).
 
 ### Health Indicators
 
 **Healthy:**
 ```text
-novelty_count: 0-10 transactions
+index_lag: 0-10 transactions
 index_rate > transaction_rate
-avg_index_time_ms: < 500ms
 ```
 
 **Warning:**
 ```text
-novelty_count: 10-50 transactions
+index_lag: 10-50 transactions
 index_rate ≈ transaction_rate
-avg_index_time_ms: 500-2000ms
 ```
 
 **Critical:**
 ```text
-novelty_count: > 50 transactions
+index_lag: > 50 transactions
 index_rate < transaction_rate
-avg_index_time_ms: > 2000ms
 ```
 
 ## Performance Tuning
@@ -250,75 +203,52 @@ avg_index_time_ms: > 2000ms
 ### Optimize for Write-Heavy Loads
 
 ```bash
-./fluree-db-server \
-  --index-interval-ms 10000 \
-  --index-batch-size 20 \
-  --index-threads 4
+fluree-server \
+  --indexing-enabled \
+  --reindex-min-bytes 200000 \
+  --reindex-max-bytes 2000000
 ```
 
-Longer intervals, larger batches, more threads.
+Larger thresholds reduce indexing frequency (more novelty accumulation), trading some query-time overlay cost for reduced background indexing activity.
 
 ### Optimize for Read-Heavy Loads
 
 ```bash
-./fluree-db-server \
-  --index-interval-ms 1000 \
-  --index-batch-size 5
+fluree-server \
+  --indexing-enabled \
+  --reindex-min-bytes 50000
 ```
 
-Shorter intervals, smaller batches for lower novelty.
-
-### Optimize for Low Latency
-
-```bash
-./fluree-db-server \
-  --index-interval-ms 500 \
-  --index-memory-mb 4096
-```
-
-Very short intervals, more memory.
+Smaller `reindex-min-bytes` keeps novelty smaller (better query performance) at the cost of more frequent background indexing cycles.
 
 ## Index Storage
 
 ### Index Snapshots
 
-Indexes are stored as snapshots:
+Indexes are stored as immutable, content-addressed snapshots:
 
 ```text
-Storage Structure:
-  index/
-    mydb-main-t145.idx
-    mydb-main-t140.idx
-    mydb-main-t135.idx
+  - Leaf blobs (FLI2) and branch manifests (FBR2)
+  - Dictionary blobs (forward packs, reverse tree leaves/branches)
+  - An index root blob (IRB1) that references everything needed for queries
 ```
 
-Each snapshot contains complete index state at that transaction time.
+The nameservice stores the current index root CID (`index_head_id`) and its watermark (`index_t`). Peers fetch only the CAS objects they need on demand.
 
 ### Index Retention
 
-Old indexes can be removed:
+Old index snapshots are retained for time-travel safety and concurrent query safety. Cleanup is performed by the binary index garbage collector, governed by:
 
-```bash
-./fluree-db-server --index-retention-count 10
-```
+- `IndexerConfig.gc_max_old_indexes`
+- `IndexerConfig.gc_min_time_mins`
 
-Keeps last 10 index snapshots per ledger.
-
-### Index Compaction
-
-Compact indexes to reclaim space:
-
-```bash
-curl -X POST http://localhost:8090/admin/compact?ledger=mydb:main
-```
-
-Merges multiple small snapshots into larger ones.
+You can also trigger cleanup via the admin endpoint `POST /admin/compact?ledger=...` (see [API Endpoints](../api/endpoints.md#admin-endpoints)).
 
 ## Troubleshooting
 
-### High Novelty Count
+### High indexing lag
 
-**Symptom:** Novelty count growing continuously
+**Symptom:** `commit_t - index_t` grows continuously
 
 **Causes:**
 - Transaction rate exceeds indexing capacity
@@ -326,15 +256,14 @@ Merges multiple small snapshots into larger ones.
 - Insufficient resources
 
 **Solutions:**
-1. Increase index interval: `--index-interval-ms 10000`
-2. Increase batch size: `--index-batch-size 20`
-3. Add more threads: `--index-threads 4`
-4. Allocate more memory: `--index-memory-mb 4096`
-5. Reduce transaction rate
+1. Reduce `reindex-min-bytes` so indexing triggers sooner
+2. Increase resources for the indexer (CPU/memory and storage throughput)
+3. Consider running a dedicated indexer process (separate from the transactor)
+4. For incremental indexing, consider increasing `IndexerConfig.incremental_max_concurrency`
 
 ### Slow Indexing
 
-**Symptom:** `last_index_duration_ms` increasing
+**Symptom:** `index_t` advances slowly (or stops advancing)
 
 **Causes:**
 - Disk I/O bottleneck
@@ -352,16 +281,7 @@ Merges multiple small snapshots into larger ones.
 
 **Symptom:** Query errors, unexpected results
 
-**Detection:**
-```bash
-curl http://localhost:8090/admin/verify-index?ledger=mydb:main
-```
-
-**Recovery:**
-```bash
-# Rebuild index from scratch
-curl -X POST http://localhost:8090/admin/rebuild-index?ledger=mydb:main
-```
+**Recovery:** Use the [Reindex API](reindex.md) to rebuild indexes from scratch if you suspect corruption or need to change index structure parameters.
 
 ## Best Practices
 
@@ -372,8 +292,9 @@ setInterval(async () => {
   const status = await fetch('http://localhost:8090/ledgers/mydb:main')
     .then(r => r.json());
   
-  if (status.novelty_count > 50) {
-    console.warn(`High novelty: ${status.novelty_count} transactions`);
+  const lag = status.commit_t - status.index_t;
+  if (lag > 50) {
+    console.warn(`High indexing lag: ${lag} transactions`);
   }
 }, 30000);  // Check every 30 seconds
 ```
@@ -381,8 +302,8 @@ setInterval(async () => {
 ### 2. Tune for Workload
 
 Match configuration to workload pattern:
-- Write-heavy: Longer intervals, larger batches
-- Read-heavy: Shorter intervals, smaller batches
+- Write-heavy: Larger `reindex-min-bytes` (fewer indexing cycles)
+- Read-heavy: Smaller `reindex-min-bytes` (less novelty overlay)
 - Balanced: Default settings
 
 ### 3. Capacity Planning
@@ -402,7 +323,8 @@ Indexing capacity: 2,000 flakes/second (2× margin)
 Set up alerting:
 
 ```javascript
-if (status.novelty_count > 100) {
+const lag = status.commit_t - status.index_t;
+if (lag > 100) {
   alertOps('Critical: Indexing lag > 100 transactions');
 }
 ```

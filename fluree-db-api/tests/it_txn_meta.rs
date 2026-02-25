@@ -71,7 +71,7 @@ async fn test_jsonld_txn_meta_basic() {
 
             // Get ledger for to_jsonld
             let ledger = fluree.ledger(ledger_id).await.expect("load indexed ledger");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
             // Should have results including our txn metadata
             let arr = results.as_array().expect("results should be array");
@@ -149,7 +149,7 @@ async fn test_jsonld_single_object_no_meta() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find data in default graph");
 
@@ -168,7 +168,7 @@ async fn test_jsonld_single_object_no_meta() {
                 .query_connection(&meta_query)
                 .await
                 .expect("meta query");
-            let meta_results = meta_results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let meta_results = meta_results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let meta_arr = meta_results.as_array().expect("array");
             assert!(
                 meta_arr.is_empty(),
@@ -232,7 +232,7 @@ async fn test_jsonld_txn_meta_all_value_types() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             // Helper to check if a value exists in results
@@ -406,7 +406,7 @@ async fn test_txn_meta_queryable_after_indexing() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             // Look for marker property
@@ -496,7 +496,7 @@ async fn test_trig_txn_meta_basic() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load indexed ledger");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("results should be array");
 
             // Look for machine property
@@ -572,7 +572,7 @@ async fn test_trig_no_graph_passthrough() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find data in default graph");
         })
@@ -654,7 +654,7 @@ async fn test_txn_meta_multiple_commits() {
 
             let results = fluree.query_connection(&query).await.expect("query");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             let has_batch_1 = arr.iter().any(|row| {
@@ -739,7 +739,7 @@ async fn test_txn_meta_time_travel_syntax() {
                 .await
                 .expect("query at t=1 should not error");
             let ledger = fluree.ledger(ledger_id).await.expect("load");
-            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
             // Should find the batch-1 metadata
@@ -832,7 +832,9 @@ async fn test_sparql_graph_pattern_txn_meta() {
                 .await
                 .expect("SPARQL GRAPH query should succeed");
 
-            let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(primary.snapshot.as_ref())
+                .expect("to_jsonld");
             let arr = jsonld.as_array().expect("array");
 
             // Should find our batch metadata
@@ -916,7 +918,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=1: should only see batch-1
             let view_t1 = fluree
-                .view_at_t(&format!("{}#txn-meta", ledger_id), 1)
+                .db_at_t(&format!("{}#txn-meta", ledger_id), 1)
                 .await
                 .expect("view at t=1");
 
@@ -932,7 +934,7 @@ async fn test_txn_meta_time_travel_filtering() {
                 .query_view(&view_t1, &query_t1)
                 .await
                 .expect("query at t=1");
-            let results_t1 = results_t1.to_jsonld(&view_t1.db).expect("to_jsonld");
+            let results_t1 = results_t1.to_jsonld(&view_t1.snapshot).expect("to_jsonld");
             let arr_t1 = results_t1.as_array().expect("array");
 
             let has_batch_1_at_t1 = arr_t1.iter().any(|row| {
@@ -957,7 +959,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=2: should see both batch-1 and batch-2
             let view_t2 = fluree
-                .view_at_t(&format!("{}#txn-meta", ledger_id), 2)
+                .db_at_t(&format!("{}#txn-meta", ledger_id), 2)
                 .await
                 .expect("view at t=2");
             let query_t2 = json!({
@@ -972,7 +974,7 @@ async fn test_txn_meta_time_travel_filtering() {
                 .query_view(&view_t2, &query_t2)
                 .await
                 .expect("query at t=2");
-            let results_t2 = results_t2.to_jsonld(&view_t2.db).expect("to_jsonld");
+            let results_t2 = results_t2.to_jsonld(&view_t2.snapshot).expect("to_jsonld");
             let arr_t2 = results_t2.as_array().expect("array");
 
             let has_batch_1_at_t2 = arr_t2.iter().any(|row| {

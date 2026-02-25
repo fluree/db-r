@@ -1,26 +1,26 @@
 //! Composable view abstraction for ledger queries
 //!
-//! This module provides `FlureeView`, a first-class, composable view of a ledger
+//! This module provides `GraphDb`, a first-class, composable view of a ledger
 //! snapshot. It mirrors Clojure's "db is a value" pattern where you create a view
 //! once and query it repeatedly.
 //!
 //! # Design Philosophy
 //!
-//! - **View is the stable value**: `FlureeView` is the immutable snapshot you pass to queries
+//! - **View is the stable value**: `GraphDb` is the immutable snapshot you pass to queries
 //! - **Query syntax is polymorphic**: One entrypoint accepts JSON-LD or SPARQL via `QueryInput`
 //! - **Wrappers apply uniformly**: Reasoning/policy apply regardless of query syntax
-//! - **Single-ledger scope**: A `FlureeView` represents one ledger; use `query_connection` for multi-ledger
+//! - **Single-ledger scope**: A `GraphDb` represents one ledger; use `query_connection` for multi-ledger
 //!
 //! # Composition
 //!
 //! Views support Clojure-style wrapper composition:
 //!
 //! ```ignore
-//! use fluree_db_api::{Fluree, FlureeView};
+//! use fluree_db_api::{Fluree, GraphDb};
 //! use fluree_db_query::rewrite::ReasoningModes;
 //!
 //! // Load a base view
-//! let view = fluree.view("mydb:main").await?;
+//! let view = fluree.db("mydb:main").await?;
 //!
 //! // Compose wrappers (order-independent)
 //! let view = view
@@ -54,7 +54,7 @@
 //!
 //! # Single-Ledger Constraint
 //!
-//! A `FlureeView` represents one ledger snapshot. SPARQL queries with `FROM`/`FROM NAMED`
+//! A `GraphDb` represents one ledger snapshot. SPARQL queries with `FROM`/`FROM NAMED`
 //! dataset clauses are rejected; use `query_connection_sparql` for multi-ledger queries.
 
 mod dataset;
@@ -66,6 +66,6 @@ mod query_builder;
 mod query_input;
 mod types;
 
-pub use dataset::FlureeDataSetView;
+pub use dataset::DataSetDb;
 pub use query_input::QueryInput;
-pub use types::{DerivedFactsHandle, FlureeView, ReasoningModePrecedence};
+pub use types::{DerivedFactsHandle, GraphDb, ReasoningModePrecedence};

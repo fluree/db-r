@@ -377,9 +377,12 @@ impl ComparableValue {
                         "bind evaluation requires database context for iri()".to_string(),
                     )
                 })?;
-                ctx.db.encode_iri(&iri).map(Binding::Sid).ok_or_else(|| {
-                    QueryError::InvalidFilter(format!("Unknown IRI or namespace: {}", iri))
-                })
+                ctx.snapshot
+                    .encode_iri(&iri)
+                    .map(Binding::Sid)
+                    .ok_or_else(|| {
+                        QueryError::InvalidFilter(format!("Unknown IRI or namespace: {}", iri))
+                    })
             }
             ComparableValue::TypedLiteral { val, dt_iri, lang } => {
                 if let Some(lang) = lang {
@@ -392,7 +395,7 @@ impl ComparableValue {
                                 .to_string(),
                         )
                     })?;
-                    let dt = ctx.db.encode_iri(&dt_iri).ok_or_else(|| {
+                    let dt = ctx.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
                         QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
                     })?;
                     Ok(Binding::lit(val, dt))

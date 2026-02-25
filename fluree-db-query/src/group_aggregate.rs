@@ -44,8 +44,8 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -87,11 +87,12 @@ enum AggState {
 /// EncodedSid/EncodedPid raw IDs don't have semantic ordering (s_id=100 for "zebra"
 /// would incorrectly compare > s_id=50 for "apple"). We must decode to get correct
 /// term ordering via namespace/name comparison.
-fn materialize_for_minmax(binding: &Binding, store: Option<&BinaryIndexStore>) -> Binding {
-    let Some(store) = store else {
+fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Binding {
+    let Some(gv) = gv else {
         // No store available - return as-is (will use raw ID comparison as fallback)
         return binding.clone();
     };
+    let store = gv.store();
 
     match binding {
         Binding::EncodedLit {
@@ -103,7 +104,7 @@ fn materialize_for_minmax(binding: &Binding, store: Option<&BinaryIndexStore>) -
             i_val,
             t,
         } => {
-            match store.decode_value(*o_kind, *o_key, *p_id) {
+            match gv.decode_value(*o_kind, *o_key, *p_id) {
                 Ok(fluree_db_core::FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
                     let dt_sid = store
@@ -167,8 +168,8 @@ impl AggState {
     /// # Arguments
     ///
     /// * `binding` - The binding value to incorporate
-    /// * `store` - Optional binary store for materializing encoded bindings (needed for MIN/MAX)
-    fn update(&mut self, binding: &Binding, store: Option<&BinaryIndexStore>) {
+    /// * `gv` - Optional graph view for materializing encoded bindings (needed for MIN/MAX)
+    fn update(&mut self, binding: &Binding, gv: Option<&BinaryGraphView>) {
         match self {
             AggState::Count { n } => {
                 // COUNT: count non-Unbound values (COUNT(*) counts all via CountAll variant)
@@ -208,7 +209,7 @@ impl AggState {
                     // Materialize encoded bindings for correct semantic comparison.
                     // Raw s_id comparison would give wrong ordering (s_id=100 for "zebra"
                     // would incorrectly be > s_id=50 for "apple").
-                    let materialized = materialize_for_minmax(binding, store);
+                    let materialized = materialize_for_minmax(binding, gv);
                     match min {
                         None => *min = Some(materialized),
                         Some(current) => {
@@ -227,7 +228,7 @@ impl AggState {
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
                     // Materialize encoded bindings for correct semantic comparison.
-                    let materialized = materialize_for_minmax(binding, store);
+                    let materialized = materialize_for_minmax(binding, gv);
                     match max {
                         None => *max = Some(materialized),
                         Some(current) => {
@@ -464,8 +465,8 @@ pub struct GroupAggregateOperator {
     groups: HashMap<CompositeGroupKey, GroupState>,
     /// Iterator for emitting results
     emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
-    /// Binary index store for materializing encoded bindings (used for MIN/MAX semantic ordering).
-    binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
+    graph_view: Option<BinaryGraphView>,
 }
 
 impl GroupAggregateOperator {
@@ -476,12 +477,12 @@ impl GroupAggregateOperator {
     /// * `child` - Input operator
     /// * `group_vars` - Variables to group by
     /// * `agg_specs` - Aggregate specifications (input col, function, output var)
-    /// * `binary_store` - Optional binary store for encoded binding materialization
+    /// * `graph_view` - Optional graph view for encoded binding materialization
     pub fn new(
         child: BoxedOperator,
         group_vars: Vec<VarId>,
         agg_specs: Vec<StreamingAggSpec>,
-        binary_store: Option<Arc<BinaryIndexStore>>,
+        graph_view: Option<BinaryGraphView>,
     ) -> Self {
         let child_schema = child.schema().to_vec();
 
@@ -512,7 +513,7 @@ impl GroupAggregateOperator {
             agg_specs,
             groups: HashMap::new(),
             emit_iter: None,
-            binary_store,
+            graph_view,
         }
     }
 
@@ -567,8 +568,8 @@ impl Operator for GroupAggregateOperator {
         self.emit_iter = None;
         // If the execution context has a binary store, use it to materialize
         // encoded bindings for correct MIN/MAX comparison semantics.
-        if self.binary_store.is_none() {
-            self.binary_store = ctx.binary_store.clone();
+        if self.graph_view.is_none() {
+            self.graph_view = ctx.graph_view();
         }
         Ok(())
     }
@@ -631,12 +632,12 @@ impl Operator for GroupAggregateOperator {
                             });
 
                         // Update each aggregate with this row's values
-                        let store_ref = self.binary_store.as_deref();
+                        let gv_ref = self.graph_view.as_ref();
                         for (agg_idx, spec) in self.agg_specs.iter().enumerate() {
                             match spec.input_col {
                                 Some(col_idx) => {
                                     let binding = batch.get_by_col(row_idx, col_idx);
-                                    group_state.agg_states[agg_idx].update(binding, store_ref);
+                                    group_state.agg_states[agg_idx].update(binding, gv_ref);
                                 }
                                 None => {
                                     // COUNT(*) - count all rows
@@ -777,10 +778,10 @@ fn is_int_binding(binding: &Binding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_snapshot() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     #[tokio::test]
@@ -788,9 +789,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input: 5 papers for venue A, 3 papers for venue B
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice()); // ?venue, ?paper
@@ -905,9 +906,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input: category A with values 10, 20, 30; category B with values 5, 15
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -1008,6 +1009,8 @@ mod tests {
     async fn test_streaming_min_materializes_encoded_sid_with_store() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
+        use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+        use fluree_db_binary_index::BinaryIndexStore;
         use fluree_db_core::subject_id::SubjectId;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
@@ -1019,8 +1022,6 @@ mod tests {
         };
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
-        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_indexer::run_index::BinaryIndexStore;
 
         // Build a tiny on-disk BinaryIndexStore so we can materialize EncodedSid.
         // We intentionally insert subjects so that s_id order disagrees with lex order:
@@ -1164,9 +1165,9 @@ mod tests {
         let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
 
         // --- Build GroupAggregateOperator over encoded subject IDs ---
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars).with_binary_store(store.clone(), 0);
+        let ctx = ExecutionContext::new(&snapshot, &vars).with_binary_store(store.clone(), 0);
 
         // Input column: EncodedSid(zebra), EncodedSid(apple)
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice()); // ?x

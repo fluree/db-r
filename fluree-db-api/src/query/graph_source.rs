@@ -3,8 +3,7 @@ use serde_json::Value as JsonValue;
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
-    DataSource, ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result,
-    Storage,
+    ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result, Storage,
 };
 
 impl<S, N> Fluree<S, N>
@@ -73,15 +72,18 @@ where
         ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
-        let (vars, parsed) =
-            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) = parse_jsonld_query(
+            query_json,
+            &ledger.snapshot,
+            ledger.default_context.as_ref(),
+        )?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let db = ledger.as_graph_db_ref(0);
         let batches = crate::execute_with_r2rml(
-            source,
+            db,
             &vars,
             &executable,
             &tracker,
@@ -107,14 +109,14 @@ where
         sparql: &str,
     ) -> Result<QueryResult> {
         let (vars, parsed) =
-            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+            parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let db = ledger.as_graph_db_ref(0);
         let batches = crate::execute_with_r2rml(
-            source,
+            db,
             &vars,
             &executable,
             &tracker,

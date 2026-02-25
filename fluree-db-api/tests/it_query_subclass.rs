@@ -97,7 +97,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         .query(&ledger, &q_any)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert!(
         !any.as_array().unwrap().is_empty(),
@@ -112,7 +112,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         .query(&ledger, &q_types)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert!(
         !types.as_array().unwrap().is_empty(),
@@ -127,7 +127,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         .query(&ledger, &q_movie)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(movie_rows, json!(["https://www.wikidata.org/wiki/Q836821"]));
 
@@ -140,7 +140,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -221,7 +221,7 @@ async fn subclass_inferencing_issue_core_48() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -290,7 +290,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
         .query(&loaded, &q)
         .await
         .unwrap()
-        .to_jsonld_async(&loaded.db)
+        .to_jsonld_async(loaded.as_graph_db_ref(0))
         .await
         .unwrap();
     assert_eq!(
@@ -359,7 +359,7 @@ async fn subclass_nested_stages() {
         .query(&db3, &q)
         .await
         .unwrap()
-        .to_jsonld(&db3.db)
+        .to_jsonld(&db3.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
