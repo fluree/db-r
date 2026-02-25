@@ -210,7 +210,6 @@ pub struct Memory {
     pub created_at: String,
 
     // -- Type-specific predicates --
-
     /// Why this decision was made (for `Decision` kind).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,

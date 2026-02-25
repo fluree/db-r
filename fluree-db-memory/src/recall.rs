@@ -73,8 +73,7 @@ impl RecallEngine {
         let mut scored: Vec<ScoredMemory> = memories
             .iter()
             .map(|mem| {
-                let score =
-                    metadata_bonus(mem, &query_lower, &query_words, current_branch, &now);
+                let score = metadata_bonus(mem, &query_lower, &query_words, current_branch, &now);
                 ScoredMemory {
                     memory: mem.clone(),
                     score,
@@ -132,7 +131,10 @@ fn metadata_bonus(
     // Tag match: +10 per matching tag
     for tag in &mem.tags {
         let tag_lower = tag.to_lowercase();
-        if query_words.iter().any(|w| tag_lower == *w || tag_lower.contains(w)) {
+        if query_words
+            .iter()
+            .any(|w| tag_lower == *w || tag_lower.contains(w))
+        {
             bonus += 10.0;
         }
     }
@@ -149,12 +151,7 @@ fn metadata_bonus(
     let kind_names = match mem.kind {
         MemoryKind::Fact => &["fact", "facts"][..],
         MemoryKind::Decision => &["decision", "decisions", "decided"][..],
-        MemoryKind::Constraint => &[
-            "constraint",
-            "constraints",
-            "rule",
-            "rules",
-        ][..],
+        MemoryKind::Constraint => &["constraint", "constraints", "rule", "rules"][..],
         MemoryKind::Preference => &["preference", "preferences", "prefer", "preferred"][..],
         MemoryKind::Artifact => &["artifact", "artifacts", "file", "files"][..],
     };
@@ -213,15 +210,22 @@ mod tests {
     #[test]
     fn rerank_applies_tag_bonus() {
         let memories = vec![
-            make_memory("mem:a", "Use nextest for tests", &["testing"], MemoryKind::Fact),
-            make_memory("mem:b", "The database uses RDF triples", &["database"], MemoryKind::Fact),
+            make_memory(
+                "mem:a",
+                "Use nextest for tests",
+                &["testing"],
+                MemoryKind::Fact,
+            ),
+            make_memory(
+                "mem:b",
+                "The database uses RDF triples",
+                &["database"],
+                MemoryKind::Fact,
+            ),
         ];
 
         // Simulate BM25 returning both with similar content scores
-        let bm25_hits = vec![
-            ("mem:a".to_string(), 1.5),
-            ("mem:b".to_string(), 1.2),
-        ];
+        let bm25_hits = vec![("mem:a".to_string(), 1.5), ("mem:b".to_string(), 1.2)];
 
         let results = RecallEngine::rerank("testing", &bm25_hits, &memories, None);
         assert_eq!(results.len(), 2);
@@ -238,10 +242,7 @@ mod tests {
         ];
 
         // BM25 says mem:b is more relevant
-        let bm25_hits = vec![
-            ("mem:b".to_string(), 3.0),
-            ("mem:a".to_string(), 1.0),
-        ];
+        let bm25_hits = vec![("mem:b".to_string(), 3.0), ("mem:a".to_string(), 1.0)];
 
         let results = RecallEngine::rerank("unrelated query", &bm25_hits, &memories, None);
         assert_eq!(results[0].memory.id, "mem:b");
@@ -250,7 +251,12 @@ mod tests {
     #[test]
     fn metadata_only_fallback() {
         let memories = vec![
-            make_memory("mem:a", "Use nextest for tests", &["testing"], MemoryKind::Fact),
+            make_memory(
+                "mem:a",
+                "Use nextest for tests",
+                &["testing"],
+                MemoryKind::Fact,
+            ),
             make_memory("mem:b", "Unrelated content", &["other"], MemoryKind::Fact),
         ];
 

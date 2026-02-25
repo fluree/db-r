@@ -48,7 +48,12 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
     writeln!(s, "mem:{local_id} a mem:{type_local} ;").unwrap();
 
     // mem:content (always present)
-    writeln!(s, "    mem:content \"{}\" ;", escape_turtle_string(&mem.content)).unwrap();
+    writeln!(
+        s,
+        "    mem:content \"{}\" ;",
+        escape_turtle_string(&mem.content)
+    )
+    .unwrap();
 
     // mem:tag (sorted, repeated predicates)
     let mut tags: Vec<&str> = mem.tags.iter().map(|t| t.as_str()).collect();
@@ -81,7 +86,12 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
     let mut refs: Vec<&str> = mem.artifact_refs.iter().map(|r| r.as_str()).collect();
     refs.sort();
     for aref in &refs {
-        writeln!(s, "    mem:artifactRef \"{}\" ;", escape_turtle_string(aref)).unwrap();
+        writeln!(
+            s,
+            "    mem:artifactRef \"{}\" ;",
+            escape_turtle_string(aref)
+        )
+        .unwrap();
     }
 
     // mem:branch (optional)
@@ -97,12 +107,22 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
 
     // mem:validFrom (optional)
     if let Some(vf) = &mem.valid_from {
-        writeln!(s, "    mem:validFrom \"{}\"^^xsd:dateTime ;", escape_turtle_string(vf)).unwrap();
+        writeln!(
+            s,
+            "    mem:validFrom \"{}\"^^xsd:dateTime ;",
+            escape_turtle_string(vf)
+        )
+        .unwrap();
     }
 
     // mem:validTo (optional)
     if let Some(vt) = &mem.valid_to {
-        writeln!(s, "    mem:validTo \"{}\"^^xsd:dateTime ;", escape_turtle_string(vt)).unwrap();
+        writeln!(
+            s,
+            "    mem:validTo \"{}\"^^xsd:dateTime ;",
+            escape_turtle_string(vt)
+        )
+        .unwrap();
     }
 
     // mem:createdAt (always present)
@@ -170,11 +190,7 @@ pub fn append_memory_to_file(path: &Path, mem: &Memory, header_comment: &str) ->
 /// Used by init migration and `forget` (the one non-append mutation).
 /// Memories are sorted by `@id` ascending (ULID = time order, oldest first).
 /// **Skips write if the new content is byte-identical** to the existing file.
-pub fn write_memory_file(
-    path: &Path,
-    memories: &[Memory],
-    header_comment: &str,
-) -> Result<()> {
+pub fn write_memory_file(path: &Path, memories: &[Memory], header_comment: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -307,9 +323,7 @@ fn inject_fulltext_value(val: Value) -> Value {
                 Value::Object(map)
             }
         }
-        Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(inject_fulltext_value).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(inject_fulltext_value).collect()),
         other => other,
     }
 }

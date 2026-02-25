@@ -1,8 +1,7 @@
 use crate::error::{MemoryError, Result};
 use crate::schema::{memory_schema_jsonld, memory_to_jsonld};
 use crate::types::{
-    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate,
-    Scope,
+    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate, Scope,
 };
 use chrono::Utc;
 use fluree_db_api::{FileStorage, Fluree};
@@ -684,7 +683,10 @@ WHERE {{
     ) -> Result<Vec<(String, f64)>> {
         self.initialize().await?;
 
-        let bind_expr = format!("(fulltext ?content \"{}\")", query_text.replace('"', "\\\""));
+        let bind_expr = format!(
+            "(fulltext ?content \"{}\")",
+            query_text.replace('"', "\\\"")
+        );
 
         let query = json!({
             "@context": {

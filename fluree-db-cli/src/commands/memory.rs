@@ -221,9 +221,8 @@ async fn run_add(
 
     let scope = scope
         .map(|s| {
-            Scope::parse_str(&s).ok_or_else(|| {
-                CliError::Usage(format!("invalid scope '{}'; valid: repo, user", s))
-            })
+            Scope::parse_str(&s)
+                .ok_or_else(|| CliError::Usage(format!("invalid scope '{}'; valid: repo, user", s)))
         })
         .transpose()?
         .unwrap_or_default();

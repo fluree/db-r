@@ -42,7 +42,9 @@ pub struct MemoryAddRequest {
     pub refs: Vec<String>,
 
     /// Scope: repo (default) or user
-    #[schemars(description = "Memory scope: 'repo' (project-wide, default) or 'user' (follows developer across repos)")]
+    #[schemars(
+        description = "Memory scope: 'repo' (project-wide, default) or 'user' (follows developer across repos)"
+    )]
     #[serde(default)]
     pub scope: Option<String>,
 
@@ -272,8 +274,18 @@ impl MemoryToolService {
         let branch = crate::detect_git_branch();
 
         // Capture preview before content is moved into MemoryInput
-        let preview: String = content.lines().next().unwrap_or("").chars().take(80).collect();
-        let ellipsis = if content.len() > preview.len() { "..." } else { "" };
+        let preview: String = content
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect();
+        let ellipsis = if content.len() > preview.len() {
+            "..."
+        } else {
+            ""
+        };
         let preview_line = format!("{}{}", preview, ellipsis);
 
         let input = MemoryInput {
@@ -387,7 +399,10 @@ impl MemoryToolService {
         // Load full memory objects for metadata re-ranking
         match self.store.current_memories(&filter).await {
             Ok(all) => {
-                debug!(total_current = all.len(), "Loaded current memories for re-ranking");
+                debug!(
+                    total_current = all.len(),
+                    "Loaded current memories for re-ranking"
+                );
                 let branch = crate::detect_git_branch();
                 let scored = if bm25_hits.is_empty() {
                     RecallEngine::recall_metadata_only(
@@ -575,23 +590,17 @@ impl MemoryToolService {
     async fn ensure_initialized(&self) -> std::result::Result<(), String> {
         if !self.store.is_initialized().await.unwrap_or(false) {
             info!("Memory store not initialized, initializing");
-            self.store
-                .initialize()
-                .await
-                .map_err(|e| {
-                    error!(error = %e, "Memory initialization failed");
-                    format!("initialization failed: {}", e)
-                })?;
+            self.store.initialize().await.map_err(|e| {
+                error!(error = %e, "Memory initialization failed");
+                format!("initialization failed: {}", e)
+            })?;
             info!("Memory store initialized");
         }
         // Rebuild ledger from .ttl files if they've changed (e.g. git pull)
-        self.store
-            .ensure_synced()
-            .await
-            .map_err(|e| {
-                error!(error = %e, "File sync failed");
-                format!("file sync failed: {}", e)
-            })?;
+        self.store.ensure_synced().await.map_err(|e| {
+            error!(error = %e, "File sync failed");
+            format!("file sync failed: {}", e)
+        })?;
         Ok(())
     }
 }

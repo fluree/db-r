@@ -302,7 +302,13 @@ fn has_memory_subjects(content: &str) -> bool {
     }
     // Look for subject patterns: mem:<kind>-<ulid>
     // These patterns don't appear in prefix declarations or property references.
-    for kind in &["fact-", "decision-", "constraint-", "preference-", "artifact-"] {
+    for kind in &[
+        "fact-",
+        "decision-",
+        "constraint-",
+        "preference-",
+        "artifact-",
+    ] {
         let pattern = format!("mem:{kind}");
         if content.contains(&pattern) {
             return true;
@@ -315,11 +321,7 @@ fn has_memory_subjects(content: &str) -> bool {
 // to avoid pulling in the `hex` crate.
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 

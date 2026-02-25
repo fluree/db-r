@@ -5,8 +5,8 @@ use fluree_db_memory::{MemoryStore, MemoryToolService};
 use rmcp::ServiceExt;
 use std::path::Path;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Layer as _;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer as _;
 
 /// Run the MCP server with the given transport.
 pub async fn run(transport: &str, dirs: &FlureeDir) -> CliResult<()> {
