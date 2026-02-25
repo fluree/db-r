@@ -301,6 +301,36 @@ fn query_no_input_errors() {
 }
 
 #[test]
+fn query_positional_inline() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "db"]).assert().success();
+
+    // Positional arg that looks like a SPARQL query is treated as inline input.
+    fluree_cmd(&tmp)
+        .args(["query", "SELECT ?s WHERE { ?s ?p ?o }"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn query_from_file_flag() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "db"]).assert().success();
+
+    // Write a query file
+    let query_file = tmp.path().join("test.sparql");
+    std::fs::write(&query_file, "SELECT ?s WHERE { ?s ?p ?o }").unwrap();
+
+    // -f flag reads query from file
+    fluree_cmd(&tmp)
+        .args(["query", "-f", query_file.to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+#[test]
 fn sparql_fql_conflict() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();

@@ -22,11 +22,11 @@ fluree init
 fluree create myledger
 
 # Insert data
-fluree insert -e '@prefix ex: <http://example.org/> .
+fluree insert '@prefix ex: <http://example.org/> .
 ex:alice a ex:Person ; ex:name "Alice" .'
 
 # Query
-fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
+fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 
 ## Global Options
@@ -122,9 +122,11 @@ Commands that accept data input (`insert`, `upsert`, `query`) use flexible argum
 
 | Arguments | Behavior |
 |-----------|----------|
-| (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger ID + stdin/-e |
-| `<ledger> <file>` | Specified ledger + file |
+| (none) | Active ledger; provide input via `-e`, `-f`, or stdin |
+| `<arg>` | Auto-detected: if it looks like a query/data, uses it inline; if it's an existing file, reads from it; otherwise treats it as a ledger name |
+| `<ledger> <input>` | Specified ledger + inline input |
+
+Input is resolved in this priority order: `-e` flag > positional inline > `-f` flag > positional file > stdin.
 
 ## Data Format Detection
 
