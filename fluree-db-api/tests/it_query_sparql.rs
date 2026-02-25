@@ -1803,3 +1803,320 @@ async fn sparql_property_path_inverse_of_alternative() {
         normalize_rows(&json!(["ex:alice"]))
     );
 }
+
+// ============================================================================
+// Custom namespace STR() and full-IRI predicate matching
+// ============================================================================
+
+/// Seed data with a custom namespace that is NOT one of the default W3C namespaces.
+async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {
+                "@id": "ex:item1",
+                "@type": "ex:Item",
+                "cust:packageType": "premium",
+                "cust:category": "electronics"
+            },
+            {
+                "@id": "ex:item2",
+                "@type": "ex:Item",
+                "cust:packageType": "standard",
+                "cust:category": "books"
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert custom ns data")
+        .ledger
+}
+
+/// SPARQL queries using full IRI predicates (angle-bracket syntax) must match
+/// data stored under custom namespace codes.
+#[tokio::test]
+async fn sparql_full_iri_predicate_matches_custom_namespace() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_custom_ns(&fluree, "custom_ns_match:main").await;
+
+    // Query using the full IRI (not PREFIX shorthand)
+    let query = r#"
+        SELECT ?type
+        WHERE {
+            ?s <https://taxo.cbcrc.ca/ns/packageType> ?type .
+        }
+    "#;
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("full-IRI predicate query should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows_json = normalize_rows(&jsonld);
+    let rows: Vec<String> = rows_json
+        .iter()
+        .map(|v| serde_json::to_string(v).unwrap())
+        .collect();
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "Expected 2 rows for packageType, got: {:?}",
+        rows
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("premium")),
+        "Expected 'premium', got: {:?}",
+        rows
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("standard")),
+        "Expected 'standard', got: {:?}",
+        rows
+    );
+}
+
+/// SPARQL queries using PREFIX shorthand for custom namespaces must also work.
+#[tokio::test]
+async fn sparql_prefix_shorthand_matches_custom_namespace() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_custom_ns(&fluree, "custom_ns_prefix:main").await;
+
+    let query = r#"
+        PREFIX cust: <https://taxo.cbcrc.ca/ns/>
+        SELECT ?type
+        WHERE {
+            ?s cust:packageType ?type .
+        }
+    "#;
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("PREFIX shorthand query should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows_json = normalize_rows(&jsonld);
+    let rows: Vec<String> = rows_json
+        .iter()
+        .map(|v| serde_json::to_string(v).unwrap())
+        .collect();
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "Expected 2 rows for packageType, got: {:?}",
+        rows
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("premium")),
+        "Expected 'premium', got: {:?}",
+        rows
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("standard")),
+        "Expected 'standard', got: {:?}",
+        rows
+    );
+}
+
+// =============================================================================
+// Bug regression: exact user repro — overlapping namespace prefixes + ref values
+// =============================================================================
+
+/// Seed ledger with exact data from the user's bug report.
+///
+/// Uses overlapping namespace prefixes (`https://taxo.cbcrc.ca/ns/` and
+/// `https://taxo.cbcrc.ca/id/`) and ref-valued custom predicates.
+async fn seed_exact_repro(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "skos": "http://www.w3.org/2004/02/skos/core#",
+            "skosxl": "http://www.w3.org/2008/05/skos-xl#",
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "cbc": "https://taxo.cbcrc.ca/id/"
+        },
+        "@graph": [
+            {
+                "@id": "cust:assocType/coverage",
+                "skosxl:prefLabel": {
+                    "@id": "cbc:label/assocType-coverage-en",
+                    "@type": "skosxl:Label",
+                    "skosxl:literalForm": {"@value": "Coverage Package", "@language": "en"}
+                }
+            },
+            {
+                "@id": "cbc:assoc/coverage-001",
+                "@type": "cust:CoveragePackage",
+                "cust:associationType": {"@id": "cust:assocType/coverage"},
+                "cust:anchor": {"@id": "https://taxo.cbcrc.ca/id/e9235fd0-c1fc-4f9e-828b-b933922b5764"},
+                "cust:member": [
+                    {"@id": "https://taxo.cbcrc.ca/id/5b33544d-d6cf-413b-915f-f1f084ba11c7"},
+                    {"@id": "https://taxo.cbcrc.ca/id/0476a33f-bcfc-459e-8b6b-e78baa81be3b"}
+                ]
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert exact repro data")
+        .ledger
+}
+
+/// Bug 1 repro: custom namespace predicate without rdf:type returns 0 rows.
+#[tokio::test]
+async fn sparql_exact_repro_custom_pred_without_type() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_exact_repro(&fluree, "repro/bug1:main").await;
+
+    // WITH rdf:type → should return 1 row (baseline)
+    let with_type = r#"
+        PREFIX cust: <https://taxo.cbcrc.ca/ns/>
+        SELECT ?s ?o
+        WHERE { ?s a cust:CoveragePackage ; cust:anchor ?o . }
+    "#;
+    let result = fluree
+        .query_sparql(&ledger, with_type)
+        .await
+        .expect("query with type");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows = jsonld.as_array().expect("array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "WITH rdf:type should return 1 row; got {}: {:?}",
+        rows.len(),
+        jsonld
+    );
+
+    // WITHOUT rdf:type → should ALSO return 1 row (BUG: returned 0)
+    let without_type = r#"
+        PREFIX cust: <https://taxo.cbcrc.ca/ns/>
+        SELECT ?s ?o
+        WHERE { ?s cust:anchor ?o . }
+    "#;
+    let result = fluree
+        .query_sparql(&ledger, without_type)
+        .await
+        .expect("query without type");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows = jsonld.as_array().expect("array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "WITHOUT rdf:type should also return 1 row; got {}: {:?}",
+        rows.len(),
+        jsonld
+    );
+}
+
+/// Bug 2 repro: JSON-LD graph crawl returns empty for custom namespace type.
+#[tokio::test]
+async fn jsonld_exact_repro_graph_crawl_custom_type() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_exact_repro(&fluree, "repro/bug2:main").await;
+
+    // Graph crawl for the cust:CoveragePackage entity
+    let query = json!({
+        "@context": {
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "cbc": "https://taxo.cbcrc.ca/id/"
+        },
+        "select": {"?s": ["*"]},
+        "values": ["?s", [{"@id": "cbc:assoc/coverage-001"}]]
+    });
+
+    let result = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("graph crawl should not error");
+    let jsonld = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .expect("to_jsonld_async");
+    let rows = jsonld.as_array().expect("array");
+    assert_eq!(rows.len(), 1, "should find 1 entity");
+    let obj = rows[0].as_object().expect("should be object");
+    assert!(
+        obj.len() > 1,
+        "graph crawl should return properties, not just @id; got: {:?}",
+        obj
+    );
+}
+
+// ============================================================================
+// Bug 3b regression: BIND IRI + OPTIONAL returns empty bindings
+// ============================================================================
+
+/// BIND(<iri> AS ?x) followed by OPTIONAL { ?x pred ?val } should propagate
+/// the bound IRI into the OPTIONAL pattern. Previously this returned nulls
+/// while using the IRI directly (without BIND) worked.
+#[tokio::test]
+async fn sparql_bind_iri_with_optional_propagates_binding() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = genesis_ledger(&fluree, "bind_opt");
+
+    // Insert a simple entity with a known IRI and property.
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [{
+            "@id": "ex:thing1",
+            "ex:label": "Hello"
+        }]
+    });
+    let receipt = fluree.insert(ledger, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    // Control: direct IRI in OPTIONAL works
+    let control = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label WHERE {
+            OPTIONAL { ex:thing1 ex:label ?label }
+        }
+    "#;
+    let result = fluree
+        .query_sparql(&ledger, control)
+        .await
+        .expect("control query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        jsonld,
+        json!(["Hello"]),
+        "control: direct IRI in OPTIONAL should find label"
+    );
+
+    // Bug 3b: BIND + OPTIONAL returns empty binding
+    let bind_query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label WHERE {
+            BIND(ex:thing1 AS ?s)
+            OPTIONAL { ?s ex:label ?label }
+        }
+    "#;
+    let result = fluree
+        .query_sparql(&ledger, bind_query)
+        .await
+        .expect("bind query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        jsonld,
+        json!(["Hello"]),
+        "BIND+OPTIONAL should propagate IRI into OPTIONAL"
+    );
+}
