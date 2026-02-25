@@ -417,9 +417,9 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
 async fn test_bind_with_inline_filter() {
     use fluree_db_query::bind::BindOperator;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Create a VALUES operator producing three rows: ?x = 10, 20, 30
     let values_rows = vec![
@@ -475,9 +475,9 @@ async fn test_bind_with_inline_filter() {
 async fn test_bind_with_inline_filter_rejects_all() {
     use fluree_db_query::bind::BindOperator;
 
-    let db = make_test_db();
+    let snapshot = make_test_snapshot();
     let vars = VarRegistry::new();
-    let ctx = ExecutionContext::new(&db, &vars);
+    let ctx = ExecutionContext::new(&snapshot, &vars);
 
     // Single row: ?x = 5
     let seed = Box::new(ValuesOperator::new(
@@ -502,6 +502,79 @@ async fn test_bind_with_inline_filter_rejects_all() {
 
     let result = bind_op.next_batch(&ctx).await.unwrap();
     assert!(result.is_none(), "all rows filtered out should yield None");
+
+    bind_op.close();
+}
+
+/// Test BindOperator with multiple inline filters — only rows passing ALL filters survive.
+///
+/// All five rows pass filter1 (?y > 15), but only the middle three pass both
+/// filter1 AND filter2 (?y < 45). Validates conjunction semantics of the filters vec.
+#[tokio::test]
+async fn test_bind_with_multiple_inline_filters() {
+    use fluree_db_query::bind::BindOperator;
+
+    let snapshot = make_test_snapshot();
+    let vars = VarRegistry::new();
+    let ctx = ExecutionContext::new(&snapshot, &vars);
+
+    // Five rows: ?x = 10, 20, 30, 40, 50
+    let values_rows = vec![
+        vec![Binding::lit(FlakeValue::Long(10), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(20), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(40), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(50), xsd_long())],
+    ];
+    let seed = Box::new(ValuesOperator::new(
+        Box::new(EmptyOperator::new()),
+        vec![VarId(0)],
+        values_rows,
+    ));
+
+    // BIND(?x + 10 AS ?y) => ?y = 20, 30, 40, 50, 60
+    // filter1: ?y > 15  — all rows pass
+    // filter2: ?y < 45  — ?y=20,30,40 pass; ?y=50,60 fail
+    // Combined: only ?y=20,30,40 survive (the middle three input rows)
+    let bind_expr = Expression::add(
+        Expression::Var(VarId(0)),
+        Expression::Const(FilterValue::Long(10)),
+    );
+    let filter1 = Expression::gt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(15)),
+    );
+    let filter2 = Expression::lt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(45)),
+    );
+
+    let mut bind_op = BindOperator::new(seed, VarId(1), bind_expr, vec![filter1, filter2]);
+    bind_op.open(&ctx).await.unwrap();
+
+    let result = bind_op.next_batch(&ctx).await.unwrap();
+    assert!(result.is_some(), "should produce a batch");
+
+    let batch = result.unwrap();
+    assert_eq!(batch.len(), 3, "only three rows should pass both filters");
+
+    // Row 0: ?x=10, ?y=20
+    let (x0, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (y0, _, _) = batch.get_by_col(0, 1).as_lit().unwrap();
+    assert_eq!(*x0, FlakeValue::Long(10));
+    assert_eq!(*y0, FlakeValue::Long(20));
+
+    // Row 1: ?x=20, ?y=30
+    let (x1, _, _) = batch.get_by_col(1, 0).as_lit().unwrap();
+    let (y1, _, _) = batch.get_by_col(1, 1).as_lit().unwrap();
+    assert_eq!(*x1, FlakeValue::Long(20));
+    assert_eq!(*y1, FlakeValue::Long(30));
+
+    // Row 2: ?x=30, ?y=40
+    let (x2, _, _) = batch.get_by_col(2, 0).as_lit().unwrap();
+    let (y2, _, _) = batch.get_by_col(2, 1).as_lit().unwrap();
+    assert_eq!(*x2, FlakeValue::Long(30));
+    assert_eq!(*y2, FlakeValue::Long(40));
 
     bind_op.close();
 }
