@@ -566,6 +566,7 @@ impl BinaryScanOperator {
                 lang,
                 t: Some(t),
                 op: None,
+                p_id: Some(p_id),
             },
         };
 
@@ -1753,6 +1754,7 @@ impl RangeScanOperator {
                     // outside history mode when explicitly requested via `@t`.
                     t: Some(f.t),
                     op: if history_mode { Some(f.op) } else { None },
+                    p_id: None,
                 },
             };
             row.push(binding);

@@ -48,6 +48,7 @@ fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Bin
                         lang: meta.and_then(|m| m.lang.map(Arc::from)),
                         t: Some(*t),
                         op: None,
+                        p_id: Some(*p_id),
                     })
                 }
             }

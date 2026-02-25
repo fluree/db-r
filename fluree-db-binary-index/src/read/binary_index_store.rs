@@ -100,6 +100,8 @@ struct GraphIndex {
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     /// Per-predicate spatial index providers.
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
+    /// Per-predicate fulltext BoW arenas (BM25 scoring).
+    fulltext: HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
 }
 
 // ============================================================================
@@ -217,6 +219,7 @@ impl BinaryIndexStore {
                         numbig: HashMap::new(),
                         vectors: HashMap::new(),
                         spatial: HashMap::new(),
+                        fulltext: HashMap::new(),
                     });
 
                     graph_index.orders.insert(
@@ -590,6 +593,7 @@ impl BinaryIndexStore {
                 numbig: HashMap::new(),
                 vectors: HashMap::new(),
                 spatial: HashMap::new(),
+                fulltext: HashMap::new(),
             });
             gi.numbig = numbig_forward;
             gi.vectors = vector_forward;
@@ -848,6 +852,10 @@ impl BinaryIndexStore {
             GraphId,
             HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
         > = HashMap::new();
+        let mut per_graph_fulltext: HashMap<
+            GraphId,
+            HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
+        > = HashMap::new();
 
         for ga in &root.graph_arenas {
             // numbig
@@ -964,12 +972,37 @@ impl BinaryIndexStore {
                 }
             }
 
-            if !ga.numbig.is_empty() || !ga.vectors.is_empty() || !ga.spatial.is_empty() {
+            // fulltext
+            if !ga.fulltext.is_empty() {
+                let ft_map = per_graph_fulltext.entry(ga.g_id).or_default();
+                for ft_ref in &ga.fulltext {
+                    let bytes =
+                        fetch_cached_bytes(cs.as_ref(), &ft_ref.arena_cid, cache_dir, "fta")
+                            .await?;
+                    let arena =
+                        crate::arena::fulltext::FulltextArena::decode(&bytes).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("fulltext arena decode: {}", e),
+                            )
+                        })?;
+                    ft_map.insert(ft_ref.p_id, Arc::new(arena));
+
+                    tracing::info!(g_id = ga.g_id, p_id = ft_ref.p_id, "loaded fulltext arena");
+                }
+            }
+
+            if !ga.numbig.is_empty()
+                || !ga.vectors.is_empty()
+                || !ga.spatial.is_empty()
+                || !ga.fulltext.is_empty()
+            {
                 tracing::info!(
                     g_id = ga.g_id,
                     numbig_predicates = ga.numbig.len(),
                     vector_predicates = ga.vectors.len(),
                     spatial_predicates = ga.spatial.len(),
+                    fulltext_predicates = ga.fulltext.len(),
                     "loaded per-graph arenas"
                 );
             }
@@ -1026,6 +1059,7 @@ impl BinaryIndexStore {
                         numbig: HashMap::new(),
                         vectors: HashMap::new(),
                         spatial: HashMap::new(),
+                        fulltext: HashMap::new(),
                     },
                 );
             }
@@ -1079,6 +1113,7 @@ impl BinaryIndexStore {
                     numbig: HashMap::new(),
                     vectors: HashMap::new(),
                     spatial: HashMap::new(),
+                    fulltext: HashMap::new(),
                 },
             );
         }
@@ -1090,6 +1125,7 @@ impl BinaryIndexStore {
                 numbig: HashMap::new(),
                 vectors: HashMap::new(),
                 spatial: HashMap::new(),
+                fulltext: HashMap::new(),
             });
             gi.numbig = nb_map;
         }
@@ -1099,6 +1135,7 @@ impl BinaryIndexStore {
                 numbig: HashMap::new(),
                 vectors: HashMap::new(),
                 spatial: HashMap::new(),
+                fulltext: HashMap::new(),
             });
             gi.vectors = vec_map;
         }
@@ -1108,8 +1145,19 @@ impl BinaryIndexStore {
                 numbig: HashMap::new(),
                 vectors: HashMap::new(),
                 spatial: HashMap::new(),
+                fulltext: HashMap::new(),
             });
             gi.spatial = sp_map;
+        }
+        for (g_id, ft_map) in per_graph_fulltext {
+            let gi = graphs.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+                fulltext: HashMap::new(),
+            });
+            gi.fulltext = ft_map;
         }
 
         // Log summary
@@ -2065,6 +2113,22 @@ impl BinaryIndexStore {
                     .to_string();
                 let key = format!("g{}:{}", g_id, pred_iri);
                 map.insert(key, Arc::clone(provider));
+            }
+        }
+        map
+    }
+
+    /// Build the fulltext arena map expected by `ContextConfig.fulltext_providers`.
+    ///
+    /// Keys are `(g_id, p_id)` pairs — no IRI resolution needed since
+    /// fulltext scoring already has numeric p_id from the `EncodedLit` binding.
+    pub fn fulltext_provider_map(
+        &self,
+    ) -> HashMap<(GraphId, u32), Arc<crate::arena::fulltext::FulltextArena>> {
+        let mut map = HashMap::new();
+        for (&g_id, gi) in &self.graph_indexes.graphs {
+            for (&p_id, arena) in &gi.fulltext {
+                map.insert((g_id, p_id), Arc::clone(arena));
             }
         }
         map

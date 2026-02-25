@@ -1019,6 +1019,8 @@ fn parse_literal_value_with_meta(
             // through the standard vector coercion path.
             let resolved_type = if type_iri == "@vector" {
                 fluree_vocab::fluree::EMBEDDING_VECTOR
+            } else if type_iri == "@fulltext" {
+                fluree_vocab::fluree::FULL_TEXT
             } else {
                 type_iri
             };

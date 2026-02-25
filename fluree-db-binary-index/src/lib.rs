@@ -5,6 +5,7 @@
 //! binary indexes. It is the dependency for `fluree-db-query` (instead of
 //! depending on the full `fluree-db-indexer` build pipeline).
 
+pub mod analyzer;
 pub mod error;
 pub mod types;
 
@@ -26,12 +27,16 @@ pub use read::spot_cursor::SpotCursor;
 pub use format::branch::{BranchManifest, LeafEntry};
 pub use format::index_root::{
     BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictRefsV5, DictTreeRefs,
-    GraphArenaRefsV5, GraphOrderRefs, GraphRefs, IndexRootV5, InlineOrderRouting,
-    NamedGraphRouting, PackBranchEntry, SpatialArenaRefV5, VectorDictRef, VectorDictRefV5,
+    FulltextArenaRefV5, GraphArenaRefsV5, GraphOrderRefs, GraphRefs, IndexRootV5,
+    InlineOrderRouting, NamedGraphRouting, PackBranchEntry, SpatialArenaRefV5, VectorDictRef,
+    VectorDictRefV5,
 };
 pub use format::leaf::read_leaf_header;
 pub use format::leaflet::{decode_leaflet_region1, decode_leaflet_region2, LeafletHeader};
 pub use format::run_record::{cmp_for_order, cmp_psot, cmp_spot, RunRecord, RunSortOrder};
+
+// ── Arena ────────────────────────────────────────────────────────────────────
+pub use arena::fulltext::FulltextArena;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 pub use types::{sort_overlay_ops, DecodedRow, NumericShape, OverlayOp, RowColumnSlice};

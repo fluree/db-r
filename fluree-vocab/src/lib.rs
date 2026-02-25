@@ -1314,6 +1314,10 @@ pub mod fluree {
     /// The `@vector` shorthand in JSON-LD resolves to this IRI.
     pub const EMBEDDING_VECTOR: &str = "https://ns.flur.ee/db#embeddingVector";
 
+    /// db:fullText datatype IRI (inline full-text search literals)
+    /// The `@fulltext` shorthand in JSON-LD resolves to this IRI.
+    pub const FULL_TEXT: &str = "https://ns.flur.ee/db#fullText";
+
     /// Full IRI for db:t predicate (used in RDF-Star annotation matching)
     pub const DB_T: &str = "https://ns.flur.ee/db#t";
 

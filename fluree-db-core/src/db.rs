@@ -283,7 +283,7 @@ impl LedgerSnapshot {
 
         // Validate version (caller already checked len >= 24 and magic)
         let version = data[4];
-        if version != 3 {
+        if version != 3 && version != 4 {
             return Err(Error::invalid_index(format!(
                 "IRB1: unsupported version {version}"
             )));
@@ -381,6 +381,14 @@ impl LedgerSnapshot {
                 let leaflet_count = read_u16(data, &mut pos)? as usize;
                 for _ in 0..leaflet_count {
                     skip_cid(data, &mut pos)?;
+                }
+            }
+            // fulltext (v4+)
+            if version >= 4 {
+                let fulltext_count = read_u16(data, &mut pos)? as usize;
+                for _ in 0..fulltext_count {
+                    let _p_id = read_u32(data, &mut pos)?;
+                    skip_cid(data, &mut pos)?; // arena_cid
                 }
             }
         }

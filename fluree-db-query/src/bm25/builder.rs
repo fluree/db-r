@@ -55,7 +55,7 @@ impl Bm25IndexBuilder {
         Self {
             ledger_alias: ledger_alias.into(),
             index: Bm25Index::with_config(config),
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
             indexed_count: 0,
             skipped_count: 0,
         }
@@ -233,7 +233,7 @@ impl MultiBm25IndexBuilder {
     pub fn new(config: Bm25Config) -> Self {
         Self {
             index: Bm25Index::with_config(config),
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
             ledger_counts: HashMap::new(),
         }
     }
@@ -364,7 +364,7 @@ impl<'a> IncrementalUpdater<'a> {
         Self {
             ledger_alias: ledger_alias.into(),
             index,
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
         }
     }
 

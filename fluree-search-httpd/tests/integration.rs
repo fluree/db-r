@@ -551,7 +551,7 @@ mod parity_tests {
             .load_bm25_index(&created.graph_source_id)
             .await
             .unwrap();
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
         let query_terms = analyzer.analyze_to_strings("rust programming");
         let term_refs: Vec<&str> = query_terms.iter().map(|s| s.as_str()).collect();
         let scorer = Bm25Scorer::new(&idx, &term_refs);

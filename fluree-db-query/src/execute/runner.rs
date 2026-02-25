@@ -16,7 +16,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
-use fluree_db_binary_index::BinaryIndexStore;
+use fluree_db_binary_index::{BinaryIndexStore, FulltextArena};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, StatsView, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
@@ -417,6 +417,9 @@ pub struct ContextConfig<'a, 'b> {
     /// Spatial index providers for S2Search patterns.
     /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
+    /// Fulltext BoW arenas for `fulltext()` BM25 scoring.
+    /// Keys are `(g_id, p_id)` pairs.
+    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
 }
 
 /// Parameters for query execution with dataset, policy, and search providers.
@@ -528,6 +531,9 @@ pub async fn execute_prepared<'a, 'b>(
     }
     if let Some(providers) = config.spatial_providers {
         ctx = ctx.with_spatial_providers(providers);
+    }
+    if let Some(providers) = config.fulltext_providers {
+        ctx = ctx.with_fulltext_providers(providers);
     }
 
     run_operator(prepared.operator, &ctx).await

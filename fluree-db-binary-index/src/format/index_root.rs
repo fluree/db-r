@@ -153,7 +153,8 @@ const ROOT_V5_MAGIC: [u8; 4] = *b"IRB1";
 /// Wire format version for IRB1.
 /// v3: per-graph specialty arenas (numbig/vectors/spatial) replace global
 ///     numbig/vectors in DictRefsV5.
-const ROOT_V5_VERSION: u8 = 3;
+/// v4: added per-graph fulltext BoW arena refs.
+const ROOT_V5_VERSION: u8 = 4;
 
 /// Fixed header size: magic(4) + version(1) + flags(1) + pad(2) + index_t(8) + base_t(8) = 24.
 const ROOT_V5_HEADER_LEN: usize = 24;
@@ -211,6 +212,8 @@ pub struct GraphArenaRefsV5 {
     pub vectors: Vec<VectorDictRefV5>,
     /// Per-predicate spatial index refs, sorted by p_id.
     pub spatial: Vec<SpatialArenaRefV5>,
+    /// Per-predicate fulltext BoW arena refs, sorted by p_id.
+    pub fulltext: Vec<FulltextArenaRefV5>,
 }
 
 /// Vector arena ref with u32 p_id key.
@@ -233,6 +236,14 @@ pub struct SpatialArenaRefV5 {
     pub arena: ContentId,
     /// CIDs of all leaflet chunks (for GC).
     pub leaflets: Vec<ContentId>,
+}
+
+/// Fulltext arena ref for one (graph, predicate) pair.
+#[derive(Debug, Clone)]
+pub struct FulltextArenaRefV5 {
+    pub p_id: u32,
+    /// CID of the FTA1 blob.
+    pub arena_cid: ContentId,
 }
 
 /// Binary index root v5 (`IRB1`).
@@ -395,6 +406,14 @@ impl IndexRootV5 {
                     write_cid(&mut buf, leaf_cid);
                 }
             }
+            // fulltext (sorted by p_id) — v4+
+            let mut sorted_ft = ga.fulltext.clone();
+            sorted_ft.sort_by_key(|f| f.p_id);
+            buf.extend_from_slice(&(sorted_ft.len() as u16).to_le_bytes());
+            for ftr in &sorted_ft {
+                buf.extend_from_slice(&ftr.p_id.to_le_bytes());
+                write_cid(&mut buf, &ftr.arena_cid);
+            }
         }
 
         // ---- Watermarks ----
@@ -487,7 +506,7 @@ impl IndexRootV5 {
             )));
         }
         let version = data[4];
-        if version != ROOT_V5_VERSION {
+        if version != 3 && version != ROOT_V5_VERSION {
             return Err(io_err(&format!("root: unsupported version {version}")));
         }
 
@@ -593,11 +612,25 @@ impl IndexRootV5 {
                     leaflets,
                 });
             }
+            // fulltext (v4+)
+            let fulltext = if version >= 4 {
+                let ft_count = read_u16_at(data, &mut pos)? as usize;
+                let mut fulltext = Vec::with_capacity(ft_count);
+                for _ in 0..ft_count {
+                    let p_id = read_u32_at(data, &mut pos)?;
+                    let arena_cid = read_cid(data, &mut pos)?;
+                    fulltext.push(FulltextArenaRefV5 { p_id, arena_cid });
+                }
+                fulltext
+            } else {
+                Vec::new()
+            };
             graph_arenas.push(GraphArenaRefsV5 {
                 g_id,
                 numbig,
                 vectors,
                 spatial,
+                fulltext,
             });
         }
 
@@ -768,6 +801,9 @@ impl IndexRootV5 {
                 ids.push(sar.manifest.clone());
                 ids.push(sar.arena.clone());
                 ids.extend(sar.leaflets.iter().cloned());
+            }
+            for ftr in &ga.fulltext {
+                ids.push(ftr.arena_cid.clone());
             }
         }
 
@@ -1365,7 +1401,7 @@ mod tests_v5 {
         let bytes = root.encode();
 
         assert_eq!(&bytes[0..4], b"IRB1");
-        assert_eq!(bytes[4], 3); // version
+        assert_eq!(bytes[4], 4); // version
         assert_eq!(bytes[5], 0); // flags (no optional sections)
         assert_eq!(bytes[6], 0); // pad
         assert_eq!(bytes[7], 0); // pad
@@ -1379,6 +1415,7 @@ mod tests_v5 {
             numbig: vec![(5, test_cid(DICT, "numbig_5"))],
             vectors: vec![],
             spatial: vec![],
+            fulltext: vec![],
         }];
         root.default_graph_orders = vec![InlineOrderRouting {
             order: RunSortOrder::Spot,

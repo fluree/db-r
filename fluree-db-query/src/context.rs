@@ -10,7 +10,7 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
-use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, FulltextArena};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{
     GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker,
@@ -95,6 +95,12 @@ pub struct ExecutionContext<'a> {
     /// The S2SearchOperator routes queries to the appropriate provider based on
     /// the graph ID and predicate.
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
+    /// Optional fulltext BoW arenas for `fulltext()` function BM25 scoring.
+    ///
+    /// Keys are `(g_id, p_id)` pairs. When present, `eval_fulltext` uses
+    /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
+    /// When absent, falls back to per-document TF-saturation scoring.
+    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -122,6 +128,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -149,6 +156,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: db.g_id,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -180,6 +188,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: db.g_id,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -212,6 +221,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -249,6 +259,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -282,6 +293,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
+            fulltext_providers: None,
         }
     }
 
@@ -330,6 +342,15 @@ impl<'a> ExecutionContext<'a> {
         providers: &'a HashMap<String, Arc<dyn SpatialIndexProvider>>,
     ) -> Self {
         self.spatial_providers = Some(providers);
+        self
+    }
+
+    /// Attach fulltext BoW arenas to this context (for `fulltext()` BM25 scoring).
+    pub fn with_fulltext_providers(
+        mut self,
+        providers: &'a HashMap<(GraphId, u32), Arc<FulltextArena>>,
+    ) -> Self {
+        self.fulltext_providers = Some(providers);
         self
     }
 
@@ -542,6 +563,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
+            fulltext_providers: self.fulltext_providers,
         }
     }
 
@@ -571,6 +593,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
+            fulltext_providers: self.fulltext_providers,
         }
     }
 
@@ -604,6 +627,7 @@ impl<'a> ExecutionContext<'a> {
             binary_g_id: graph.g_id,
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
+            fulltext_providers: self.fulltext_providers,
         }
     }
 

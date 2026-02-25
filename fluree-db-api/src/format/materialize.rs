@@ -89,6 +89,7 @@ fn materialize_encoded_lit(binding: &Binding, gv: &BinaryGraphView) -> std::io::
                 lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
                 t: Some(*t),
                 op: None,
+                p_id: Some(*p_id),
             })
         }
     }

@@ -545,6 +545,7 @@ impl Materializer {
                         lang: meta.and_then(|m| m.lang.map(Arc::from)),
                         t: Some(*t),
                         op: None,
+                        p_id: Some(*p_id),
                     }
                 }
                 Err(_) => Binding::Unbound,

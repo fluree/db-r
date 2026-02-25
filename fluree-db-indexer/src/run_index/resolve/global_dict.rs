@@ -1020,7 +1020,8 @@ pub(crate) fn new_datatype_dict() -> PredicateDict {
     d.get_or_insert(fluree_vocab::rdf::LANG_STRING); // 11
     d.get_or_insert("@json"); // 12
     d.get_or_insert("@vector"); // 13
-    debug_assert_eq!(d.len(), 14);
+    d.get_or_insert(fluree_vocab::fluree::FULL_TEXT); // 14
+    debug_assert_eq!(d.len(), 15);
     d
 }
 
@@ -1471,8 +1472,8 @@ mod tests {
         assert_eq!(dicts.predicates.len(), 1);
         assert_eq!(dicts.strings.len(), 1);
         assert_eq!(dicts.languages.len(), 1);
-        // datatypes dict has 14 reserved entries
-        assert_eq!(dicts.datatypes.len(), 14);
+        // datatypes dict has 15 reserved entries
+        assert_eq!(dicts.datatypes.len(), 15);
     }
 
     // ---- StringValueDict tests ----
@@ -1533,7 +1534,7 @@ mod tests {
     #[test]
     fn test_new_datatype_dict_reserved_entries() {
         let d = new_datatype_dict();
-        assert_eq!(d.len(), 14);
+        assert_eq!(d.len(), 15);
 
         // Verify reserved positions match DatatypeDictId constants
         assert_eq!(d.get("@id"), Some(DatatypeDictId::ID.as_u16() as u32));
@@ -1586,6 +1587,10 @@ mod tests {
             d.get("@vector"),
             Some(DatatypeDictId::VECTOR.as_u16() as u32)
         );
+        assert_eq!(
+            d.get(fluree_vocab::fluree::FULL_TEXT),
+            Some(DatatypeDictId::FULL_TEXT.as_u16() as u32)
+        );
     }
 
     #[test]
@@ -1597,18 +1602,18 @@ mod tests {
             d.get_or_insert(fluree_vocab::xsd::STRING),
             DatatypeDictId::STRING.as_u16() as u32
         );
-        assert_eq!(d.len(), 14); // no new entries
+        assert_eq!(d.len(), 15); // no new entries
     }
 
     #[test]
     fn test_datatype_dict_dynamic_assignment() {
         let mut d = new_datatype_dict();
-        // Custom/unknown types get dynamic IDs starting at 14
+        // Custom/unknown types get dynamic IDs starting at 15
         let g_year_id = d.get_or_insert(fluree_vocab::xsd::G_YEAR);
-        assert_eq!(g_year_id, DatatypeDictId::RESERVED_COUNT as u32); // 14
+        assert_eq!(g_year_id, DatatypeDictId::RESERVED_COUNT as u32); // 15
         let custom_id = d.get_or_insert("http://example.org/custom#myType");
-        assert_eq!(custom_id, 15);
-        assert_eq!(d.len(), 16);
+        assert_eq!(custom_id, 16);
+        assert_eq!(d.len(), 17);
 
         // Re-insert returns same ID
         assert_eq!(d.get_or_insert(fluree_vocab::xsd::G_YEAR), g_year_id);
@@ -1701,7 +1706,7 @@ mod tests {
     fn test_shared_dict_from_datatype_dict() {
         let dt_dict = new_datatype_dict();
         let alloc = SharedDictAllocator::from_predicate_dict(&dt_dict);
-        assert_eq!(alloc.len(), 14);
+        assert_eq!(alloc.len(), 15);
 
         // Reserved datatypes are found
         assert_eq!(
@@ -1709,8 +1714,8 @@ mod tests {
             DatatypeDictId::STRING.as_u16() as u32
         );
 
-        // Novel datatype gets ID 14
-        assert_eq!(alloc.get_or_insert(fluree_vocab::xsd::G_YEAR), 14);
+        // Novel datatype gets ID 15
+        assert_eq!(alloc.get_or_insert(fluree_vocab::xsd::G_YEAR), 15);
     }
 
     #[test]
