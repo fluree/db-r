@@ -37,6 +37,9 @@ members = [
     "fluree-db-cli",
     "bench-filter-query",
 ]
+exclude = [
+    "testsuite-sparql",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -101,7 +104,11 @@ ryu = "1"
 # HTTP server dependencies
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "compression-gzip",
+] }
 
 # Concurrent collections
 dashmap = "6"
@@ -122,7 +129,10 @@ http-body-util = "0.1"
 bytes = "1.4"
 
 # HTTP client for REST catalog (Iceberg)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
 urlencoding = "2"
 
 # JWT verification (standard OIDC JWT with JWKS support)
