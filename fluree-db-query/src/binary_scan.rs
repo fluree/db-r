@@ -907,6 +907,56 @@ impl Operator for BinaryScanOperator {
                     None
                 }
             }
+            // Overlay-only fallback: UNBOUND subject.
+            // When a predicate exists only in novelty (not yet indexed),
+            // translate_range returns None because sid_to_p_id fails.
+            // If overlay ops exist, create full-range bounds so the cursor
+            // can merge overlay ops. The BinaryFilter will narrow to the
+            // predicate via dict_overlay.
+            None if !self.overlay_ops.is_empty() && s_sid.is_none() => {
+                tracing::trace!("binary_scan: trying overlay-only fallback for unbound subject");
+                if let Some(dict_ov) = &mut self.dict_overlay {
+                    use fluree_db_binary_index::RunRecord;
+                    use fluree_db_core::subject_id::SubjectId;
+                    let p_id = p_sid
+                        .as_ref()
+                        .map(|p| dict_ov.assign_predicate_id_from_sid(p));
+                    // Full-range bounds spanning the entire graph.
+                    // The cursor will merge overlay ops; BinaryFilter
+                    // restricts to the resolved p_id.
+                    let min_key = RunRecord {
+                        g_id: self.graph_view.g_id(),
+                        s_id: SubjectId::from_u64(0),
+                        p_id: p_id.unwrap_or(0),
+                        dt: 0,
+                        o_kind: ObjKind::MIN.as_u8(),
+                        op: 0,
+                        o_key: 0,
+                        t: 0,
+                        lang_id: 0,
+                        i: 0,
+                    };
+                    let max_key = RunRecord {
+                        g_id: self.graph_view.g_id(),
+                        s_id: SubjectId::from_u64(u64::MAX),
+                        p_id: p_id.unwrap_or(u32::MAX),
+                        dt: u16::MAX,
+                        o_kind: ObjKind::MAX.as_u8(),
+                        op: 1,
+                        o_key: u64::MAX,
+                        t: u32::MAX,
+                        lang_id: u16::MAX,
+                        i: u32::MAX,
+                    };
+                    tracing::trace!(
+                        ?p_id,
+                        "binary_scan: created full-range overlay-only bounds (unbound subject)"
+                    );
+                    Some((min_key, max_key))
+                } else {
+                    None
+                }
+            }
             None => None,
         };
 
@@ -1032,9 +1082,17 @@ impl Operator for BinaryScanOperator {
                         }
                     }
                 }
-                let resolved_p_id = p_sid
-                    .as_ref()
-                    .and_then(|sid| self.graph_view.store().sid_to_p_id(sid));
+                let resolved_p_id = p_sid.as_ref().and_then(|sid| {
+                    self.graph_view
+                        .store()
+                        .sid_to_p_id(sid)
+                        // Fallback to DictOverlay for novelty-only predicates
+                        .or_else(|| {
+                            self.dict_overlay
+                                .as_mut()
+                                .map(|ov| ov.assign_predicate_id_from_sid(sid))
+                        })
+                });
                 if let Some(p_id) = resolved_p_id {
                     filter.p_id = Some(p_id);
                 }

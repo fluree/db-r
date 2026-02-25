@@ -234,7 +234,7 @@ fn binary_range_eq(
     index: IndexType,
     match_val: &RangeMatch,
     opts: &RangeOptions,
-    overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
+    mut overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
 ) -> io::Result<Vec<Flake>> {
     let gv = BinaryGraphView::new(Arc::clone(store), g_id);
     let order = index_type_to_sort_order(index);
@@ -248,30 +248,88 @@ fn binary_range_eq(
         g_id,
     )?;
 
-    let (min_key, max_key) = match bounds {
-        Some(b) => b,
-        None => return Ok(Vec::new()), // untranslatable → no results
-    };
-
     // Build filter for exact-match post-filtering within leaves.
+    // This is computed early so the overlay-only fallback can populate it too.
     let mut filter = BinaryFilter::new();
-    if let Some(ref s) = match_val.s {
-        if let Some(s_id) = store.sid_to_s_id(s)? {
-            filter.s_id = Some(s_id);
+
+    let (min_key, max_key) = match bounds {
+        Some(b) => {
+            // Populate filter from persisted IDs.
+            if let Some(ref s) = match_val.s {
+                if let Some(s_id) = store.sid_to_s_id(s)? {
+                    filter.s_id = Some(s_id);
+                }
+            }
+            if let Some(ref p) = match_val.p {
+                if let Some(p_id) = store.sid_to_p_id(p) {
+                    filter.p_id = Some(p_id);
+                }
+            }
+            if let Some(ref o) = match_val.o {
+                if let Ok(Some((ok, okey))) = store.value_to_obj_pair(o) {
+                    filter.o_kind = Some(ok.as_u8());
+                    filter.o_key = Some(okey.as_u64());
+                }
+            }
+            b
         }
-    }
-    if let Some(ref p) = match_val.p {
-        if let Some(p_id) = store.sid_to_p_id(p) {
-            filter.p_id = Some(p_id);
+        None => {
+            // translate_range returned None — a bound component (subject,
+            // predicate, or object) could not be found in the persisted index.
+            // If we have an overlay (novelty), the data may exist there.
+            // Create fallback bounds using DictOverlay.
+            if let Some((_, ref mut dict_ov)) = overlay {
+                // Resolve subject via DictOverlay (handles novelty-only subjects)
+                let s_id = match &match_val.s {
+                    Some(sid) => match dict_ov.assign_subject_id_from_sid(sid) {
+                        Ok(id) => Some(id),
+                        Err(_) => return Ok(Vec::new()),
+                    },
+                    None => None,
+                };
+                // Resolve predicate via DictOverlay (handles novelty-only predicates)
+                let p_id = match_val
+                    .p
+                    .as_ref()
+                    .map(|p| dict_ov.assign_predicate_id_from_sid(p));
+
+                if let Some(s_id) = s_id {
+                    filter.s_id = Some(s_id);
+                }
+                if let Some(p_id) = p_id {
+                    filter.p_id = Some(p_id);
+                }
+
+                let min_key = RunRecord {
+                    g_id,
+                    s_id: SubjectId::from_u64(s_id.unwrap_or(0)),
+                    p_id: p_id.unwrap_or(0),
+                    dt: 0,
+                    o_kind: ObjKind::MIN.as_u8(),
+                    op: 0,
+                    o_key: 0,
+                    t: 0,
+                    lang_id: 0,
+                    i: 0,
+                };
+                let max_key = RunRecord {
+                    g_id,
+                    s_id: SubjectId::from_u64(s_id.unwrap_or(u64::MAX)),
+                    p_id: p_id.unwrap_or(u32::MAX),
+                    dt: u16::MAX,
+                    o_kind: ObjKind::MAX.as_u8(),
+                    op: 1,
+                    o_key: u64::MAX,
+                    t: u32::MAX,
+                    lang_id: u16::MAX,
+                    i: u32::MAX,
+                };
+                (min_key, max_key)
+            } else {
+                return Ok(Vec::new()); // no overlay → genuinely no results
+            }
         }
-    }
-    // Object filter: only for exact-match (Eq) queries with a bound object.
-    if let Some(ref o) = match_val.o {
-        if let Ok(Some((ok, okey))) = store.value_to_obj_pair(o) {
-            filter.o_kind = Some(ok.as_u8());
-            filter.o_key = Some(okey.as_u64());
-        }
-    }
+    };
 
     // Region 2 is needed for Flake reconstruction (t, dt, lang, list_index).
     let need_region2 = true;
@@ -292,8 +350,8 @@ fn binary_range_eq(
         cursor.set_to_t(effective_to_t);
     }
 
-    // Overlay merge.
-    if let Some((ovl, dict_ov)) = overlay {
+    // Overlay merge. Keep a reference to the DictOverlay for decode-time fallback.
+    let dict_ov_ref: Option<&DictOverlay> = if let Some((ovl, ref mut dict_ov)) = overlay {
         let overlay_ops =
             crate::binary_scan::translate_overlay_flakes(ovl, dict_ov, effective_to_t, g_id);
         if !overlay_ops.is_empty() {
@@ -304,7 +362,10 @@ fn binary_range_eq(
             sort_overlay_ops(&mut sorted, order);
             cursor.set_overlay_ops(sorted);
         }
-    }
+        Some(dict_ov)
+    } else {
+        None
+    };
 
     // Iterate leaves and collect Flakes.
     //
@@ -326,6 +387,7 @@ fn binary_range_eq(
             bounds,
             &mut offset_remaining,
             effective_flake_limit,
+            dict_ov_ref,
         )?;
         if flakes.len() >= effective_flake_limit {
             flakes.truncate(effective_flake_limit);
@@ -341,6 +403,9 @@ fn binary_range_eq(
 ///
 /// Uses `BinaryGraphView` for graph-scoped value decoding (handles specialty arenas
 /// like NumBig/Vector that are per-graph).
+///
+/// When `dict_ov` is provided, subject and predicate resolution falls back to
+/// `DictOverlay` for novelty-only IDs that aren't in the persisted index.
 fn decode_batch_to_flakes_filtered(
     gv: &BinaryGraphView,
     batch: &DecodedBatch,
@@ -348,6 +413,7 @@ fn decode_batch_to_flakes_filtered(
     bounds: Option<&ObjectBounds>,
     offset_remaining: &mut usize,
     flake_limit: usize,
+    dict_ov: Option<&DictOverlay>,
 ) -> io::Result<()> {
     let store = gv.store();
     let dt_sids = store.dt_sids();
@@ -362,21 +428,55 @@ fn decode_batch_to_flakes_filtered(
         let lang_id = batch.lang_ids[i];
         let i_val = batch.i_values[i];
 
-        // s_id → Sid
-        let s_iri = store.resolve_subject_iri(s_id)?;
-        let s_sid = store.encode_iri(&s_iri);
+        // s_id → Sid (try persisted store first, fallback to DictOverlay)
+        let s_sid = match store.resolve_subject_iri(s_id) {
+            Ok(s_iri) => store.encode_iri(&s_iri),
+            Err(_) => {
+                if let Some(ov) = dict_ov {
+                    ov.resolve_subject_sid(s_id).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("resolve s_id {s_id}: {e}"),
+                        )
+                    })?
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("s_id {s_id} not found in persisted index and no DictOverlay"),
+                    ));
+                }
+            }
+        };
 
-        // p_id → Sid
-        let p_iri = store.resolve_predicate_iri(p_id).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown predicate ID {p_id}"),
-            )
-        })?;
-        let p_sid = store.encode_iri(p_iri);
+        // p_id → Sid (try persisted store first, fallback to DictOverlay)
+        let p_sid = match store.resolve_predicate_iri(p_id) {
+            Some(p_iri) => store.encode_iri(p_iri),
+            None => {
+                if let Some(ov) = dict_ov {
+                    ov.resolve_predicate_sid(p_id).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown predicate ID {p_id}"),
+                        )
+                    })?
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown predicate ID {p_id}"),
+                    ));
+                }
+            }
+        };
 
-        // (o_kind, o_key) → FlakeValue (graph-scoped decode)
-        let o_val = gv.decode_value(o_kind, o_key, p_id)?;
+        // (o_kind, o_key) → FlakeValue
+        // Try DictOverlay first when available — it handles both novel
+        // and persisted IDs (falls through to the store for persisted).
+        // Only fall back to gv.decode_value when no DictOverlay.
+        let o_val = if let Some(ov) = dict_ov {
+            ov.decode_value(o_kind, o_key, p_id)?
+        } else {
+            gv.decode_value(o_kind, o_key, p_id)?
+        };
 
         // Optional post-filter for object bounds (RangeOptions semantics).
         if let Some(b) = bounds {
@@ -386,13 +486,23 @@ fn decode_batch_to_flakes_filtered(
         }
 
         // dt_id → Sid for datatype
-        let dt = dt_sids
-            .get(dt_id as usize)
-            .cloned()
-            .unwrap_or_else(Sid::min);
+        // Use DictOverlay when available (handles novel dt_ids).
+        let dt = if let Some(ov) = dict_ov {
+            ov.decode_dt_sid(dt_id as u16)
+        } else {
+            dt_sids
+                .get(dt_id as usize)
+                .cloned()
+                .unwrap_or_else(Sid::min)
+        };
 
         // Language tag + list index → FlakeMeta
-        let meta = store.decode_meta(lang_id, i_val);
+        // Use DictOverlay when available (handles novel lang_ids).
+        let meta = if let Some(ov) = dict_ov {
+            ov.decode_meta(lang_id, i_val)
+        } else {
+            store.decode_meta(lang_id, i_val)
+        };
 
         // Offset applies to the filtered stream (RangeOptions semantics).
         if *offset_remaining > 0 {
