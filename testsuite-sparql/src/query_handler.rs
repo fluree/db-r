@@ -160,7 +160,7 @@ async fn run_eval_test(
     let actual = if is_construct {
         // CONSTRUCT path: format as JSON-LD graph
         let construct_json = query_result
-            .to_construct(&ledger.db)
+            .to_construct(&ledger.snapshot)
             .map_err(|e| anyhow::anyhow!("Formatting CONSTRUCT result: {e}"))?;
         fluree_construct_to_sparql_results(&construct_json)
             .context("Converting CONSTRUCT output to graph")?
@@ -169,7 +169,7 @@ async fn run_eval_test(
         let empty_context = ParsedContext::new();
         let config = FormatterConfig::sparql_json().with_select_mode(query_result.select_mode);
         let actual_json =
-            format::format_results(&query_result, &empty_context, &ledger.db, &config)
+            format::format_results(&query_result, &empty_context, &ledger.snapshot, &config)
                 .map_err(|e| anyhow::anyhow!("Formatting SPARQL JSON: {e}"))?;
         fluree_json_to_sparql_results(&actual_json)
             .context("Converting Fluree results to SparqlResults")?

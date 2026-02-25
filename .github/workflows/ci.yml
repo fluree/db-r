@@ -67,3 +67,36 @@ jobs:
 
       - name: Test
         run: cargo nextest run --workspace --all-features --no-fail-fast
+
+  testsuite-sparql:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: "testsuite-sparql -> target"
+
+      - name: Format
+        working-directory: testsuite-sparql
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: testsuite-sparql
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check compiles (test targets)
+        working-directory: testsuite-sparql
+        run: cargo test --no-run
