@@ -1222,7 +1222,7 @@ mod tests {
             .expect("expected a UNION in the pattern list");
         if let Pattern::Union(branches) = union {
             for (i, branch) in branches.iter().enumerate() {
-                assert!(branch.iter().any(|p| pred(p)), "UNION branch {i}: {msg}");
+                assert!(branch.iter().any(&pred), "UNION branch {i}: {msg}");
             }
         }
     }
@@ -2554,7 +2554,7 @@ mod tests {
             .expect("Graph should be in result");
         if let Pattern::Graph { patterns, .. } = graph {
             assert!(
-                patterns.iter().any(|p| is_filter(p)),
+                patterns.iter().any(is_filter),
                 "Graph inner patterns should contain the filter"
             );
         }
