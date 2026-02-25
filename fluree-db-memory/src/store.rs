@@ -851,11 +851,11 @@ fn parse_memory_from_sparql_results(id: &str, result: &Value) -> Result<Option<M
 fn parse_from_sparql_bindings(bindings: &[Value]) -> Result<Vec<Memory>> {
     use std::collections::HashMap;
 
-    // Group bindings by subject ID
+    // Group bindings by subject ID — compact to `mem:` prefix form (canonical)
     let mut grouped: HashMap<String, Vec<&Value>> = HashMap::new();
     for binding in bindings {
         if let Some(id) = extract_binding_value(binding, "id") {
-            grouped.entry(id).or_default().push(binding);
+            grouped.entry(compact_id(&id)).or_default().push(binding);
         }
     }
 
@@ -876,11 +876,12 @@ fn parse_from_sparql_bindings(bindings: &[Value]) -> Result<Vec<Memory>> {
 fn parse_from_flat_rows(rows: &[Value]) -> Result<Vec<Memory>> {
     use std::collections::HashMap;
 
+    // Group rows by subject ID — compact to `mem:` prefix form (canonical)
     let mut grouped: HashMap<String, Vec<&Value>> = HashMap::new();
     for row in rows {
         if let Some(arr) = row.as_array() {
             if let Some(id) = arr.first().and_then(|v| v.as_str()) {
-                grouped.entry(id.to_string()).or_default().push(row);
+                grouped.entry(compact_id(id)).or_default().push(row);
             }
         }
     }
