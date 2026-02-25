@@ -130,7 +130,8 @@ fluree memory recall <QUERY> [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `-n, --limit <N>` | Maximum results (default: 10) |
+| `-n, --limit <N>` | Maximum results per page (default: 3) |
+| `--offset <N>` | Skip the first N results — use for pagination (default: 0) |
 | `--kind <KIND>` | Filter to a specific memory kind |
 | `--tags <T1,T2>` | Filter to memories with these tags |
 | `--scope <SCOPE>` | Filter by scope: `repo` or `user` |
@@ -139,8 +140,14 @@ fluree memory recall <QUERY> [OPTIONS]
 ### Examples
 
 ```bash
-# Basic recall
+# Basic recall (returns top 3)
 fluree memory recall "how to run tests"
+
+# Get the next page
+fluree memory recall "how to run tests" --offset 3
+
+# Return up to 10 results
+fluree memory recall "error handling" -n 10
 
 # Filter by kind and tags
 fluree memory recall "error handling" --kind constraint --tags errors
@@ -160,6 +167,8 @@ Recall: "how to run tests" (2 matches)
 2. [score: 8.0] mem:fact-01JDABC...
    Integration tests use assert_cmd + predicates
    Tags: testing
+
+  (showing results 1–3; use --offset 3 for more)
 ```
 
 Output (context):
@@ -169,7 +178,14 @@ Output (context):
     <content>Tests use cargo nextest</content>
     <tags>testing, cargo</tags>
   </memory>
+  <pagination shown="1" offset="0" total_in_store="13" />
 </memory-context>
+```
+
+When results are cut off, the pagination element includes a hint:
+
+```xml
+  <pagination shown="3" offset="0" limit="3" total_in_store="13">Results 1–3. Use offset=3 to retrieve more.</pagination>
 ```
 
 ## fluree memory update

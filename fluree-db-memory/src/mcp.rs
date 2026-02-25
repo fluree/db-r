@@ -3,7 +3,7 @@
 //! Provides `MemoryToolService` with tools for storing, recalling, updating,
 //! and forgetting memories. Designed for IDE agent integration via stdio transport.
 
-use crate::format::{format_context, format_json, format_status_text};
+use crate::format::{format_context_paged, format_json, format_status_text};
 use crate::recall::RecallEngine;
 use crate::secrets::SecretDetector;
 use crate::store::MemoryStore;
@@ -96,6 +96,13 @@ pub struct MemoryRecallRequest {
     /// Maximum number of results
     #[schemars(description = "Maximum number of memories to return (default: 10)")]
     pub limit: Option<usize>,
+
+    /// Skip the first N results (for pagination)
+    #[schemars(
+        description = "Skip the first N results. Use with limit for pagination (e.g., offset=3 to get the next page after the first 3 results)."
+    )]
+    #[serde(default)]
+    pub offset: Option<usize>,
 
     /// Filter by kind
     #[schemars(description = "Filter to a specific memory kind")]
@@ -377,12 +384,15 @@ impl MemoryToolService {
             scope: scope_filter,
         };
 
-        let limit = req.limit.unwrap_or(10);
+        let limit = req.limit.unwrap_or(3);
+        let offset = req.offset.unwrap_or(0);
+        // Fetch enough candidates from BM25 to cover offset + limit
+        let fetch_n = offset + limit;
 
-        debug!(query = %req.query, limit = limit, "Memory recall request");
+        debug!(query = %req.query, limit = limit, offset = offset, "Memory recall request");
 
         // BM25 fulltext search for content relevance
-        let bm25_hits = match self.store.recall_fulltext(&req.query, limit).await {
+        let bm25_hits = match self.store.recall_fulltext(&req.query, fetch_n).await {
             Ok(hits) => {
                 debug!(hits = hits.len(), "BM25 search complete");
                 hits
@@ -409,22 +419,29 @@ impl MemoryToolService {
                         &req.query,
                         &all,
                         branch.as_deref(),
-                        Some(limit),
+                        Some(fetch_n),
                     )
                 } else {
                     RecallEngine::rerank(&req.query, &bm25_hits, &all, branch.as_deref())
                 };
 
-                if scored.is_empty() {
-                    debug!(query = %req.query, "No relevant memories found");
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "No relevant memories found. Tip: use specific topic keywords, not generic terms.",
-                    )]));
+                // Apply offset + limit slicing
+                let paged: Vec<_> = scored.into_iter().skip(offset).take(limit).collect();
+
+                if paged.is_empty() {
+                    let msg = if offset > 0 {
+                        format!("No more memories at offset={}.", offset)
+                    } else {
+                        "No relevant memories found. Tip: use specific topic keywords, not generic terms.".to_string()
+                    };
+                    debug!(query = %req.query, offset = offset, "No relevant memories found");
+                    return Ok(CallToolResult::success(vec![Content::text(msg)]));
                 }
 
-                info!(query = %req.query, results = scored.len(), "Memory recall complete");
-                // Return as XML context for LLM consumption
-                let context = format_context(&scored);
+                // has_more: we got a full page, so there may be more after this slice
+                let has_more = paged.len() == limit;
+                info!(query = %req.query, shown = paged.len(), offset = offset, has_more = has_more, "Memory recall complete");
+                let context = format_context_paged(&paged, offset, limit, all.len(), has_more);
                 Ok(CallToolResult::success(vec![Content::text(context)]))
             }
             Err(e) => {

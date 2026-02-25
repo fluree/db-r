@@ -493,8 +493,12 @@ pub enum MemoryAction {
         query: String,
 
         /// Maximum number of results
-        #[arg(long, short = 'n', default_value_t = 10)]
+        #[arg(long, short = 'n', default_value_t = 3)]
         limit: usize,
+
+        /// Skip the first N results (for pagination)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
 
         /// Filter by kind
         #[arg(long)]

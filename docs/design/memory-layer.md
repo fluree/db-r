@@ -113,7 +113,7 @@ All commands require a Fluree project directory (`.fluree/`). Run `fluree init` 
 |---------|-------------|
 | `fluree memory init` | Create the `__memory` ledger and transact the schema |
 | `fluree memory add --kind fact --text "..." --tags t1,t2` | Store a new memory |
-| `fluree memory recall "query string" -n 10` | Search and rank memories by relevance |
+| `fluree memory recall "query string" [-n 3] [--offset 0]` | Search and rank memories by relevance (default: top 3; use `--offset` to paginate) |
 | `fluree memory update <id> --text "new content"` | Supersede a memory with updated content |
 | `fluree memory forget <id>` | Delete a memory (retracts all triples) |
 | `fluree memory explain <id>` | Show the supersession chain |
@@ -131,7 +131,7 @@ The `fluree mcp serve --transport stdio` command starts an MCP server that expos
 | Tool | Description |
 |------|-------------|
 | `memory_add` | Store a new memory (auto-initializes if needed) |
-| `memory_recall` | Search and retrieve relevant memories as XML context |
+| `memory_recall` | Search and retrieve relevant memories as XML context. Returns up to `limit` results (default: 3) starting at `offset` (default: 0). Response includes a `<pagination>` element indicating remaining results. |
 | `memory_update` | Supersede an existing memory |
 | `memory_forget` | Delete a memory |
 | `memory_status` | Show memory store summary |
@@ -153,17 +153,24 @@ All configs point to `fluree mcp serve --transport stdio`. The IDE auto-detects 
 
 ## Recall scoring
 
-Phase 1 uses keyword-based scoring with no embeddings. The `RecallEngine` scores each memory against a query string and returns results sorted by descending score (filtered to score > 0).
+Phase 1 uses BM25 fulltext search (via Fluree's native `fulltext()` function) combined with metadata bonuses. The BM25 step fetches the top `offset + limit` candidates from the ledger; the `RecallEngine` re-ranks them by adding metadata bonuses and then applies the offset/limit slice.
+
+By default, `limit=3` and `offset=0` — returning the top 3 results. Use `--offset` (CLI) or the `offset` parameter (MCP) to paginate. The response always includes a `<pagination>` element; when results are cut off it shows the next offset to use.
+
+When BM25 returns no hits (e.g., very short or generic queries), the engine falls back to metadata-only scoring over all current memories.
+
+**BM25 (primary):** Fluree's native `fulltext()` function scores memories by content relevance and returns up to `offset + limit` candidates.
+
+**Metadata bonuses (additive re-ranking):**
 
 | Signal | Points | Description |
 |--------|--------|-------------|
 | Tag match | +10 per tag | Query word appears in a tag |
 | Artifact ref match | +8 per ref | Query word appears in a file/artifact reference |
 | Kind match | +6 | Query contains a kind keyword (e.g., "constraint", "rule", "must") |
-| Content keyword | +1 per word | Query word appears in the content text |
+| Branch match | +3 | Memory's git branch matches current branch |
 | Recency (< 7 days) | +2 | Memory created within the last week |
 | Recency (< 30 days) | +1 | Memory created within the last month |
-| Branch match | +3 | Memory's git branch matches current branch |
 
 Query words shorter than 3 characters are ignored. All matching is case-insensitive.
 

@@ -37,7 +37,7 @@ The MCP server exposes 6 tools:
 | Tool | Description |
 |------|-------------|
 | `memory_add` | Store a new memory (fact, decision, constraint, preference, artifact) |
-| `memory_recall` | Search and retrieve relevant memories as XML context |
+| `memory_recall` | Search and retrieve relevant memories as XML context. Accepts `query`, `limit` (default: 3), `offset` (default: 0), `kind`, `tags`, `scope`. Returns a `<pagination>` element indicating whether more results are available. |
 | `memory_update` | Update (supersede) an existing memory |
 | `memory_forget` | Delete a memory |
 | `memory_status` | Show memory store summary |

@@ -77,6 +77,21 @@ pub fn format_recall_json(result: &RecallResult) -> serde_json::Value {
 ///
 /// This is the format that agents receive when they call the `memory_recall` MCP tool.
 pub fn format_context(memories: &[ScoredMemory]) -> String {
+    format_context_paged(memories, 0, memories.len(), memories.len(), false)
+}
+
+/// Format memories as an XML context block with pagination metadata.
+///
+/// `offset` and `limit` describe the current page.
+/// `total_store` is the total number of current memories in the store.
+/// `has_more` indicates that additional results may be available at `offset + shown`.
+pub fn format_context_paged(
+    memories: &[ScoredMemory],
+    offset: usize,
+    limit: usize,
+    total_store: usize,
+    has_more: bool,
+) -> String {
     let mut out = String::new();
     out.push_str("<memory-context>\n");
 
@@ -115,6 +130,27 @@ pub fn format_context(memories: &[ScoredMemory]) -> String {
             ));
         }
         out.push_str("  </memory>\n");
+    }
+
+    let shown = memories.len();
+    if has_more {
+        let next = offset + shown;
+        out.push_str(&format!(
+            "  <pagination shown=\"{}\" offset=\"{}\" limit=\"{}\" total_in_store=\"{}\">\
+             Results {}\u{2013}{}. Use offset={} to retrieve more.</pagination>\n",
+            shown,
+            offset,
+            limit,
+            total_store,
+            offset + 1,
+            offset + shown,
+            next,
+        ));
+    } else {
+        out.push_str(&format!(
+            "  <pagination shown=\"{}\" offset=\"{}\" total_in_store=\"{}\" />\n",
+            shown, offset, total_store,
+        ));
     }
 
     out.push_str("</memory-context>");

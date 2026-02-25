@@ -3,8 +3,8 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_memory::{
-    MemoryFilter, MemoryInput, MemoryKind, MemoryStore, MemoryUpdate, RecallEngine, RecallResult,
-    Scope, SecretDetector, Sensitivity,
+    format_context_paged, MemoryFilter, MemoryInput, MemoryKind, MemoryStore, MemoryUpdate,
+    RecallEngine, RecallResult, Scope, SecretDetector, Sensitivity,
 };
 
 pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
@@ -46,11 +46,12 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
         MemoryAction::Recall {
             query,
             limit,
+            offset,
             kind,
             tags,
             scope,
             format,
-        } => run_recall(&query, limit, kind, tags, scope, &format, dirs).await,
+        } => run_recall(&query, limit, offset, kind, tags, scope, &format, dirs).await,
         MemoryAction::Update {
             id,
             text,
@@ -284,6 +285,7 @@ async fn run_add(
 async fn run_recall(
     query: &str,
     limit: usize,
+    offset: usize,
     kind: Option<String>,
     tags: Vec<String>,
     scope: Option<String>,
@@ -314,27 +316,34 @@ async fn run_recall(
     let store = build_store(dirs)?;
     store.ensure_synced().await.map_err(memory_err)?;
 
+    let fetch_n = offset + limit;
+
     // BM25 fulltext search for content relevance
     let bm25_hits = store
-        .recall_fulltext(query, limit)
+        .recall_fulltext(query, fetch_n)
         .await
         .map_err(memory_err)?;
 
     // Load full memory objects for metadata re-ranking
     let all = store.current_memories(&filter).await.map_err(memory_err)?;
+    let total_store = all.len();
 
     let branch = fluree_db_memory::detect_git_branch();
     let scored = if bm25_hits.is_empty() {
         // Fallback to metadata-only scoring when BM25 returns nothing
-        RecallEngine::recall_metadata_only(query, &all, branch.as_deref(), Some(limit))
+        RecallEngine::recall_metadata_only(query, &all, branch.as_deref(), Some(fetch_n))
     } else {
         RecallEngine::rerank(query, &bm25_hits, &all, branch.as_deref())
     };
 
+    // Apply offset + limit slicing
+    let paged: Vec<_> = scored.into_iter().skip(offset).take(limit).collect();
+    let has_more = paged.len() == limit;
+
     let result = RecallResult {
         query: query.to_string(),
-        memories: scored.clone(),
-        total_count: all.len(),
+        memories: paged.clone(),
+        total_count: total_store,
     };
 
     match format {
@@ -346,10 +355,18 @@ async fn run_recall(
             );
         }
         "context" => {
-            print!("{}", fluree_db_memory::format_context(&scored));
+            print!("{}", format_context_paged(&paged, offset, limit, total_store, has_more));
         }
         _ => {
             print!("{}", fluree_db_memory::format_recall_text(&result));
+            if has_more {
+                println!(
+                    "  (showing results {}–{}; use --offset {} for more)",
+                    offset + 1,
+                    offset + paged.len(),
+                    offset + paged.len()
+                );
+            }
         }
     }
 
