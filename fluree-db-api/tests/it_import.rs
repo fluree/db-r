@@ -527,3 +527,427 @@ ex:bob a ex:User ;
         qr.row_count()
     );
 }
+
+// ============================================================================
+// Directory import without chunk_ prefix
+// ============================================================================
+
+#[tokio::test]
+async fn import_directory_without_chunk_prefix() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let prefix = "@prefix ex: <http://example.org/ns/> .\n\
+                  @prefix schema: <http://schema.org/> .\n";
+
+    let file_a = format!(
+        "{prefix}\n\
+         ex:alice a ex:User ;\n\
+             schema:name \"Alice\" .\n"
+    );
+    let file_b = format!(
+        "{prefix}\n\
+         ex:bob a ex:User ;\n\
+             schema:name \"Bob\" .\n"
+    );
+
+    write_ttl(data_dir.path(), "a_people.ttl", &file_a);
+    write_ttl(data_dir.path(), "b_people.ttl", &file_b);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-noprefix:main")
+        .import(data_dir.path())
+        .threads(2)
+        .memory_budget_mb(256)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("import should succeed without chunk_ prefix");
+
+    assert_eq!(result.t, 2, "two files => t=2");
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree
+        .ledger("test/import-noprefix:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Alice", "Bob"]);
+}
+
+// ============================================================================
+// JSON-LD import tests
+// ============================================================================
+
+#[tokio::test]
+async fn import_jsonld_directory_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    std::fs::write(
+        data_dir.path().join("01_alice.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:alice",
+            "@type": "ex:Person",
+            "schema:name": "Alice"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.path().join("02_bob.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:bob",
+            "@type": "ex:Person",
+            "schema:name": "Bob"
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-jsonld-dir:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("JSON-LD directory import should succeed");
+
+    assert_eq!(result.t, 2, "two .jsonld files => t=2");
+    assert!(result.flake_count > 0, "expected flakes, got 0");
+
+    let ledger = fluree
+        .ledger("test/import-jsonld-dir:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after JSON-LD import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Alice", "Bob"]);
+}
+
+#[tokio::test]
+async fn import_single_jsonld_file_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let file_path = data_dir.path().join("people.jsonld");
+    std::fs::write(
+        &file_path,
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@graph": [
+                {"@id": "ex:carol", "@type": "ex:Person", "schema:name": "Carol"},
+                {"@id": "ex:dave", "@type": "ex:Person", "schema:name": "Dave"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-jsonld-single:main")
+        .import(&file_path)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("single JSON-LD file import should succeed");
+
+    assert_eq!(result.t, 1, "single file => t=1");
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree
+        .ledger("test/import-jsonld-single:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after single JSON-LD import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Carol", "Dave"]);
+}
+
+/// Regression: serial Turtle path (threads=0) must produce queryable results.
+#[tokio::test]
+async fn import_serial_turtle_then_query() {
+    let db_dir = tempfile::tempdir().expect("db");
+    let data_dir = tempfile::tempdir().expect("data");
+
+    write_ttl(
+        data_dir.path(),
+        "a.ttl",
+        "@prefix ex: <http://example.org/ns/> .\n@prefix schema: <http://schema.org/> .\nex:alice a ex:Person ; schema:name \"Alice\" .\n",
+    );
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build");
+
+    let result = fluree
+        .create("test/serial-ttl:main")
+        .import(data_dir.path())
+        .threads(0) // Force serial path
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("import");
+
+    assert_eq!(result.t, 1);
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree.ledger("test/serial-ttl:main").await.expect("load");
+    let query = json!({
+        "@context": { "schema": "http://schema.org/" },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+    let qr = fluree.query(&ledger, &query).await.expect("query");
+    let json_result = qr.to_jsonld(&ledger.snapshot).expect("format");
+    let names = extract_sorted_strings(&json_result);
+    assert_eq!(names, vec!["Alice"]);
+}
+
+/// Regression: after directory import, a subsequent insert with a custom namespace
+/// predicate must be queryable by full IRI in SPARQL. Previously, the predicate
+/// filter was silently dropped (acting as a wildcard) because the overlay-only
+/// bounds code used `store.sid_to_p_id()` which only checks the persisted index,
+/// returning None for novelty-only predicates and widening the scan to all p_ids.
+#[tokio::test]
+async fn import_then_insert_custom_ns_predicate_matches_sparql() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    // Phase 1: Create import data with a custom namespace
+    std::fs::write(
+        data_dir.path().join("01_schema.jsonld"),
+        r#"{
+            "@context": {
+                "skos": "http://www.w3.org/2004/02/skos/core#",
+                "sh": "http://www.w3.org/ns/shacl#",
+                "cust": "https://taxo.cbcrc.ca/ns/"
+            },
+            "@graph": [
+                {
+                    "@id": "cust:shape/ConceptShape",
+                    "@type": "sh:NodeShape",
+                    "sh:targetClass": {"@id": "skos:Concept"}
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.path().join("02_data.jsonld"),
+        r#"{
+            "@context": {"skos": "http://www.w3.org/2004/02/skos/core#"},
+            "@graph": [
+                {"@id": "http://example.org/c1", "@type": "skos:Concept", "skos:prefLabel": "One"},
+                {"@id": "http://example.org/c2", "@type": "skos:Concept", "skos:prefLabel": "Two"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Phase 2: Import directory
+    let import_result = fluree
+        .create("test/import-ns-bug:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("directory import should succeed");
+
+    assert!(import_result.flake_count > 0);
+
+    // Phase 3: Insert data with a custom namespace predicate
+    let ledger = fluree
+        .ledger("test/import-ns-bug:main")
+        .await
+        .expect("load ledger after import");
+
+    let insert_data = json!({
+        "@context": {"cust": "https://taxo.cbcrc.ca/ns/"},
+        "@id": "http://example.org/assoc1",
+        "@type": "cust:CoveragePackage",
+        "cust:packageType": "test-pkg"
+    });
+    let insert_result = fluree.insert(ledger, &insert_data).await.expect("insert");
+    assert!(insert_result.receipt.flake_count > 0);
+
+    // Phase 4: Reload ledger and query with SPARQL using the full predicate IRI.
+    // The predicate <https://taxo.cbcrc.ca/ns/packageType> must match ONLY the
+    // packageType triple, not all triples for the subject.
+    let ledger = fluree
+        .ledger("test/import-ns-bug:main")
+        .await
+        .expect("reload ledger");
+
+    let sparql = r#"SELECT ?o WHERE {
+        <http://example.org/assoc1> <https://taxo.cbcrc.ca/ns/packageType> ?o
+    }"#;
+
+    let qr = fluree
+        .query_sparql(&ledger, sparql)
+        .await
+        .expect("SPARQL query with custom namespace predicate");
+
+    let json = qr.to_sparql_json(&ledger.snapshot).expect("format json");
+    let bindings = json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    // Must return exactly 1 row (the packageType triple), not all triples for the subject
+    assert_eq!(
+        bindings.len(),
+        1,
+        "Expected 1 binding for packageType, got {}: {:?}",
+        bindings.len(),
+        bindings
+    );
+
+    let value = bindings[0]["o"]["value"]
+        .as_str()
+        .expect("binding value string");
+    assert_eq!(value, "test-pkg");
+}
+
+// ============================================================================
+// Negative: malformed JSON-LD in directory import
+// ============================================================================
+
+/// A directory containing a valid `.jsonld` alongside a malformed one must
+/// fail with a clear error rather than silently skipping or panicking.
+#[tokio::test]
+async fn import_jsonld_directory_with_malformed_file_errors() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    // Valid file
+    std::fs::write(
+        data_dir.path().join("01_valid.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:alice",
+            "@type": "ex:Person",
+            "schema:name": "Alice"
+        }"#,
+    )
+    .unwrap();
+
+    // Malformed: not valid JSON at all
+    std::fs::write(
+        data_dir.path().join("02_bad.jsonld"),
+        r#"{ this is not valid json @@@ "#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let err = fluree
+        .create("test/import-jsonld-bad:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect_err("import of directory with malformed JSON-LD should fail");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("transact")
+            || msg.contains("parse")
+            || msg.contains("JSON")
+            || msg.contains("json"),
+        "expected a parse/transact error for malformed JSON-LD, got: {msg}"
+    );
+}
+
+/// A single malformed `.jsonld` file (not in a directory) must also fail cleanly.
+#[tokio::test]
+async fn import_single_malformed_jsonld_file_errors() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let bad_path = data_dir.path().join("bad.jsonld");
+    std::fs::write(&bad_path, r#"{ not json !!!"#).unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let err = fluree
+        .create("test/import-jsonld-single-bad:main")
+        .import(&bad_path)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect_err("import of malformed single JSON-LD file should fail");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("transact")
+            || msg.contains("parse")
+            || msg.contains("JSON")
+            || msg.contains("json"),
+        "expected a parse/transact error for malformed JSON-LD, got: {msg}"
+    );
+}

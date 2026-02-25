@@ -12,19 +12,27 @@ pub enum InputSource {
     Stdin,
 }
 
-/// Resolve the input source with priority: `-e` > file arg > stdin.
-pub fn resolve_input(file: Option<&Path>, expr: Option<&str>) -> CliResult<InputSource> {
+/// Resolve the input source with priority: `-e` > positional inline > `-f` > positional file > stdin.
+pub fn resolve_input(
+    expr: Option<&str>,
+    positional_inline: Option<&str>,
+    file_flag: Option<&Path>,
+    positional_file: Option<&Path>,
+) -> CliResult<InputSource> {
     if let Some(e) = expr {
         return Ok(InputSource::Inline(e.to_string()));
     }
-    if let Some(f) = file {
+    if let Some(q) = positional_inline {
+        return Ok(InputSource::Inline(q.to_string()));
+    }
+    if let Some(f) = file_flag.or(positional_file) {
         return Ok(InputSource::File(f.to_path_buf()));
     }
     if !io::stdin().is_terminal() {
         return Ok(InputSource::Stdin);
     }
     Err(CliError::Input(format!(
-        "no input provided\n  {} provide a file, use -e for inline, or pipe via stdin",
+        "no input provided\n  {} pass inline, use -f for a file, or pipe via stdin",
         colored::Colorize::bold(colored::Colorize::cyan("help:"))
     )))
 }

@@ -392,6 +392,8 @@ pub enum ImportError {
     Io(std::io::Error),
     /// Chunk discovery error.
     NoChunks(String),
+    /// Directory contains both Turtle and JSON-LD files.
+    MixedFormats(String),
 }
 
 impl std::fmt::Display for ImportError {
@@ -405,6 +407,7 @@ impl std::fmt::Display for ImportError {
             Self::Upload(msg) => write!(f, "upload: {}", msg),
             Self::Io(e) => write!(f, "I/O: {}", e),
             Self::NoChunks(msg) => write!(f, "no chunks: {}", msg),
+            Self::MixedFormats(msg) => write!(f, "mixed formats: {}", msg),
         }
     }
 }
@@ -438,7 +441,7 @@ impl From<fluree_db_core::Error> for ImportError {
 /// Either a set of pre-split files (index-based access), or a streaming reader
 /// for a single large Turtle file (channel-based, no pre-scan).
 pub enum ChunkSource {
-    /// Pre-split chunk files (existing behavior: `chunk_*.ttl` / `chunk_*.trig`).
+    /// Pre-split Turtle/TriG/JSON-LD files from a directory (sorted lexicographically).
     Files(Vec<PathBuf>),
     /// Streaming reader for a single large Turtle file. Chunks are emitted
     /// through a channel as the file is read — no full pre-scan needed.
@@ -504,23 +507,50 @@ impl ChunkSource {
         }
     }
 
-    /// Whether chunk at `index` is a TriG file.
+    /// Whether chunk at `index` is a TriG file (case-insensitive).
     pub fn is_trig(&self, index: usize) -> bool {
         match self {
             Self::Files(files) => files
                 .get(index)
                 .and_then(|p| p.extension())
-                .is_some_and(|ext| ext == "trig"),
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("trig")),
             Self::Streaming(_) => false, // Streaming is Turtle only.
+        }
+    }
+
+    /// Whether chunk at `index` is a JSON-LD file (case-insensitive `.jsonld`).
+    pub fn is_jsonld(&self, index: usize) -> bool {
+        match self {
+            Self::Files(files) => files
+                .get(index)
+                .and_then(|p| p.extension())
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonld")),
+            Self::Streaming(_) => false,
+        }
+    }
+
+    /// Whether any file in this source is JSON-LD.
+    ///
+    /// Used to force serial import — the parallel pipeline only handles Turtle.
+    pub fn has_jsonld(&self) -> bool {
+        match self {
+            Self::Files(files) => files.iter().any(|p| {
+                p.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonld"))
+            }),
+            Self::Streaming(_) => false,
         }
     }
 }
 
 /// Resolve the import path into a `ChunkSource`.
 ///
-/// - If `path` is a directory: discover `chunk_*.ttl`/`chunk_*.trig` files (existing behavior).
+/// - If `path` is a directory: discover `.ttl`/`.trig`/`.jsonld` files (sorted lexicographically).
 /// - If `path` is a single large `.ttl` file: auto-split using `TurtleChunkReader`.
-/// - If `path` is a single small `.ttl` file: treat as a single-element `Files` source.
+/// - If `path` is a single small `.ttl`/`.trig`/`.jsonld` file: treat as a single-element `Files` source.
 fn resolve_chunk_source(
     path: &Path,
     config: &ImportConfig,
@@ -541,7 +571,10 @@ fn resolve_chunk_source(
     let file_size = std::fs::metadata(path)?.len();
     let chunk_size_bytes = config.effective_chunk_size_mb() as u64 * 1024 * 1024;
 
-    let is_ttl = path.extension().is_some_and(|ext| ext == "ttl");
+    let is_ttl = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("ttl"));
 
     if is_ttl && file_size > chunk_size_bytes {
         // Large file: stream chunks via background reader thread.
@@ -769,9 +802,65 @@ where
 {
     /// Attach a bulk import to this create operation.
     ///
-    /// `path` can be a directory containing `chunk_*.ttl` files, or a single TTL file.
+    /// `path` can be a directory containing `.ttl`/`.trig`/`.jsonld` files
+    /// (sorted lexicographically), or a single `.ttl`/`.jsonld` file.
     pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
+    }
+}
+
+// ============================================================================
+// Directory format detection
+// ============================================================================
+
+/// What kind of data files a directory contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryFormat {
+    /// Only `.ttl` / `.trig` files found.
+    Turtle,
+    /// Only `.jsonld` files found.
+    JsonLd,
+}
+
+/// Scan a directory and determine its data format.
+///
+/// Returns [`DirectoryFormat::Turtle`] if all supported files are `.ttl`/`.trig`,
+/// [`DirectoryFormat::JsonLd`] if all are `.jsonld`.
+/// Returns [`ImportError::MixedFormats`] on mixed formats,
+/// [`ImportError::NoChunks`] on empty directories or directories with no supported files.
+pub fn scan_directory_format(dir: &Path) -> std::result::Result<DirectoryFormat, ImportError> {
+    let mut has_turtle = false;
+    let mut has_jsonld = false;
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+            continue;
+        }
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            match ext.to_ascii_lowercase().as_str() {
+                "ttl" | "trig" => has_turtle = true,
+                "jsonld" => has_jsonld = true,
+                _ => {}
+            }
+        }
+    }
+
+    match (has_turtle, has_jsonld) {
+        (true, true) => Err(ImportError::MixedFormats(format!(
+            "directory {} contains both Turtle (.ttl/.trig) and JSON-LD (.jsonld) files; \
+             use a single format per directory",
+            dir.display(),
+        ))),
+        (true, false) => Ok(DirectoryFormat::Turtle),
+        (false, true) => Ok(DirectoryFormat::JsonLd),
+        (false, false) => Err(ImportError::NoChunks(format!(
+            "no supported data files (.ttl, .trig, .jsonld) found in {}",
+            dir.display()
+        ))),
     }
 }
 
@@ -779,7 +868,10 @@ where
 // Chunk discovery
 // ============================================================================
 
-/// Discover and sort `chunk_*.ttl` or `chunk_*.trig` files from a directory.
+/// Discover and sort `.ttl`, `.trig`, or `.jsonld` files from a directory (case-insensitive).
+///
+/// Returns an error if the directory contains a mix of Turtle (`.ttl`/`.trig`) and
+/// JSON-LD (`.jsonld`) files — all files must be the same format family.
 fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError> {
     if !dir.is_dir() {
         // Single file import
@@ -792,27 +884,23 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
         )));
     }
 
+    // Validate format consistency (also catches empty directories).
+    scan_directory_format(dir)?;
+
     let mut chunks: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
         .map(|e| e.path())
         .filter(|p| {
-            let is_supported_ext = p
-                .extension()
-                .is_some_and(|ext| ext == "ttl" || ext == "trig");
-            let starts_with_chunk = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("chunk_"));
-            is_supported_ext && starts_with_chunk
+            p.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("ttl")
+                        || ext.eq_ignore_ascii_case("trig")
+                        || ext.eq_ignore_ascii_case("jsonld")
+                })
         })
         .collect();
-
-    if chunks.is_empty() {
-        return Err(ImportError::NoChunks(format!(
-            "no chunk_*.ttl or chunk_*.trig files found in {}",
-            dir.display()
-        )));
-    }
 
     chunks.sort();
     Ok(chunks)
@@ -1180,8 +1268,8 @@ where
 {
     use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
-        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
-        parse_chunk_with_prelude, ImportState, ParsedChunk,
+        finalize_parsed_chunk, import_trig_commit, parse_chunk, parse_chunk_with_prelude,
+        parse_jsonld_chunk, ImportState, ParsedChunk,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -1742,7 +1830,8 @@ where
     } else {
         // File-based path: index-based access to chunk files.
         let has_trig = (0..estimated_total).any(|i| chunk_source.is_trig(i));
-        if estimated_total > 0 && num_threads > 0 && !has_trig {
+        let has_jsonld = chunk_source.has_jsonld();
+        if estimated_total > 0 && num_threads > 0 && !has_trig && !has_jsonld {
             let ledger = alias.to_string();
 
             let next_chunk = Arc::new(AtomicUsize::new(0));
@@ -1840,13 +1929,21 @@ where
                 handle.join().expect("parse thread panicked");
             }
         } else if estimated_total > 0 {
-            // Serial fallback (0 threads or TriG files present).
-            // Spool is enabled so that the merge/remap pipeline produces run files.
+            // Serial fallback (0 threads, TriG, or JSON-LD files present).
+            //
+            // Uses parse_chunk / parse_jsonld_chunk + finalize_parsed_chunk
+            // (same as the parallel path) so that namespace codes are allocated
+            // in shared_alloc — the spool pipeline reads prefixes from
+            // shared_alloc, so they must be in sync during the parse pass.
             for i in 0..estimated_total {
                 let content = chunk_source.read_chunk(i)?;
-                let is_trig = chunk_source.is_trig(i);
-                let result = if is_trig {
-                    import_trig_commit(
+                let t = (i + 1) as i64;
+
+                let result = if chunk_source.is_trig(i) {
+                    // TriG uses its own commit function (named graph handling).
+                    // It allocates codes in state.ns_registry; sync them to
+                    // shared_alloc afterward for subsequent chunks' spool writes.
+                    let r = import_trig_commit(
                         &mut state,
                         &content,
                         storage,
@@ -1857,20 +1954,42 @@ where
                         i,
                     )
                     .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?
+                    .map_err(|e| ImportError::Transact(e.to_string()))?;
+                    shared_alloc.sync_from_registry(&state.ns_registry);
+                    published_codes.extend(state.ns_registry.all_codes());
+                    r
                 } else {
-                    import_commit(
-                        &mut state,
-                        &content,
-                        storage,
-                        alias,
-                        compress,
-                        Some(&spool_dir),
-                        Some(&spool_config),
-                        i,
-                    )
-                    .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?
+                    // TTL and JSON-LD: parse via shared allocator, then finalize.
+                    let parsed = if chunk_source.is_jsonld(i) {
+                        parse_jsonld_chunk(
+                            &content,
+                            &shared_alloc,
+                            t,
+                            alias,
+                            compress,
+                            Some(&spool_dir),
+                            Some(&spool_config),
+                            i,
+                        )
+                    } else {
+                        parse_chunk(
+                            &content,
+                            &shared_alloc,
+                            t,
+                            alias,
+                            compress,
+                            Some(&spool_dir),
+                            Some(&spool_config),
+                            i,
+                        )
+                    }
+                    .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                    let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
+
+                    finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
+                        .await
+                        .map_err(|e| ImportError::Transact(e.to_string()))?
                 };
 
                 // Collect txn-meta for this commit.

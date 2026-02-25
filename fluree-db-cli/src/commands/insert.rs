@@ -6,43 +6,89 @@ use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
 use std::path::{Path, PathBuf};
 
-/// Resolve positional args for insert/query commands.
+/// Resolve positional args for insert/query/upsert commands.
 ///
-/// - 0 args: active ledger + stdin/-e
-/// - 1 arg: if file exists → active ledger + that file; else → ledger name + stdin/-e
-/// - 2 args: first = ledger name, second = file path
-pub fn resolve_positional_args(args: &[String]) -> (Option<&str>, Option<PathBuf>) {
+/// Returns `(ledger_name, inline_input, file_path)`:
+/// - 0 args: active ledger, no inline or file
+/// - 1 arg: auto-detected as inline input (if it looks like a query/data),
+///   file path (if the path exists), or ledger name (otherwise)
+/// - 2 args: first is ledger name, second is inline input
+pub fn resolve_positional_args(
+    args: &[String],
+) -> CliResult<(Option<&str>, Option<&str>, Option<PathBuf>)> {
     match args.len() {
-        0 => (None, None),
+        0 => Ok((None, None, None)),
         1 => {
-            let p = Path::new(&args[0]);
-            if p.is_file() {
-                (None, Some(p.to_path_buf()))
+            if looks_like_query(&args[0]) {
+                // Inline query/data with active ledger
+                Ok((None, Some(&args[0]), None))
             } else {
-                (Some(&args[0]), None)
+                let p = Path::new(&args[0]);
+                if p.is_file() {
+                    // Backwards compat: existing file path as positional arg
+                    Ok((None, None, Some(p.to_path_buf())))
+                } else {
+                    // Ledger name
+                    Ok((Some(&args[0]), None, None))
+                }
             }
         }
-        _ => (Some(&args[0]), Some(PathBuf::from(&args[1]))),
+        _ => {
+            // 2 args: first = ledger, second = inline input
+            Ok((Some(&args[0]), Some(&args[1]), None))
+        }
     }
 }
 
+/// Heuristic: does this string look like a query or data literal rather than a
+/// ledger name or file path?
+fn looks_like_query(s: &str) -> bool {
+    let trimmed = s.trim();
+    // JSON-LD object or array
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return true;
+    }
+    // Turtle directives
+    if trimmed.starts_with("@prefix") || trimmed.starts_with("@base") {
+        return true;
+    }
+    // IRI-based Turtle triples (e.g., "<http://...> a <http://...> .")
+    if trimmed.starts_with('<') {
+        return true;
+    }
+    // SPARQL keywords (case-insensitive)
+    let first_word = trimmed.split_whitespace().next().unwrap_or("");
+    matches!(
+        first_word.to_ascii_uppercase().as_str(),
+        "SELECT" | "ASK" | "CONSTRUCT" | "DESCRIBE" | "INSERT" | "DELETE" | "PREFIX" | "BASE"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
     expr: Option<&str>,
+    file_flag: Option<&Path>,
     message: Option<&str>,
     format_flag: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
 ) -> CliResult<()> {
-    let (explicit_ledger, file_path) = resolve_positional_args(args);
+    let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
-    // Resolve input
-    let source = input::resolve_input(file_path.as_deref(), expr)?;
+    // Resolve input: -e > positional inline > -f > positional file > stdin
+    let source = input::resolve_input(
+        expr,
+        positional_inline,
+        file_flag,
+        positional_file.as_deref(),
+    )?;
     let content = input::read_input(&source)?;
 
-    // Detect format
-    let data_format = detect::detect_data_format(file_path.as_deref(), &content, format_flag)?;
+    // For format detection, prefer the -f path, then positional file
+    let detect_path = file_flag.or(positional_file.as_deref());
+    let data_format = detect::detect_data_format(detect_path, &content, format_flag)?;
 
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
