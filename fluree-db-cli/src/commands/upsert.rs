@@ -7,6 +7,7 @@ use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
     expr: Option<&str>,

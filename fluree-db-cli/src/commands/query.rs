@@ -84,8 +84,7 @@ pub async fn run(
 
     // For format detection, prefer the -f path, then positional file
     let detect_path = file_flag.or(positional_file.as_deref());
-    let query_format =
-        detect::detect_query_format(detect_path, &content, sparql_flag, fql_flag)?;
+    let query_format = detect::detect_query_format(detect_path, &content, sparql_flag, fql_flag)?;
 
     // Parse output format
     let output_format = match format_str.to_lowercase().as_str() {

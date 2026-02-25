@@ -392,6 +392,8 @@ pub enum ImportError {
     Io(std::io::Error),
     /// Chunk discovery error.
     NoChunks(String),
+    /// Directory contains both Turtle and JSON-LD files.
+    MixedFormats(String),
 }
 
 impl std::fmt::Display for ImportError {
@@ -405,6 +407,7 @@ impl std::fmt::Display for ImportError {
             Self::Upload(msg) => write!(f, "upload: {}", msg),
             Self::Io(e) => write!(f, "I/O: {}", e),
             Self::NoChunks(msg) => write!(f, "no chunks: {}", msg),
+            Self::MixedFormats(msg) => write!(f, "mixed formats: {}", msg),
         }
     }
 }
@@ -807,6 +810,61 @@ where
 }
 
 // ============================================================================
+// Directory format detection
+// ============================================================================
+
+/// What kind of data files a directory contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectoryFormat {
+    /// Only `.ttl` / `.trig` files found.
+    Turtle,
+    /// Only `.jsonld` files found.
+    JsonLd,
+}
+
+/// Scan a directory and determine its data format.
+///
+/// Returns [`DirectoryFormat::Turtle`] if all supported files are `.ttl`/`.trig`,
+/// [`DirectoryFormat::JsonLd`] if all are `.jsonld`.
+/// Returns [`ImportError::MixedFormats`] on mixed formats,
+/// [`ImportError::NoChunks`] on empty directories or directories with no supported files.
+pub fn scan_directory_format(dir: &Path) -> std::result::Result<DirectoryFormat, ImportError> {
+    let mut has_turtle = false;
+    let mut has_jsonld = false;
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+            continue;
+        }
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            match ext.to_ascii_lowercase().as_str() {
+                "ttl" | "trig" => has_turtle = true,
+                "jsonld" => has_jsonld = true,
+                _ => {}
+            }
+        }
+    }
+
+    match (has_turtle, has_jsonld) {
+        (true, true) => Err(ImportError::MixedFormats(format!(
+            "directory {} contains both Turtle (.ttl/.trig) and JSON-LD (.jsonld) files; \
+             use a single format per directory",
+            dir.display(),
+        ))),
+        (true, false) => Ok(DirectoryFormat::Turtle),
+        (false, true) => Ok(DirectoryFormat::JsonLd),
+        (false, false) => Err(ImportError::NoChunks(format!(
+            "no supported data files (.ttl, .trig, .jsonld) found in {}",
+            dir.display()
+        ))),
+    }
+}
+
+// ============================================================================
 // Chunk discovery
 // ============================================================================
 
@@ -826,6 +884,9 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
         )));
     }
 
+    // Validate format consistency (also catches empty directories).
+    scan_directory_format(dir)?;
+
     let mut chunks: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
@@ -840,32 +901,6 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
                 })
         })
         .collect();
-
-    if chunks.is_empty() {
-        return Err(ImportError::NoChunks(format!(
-            "no *.ttl, *.trig, or *.jsonld files found in {}",
-            dir.display()
-        )));
-    }
-
-    // Error on mixed formats: Turtle (.ttl/.trig) + JSON-LD (.jsonld) in the same directory.
-    let has_turtle = chunks.iter().any(|p| {
-        p.extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ttl") || ext.eq_ignore_ascii_case("trig"))
-    });
-    let has_jsonld = chunks.iter().any(|p| {
-        p.extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonld"))
-    });
-    if has_turtle && has_jsonld {
-        return Err(ImportError::NoChunks(
-            "directory contains both Turtle (.ttl/.trig) and JSON-LD (.jsonld) files; \
-             use a single format per directory"
-                .to_string(),
-        ));
-    }
 
     chunks.sort();
     Ok(chunks)

@@ -37,21 +37,18 @@ pub async fn run(
 
     match from {
         Some(path) if path.is_dir() => {
-            // Directory: scan to determine format, then route.
-            match scan_directory_format(path)? {
-                DirectoryFormat::Turtle | DirectoryFormat::JsonLd => {
-                    run_bulk_import(
-                        &fluree,
-                        ledger,
-                        path,
-                        dirs.data_dir(),
-                        verbose,
-                        quiet,
-                        import_opts,
-                    )
-                    .await?;
-                }
-            }
+            // Validate directory format (catches mixed formats & empty dirs).
+            fluree_db_api::scan_directory_format(path)?;
+            run_bulk_import(
+                &fluree,
+                ledger,
+                path,
+                dirs.data_dir(),
+                verbose,
+                quiet,
+                import_opts,
+            )
+            .await?;
         }
         Some(path) if is_import_path(path)? => {
             // Bulk import: Turtle or JSON-LD file (any size).
@@ -473,61 +470,6 @@ where
 }
 
 // ============================================================================
-// Directory format detection
-// ============================================================================
-
-/// What kind of data files a directory contains.
-enum DirectoryFormat {
-    /// Only `.ttl` / `.trig` files found.
-    Turtle,
-    /// Only `.jsonld` files found.
-    JsonLd,
-}
-
-/// Scan a directory and determine its data format.
-///
-/// Returns `Turtle` if all supported files are `.ttl`/`.trig`, `JsonLd` if all
-/// are `.jsonld`. Errors on mixed formats, empty directories, or directories
-/// with no supported files.
-fn scan_directory_format(dir: &Path) -> CliResult<DirectoryFormat> {
-    let mut has_turtle = false;
-    let mut has_jsonld = false;
-
-    for entry in std::fs::read_dir(dir)
-        .map_err(|e| CliError::Input(format!("failed to read directory {}: {e}", dir.display())))?
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
-            continue;
-        }
-        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-            match ext.to_ascii_lowercase().as_str() {
-                "ttl" | "trig" => has_turtle = true,
-                "jsonld" => has_jsonld = true,
-                _ => {}
-            }
-        }
-    }
-
-    match (has_turtle, has_jsonld) {
-        (true, true) => Err(CliError::Usage(format!(
-            "directory {} contains both Turtle (.ttl/.trig) and JSON-LD (.jsonld) files; \
-             use a directory with only one format, or import files individually",
-            dir.display(),
-        ))),
-        (true, false) => Ok(DirectoryFormat::Turtle),
-        (false, true) => Ok(DirectoryFormat::JsonLd),
-        (false, false) => Err(CliError::Input(format!(
-            "no supported data files (.ttl, .trig, .jsonld) found in {}",
-            dir.display()
-        ))),
-    }
-}
-
-// ============================================================================
 // Import path detection (single files only)
 // ============================================================================
 
@@ -538,7 +480,7 @@ fn scan_directory_format(dir: &Path) -> CliResult<DirectoryFormat> {
 /// - `.ttl.gz` → error with helpful message
 /// - Everything else (e.g. `.json`) → detect-based transact path
 ///
-/// Note: directories are handled separately in `run()` via `scan_directory_format()`.
+/// Note: directories are handled separately in `run()` via `fluree_db_api::scan_directory_format()`.
 fn is_import_path(path: &Path) -> CliResult<bool> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let name_lower = name.to_ascii_lowercase();

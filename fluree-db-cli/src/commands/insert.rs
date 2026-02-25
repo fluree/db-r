@@ -64,6 +64,7 @@ fn looks_like_query(s: &str) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
     expr: Option<&str>,

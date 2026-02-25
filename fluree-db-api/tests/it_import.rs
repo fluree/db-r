@@ -868,3 +868,86 @@ async fn import_then_insert_custom_ns_predicate_matches_sparql() {
         .expect("binding value string");
     assert_eq!(value, "test-pkg");
 }
+
+// ============================================================================
+// Negative: malformed JSON-LD in directory import
+// ============================================================================
+
+/// A directory containing a valid `.jsonld` alongside a malformed one must
+/// fail with a clear error rather than silently skipping or panicking.
+#[tokio::test]
+async fn import_jsonld_directory_with_malformed_file_errors() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    // Valid file
+    std::fs::write(
+        data_dir.path().join("01_valid.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:alice",
+            "@type": "ex:Person",
+            "schema:name": "Alice"
+        }"#,
+    )
+    .unwrap();
+
+    // Malformed: not valid JSON at all
+    std::fs::write(
+        data_dir.path().join("02_bad.jsonld"),
+        r#"{ this is not valid json @@@ "#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let err = fluree
+        .create("test/import-jsonld-bad:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect_err("import of directory with malformed JSON-LD should fail");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("transact")
+            || msg.contains("parse")
+            || msg.contains("JSON")
+            || msg.contains("json"),
+        "expected a parse/transact error for malformed JSON-LD, got: {msg}"
+    );
+}
+
+/// A single malformed `.jsonld` file (not in a directory) must also fail cleanly.
+#[tokio::test]
+async fn import_single_malformed_jsonld_file_errors() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let bad_path = data_dir.path().join("bad.jsonld");
+    std::fs::write(&bad_path, r#"{ not json !!!"#).unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let err = fluree
+        .create("test/import-jsonld-single-bad:main")
+        .import(&bad_path)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect_err("import of malformed single JSON-LD file should fail");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("transact")
+            || msg.contains("parse")
+            || msg.contains("JSON")
+            || msg.contains("json"),
+        "expected a parse/transact error for malformed JSON-LD, got: {msg}"
+    );
+}
