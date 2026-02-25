@@ -789,10 +789,17 @@ fn apply_pushed_commits_to_state(
     }
 
     // Build reverse_graph now that namespace_codes and graph_registry are complete.
+    // NOTE: We fallback to an empty map on failure because commits are already
+    // persisted at this point.  An empty reverse_graph means graph-scoped flake
+    // routing in novelty will be incomplete until the server restarts and rebuilds
+    // state from the stored commits.  Propagating an error here would mislead the
+    // caller into thinking the commit failed when it was actually stored.
     let reverse_graph = base.snapshot.build_reverse_graph().unwrap_or_else(|e| {
         error!(
             error = ?e,
-            "post-CAS build_reverse_graph failed; falling back to empty map"
+            "post-CAS build_reverse_graph failed; in-memory graph routing will be \
+             incomplete until server restart — commits are already persisted and will \
+             be correct after reload"
         );
         HashMap::new()
     });
