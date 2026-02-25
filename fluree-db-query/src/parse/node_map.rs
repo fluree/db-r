@@ -224,9 +224,7 @@ fn is_bare_subject_variable(
     if map.len() != 1 {
         return false;
     }
-    let id_val = map
-        .get("@id")
-        .or_else(|| map.get(context.id_key.as_str()));
+    let id_val = map.get("@id").or_else(|| map.get(context.id_key.as_str()));
     matches!(id_val, Some(v) if v.as_str().is_some_and(is_variable))
 }
 

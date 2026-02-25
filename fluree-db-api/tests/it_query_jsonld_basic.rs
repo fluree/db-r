@@ -897,7 +897,7 @@ async fn jsonld_bare_id_variable_returns_all_subjects() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
