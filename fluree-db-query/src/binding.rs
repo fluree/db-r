@@ -81,6 +81,10 @@ pub enum Binding {
         /// Optional operation type for history queries (true = assert, false = retract)
         /// Only populated in history mode when both assertions and retractions are returned.
         op: Option<bool>,
+        /// Optional predicate ID from binary index (metadata, excluded from eq/hash).
+        /// Set when early-materializing novelty values in BinaryScanOperator.
+        /// Used by `fulltext()` to identify the correct per-predicate arena/stats.
+        p_id: Option<u32>,
     },
     /// Encoded literal value from the binary index (late materialization).
     ///
@@ -162,6 +166,7 @@ impl Binding {
             lang: None,
             t: None,
             op: None,
+            p_id: None,
         }
     }
 
@@ -177,6 +182,7 @@ impl Binding {
             lang: Some(lang.into()),
             t: None,
             op: None,
+            p_id: None,
         }
     }
 
@@ -192,6 +198,7 @@ impl Binding {
             lang: None,
             t: Some(t),
             op: None,
+            p_id: None,
         }
     }
 
@@ -207,6 +214,7 @@ impl Binding {
                 lang: None,
                 t: None,
                 op: None,
+                p_id: None,
             },
         }
     }
@@ -223,6 +231,7 @@ impl Binding {
                 lang: meta.and_then(|m| m.lang.map(Arc::from)),
                 t: None,
                 op: None,
+                p_id: None,
             },
         }
     }
@@ -240,6 +249,7 @@ impl Binding {
                 lang: meta.and_then(|m| m.lang.map(Arc::from)),
                 t: Some(t),
                 op: None,
+                p_id: None,
             },
         }
     }
@@ -263,6 +273,7 @@ impl Binding {
                 lang: meta.and_then(|m| m.lang.map(Arc::from)),
                 t: Some(t),
                 op: Some(op),
+                p_id: None,
             },
         }
     }

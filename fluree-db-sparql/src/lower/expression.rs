@@ -27,9 +27,17 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
 
             AstExpression::Iri(iri) => {
-                // IRIs in expressions become string constants for now
+                // Wrap the expanded IRI string in IRI() so it evaluates to
+                // ComparableValue::Iri, which in turn produces Binding::Sid
+                // (or Binding::Iri for unknown IRIs).  Without this wrapper
+                // the IRI was lowered as a plain string literal, causing BIND
+                // to produce a Binding::Lit that can't substitute into subject
+                // or predicate positions of OPTIONAL patterns.
                 let full_iri = self.expand_iri(iri)?;
-                Ok(Expression::Const(FilterValue::String(full_iri)))
+                Ok(Expression::Call {
+                    func: Function::Iri,
+                    args: vec![Expression::Const(FilterValue::String(full_iri))],
+                })
             }
 
             AstExpression::Binary {

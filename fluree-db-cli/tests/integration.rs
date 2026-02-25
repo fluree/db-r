@@ -301,6 +301,36 @@ fn query_no_input_errors() {
 }
 
 #[test]
+fn query_positional_inline() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "db"]).assert().success();
+
+    // Positional arg that looks like a SPARQL query is treated as inline input.
+    fluree_cmd(&tmp)
+        .args(["query", "SELECT ?s WHERE { ?s ?p ?o }"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn query_from_file_flag() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "db"]).assert().success();
+
+    // Write a query file
+    let query_file = tmp.path().join("test.sparql");
+    std::fs::write(&query_file, "SELECT ?s WHERE { ?s ?p ?o }").unwrap();
+
+    // -f flag reads query from file
+    fluree_cmd(&tmp)
+        .args(["query", "-f", query_file.to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+#[test]
 fn sparql_fql_conflict() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
@@ -1308,4 +1338,117 @@ fn auth_login_discovery_fallback_unreachable_server() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Token stored"));
+}
+
+// ============================================================================
+// Directory --from support
+// ============================================================================
+
+#[test]
+fn create_from_turtle_directory() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Create a directory with .ttl files (no chunk_ prefix)
+    let data_dir = tmp.path().join("ttl_data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(
+        data_dir.join("01_people.ttl"),
+        "@prefix ex: <http://example.org/> .\nex:alice a ex:Person ; ex:name \"Alice\" .\n",
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.join("02_things.ttl"),
+        "@prefix ex: <http://example.org/> .\nex:widget a ex:Thing ; ex:label \"Widget\" .\n",
+    )
+    .unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["create", "ttldir", "--from", data_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("About ledger 'ttldir'"))
+        .stdout(predicate::str::contains("flakes"));
+}
+
+#[test]
+fn create_from_jsonld_directory() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    let data_dir = tmp.path().join("jsonld_data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(
+        data_dir.join("01_alice.jsonld"),
+        r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:alice", "@type": "ex:Person", "ex:name": "Alice"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.join("02_bob.jsonld"),
+        r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob"}"#,
+    )
+    .unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["create", "jsondir", "--from", data_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("About ledger 'jsondir'"))
+        .stdout(predicate::str::contains("flakes"));
+}
+
+#[test]
+fn create_from_mixed_directory_fails() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    let data_dir = tmp.path().join("mixed_data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(
+        data_dir.join("data.ttl"),
+        "@prefix ex: <http://example.org/> .\nex:a a ex:Thing .\n",
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.join("data.jsonld"),
+        r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:b", "@type": "ex:Thing"}"#,
+    )
+    .unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["create", "mixdb", "--from", data_dir.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("both Turtle"));
+}
+
+#[test]
+fn create_from_empty_directory_fails() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    let data_dir = tmp.path().join("empty_data");
+    std::fs::create_dir(&data_dir).unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["create", "emptydb", "--from", data_dir.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no supported data files"));
+}
+
+#[test]
+fn create_from_unsupported_files_only_fails() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    let data_dir = tmp.path().join("bad_data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::write(data_dir.join("readme.txt"), "not data").unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["create", "baddb", "--from", data_dir.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no supported data files"));
 }

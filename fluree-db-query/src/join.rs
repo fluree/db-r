@@ -368,24 +368,21 @@ impl NestedLoopJoinOperator {
             let binding = left_batch.get_by_col(row, instr.left_col);
             match instr.position {
                 PatternPosition::Subject | PatternPosition::Predicate => {
-                    // Unbound does not constrain; Sid, IriMatch, and encoded variants are valid.
-                    // Anything else (Lit, raw Iri) cannot match subject/predicate.
+                    // Unbound does not constrain; Sid, IriMatch, Iri, and encoded variants
+                    // are valid. Iri can come from BIND(ex:foo AS ?s) when the IRI isn't
+                    // in the namespace table — the scan will attempt encode_iri at open time.
+                    // Anything else (Lit) cannot match subject/predicate.
                     !matches!(
                         binding,
                         Binding::Unbound
                             | Binding::Sid(_)
                             | Binding::IriMatch { .. }
+                            | Binding::Iri(_)
                             | Binding::EncodedSid { .. }
                             | Binding::EncodedPid { .. }
                     )
                 }
-                PatternPosition::Object => {
-                    // Raw IRIs from graph sources can't match native object values
-                    // (they're not in the namespace table and can't be compared to Sids)
-                    // Note: IriMatch is OK because it carries a SID.
-                    // EncodedSid (refs) and EncodedLit (literals) are also valid.
-                    matches!(binding, Binding::Iri(_))
-                }
+                PatternPosition::Object => false,
             }
         })
     }
@@ -421,7 +418,7 @@ impl NestedLoopJoinOperator {
                         Binding::Sid(sid) => {
                             pattern.s = Ref::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Ref::Iri so scan can encode for each target ledger
                             pattern.s = Ref::Iri(iri.clone());
                         }
@@ -444,8 +441,8 @@ impl NestedLoopJoinOperator {
                         Binding::Sid(sid) => {
                             pattern.p = Ref::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
-                            // Use Ref::Iri so scan can encode for each target ledger
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
+                            // Use Term::Iri so scan can encode for each target ledger
                             pattern.p = Ref::Iri(iri.clone());
                         }
                         Binding::EncodedPid { p_id } => {
@@ -467,7 +464,7 @@ impl NestedLoopJoinOperator {
                         Binding::Sid(sid) => {
                             pattern.o = Term::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.o = Term::Iri(iri.clone());
                         }
@@ -494,11 +491,6 @@ impl NestedLoopJoinOperator {
                         }
                         Binding::EncodedPid { .. } => {
                             // Predicate as object is unusual - leave as variable
-                        }
-                        Binding::Iri(_) => {
-                            // Raw IRI from graph source can't be converted to native Term
-                            // This case should not be reached due to has_invalid_binding_type check,
-                            // but leave as variable defensively (row will produce no matches)
                         }
                         Binding::Unbound | Binding::Poisoned => {
                             // Leave as variable (Poisoned vars from OPTIONAL also remain unbound)

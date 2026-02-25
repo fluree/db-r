@@ -119,10 +119,13 @@ pub enum NodeConstraint {
 pub struct NestedShape {
     /// The shape ID
     pub id: Sid,
-    /// Property constraints
+    /// Property constraints (path → constraints on values at that path)
     pub property_constraints: Vec<(Sid, Vec<Constraint>)>,
     /// Node-level constraints
     pub node_constraints: Vec<NodeConstraint>,
+    /// Value-level constraints (e.g. sh:datatype on an anonymous shape without sh:path).
+    /// These constrain the focus node's own value/datatype rather than a nested property.
+    pub value_constraints: Vec<Constraint>,
 }
 
 impl Constraint {

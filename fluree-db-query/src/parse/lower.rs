@@ -1349,6 +1349,8 @@ fn lower_function_name(name: &str) -> Function {
         | "geo_distance"
         | "geodistance"
         | "http://www.opengis.net/def/function/geosparql/distance" => Function::GeofDistance,
+        // Fulltext scoring
+        "fulltext" | "full_text" => Function::Fulltext,
         // Other
         "bound" => Function::Bound,
         "if" => Function::If,

@@ -241,6 +241,31 @@ Without this type annotation, plain JSON arrays are decomposed into individual R
 
 See [Vector Search](../indexing-and-search/vector-search.md) for complete documentation.
 
+### Fulltext Data
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/"
+  },
+  "@graph": [
+    {
+      "@id": "ex:article-1",
+      "ex:content": {
+        "@value": "Rust is a systems programming language focused on safety and performance",
+        "@type": "@fulltext"
+      }
+    }
+  ]
+}
+```
+
+**@fulltext** (full IRI: `https://ns.flur.ee/db#fullText`, prefix form: `f:fullText`) marks a string value for full-text search indexing. Values annotated with `@fulltext` are automatically analyzed (tokenized, stemmed, stopword-filtered) and indexed into per-predicate fulltext arenas during background index builds. This enables BM25-ranked relevance scoring via the `fulltext()` query function.
+
+Without this type annotation, strings are stored as plain `xsd:string` values and support only exact matching and prefix queries -- not relevance-ranked full-text search.
+
+See [Inline Fulltext Search](../indexing-and-search/fulltext.md) for complete documentation.
+
 ## Type Coercion and Compatibility
 
 ### Automatic Type Promotion

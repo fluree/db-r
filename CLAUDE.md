@@ -4,6 +4,8 @@
 
 Fluree DB-R is a 37-crate Rust workspace implementing a semantic, immutable, time-travel-capable graph database with W3C standards compliance (RDF, JSON-LD, SPARQL). The core is runtime-agnostic; storage and networking are feature-gated.
 
+Use Fluree memory MCP (if installed) as the primary way for managing memories as you work. For every new concept, first search Fluree memory for any insights, and then when you have new concepts that should be incorporated into memory be sure to add it there.
+
 ## Documentation — Use It
 
 The `docs/` directory is the canonical source of truth. **Before inventing an approach, check if docs/ already covers it.** Key sections:

@@ -153,7 +153,8 @@ impl Expression {
                     Expression::Call {
                         func: Function::CosineSimilarity
                             | Function::DotProduct
-                            | Function::EuclideanDistance,
+                            | Function::EuclideanDistance
+                            | Function::Fulltext,
                         ..
                     }
                 ) {

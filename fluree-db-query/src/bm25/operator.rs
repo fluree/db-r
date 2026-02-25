@@ -208,7 +208,7 @@ impl Bm25SearchOperator {
             index: None,
             cached_search_result: None,
             use_search_provider: false,
-            analyzer: Analyzer::clojure_parity_english(),
+            analyzer: Analyzer::english_default(),
             datatypes: WellKnownDatatypes::new(),
             state: OperatorState::Created,
         }

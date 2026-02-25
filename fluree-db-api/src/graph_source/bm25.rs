@@ -686,7 +686,7 @@ where
                 .load_bm25_from_bytes(graph_source_id, snapshot_bytes)
                 .await?;
             let index_t = index.watermark.effective_t();
-            let analyzer = Analyzer::clojure_parity_english();
+            let analyzer = Analyzer::english_default();
             let terms = analyzer.analyze_to_strings(query_text);
             if terms.is_empty() {
                 return Ok(Bm25SearchResult::empty(index_t));
@@ -711,7 +711,7 @@ where
         let root = deserialize_chunked_root(snapshot_bytes)?;
 
         // Analyze query
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
         let terms = analyzer.analyze_to_strings(query_text);
         if terms.is_empty() {
             return Ok(Bm25SearchResult::empty(0));

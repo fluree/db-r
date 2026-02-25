@@ -30,11 +30,11 @@ chrono.workspace = true
 num-bigint = "0.4"
 num-traits = "0.2"
 bigdecimal = "0.4"
-# BM25 text analysis
-rust-stemmers = "1.2"
 once_cell = "1"
 # LRU cache for compiled regexes
 lru = "0.12"
+# TinyLFU cache for fulltext novelty deltas
+moka = { workspace = true }
 # BM25 index serialization
 postcard = { version = "1", features = ["alloc"] }
 # Compression for chunked BM25 snapshots (v4)

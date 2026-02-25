@@ -5,24 +5,33 @@ use crate::error::CliResult;
 use crate::input;
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
+use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
     expr: Option<&str>,
+    file_flag: Option<&Path>,
     message: Option<&str>,
     format_flag: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
 ) -> CliResult<()> {
-    let (explicit_ledger, file_path) = resolve_positional_args(args);
+    let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
-    // Resolve input
-    let source = input::resolve_input(file_path.as_deref(), expr)?;
+    // Resolve input: -e > positional inline > -f > positional file > stdin
+    let source = input::resolve_input(
+        expr,
+        positional_inline,
+        file_flag,
+        positional_file.as_deref(),
+    )?;
     let content = input::read_input(&source)?;
 
-    // Detect format
-    let data_format = detect::detect_data_format(file_path.as_deref(), &content, format_flag)?;
+    // For format detection, prefer the -f path, then positional file
+    let detect_path = file_flag.or(positional_file.as_deref());
+    let data_format = detect::detect_data_format(detect_path, &content, format_flag)?;
 
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {

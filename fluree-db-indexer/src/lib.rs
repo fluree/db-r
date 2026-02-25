@@ -30,6 +30,7 @@
 mod build;
 pub mod config;
 pub mod error;
+pub mod fulltext_hook;
 pub mod gc;
 #[path = "stats/hll256.rs"]
 pub mod hll;

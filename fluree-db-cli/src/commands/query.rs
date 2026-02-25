@@ -5,6 +5,7 @@ use crate::error::{CliError, CliResult};
 use crate::input;
 use crate::output::{self, OutputFormatKind};
 use fluree_db_api::server_defaults::FlureeDir;
+use std::path::Path;
 use std::time::Instant;
 
 /// Parse a `--at` value into a `TimeSpec`.
@@ -58,6 +59,7 @@ fn format_count(n: usize) -> String {
 pub async fn run(
     args: &[String],
     expr: Option<&str>,
+    file_flag: Option<&Path>,
     format_str: &str,
     bench: bool,
     sparql_flag: bool,
@@ -69,15 +71,20 @@ pub async fn run(
 ) -> CliResult<()> {
     const BENCH_ROWS: usize = 5;
     let limit = if bench { Some(BENCH_ROWS) } else { None };
-    let (explicit_ledger, file_path) = resolve_positional_args(args);
+    let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
-    // Resolve input
-    let source = input::resolve_input(file_path.as_deref(), expr)?;
+    // Resolve input: -e > positional inline > -f > positional file > stdin
+    let source = input::resolve_input(
+        expr,
+        positional_inline,
+        file_flag,
+        positional_file.as_deref(),
+    )?;
     let content = input::read_input(&source)?;
 
-    // Detect query format
-    let query_format =
-        detect::detect_query_format(file_path.as_deref(), &content, sparql_flag, fql_flag)?;
+    // For format detection, prefer the -f path, then positional file
+    let detect_path = file_flag.or(positional_file.as_deref());
+    let query_format = detect::detect_query_format(detect_path, &content, sparql_flag, fql_flag)?;
 
     // Parse output format
     let output_format = match format_str.to_lowercase().as_str() {

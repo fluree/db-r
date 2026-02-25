@@ -219,7 +219,7 @@ impl PatternOptionalBuilder {
                         Binding::Sid(sid) => {
                             pattern.s = Ref::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Ref::Iri so scan can encode for each target ledger
                             pattern.s = Ref::Iri(iri.clone());
                         }
@@ -233,7 +233,7 @@ impl PatternOptionalBuilder {
                         Binding::Sid(sid) => {
                             pattern.p = Ref::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Ref::Iri so scan can encode for each target ledger
                             pattern.p = Ref::Iri(iri.clone());
                         }
@@ -247,7 +247,7 @@ impl PatternOptionalBuilder {
                         Binding::Sid(sid) => {
                             pattern.o = Term::Sid(sid.clone());
                         }
-                        Binding::IriMatch { iri, .. } => {
+                        Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.o = Term::Iri(iri.clone());
                         }
@@ -259,11 +259,6 @@ impl PatternOptionalBuilder {
                         }
                         Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
                             // Late materialized IRI: no decode context here; leave unbound.
-                        }
-                        Binding::Iri(_) => {
-                            // Raw IRI from graph source can't be converted to native Term.
-                            // Leave as variable - unify_check will compare Iri vs Sid and
-                            // correctly fail, treating this as "no optional match".
                         }
                         Binding::Unbound | Binding::Poisoned => {
                             // Leave as variable

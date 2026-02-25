@@ -36,8 +36,22 @@ pub async fn run(
     let fluree = context::build_fluree(dirs)?;
 
     match from {
+        Some(path) if path.is_dir() => {
+            // Validate directory format (catches mixed formats & empty dirs).
+            fluree_db_api::scan_directory_format(path)?;
+            run_bulk_import(
+                &fluree,
+                ledger,
+                path,
+                dirs.data_dir(),
+                verbose,
+                quiet,
+                import_opts,
+            )
+            .await?;
+        }
         Some(path) if is_import_path(path)? => {
-            // Bulk import: directory or Turtle file (any size).
+            // Bulk import: Turtle or JSON-LD file (any size).
             // The import pipeline handles both small (single-chunk) and large
             // (auto-split) files via resolve_chunk_source.
             run_bulk_import(
@@ -455,17 +469,19 @@ where
     Ok(())
 }
 
-/// Whether this path should use the import pipeline.
-///
-/// - Directories → import (discovers chunk_*.ttl / chunk_*.trig files)
-/// - `.ttl` files (case-insensitive) → import (auto-splits large files)
-/// - `.ttl.gz` → error with helpful message
-/// - Everything else → staging path (JSON-LD read + insert)
-fn is_import_path(path: &Path) -> CliResult<bool> {
-    if path.is_dir() {
-        return Ok(true);
-    }
+// ============================================================================
+// Import path detection (single files only)
+// ============================================================================
 
+/// Whether this single-file path should use the import pipeline.
+///
+/// - `.ttl` files (case-insensitive) → import (auto-splits large files)
+/// - `.jsonld` files (case-insensitive) → import (bypasses novelty)
+/// - `.ttl.gz` → error with helpful message
+/// - Everything else (e.g. `.json`) → detect-based transact path
+///
+/// Note: directories are handled separately in `run()` via `fluree_db_api::scan_directory_format()`.
+fn is_import_path(path: &Path) -> CliResult<bool> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let name_lower = name.to_ascii_lowercase();
 
@@ -480,8 +496,8 @@ fn is_import_path(path: &Path) -> CliResult<bool> {
         )));
     }
 
-    // Case-insensitive .ttl check.
-    if name_lower.ends_with(".ttl") {
+    // Case-insensitive .ttl / .jsonld check.
+    if name_lower.ends_with(".ttl") || name_lower.ends_with(".jsonld") {
         return Ok(true);
     }
 
