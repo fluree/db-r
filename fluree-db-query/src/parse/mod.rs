@@ -158,9 +158,7 @@ fn parse_query_ast_internal(
                 object_var_parsing,
             )?;
         } else {
-            return Err(ParseError::MissingField(
-                "where (required for ask queries)",
-            ));
+            return Err(ParseError::MissingField("where (required for ask queries)"));
         }
         // LIMIT 1 for efficiency — only need to know if any solution exists
         query.options.limit = Some(1);

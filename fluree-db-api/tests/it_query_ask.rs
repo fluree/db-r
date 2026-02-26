@@ -106,10 +106,7 @@ async fn ask_with_filter() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query_no_match)
-        .await
-        .expect("query");
+    let result = fluree.query(&ledger, &query_no_match).await.expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -147,10 +144,7 @@ async fn ask_with_type_pattern() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query_no_match)
-        .await
-        .expect("query");
+    let result = fluree.query(&ledger, &query_no_match).await.expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -195,10 +189,7 @@ async fn ask_requires_where() {
     let result = fluree.query(&ledger, &query).await;
     assert!(result.is_err(), "ask without where should fail");
     let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("where"),
-        "error should mention 'where': {err}"
-    );
+    assert!(err.contains("where"), "error should mention 'where': {err}");
 }
 
 #[tokio::test]
@@ -207,9 +198,7 @@ async fn ask_rejects_non_true() {
     let ledger = genesis_ledger(&fluree, "it/ask:non-true");
 
     // "ask": 1 — not exactly true
-    let result = fluree
-        .query(&ledger, &json!({"ask": 1, "where": []}))
-        .await;
+    let result = fluree.query(&ledger, &json!({"ask": 1, "where": []})).await;
     assert!(result.is_err(), "ask: 1 should be rejected");
 
     // "ask": "yes" — not exactly true
