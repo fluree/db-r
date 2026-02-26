@@ -61,7 +61,9 @@ pub struct StreamingAggSpec {
     pub input_col: Option<usize>,
     /// Output variable ID
     pub output_var: VarId,
-    /// Whether DISTINCT was specified
+    /// Whether DISTINCT was specified (e.g., SUM(DISTINCT ?x)).
+    /// Used by `all_streamable()` to route DISTINCT SUM/AVG to the
+    /// traditional AggregateOperator path which handles deduplication.
     pub distinct: bool,
 }
 
@@ -284,10 +286,11 @@ impl AggState {
             AggState::Min { min } => min.unwrap_or(Binding::Unbound),
             AggState::Max { max } => max.unwrap_or(Binding::Unbound),
             AggState::Collect { values } => {
-                // Use existing aggregate functions for non-streamable.
-                // DISTINCT is already handled by falling back to collect mode,
-                // so pass distinct=false here — dedup happens at the caller level
-                // when the spec.distinct flag forces collect mode.
+                // Non-streamable aggregates collect all values, then delegate.
+                // DISTINCT SUM/AVG never reach this path — the planner routes
+                // them to the traditional AggregateOperator instead (via
+                // `all_streamable()` returning false). If a future non-streamable
+                // aggregate needs DISTINCT, pass the spec's distinct flag here.
                 crate::aggregate::apply_aggregate(func, &Binding::Grouped(values), false)
             }
         }
@@ -736,14 +739,8 @@ impl Operator for GroupAggregateOperator {
     }
 }
 
-/// XSD datatype SIDs
-fn xsd_integer() -> Sid {
-    Sid::new(2, "integer")
-}
-
-fn xsd_double() -> Sid {
-    Sid::new(2, "double")
-}
+// XSD datatype SIDs — reuse cached versions from aggregate module
+use crate::aggregate::{xsd_double, xsd_integer};
 
 /// Extract numeric value from binding
 fn extract_number(binding: &Binding) -> Option<f64> {

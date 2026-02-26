@@ -369,8 +369,23 @@ HAVING (COUNT(?product) > 10)
 - `AVG(?var)` - Average numeric values
 - `MIN(?var)` - Minimum value
 - `MAX(?var)` - Maximum value
-- `SAMPLE(?var)` - Sample value
-- `GROUP_CONCAT(?var)` - Concatenate values
+- `SAMPLE(?var)` - Arbitrary value from group
+- `GROUP_CONCAT(?var; separator=",")` - Concatenate values
+
+All aggregate functions support the `DISTINCT` modifier, which eliminates duplicate values before aggregation:
+
+```sparql
+SELECT ?category (COUNT(DISTINCT ?customer) AS ?unique_buyers)
+                 (SUM(DISTINCT ?price) AS ?unique_price_total)
+WHERE {
+  ?order ex:category ?category .
+  ?order ex:customer ?customer .
+  ?order ex:price ?price .
+}
+GROUP BY ?category
+```
+
+**Aggregate result types:** COUNT and SUM of integers return `xsd:integer`. SUM of mixed numeric types and AVG return `xsd:double`.
 
 ## Sorting and Limiting
 

@@ -246,10 +246,11 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     /// Lower a GROUP BY condition to a variable ID and optional pre-GROUP-BY BIND.
     ///
-    /// - `GROUP BY ?x` → `(var_id, None)`
-    /// - `GROUP BY (?x)` → `(var_id, None)` (unwrap brackets)
-    /// - `GROUP BY (expr AS ?alias)` → `(alias_id, Some(Pattern::Bind { alias_id, lowered_expr }))`
-    /// - `GROUP BY (expr)` (no alias) → synthetic variable `?__group_expr_N`
+    /// Returns `(var_id, Option<Pattern::Bind>)`:
+    /// - `GROUP BY ?x`              → variable reference, no BIND needed
+    /// - `GROUP BY (?x)`            → parenthesized variable, unwrapped to plain variable
+    /// - `GROUP BY (expr AS ?alias)` → desugared to BIND(expr AS ?alias) + GROUP BY ?alias
+    /// - `GROUP BY (expr)`          → same, but with a synthetic `?__group_expr_N` alias
     fn lower_group_condition(&mut self, cond: &GroupCondition) -> Result<(VarId, Option<Pattern>)> {
         match cond {
             GroupCondition::Var(var) => Ok((self.register_var(var), None)),

@@ -85,7 +85,10 @@ pub async fn run_eval_test(
             let turtle = prepare_for_insert(&raw, data_url)?;
             match fluree.insert_turtle(ledger.clone(), &turtle).await {
                 Ok(result) => result.ledger,
-                Err(e) if is_empty_transaction(&e) => ledger,
+                Err(e) if is_empty_transaction(&e) => {
+                    // Turtle had only prefixes / no triples — skip gracefully
+                    ledger
+                }
                 Err(e) => return Err(e).with_context(|| format!("Loading test data: {data_url}")),
             }
         }
@@ -178,8 +181,11 @@ pub async fn run_eval_test(
 /// Turtle files with only `@prefix` declarations and no triples produce zero
 /// flakes. Fluree rejects these as empty transactions, but for W3C tests we
 /// should treat them as a no-op (the test is querying an empty graph).
+///
+/// FRAGILE: uses string matching because `ApiError` doesn't expose a typed
+/// variant for this case. Update if `ApiError::Transact(TransactError::EmptyTransaction)`
+/// becomes publicly matchable.
 fn is_empty_transaction(e: &fluree_db_api::ApiError) -> bool {
-    // ApiError::Transact(TransactError::EmptyTransaction)
     e.to_string().contains("Empty transaction")
 }
 

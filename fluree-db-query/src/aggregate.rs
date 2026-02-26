@@ -27,14 +27,21 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
-/// Aggregate function types
+/// Aggregate function types.
+///
+/// DISTINCT handling is split: `COUNT(DISTINCT)` has a dedicated variant
+/// (`CountDistinct`) because its streaming state uses a HashSet rather than
+/// a simple counter. All other DISTINCT aggregates (SUM, AVG, etc.) use
+/// their normal variant with `AggregateSpec::distinct = true`, and dedup
+/// is applied at execution time by `apply_aggregate()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggregateFn {
     /// COUNT - count non-Unbound values of a variable
     Count,
     /// COUNT(*) - count all rows in a group (regardless of variable values)
     CountAll,
-    /// COUNT(DISTINCT) - count distinct non-Unbound values
+    /// COUNT(DISTINCT) - count distinct non-Unbound values (dedicated variant
+    /// for streaming HashSet state; `AggregateSpec::distinct` is false for this)
     CountDistinct,
     /// SUM - numeric sum
     Sum,
@@ -311,12 +318,9 @@ pub fn apply_aggregate(func: &AggregateFn, binding: &Binding, distinct: bool) ->
     match binding {
         Binding::Grouped(values) => {
             if distinct {
-                let deduped: Vec<Binding> = values
-                    .iter()
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .cloned()
-                    .collect();
+                let mut seen = HashSet::with_capacity(values.len());
+                let deduped: Vec<Binding> =
+                    values.iter().filter(|b| seen.insert(*b)).cloned().collect();
                 compute_aggregate(func, &deduped)
             } else {
                 compute_aggregate(func, values)
@@ -345,17 +349,26 @@ fn compute_aggregate(func: &AggregateFn, values: &[Binding]) -> Binding {
     }
 }
 
-/// XSD datatype SIDs for results
-fn xsd_integer() -> Sid {
-    Sid::new(2, "integer")
+/// XSD datatype SIDs for aggregate results.
+///
+/// Used by both `AggregateOperator` (collect path) and `GroupAggregateOperator`
+/// (streaming path). Cached via `LazyLock` to avoid per-call `Arc<str>` allocation.
+pub(crate) fn xsd_integer() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "integer"));
+    SID.clone()
 }
 
-fn xsd_double() -> Sid {
-    Sid::new(2, "double")
+pub(crate) fn xsd_double() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "double"));
+    SID.clone()
 }
 
-fn xsd_string() -> Sid {
-    Sid::new(2, "string")
+pub(crate) fn xsd_string() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "string"));
+    SID.clone()
 }
 
 /// COUNT - count non-Unbound values
