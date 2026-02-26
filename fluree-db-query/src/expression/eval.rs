@@ -124,9 +124,6 @@ impl Expression {
     ///
     /// The `ctx` parameter provides access to the execution context for resolving
     /// `Binding::EncodedLit` values (late materialization).
-    ///
-    /// This method is generic over `RowAccess`, allowing it to work with both
-    /// `RowView` (batch rows) and `BindingRow` (pre-batch inline evaluation).
     pub fn eval_to_binding<R: RowAccess>(
         &self,
         row: &R,
@@ -142,9 +139,6 @@ impl Expression {
     ///
     /// Unlike [`eval_to_binding`], this returns errors rather than converting
     /// them to `Binding::Unbound`.
-    ///
-    /// This method is generic over `RowAccess`, allowing it to work with both
-    /// `RowView` (batch rows) and `BindingRow` (pre-batch inline evaluation).
     pub fn try_eval_to_binding<R: RowAccess>(
         &self,
         row: &R,
