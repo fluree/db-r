@@ -167,9 +167,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     self.lower_select_expression_binds(&select_query.select, &aggregate_aliases)?;
                 patterns.extend(select_binds.pre);
 
-                // Lower solution modifiers to QueryOptions
-                let mut options =
+                // Lower solution modifiers to QueryOptions.
+                // Expression-based GROUP BY produces pre-group BINDs that must be
+                // injected into the WHERE pattern list before query building.
+                let lowered_modifiers =
                     self.lower_solution_modifiers(&select_query.modifiers, &select_query.select)?;
+                patterns.extend(lowered_modifiers.pre_group_binds);
+                let mut options = lowered_modifiers.options;
                 options.post_binds = select_binds.post;
 
                 // Build a JSON-LD-like context from SPARQL prologue prefixes so formatters can compact IRIs.
@@ -1139,16 +1143,24 @@ mod tests {
     }
 
     #[test]
-    fn test_group_by_expr_unsupported() {
-        let result = lower_query(
+    fn test_group_by_expression_desugars_to_bind() {
+        // Expression GROUP BY: `GROUP BY (?x + 1 AS ?y)` desugars to
+        // `BIND(?x + 1 AS ?y)` in patterns + `GROUP BY ?y` in options.
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?x WHERE { ?s ex:p ?x } GROUP BY (?x + 1 AS ?y)",
-        );
+        )
+        .unwrap();
 
-        assert!(matches!(
-            result,
-            Err(LowerError::UnsupportedGroupByExpression { .. })
-        ));
+        // GROUP BY should contain one variable (the alias ?y)
+        assert_eq!(query.options.group_by.len(), 1);
+        let group_var = query.options.group_by[0];
+
+        // Patterns should contain a Bind for the expression, targeting the same variable
+        let has_bind = query.patterns.iter().any(|p| {
+            matches!(p, Pattern::Bind { var, .. } if *var == group_var)
+        });
+        assert!(has_bind, "expected a BIND pattern from expression GROUP BY");
     }
 
     #[test]

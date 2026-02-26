@@ -31,6 +31,15 @@ pub(super) struct SelectBinds {
     pub post: Vec<(VarId, Expression)>,
 }
 
+/// Result of lowering solution modifiers.
+pub(super) struct LoweredModifiers {
+    /// Query options (GROUP BY vars, aggregates, HAVING, ORDER BY, LIMIT, OFFSET, DISTINCT)
+    pub options: QueryOptions,
+    /// Pre-GROUP-BY BIND patterns for expression-based GROUP BY conditions.
+    /// These must be injected into the WHERE pattern list before query building.
+    pub pre_group_binds: Vec<Pattern>,
+}
+
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// Lower SELECT clause to a list of VarIds.
     pub(super) fn lower_select_clause(&mut self, clause: &SelectClause) -> Result<Vec<VarId>> {
@@ -113,21 +122,27 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         &mut self,
         modifiers: &SolutionModifiers,
         select: &SelectClause,
-    ) -> Result<QueryOptions> {
+    ) -> Result<LoweredModifiers> {
         let mut options = QueryOptions {
             distinct: select.modifier == Some(SelectModifier::Distinct),
             ..Default::default()
         };
+        let mut pre_group_binds = Vec::new();
 
         // LIMIT, OFFSET, ORDER BY
         self.lower_base_modifiers(modifiers, &mut options)?;
 
-        // GROUP BY (vars-only MVP)
+        // GROUP BY — supports both variables and expressions.
+        // Expression GROUP BY like `GROUP BY (expr AS ?alias)` desugars to
+        // a pre-group BIND pattern + GROUP BY on the alias variable.
         if let Some(ref group_by) = modifiers.group_by {
             let mut group_vars = Vec::with_capacity(group_by.conditions.len());
             for cond in &group_by.conditions {
-                let var_id = self.lower_group_condition(cond)?;
+                let (var_id, bind_pattern) = self.lower_group_condition(cond)?;
                 group_vars.push(var_id);
+                if let Some(pattern) = bind_pattern {
+                    pre_group_binds.push(pattern);
+                }
             }
             options.group_by = group_vars;
         }
@@ -162,7 +177,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             options.group_by = self.collect_non_aggregate_select_vars(select);
         }
 
-        Ok(options)
+        Ok(LoweredModifiers {
+            options,
+            pre_group_binds,
+        })
     }
 
     /// Lower LIMIT, OFFSET, and ORDER BY modifiers (shared by SELECT and CONSTRUCT).
@@ -226,18 +244,37 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    /// Lower a GROUP BY condition (vars-only MVP)
-    fn lower_group_condition(&mut self, cond: &GroupCondition) -> Result<VarId> {
+    /// Lower a GROUP BY condition to a variable ID and optional pre-GROUP-BY BIND.
+    ///
+    /// - `GROUP BY ?x` → `(var_id, None)`
+    /// - `GROUP BY (?x)` → `(var_id, None)` (unwrap brackets)
+    /// - `GROUP BY (expr AS ?alias)` → `(alias_id, Some(Pattern::Bind { alias_id, lowered_expr }))`
+    /// - `GROUP BY (expr)` (no alias) → synthetic variable `?__group_expr_N`
+    fn lower_group_condition(
+        &mut self,
+        cond: &GroupCondition,
+    ) -> Result<(VarId, Option<Pattern>)> {
         match cond {
-            GroupCondition::Var(var) => Ok(self.register_var(var)),
-            // Handle GROUP BY (?var) or GROUP BY ((?var)) - bracketed variables
-            GroupCondition::Expr { expr, span, .. } => match expr.unwrap_bracketed() {
-                AstExpression::Var(var) => Ok(self.register_var(var)),
-                _ => {
-                    // Expression-based GROUP BY not yet supported
-                    Err(LowerError::unsupported_group_by_expr(*span))
+            GroupCondition::Var(var) => Ok((self.register_var(var), None)),
+            GroupCondition::Expr { expr, alias, .. } => {
+                // Try unwrapping brackets to see if it's just a variable
+                match expr.unwrap_bracketed() {
+                    AstExpression::Var(var) => Ok((self.register_var(var), None)),
+                    _ => {
+                        // Expression-based GROUP BY: desugar to BIND + GROUP BY alias
+                        let lowered = self.lower_expression(expr)?;
+                        let var_id = if let Some(alias_var) = alias {
+                            self.register_var(alias_var)
+                        } else {
+                            // No alias — generate a synthetic variable
+                            let name =
+                                format!("?__group_expr_{}", self.vars.len());
+                            self.vars.get_or_insert(&name)
+                        };
+                        Ok((var_id, Some(Pattern::Bind { var: var_id, expr: lowered })))
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -270,8 +307,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         subselect: &SubSelect,
         _span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
-        // Lower WHERE patterns
-        let patterns = self.lower_graph_pattern(&subselect.pattern)?;
+        // Lower WHERE patterns (mut: expression GROUP BY may append pre-group BINDs)
+        let mut patterns = self.lower_graph_pattern(&subselect.pattern)?;
 
         // Build a temporary SelectClause so we can reuse extract_aggregates /
         // collect_non_aggregate_select_vars which operate on SelectClause.
@@ -323,20 +360,23 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
         };
 
-        // Build SubqueryPattern
-        let mut sq = SubqueryPattern::new(select, patterns);
-
         // Extract aggregates from SELECT clause (e.g. COUNT(?x) AS ?count)
         let aggregates = self.extract_aggregates(&select_clause)?;
 
-        // Lower GROUP BY
+        // Lower GROUP BY (expression GROUP BY produces pre-group BINDs)
         let mut group_vars = Vec::new();
         if let Some(ref group_by) = subselect.group_by {
             for cond in &group_by.conditions {
-                let var_id = self.lower_group_condition(cond)?;
+                let (var_id, bind_pattern) = self.lower_group_condition(cond)?;
                 group_vars.push(var_id);
+                if let Some(pattern) = bind_pattern {
+                    patterns.push(pattern);
+                }
             }
         }
+
+        // Build SubqueryPattern (after injecting any pre-group BINDs into patterns)
+        let mut sq = SubqueryPattern::new(select, patterns);
 
         // Auto-populate GROUP BY when aggregates present but no explicit GROUP BY.
         // Per SPARQL semantics, all non-aggregated SELECT variables must be grouped.
