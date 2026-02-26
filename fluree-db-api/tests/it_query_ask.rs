@@ -1,7 +1,8 @@
 //! Integration tests for FQL `ask` boolean queries.
 //!
-//! Tests the `"ask": true` query form which returns a bare boolean
-//! indicating whether the WHERE patterns have any solution.
+//! Tests the `"ask": [...]` query form where the value of `ask` is the
+//! where clause. Returns a bare boolean indicating whether the patterns
+//! have any solution.
 
 mod support;
 
@@ -38,8 +39,7 @@ async fn ask_true_when_match_exists() {
 
     let query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:name": "Alice" }
         ]
     });
@@ -59,8 +59,7 @@ async fn ask_false_when_no_match() {
 
     let query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:name": "Charlie" }
         ]
     });
@@ -81,8 +80,7 @@ async fn ask_with_filter() {
     // Alice is 30, Bob is 25 — only Alice matches > 28
     let query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:age": "?age" },
             ["filter", "(> ?age 28)"]
         ]
@@ -99,8 +97,7 @@ async fn ask_with_filter() {
     // Nobody is older than 50
     let query_no_match = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:age": "?age" },
             ["filter", "(> ?age 50)"]
         ]
@@ -121,8 +118,7 @@ async fn ask_with_type_pattern() {
 
     let query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "@type": "ex:Person" }
         ]
     });
@@ -138,8 +134,7 @@ async fn ask_with_type_pattern() {
     // No Animals exist
     let query_no_match = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?x", "@type": "ex:Animal" }
         ]
     });
@@ -160,8 +155,7 @@ async fn ask_with_optional() {
     // Base pattern matches (Alice exists), OPTIONAL just adds more bindings
     let query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:name": "Alice" },
             ["optional", { "@id": "?person", "ex:email": "?email" }]
         ]
@@ -177,41 +171,48 @@ async fn ask_with_optional() {
 }
 
 #[tokio::test]
-async fn ask_requires_where() {
-    let fluree = FlureeBuilder::memory().build_memory();
-    let ledger = genesis_ledger(&fluree, "it/ask:no-where");
+async fn ask_object_shorthand() {
+    let (fluree, ledger) = seed_people().await;
 
+    // Single node-map object instead of array — shorthand form
     let query = json!({
         "@context": ctx(),
-        "ask": true
+        "ask": { "@id": "?person", "ex:name": "Alice" }
     });
 
-    let result = fluree.query(&ledger, &query).await;
-    assert!(result.is_err(), "ask without where should fail");
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("where"), "error should mention 'where': {err}");
+    let result = fluree.query(&ledger, &query).await.expect("query");
+    let json = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .expect("to_jsonld_async");
+
+    assert_eq!(json, JsonValue::Bool(true));
 }
 
 #[tokio::test]
-async fn ask_rejects_non_true() {
+async fn ask_rejects_non_pattern_values() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger = genesis_ledger(&fluree, "it/ask:non-true");
+    let ledger = genesis_ledger(&fluree, "it/ask:bad-values");
 
-    // "ask": 1 — not exactly true
-    let result = fluree.query(&ledger, &json!({"ask": 1, "where": []})).await;
+    // "ask": true — old syntax, no longer valid
+    let result = fluree.query(&ledger, &json!({"ask": true})).await;
+    assert!(result.is_err(), "ask: true should be rejected");
+
+    // "ask": 1
+    let result = fluree.query(&ledger, &json!({"ask": 1})).await;
     assert!(result.is_err(), "ask: 1 should be rejected");
 
-    // "ask": "yes" — not exactly true
-    let result = fluree
-        .query(&ledger, &json!({"ask": "yes", "where": []}))
-        .await;
+    // "ask": "yes"
+    let result = fluree.query(&ledger, &json!({"ask": "yes"})).await;
     assert!(result.is_err(), "ask: \"yes\" should be rejected");
 
-    // "ask": false — not exactly true
-    let result = fluree
-        .query(&ledger, &json!({"ask": false, "where": []}))
-        .await;
+    // "ask": false
+    let result = fluree.query(&ledger, &json!({"ask": false})).await;
     assert!(result.is_err(), "ask: false should be rejected");
+
+    // "ask": null
+    let result = fluree.query(&ledger, &json!({"ask": null})).await;
+    assert!(result.is_err(), "ask: null should be rejected");
 }
 
 #[tokio::test]
@@ -221,8 +222,7 @@ async fn ask_sparql_parity() {
     // FQL ask
     let fql_query = json!({
         "@context": ctx(),
-        "ask": true,
-        "where": [
+        "ask": [
             { "@id": "?person", "ex:name": "Alice" }
         ]
     });
