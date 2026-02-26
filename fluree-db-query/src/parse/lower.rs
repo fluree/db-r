@@ -54,6 +54,12 @@ pub enum SelectMode {
     /// Template patterns are instantiated with bindings to produce RDF triples.
     /// Projection is skipped (all bindings needed for templating).
     Construct,
+
+    /// ASK: return boolean based on whether any solution exists
+    ///
+    /// No variables are projected. LIMIT 1 is applied internally for efficiency.
+    /// Result format: `{"head": {}, "boolean": true|false}`
+    Boolean,
 }
 
 /// Resolved CONSTRUCT template patterns

@@ -33,6 +33,15 @@ pub fn format_sparql_table_from_result(
     snapshot: &LedgerSnapshot,
     limit: Option<usize>,
 ) -> CliResult<Option<FormatOutput>> {
+    // ASK queries: display boolean result directly instead of an empty table.
+    if result.select_mode == SelectMode::Boolean {
+        let has_solution = result.batches.iter().any(|b| !b.is_empty());
+        return Ok(Some(FormatOutput {
+            text: has_solution.to_string(),
+            total_rows: 1,
+        }));
+    }
+
     // Grouped bindings require cartesian disaggregation (SPARQL formatter logic).
     // Rather than re-implement that here, fall back to the existing SPARQL JSON formatter.
     let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
