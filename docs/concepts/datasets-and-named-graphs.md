@@ -25,7 +25,9 @@ In SPARQL, **named graphs** are additional graphs (identified by IRIs) that part
 In Fluree, named graphs are used in several ways:
 
 - **Multi-graph execution (datasets)**: `FROM NAMED <...>` identifies additional **graph sources** (often other ledgers or non-ledger graph sources) that you can reference with `GRAPH <...> { ... }`.
-- **Named graphs within a ledger (txn metadata)**: Fluree provides a built-in named graph for commit/transaction metadata called **`txn-meta`**, queryable via the `#txn-meta` fragment on a ledger reference (e.g., `<mydb:main#txn-meta>`).
+- **System named graphs**: Fluree provides two built-in named graphs:
+  - **`txn-meta`** (`#txn-meta`): commit/transaction metadata, queryable via the `#txn-meta` fragment (e.g., `<mydb:main#txn-meta>`)
+  - **`config`** (`#config`): ledger-level configuration (policy, SHACL, reasoning, uniqueness constraints). See [Ledger configuration](../ledger-config/README.md).
 - **User-defined named graphs**: Fluree supports ingesting data into user-defined named graphs using TriG format. These graphs are identified by their IRI and can be queried using the structured `from` object syntax with a `graph` field.
 
 ### Txn metadata named graph (`#txn-meta`)
