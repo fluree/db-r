@@ -880,6 +880,55 @@ mod tests {
     }
 
     // =========================================================================
+    // ASK Query Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ask_basic() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:name \"Alice\" }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        assert!(query.select.is_empty(), "ASK should not project variables");
+        assert_eq!(query.options.limit, Some(1), "ASK should inject LIMIT 1");
+        assert!(
+            query.construct_template.is_none(),
+            "ASK should have no CONSTRUCT template"
+        );
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_ask_multiple_patterns() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:name ?name . ?s ex:age ?age }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        assert!(query.select.is_empty());
+        assert_eq!(query.patterns.len(), 2);
+    }
+
+    #[test]
+    fn test_ask_with_filter() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:age ?age FILTER(?age > 30) }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        // Patterns: Triple + Filter
+        assert!(query.patterns.len() >= 2);
+    }
+
+    // =========================================================================
     // Extended expression tests (Phase 9b)
     // =========================================================================
 

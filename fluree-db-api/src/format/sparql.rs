@@ -472,6 +472,32 @@ mod tests {
     }
 
     #[test]
+    fn test_boolean_true_when_solutions_exist() {
+        let compactor = make_test_compactor();
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+        result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
+
+        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
+        let output = format(&result, &compactor, &config).unwrap();
+
+        assert_eq!(output, json!({"head": {}, "boolean": true}));
+    }
+
+    #[test]
+    fn test_boolean_false_when_no_solutions() {
+        let compactor = make_test_compactor();
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+        // No batches = no solutions
+
+        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
+        let output = format(&result, &compactor, &config).unwrap();
+
+        assert_eq!(output, json!({"head": {}, "boolean": false}));
+    }
+
+    #[test]
     fn test_strip_question_mark() {
         assert_eq!(strip_question_mark("?name"), "name");
         assert_eq!(strip_question_mark("name"), "name");
