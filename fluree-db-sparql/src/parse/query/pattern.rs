@@ -43,6 +43,11 @@ impl<'a> super::Parser<'a> {
         let mut current_triples: Vec<crate::ast::TriplePattern> = Vec::new();
 
         while !self.stream.check(&TokenKind::RBrace) && !self.stream.is_eof() {
+            // Safety: track position to detect sub-parsers that return None
+            // without advancing. If we make no progress, force-advance to
+            // prevent infinite loops from unhandled token types.
+            let loop_start_pos = self.stream.position();
+
             // Check for graph pattern keywords
             if self.stream.check_keyword(TokenKind::KwOptional) {
                 super::flush_current_triples(&mut current_triples, &mut patterns);
@@ -168,6 +173,15 @@ impl<'a> super::Parser<'a> {
                 // Unknown token
                 self.stream
                     .error_at_current("unexpected token in graph pattern");
+                self.stream.advance();
+            }
+
+            // Safety net: if no branch consumed any tokens, force-advance to prevent
+            // infinite loops. This catches cases where a sub-parser returns None
+            // without advancing (e.g., an unhandled token type in parse_subject).
+            if self.stream.position() == loop_start_pos {
+                self.stream
+                    .error_at_current("parser failed to make progress — skipping token");
                 self.stream.advance();
             }
         }
