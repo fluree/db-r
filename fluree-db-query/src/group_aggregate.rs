@@ -258,16 +258,16 @@ impl AggState {
     /// Finalize the aggregate state into a result binding
     fn finalize(self, func: &AggregateFn) -> Binding {
         match self {
-            AggState::Count { n } => Binding::lit(FlakeValue::Long(n as i64), xsd_long()),
+            AggState::Count { n } => Binding::lit(FlakeValue::Long(n as i64), xsd_integer()),
             AggState::CountDistinct { seen } => {
-                Binding::lit(FlakeValue::Long(seen.len() as i64), xsd_long())
+                Binding::lit(FlakeValue::Long(seen.len() as i64), xsd_integer())
             }
             AggState::Sum {
                 total,
                 has_int_only,
             } => {
                 if has_int_only && total.fract() == 0.0 {
-                    Binding::lit(FlakeValue::Long(total as i64), xsd_long())
+                    Binding::lit(FlakeValue::Long(total as i64), xsd_integer())
                 } else {
                     Binding::lit(FlakeValue::Double(total), xsd_double())
                 }
@@ -723,8 +723,8 @@ impl Operator for GroupAggregateOperator {
 }
 
 /// XSD datatype SIDs
-fn xsd_long() -> Sid {
-    Sid::new(2, "long")
+fn xsd_integer() -> Sid {
+    Sid::new(2, "integer")
 }
 
 fn xsd_double() -> Sid {
@@ -924,11 +924,11 @@ mod tests {
             ],
             // ?value
             vec![
-                Binding::lit(FlakeValue::Long(10), xsd_long()),
-                Binding::lit(FlakeValue::Long(20), xsd_long()),
-                Binding::lit(FlakeValue::Long(30), xsd_long()),
-                Binding::lit(FlakeValue::Long(5), xsd_long()),
-                Binding::lit(FlakeValue::Long(15), xsd_long()),
+                Binding::lit(FlakeValue::Long(10), xsd_integer()),
+                Binding::lit(FlakeValue::Long(20), xsd_integer()),
+                Binding::lit(FlakeValue::Long(30), xsd_integer()),
+                Binding::lit(FlakeValue::Long(5), xsd_integer()),
+                Binding::lit(FlakeValue::Long(15), xsd_integer()),
             ],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();

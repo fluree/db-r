@@ -274,7 +274,7 @@ impl Operator for AggregateOperator {
                             });
                             sizes
                                 .iter()
-                                .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_long()))
+                                .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_integer()))
                                 .collect()
                         }
                     };
@@ -331,8 +331,8 @@ fn compute_aggregate(func: &AggregateFn, values: &[Binding]) -> Binding {
 }
 
 /// XSD datatype SIDs for results
-fn xsd_long() -> Sid {
-    Sid::new(2, "long")
+fn xsd_integer() -> Sid {
+    Sid::new(2, "integer")
 }
 
 fn xsd_double() -> Sid {
@@ -349,12 +349,12 @@ fn agg_count(values: &[Binding]) -> Binding {
         .iter()
         .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned))
         .count();
-    Binding::lit(FlakeValue::Long(count as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(count as i64), xsd_integer())
 }
 
 /// COUNT(*) - count all rows (including Unbound/Poisoned)
 fn agg_count_all(values: &[Binding]) -> Binding {
-    Binding::lit(FlakeValue::Long(values.len() as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(values.len() as i64), xsd_integer())
 }
 
 /// COUNT(DISTINCT) - count distinct non-Unbound values
@@ -363,7 +363,7 @@ fn agg_count_distinct(values: &[Binding]) -> Binding {
         .iter()
         .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned))
         .collect();
-    Binding::lit(FlakeValue::Long(distinct.len() as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(distinct.len() as i64), xsd_integer())
 }
 
 /// SUM - numeric sum
@@ -377,7 +377,7 @@ fn agg_sum(values: &[Binding]) -> Binding {
 
     // Return as Long if all values were Long and result is whole number
     if numbers.iter().all(|n| n.fract() == 0.0) && sum.fract() == 0.0 {
-        Binding::lit(FlakeValue::Long(sum as i64), xsd_long())
+        Binding::lit(FlakeValue::Long(sum as i64), xsd_integer())
     } else {
         Binding::lit(FlakeValue::Double(sum), xsd_double())
     }
@@ -535,11 +535,11 @@ mod tests {
     #[test]
     fn test_agg_count() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Poisoned,
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_count(&values);
@@ -551,11 +551,11 @@ mod tests {
     fn test_agg_count_all() {
         // COUNT(*) counts ALL rows, including Unbound and Poisoned
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Poisoned,
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_count_all(&values);
@@ -575,9 +575,9 @@ mod tests {
     #[test]
     fn test_agg_count_distinct() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Unbound,
         ];
 
@@ -589,9 +589,9 @@ mod tests {
     #[test]
     fn test_agg_sum() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
         ];
 
         let result = agg_sum(&values);
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn test_agg_sum_mixed_types() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
             Binding::lit(FlakeValue::Double(20.5), xsd_double()),
         ];
 
@@ -621,9 +621,9 @@ mod tests {
     #[test]
     fn test_agg_avg() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
         ];
 
         let result = agg_avg(&values);
@@ -634,9 +634,9 @@ mod tests {
     #[test]
     fn test_agg_min() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
         ];
 
         let result = agg_min(&values);
@@ -647,9 +647,9 @@ mod tests {
     #[test]
     fn test_agg_max() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
         ];
 
         let result = agg_max(&values);
@@ -660,9 +660,9 @@ mod tests {
     #[test]
     fn test_agg_median_odd() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_median(&values);
@@ -673,10 +673,10 @@ mod tests {
     #[test]
     fn test_agg_median_even() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
         ];
 
         let result = agg_median(&values);
@@ -691,14 +691,14 @@ mod tests {
         // Variance: ((2-5)^2 + (4-5)^2 + (4-5)^2 + (4-5)^2 + (5-5)^2 + (5-5)^2 + (7-5)^2 + (9-5)^2) / 8
         //         = (9 + 1 + 1 + 1 + 0 + 0 + 4 + 16) / 8 = 32 / 8 = 4
         let values = vec![
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(7), xsd_long()),
-            Binding::lit(FlakeValue::Long(9), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(7), xsd_integer()),
+            Binding::lit(FlakeValue::Long(9), xsd_integer()),
         ];
 
         let result = agg_variance(&values);
@@ -710,14 +710,14 @@ mod tests {
     fn test_agg_stddev() {
         // Same values as variance test, stddev = sqrt(4) = 2
         let values = vec![
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(7), xsd_long()),
-            Binding::lit(FlakeValue::Long(9), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(7), xsd_integer()),
+            Binding::lit(FlakeValue::Long(9), xsd_integer()),
         ];
 
         let result = agg_stddev(&values);
@@ -742,8 +742,8 @@ mod tests {
     fn test_agg_sample() {
         let values = vec![
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(42), xsd_long()),
-            Binding::lit(FlakeValue::Long(99), xsd_long()),
+            Binding::lit(FlakeValue::Long(42), xsd_integer()),
+            Binding::lit(FlakeValue::Long(99), xsd_integer()),
         ];
 
         let result = agg_sample(&values);
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn test_apply_aggregate_non_grouped() {
         // Non-grouped values pass through unchanged
-        let binding = Binding::lit(FlakeValue::Long(42), xsd_long());
+        let binding = Binding::lit(FlakeValue::Long(42), xsd_integer());
         let result = apply_aggregate(&AggregateFn::Sum, &binding);
         assert_eq!(result, binding);
     }
@@ -769,9 +769,9 @@ mod tests {
     #[test]
     fn test_apply_aggregate_grouped() {
         let grouped = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ]);
 
         let result = apply_aggregate(&AggregateFn::Sum, &grouped);
