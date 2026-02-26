@@ -410,7 +410,7 @@ impl ComparableValue {
                     )
                 })?;
                 ctx.snapshot
-                    .encode_iri(&iri)
+                    .encode_iri_strict(&iri)
                     .map(Binding::Sid)
                     .ok_or_else(|| {
                         QueryError::InvalidFilter(format!("Unknown IRI or namespace: {}", iri))
@@ -427,7 +427,7 @@ impl ComparableValue {
                                 .to_string(),
                         )
                     })?;
-                    let dt = ctx.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
+                    let dt = ctx.snapshot.encode_iri_strict(&dt_iri).ok_or_else(|| {
                         QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
                     })?;
                     Ok(Binding::lit(val, dt))
