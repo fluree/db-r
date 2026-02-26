@@ -49,12 +49,14 @@ Supported SPARQL features:
 - UNION patterns
 - FILTER expressions
 - BIND expressions
-- Aggregations (COUNT, SUM, AVG, MIN, MAX)
-- GROUP BY
+- Aggregations (COUNT, SUM, AVG, MIN, MAX, SAMPLE, GROUP_CONCAT) with DISTINCT modifier
+- GROUP BY (variables and expressions)
 - ORDER BY
 - LIMIT and OFFSET
 - Subqueries
 - Property paths (partial: `+`, `*`, `^`, `|`, `/`; see [SPARQL docs](../query/sparql.md#property-paths))
+
+**Aggregate result types:** COUNT and SUM of integers return `xsd:integer` (per W3C spec), not `xsd:long`. SUM of mixed types and AVG return `xsd:double`.
 
 **W3C Compliance Testing:** Fluree runs the official W3C SPARQL test suite via the `testsuite-sparql` crate. The suite automatically discovers and runs 700+ test cases from W3C manifest files. See the [compliance test guide](../contributing/sparql-compliance.md) for details.
 

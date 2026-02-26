@@ -27,14 +27,21 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
-/// Aggregate function types
+/// Aggregate function types.
+///
+/// DISTINCT handling is split: `COUNT(DISTINCT)` has a dedicated variant
+/// (`CountDistinct`) because its streaming state uses a HashSet rather than
+/// a simple counter. All other DISTINCT aggregates (SUM, AVG, etc.) use
+/// their normal variant with `AggregateSpec::distinct = true`, and dedup
+/// is applied at execution time by `apply_aggregate()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggregateFn {
     /// COUNT - count non-Unbound values of a variable
     Count,
     /// COUNT(*) - count all rows in a group (regardless of variable values)
     CountAll,
-    /// COUNT(DISTINCT) - count distinct non-Unbound values
+    /// COUNT(DISTINCT) - count distinct non-Unbound values (dedicated variant
+    /// for streaming HashSet state; `AggregateSpec::distinct` is false for this)
     CountDistinct,
     /// SUM - numeric sum
     Sum,
@@ -66,6 +73,8 @@ pub struct AggregateSpec {
     pub input_var: Option<VarId>,
     /// Output variable for the aggregate result
     pub output_var: VarId,
+    /// Whether DISTINCT was specified (e.g., SUM(DISTINCT ?x))
+    pub distinct: bool,
 }
 
 /// Aggregate operator - applies aggregate functions to grouped values
@@ -224,7 +233,7 @@ impl Operator for AggregateOperator {
                         Some(agg_idx) => {
                             // This column needs aggregation
                             let spec = &self.aggregates[agg_idx];
-                            apply_aggregate(&spec.function, input_binding)
+                            apply_aggregate(&spec.function, input_binding, spec.distinct)
                         }
                         None => {
                             // Pass through unchanged
@@ -247,7 +256,7 @@ impl Operator for AggregateOperator {
                         Some(col_idx) => (0..batch.len())
                             .map(|row_idx| {
                                 let input_binding = batch.get_by_col(row_idx, *col_idx);
-                                apply_aggregate(&spec.function, input_binding)
+                                apply_aggregate(&spec.function, input_binding, spec.distinct)
                             })
                             .collect(),
                         None => {
@@ -274,7 +283,7 @@ impl Operator for AggregateOperator {
                             });
                             sizes
                                 .iter()
-                                .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_long()))
+                                .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_integer()))
                                 .collect()
                         }
                     };
@@ -304,9 +313,19 @@ impl Operator for AggregateOperator {
 ///
 /// If the binding is `Grouped(values)`, compute the aggregate.
 /// Otherwise, pass through unchanged (shouldn't happen in normal usage).
-pub fn apply_aggregate(func: &AggregateFn, binding: &Binding) -> Binding {
+/// When `distinct` is true, deduplicates values before aggregation.
+pub fn apply_aggregate(func: &AggregateFn, binding: &Binding, distinct: bool) -> Binding {
     match binding {
-        Binding::Grouped(values) => compute_aggregate(func, values),
+        Binding::Grouped(values) => {
+            if distinct {
+                let mut seen = HashSet::with_capacity(values.len());
+                let deduped: Vec<Binding> =
+                    values.iter().filter(|b| seen.insert(*b)).cloned().collect();
+                compute_aggregate(func, &deduped)
+            } else {
+                compute_aggregate(func, values)
+            }
+        }
         // Non-grouped values pass through (e.g., group key columns)
         other => other.clone(),
     }
@@ -330,17 +349,26 @@ fn compute_aggregate(func: &AggregateFn, values: &[Binding]) -> Binding {
     }
 }
 
-/// XSD datatype SIDs for results
-fn xsd_long() -> Sid {
-    Sid::new(2, "long")
+/// XSD datatype SIDs for aggregate results.
+///
+/// Used by both `AggregateOperator` (collect path) and `GroupAggregateOperator`
+/// (streaming path). Cached via `LazyLock` to avoid per-call `Arc<str>` allocation.
+pub(crate) fn xsd_integer() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "integer"));
+    SID.clone()
 }
 
-fn xsd_double() -> Sid {
-    Sid::new(2, "double")
+pub(crate) fn xsd_double() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "double"));
+    SID.clone()
 }
 
-fn xsd_string() -> Sid {
-    Sid::new(2, "string")
+pub(crate) fn xsd_string() -> Sid {
+    use std::sync::LazyLock;
+    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "string"));
+    SID.clone()
 }
 
 /// COUNT - count non-Unbound values
@@ -349,12 +377,12 @@ fn agg_count(values: &[Binding]) -> Binding {
         .iter()
         .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned))
         .count();
-    Binding::lit(FlakeValue::Long(count as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(count as i64), xsd_integer())
 }
 
 /// COUNT(*) - count all rows (including Unbound/Poisoned)
 fn agg_count_all(values: &[Binding]) -> Binding {
-    Binding::lit(FlakeValue::Long(values.len() as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(values.len() as i64), xsd_integer())
 }
 
 /// COUNT(DISTINCT) - count distinct non-Unbound values
@@ -363,7 +391,7 @@ fn agg_count_distinct(values: &[Binding]) -> Binding {
         .iter()
         .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned))
         .collect();
-    Binding::lit(FlakeValue::Long(distinct.len() as i64), xsd_long())
+    Binding::lit(FlakeValue::Long(distinct.len() as i64), xsd_integer())
 }
 
 /// SUM - numeric sum
@@ -377,7 +405,7 @@ fn agg_sum(values: &[Binding]) -> Binding {
 
     // Return as Long if all values were Long and result is whole number
     if numbers.iter().all(|n| n.fract() == 0.0) && sum.fract() == 0.0 {
-        Binding::lit(FlakeValue::Long(sum as i64), xsd_long())
+        Binding::lit(FlakeValue::Long(sum as i64), xsd_integer())
     } else {
         Binding::lit(FlakeValue::Double(sum), xsd_double())
     }
@@ -535,11 +563,11 @@ mod tests {
     #[test]
     fn test_agg_count() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Poisoned,
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_count(&values);
@@ -551,11 +579,11 @@ mod tests {
     fn test_agg_count_all() {
         // COUNT(*) counts ALL rows, including Unbound and Poisoned
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Poisoned,
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_count_all(&values);
@@ -575,9 +603,9 @@ mod tests {
     #[test]
     fn test_agg_count_distinct() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
             Binding::Unbound,
         ];
 
@@ -589,9 +617,9 @@ mod tests {
     #[test]
     fn test_agg_sum() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
         ];
 
         let result = agg_sum(&values);
@@ -609,7 +637,7 @@ mod tests {
     #[test]
     fn test_agg_sum_mixed_types() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
             Binding::lit(FlakeValue::Double(20.5), xsd_double()),
         ];
 
@@ -621,9 +649,9 @@ mod tests {
     #[test]
     fn test_agg_avg() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
         ];
 
         let result = agg_avg(&values);
@@ -634,9 +662,9 @@ mod tests {
     #[test]
     fn test_agg_min() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
         ];
 
         let result = agg_min(&values);
@@ -647,9 +675,9 @@ mod tests {
     #[test]
     fn test_agg_max() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(30), xsd_long()),
-            Binding::lit(FlakeValue::Long(10), xsd_long()),
-            Binding::lit(FlakeValue::Long(20), xsd_long()),
+            Binding::lit(FlakeValue::Long(30), xsd_integer()),
+            Binding::lit(FlakeValue::Long(10), xsd_integer()),
+            Binding::lit(FlakeValue::Long(20), xsd_integer()),
         ];
 
         let result = agg_max(&values);
@@ -660,9 +688,9 @@ mod tests {
     #[test]
     fn test_agg_median_odd() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ];
 
         let result = agg_median(&values);
@@ -673,10 +701,10 @@ mod tests {
     #[test]
     fn test_agg_median_even() {
         let values = vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
         ];
 
         let result = agg_median(&values);
@@ -691,14 +719,14 @@ mod tests {
         // Variance: ((2-5)^2 + (4-5)^2 + (4-5)^2 + (4-5)^2 + (5-5)^2 + (5-5)^2 + (7-5)^2 + (9-5)^2) / 8
         //         = (9 + 1 + 1 + 1 + 0 + 0 + 4 + 16) / 8 = 32 / 8 = 4
         let values = vec![
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(7), xsd_long()),
-            Binding::lit(FlakeValue::Long(9), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(7), xsd_integer()),
+            Binding::lit(FlakeValue::Long(9), xsd_integer()),
         ];
 
         let result = agg_variance(&values);
@@ -710,14 +738,14 @@ mod tests {
     fn test_agg_stddev() {
         // Same values as variance test, stddev = sqrt(4) = 2
         let values = vec![
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(4), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(5), xsd_long()),
-            Binding::lit(FlakeValue::Long(7), xsd_long()),
-            Binding::lit(FlakeValue::Long(9), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(4), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(5), xsd_integer()),
+            Binding::lit(FlakeValue::Long(7), xsd_integer()),
+            Binding::lit(FlakeValue::Long(9), xsd_integer()),
         ];
 
         let result = agg_stddev(&values);
@@ -742,8 +770,8 @@ mod tests {
     fn test_agg_sample() {
         let values = vec![
             Binding::Unbound,
-            Binding::lit(FlakeValue::Long(42), xsd_long()),
-            Binding::lit(FlakeValue::Long(99), xsd_long()),
+            Binding::lit(FlakeValue::Long(42), xsd_integer()),
+            Binding::lit(FlakeValue::Long(99), xsd_integer()),
         ];
 
         let result = agg_sample(&values);
@@ -761,21 +789,37 @@ mod tests {
     #[test]
     fn test_apply_aggregate_non_grouped() {
         // Non-grouped values pass through unchanged
-        let binding = Binding::lit(FlakeValue::Long(42), xsd_long());
-        let result = apply_aggregate(&AggregateFn::Sum, &binding);
+        let binding = Binding::lit(FlakeValue::Long(42), xsd_integer());
+        let result = apply_aggregate(&AggregateFn::Sum, &binding, false);
         assert_eq!(result, binding);
     }
 
     #[test]
     fn test_apply_aggregate_grouped() {
         let grouped = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-            Binding::lit(FlakeValue::Long(3), xsd_long()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ]);
 
-        let result = apply_aggregate(&AggregateFn::Sum, &grouped);
+        let result = apply_aggregate(&AggregateFn::Sum, &grouped, false);
         let (val, _, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(6));
+    }
+
+    #[test]
+    fn test_apply_aggregate_distinct() {
+        // SUM(DISTINCT) should deduplicate before summing
+        let grouped = Binding::Grouped(vec![
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()), // duplicate
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()), // duplicate
+        ]);
+
+        let result = apply_aggregate(&AggregateFn::Sum, &grouped, true);
+        let (val, _, _) = result.as_lit().unwrap();
+        assert_eq!(*val, FlakeValue::Long(6)); // 1+2+3 = 6, not 1+2+1+3+2 = 9
     }
 }

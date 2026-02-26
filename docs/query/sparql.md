@@ -325,7 +325,7 @@ WHERE {
 
 ### GROUP BY
 
-Group results:
+Group results by variable:
 
 ```sparql
 SELECT ?category (COUNT(?product) AS ?count)
@@ -334,6 +334,20 @@ WHERE {
 }
 GROUP BY ?category
 ```
+
+**Expression-based GROUP BY:**
+
+Group by a computed expression using `(expr AS ?alias)` syntax:
+
+```sparql
+SELECT ?initial (COUNT(?name) AS ?count)
+WHERE {
+  ?person ex:name ?name .
+}
+GROUP BY (SUBSTR(?name, 1, 1) AS ?initial)
+```
+
+The expression is evaluated per row and bound to the alias variable before grouping. Any SPARQL expression is supported, including function calls, arithmetic, and type casts.
 
 ### HAVING
 
@@ -355,8 +369,23 @@ HAVING (COUNT(?product) > 10)
 - `AVG(?var)` - Average numeric values
 - `MIN(?var)` - Minimum value
 - `MAX(?var)` - Maximum value
-- `SAMPLE(?var)` - Sample value
-- `GROUP_CONCAT(?var)` - Concatenate values
+- `SAMPLE(?var)` - Arbitrary value from group
+- `GROUP_CONCAT(?var; separator=",")` - Concatenate values
+
+All aggregate functions support the `DISTINCT` modifier, which eliminates duplicate values before aggregation:
+
+```sparql
+SELECT ?category (COUNT(DISTINCT ?customer) AS ?unique_buyers)
+                 (SUM(DISTINCT ?price) AS ?unique_price_total)
+WHERE {
+  ?order ex:category ?category .
+  ?order ex:customer ?customer .
+  ?order ex:price ?price .
+}
+GROUP BY ?category
+```
+
+**Aggregate result types:** COUNT and SUM of integers return `xsd:integer`. SUM of mixed numeric types and AVG return `xsd:double`.
 
 ## Sorting and Limiting
 

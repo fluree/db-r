@@ -1463,6 +1463,7 @@ fn lower_aggregate_spec(spec: &UnresolvedAggregateSpec, vars: &mut VarRegistry) 
             function: AggregateFn::CountAll,
             input_var: None,
             output_var: vars.get_or_insert(&spec.output_var),
+            distinct: false,
         }
     } else {
         // Regular aggregate with input variable
@@ -1470,6 +1471,7 @@ fn lower_aggregate_spec(spec: &UnresolvedAggregateSpec, vars: &mut VarRegistry) 
             function: lower_aggregate_fn(&spec.function),
             input_var: Some(vars.get_or_insert(&spec.input_var)),
             output_var: vars.get_or_insert(&spec.output_var),
+            distinct: false,
         }
     }
 }

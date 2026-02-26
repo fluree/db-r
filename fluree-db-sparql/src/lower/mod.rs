@@ -167,9 +167,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     self.lower_select_expression_binds(&select_query.select, &aggregate_aliases)?;
                 patterns.extend(select_binds.pre);
 
-                // Lower solution modifiers to QueryOptions
-                let mut options =
+                // Lower solution modifiers to QueryOptions.
+                // Expression-based GROUP BY produces pre-group BINDs that must be
+                // injected into the WHERE pattern list before query building.
+                let lowered_modifiers =
                     self.lower_solution_modifiers(&select_query.modifiers, &select_query.select)?;
+                patterns.extend(lowered_modifiers.pre_group_binds);
+                let mut options = lowered_modifiers.options;
                 options.post_binds = select_binds.post;
 
                 // Build a JSON-LD-like context from SPARQL prologue prefixes so formatters can compact IRIs.
@@ -264,6 +268,10 @@ mod tests {
     }
 
     fn lower_query(sparql: &str) -> Result<ParsedQuery> {
+        lower_query_with_vars(sparql).map(|(q, _)| q)
+    }
+
+    fn lower_query_with_vars(sparql: &str) -> Result<(ParsedQuery, VarRegistry)> {
         let output = parse_sparql(sparql);
         assert!(
             output.ast.is_some(),
@@ -273,7 +281,8 @@ mod tests {
         let ast = output.ast.unwrap();
         let encoder = test_encoder();
         let mut vars = VarRegistry::new();
-        lower_sparql(&ast, &encoder, &mut vars)
+        let query = lower_sparql(&ast, &encoder, &mut vars)?;
+        Ok((query, vars))
     }
 
     // =========================================================================
@@ -493,17 +502,26 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_namespace_error() {
-        let result = lower_query(
+    fn test_unknown_namespace_produces_fallback_sid() {
+        // An unregistered namespace is benign: the IRI encodes to a fallback
+        // SID (EMPTY namespace, code 0) that won't match data in the indexes.
+        let query = lower_query(
             "PREFIX other: <http://other.example.org/>
              SELECT ?s ?name WHERE { ?s other:name ?name }",
-        );
+        )
+        .unwrap();
 
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            LowerError::UnknownNamespace { .. }
-        ));
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            if let Ref::Sid(sid) = &tp.p {
+                assert_eq!(sid.namespace_code, fluree_vocab::namespaces::EMPTY);
+                assert_eq!(sid.name.as_ref(), "http://other.example.org/name");
+            } else {
+                panic!("Expected Sid for predicate");
+            }
+        } else {
+            panic!("Expected Triple pattern");
+        }
     }
 
     #[test]
@@ -1130,16 +1148,75 @@ mod tests {
     }
 
     #[test]
-    fn test_group_by_expr_unsupported() {
-        let result = lower_query(
+    fn test_group_by_expression_desugars_to_bind() {
+        // Expression GROUP BY: `GROUP BY (?x + 1 AS ?y)` desugars to
+        // `BIND(?x + 1 AS ?y)` in patterns + `GROUP BY ?y` in options.
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?x WHERE { ?s ex:p ?x } GROUP BY (?x + 1 AS ?y)",
+        )
+        .unwrap();
+
+        // GROUP BY should contain one variable (the alias ?y)
+        assert_eq!(query.options.group_by.len(), 1);
+        let group_var = query.options.group_by[0];
+
+        // Patterns should contain a Bind for the expression, targeting the same variable
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == group_var));
+        assert!(has_bind, "expected a BIND pattern from expression GROUP BY");
+    }
+
+    #[test]
+    fn test_group_by_expression_no_alias_generates_synthetic_var() {
+        // GROUP BY (expr) without AS ?alias should generate a synthetic variable
+        let (query, vars) = lower_query_with_vars(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(?s) AS ?cnt) WHERE { ?s ex:p ?x } GROUP BY (?x + 1)",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.group_by.len(), 1);
+        let group_var = query.options.group_by[0];
+
+        // The synthetic variable name starts with ?__group_expr_
+        let var_name = vars.name(group_var);
+        assert!(
+            var_name.starts_with("?__group_expr_"),
+            "expected synthetic variable name, got: {var_name}"
         );
 
-        assert!(matches!(
-            result,
-            Err(LowerError::UnsupportedGroupByExpression { .. })
-        ));
+        // Should have a BIND pattern targeting the synthetic variable
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == group_var));
+        assert!(
+            has_bind,
+            "expected a BIND pattern for synthetic GROUP BY expression"
+        );
+    }
+
+    #[test]
+    fn test_group_by_bracketed_var_produces_no_bind() {
+        // GROUP BY (?var) should NOT produce a BIND pattern — just unwrap the parens
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type WHERE { ?s ex:type ?type } GROUP BY (?type)",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.group_by.len(), 1);
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(
+            !has_bind,
+            "bracketed variable GROUP BY should not produce a BIND"
+        );
     }
 
     #[test]
@@ -1234,6 +1311,33 @@ mod tests {
         let agg = &query.options.aggregates[0];
         assert!(matches!(agg.function, AggregateFn::CountDistinct));
         assert!(agg.input_var.is_some());
+    }
+
+    #[test]
+    fn test_distinct_flag_count_vs_sum() {
+        // COUNT(DISTINCT) uses a dedicated AggregateFn::CountDistinct variant
+        // with distinct=false (dedup is built into the variant's HashSet state).
+        // SUM(DISTINCT) keeps AggregateFn::Sum with distinct=true (dedup happens
+        // at execution time via HashSet filtering in apply_aggregate).
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(DISTINCT ?s) AS ?c) (SUM(DISTINCT ?v) AS ?t)
+             WHERE { ?s ex:val ?v }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 2);
+
+        let count_agg = &query.options.aggregates[0];
+        assert!(matches!(count_agg.function, AggregateFn::CountDistinct));
+        assert!(
+            !count_agg.distinct,
+            "CountDistinct variant should clear the distinct flag"
+        );
+
+        let sum_agg = &query.options.aggregates[1];
+        assert!(matches!(sum_agg.function, AggregateFn::Sum));
+        assert!(sum_agg.distinct, "SUM(DISTINCT) should set distinct=true");
     }
 
     #[test]
