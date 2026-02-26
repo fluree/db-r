@@ -517,6 +517,25 @@ where
             None => view,
         }
     }
+
+    /// Apply config-graph datalog defaults to a view.
+    ///
+    /// Stores resolved datalog config on the view. Enforcement happens
+    /// at query execution time, not here.
+    pub fn apply_config_datalog(&self, view: GraphDb, server_identity: Option<&str>) -> GraphDb {
+        let resolved = match &view.resolved_config {
+            Some(r) => r,
+            None => return view,
+        };
+
+        match config_resolver::merge_datalog_opts(resolved, server_identity) {
+            Some(config) => view
+                .with_datalog_enabled(config.enabled)
+                .with_query_time_rules_allowed(config.allow_query_time_rules)
+                .with_datalog_override_allowed(config.override_allowed),
+            None => view,
+        }
+    }
 }
 
 #[cfg(test)]

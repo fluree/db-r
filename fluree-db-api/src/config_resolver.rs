@@ -12,6 +12,8 @@
 //! resolve_effective_config()  — three-tier merge → ResolvedConfig
 //! merge_policy_opts()         — request-scoped policy merge
 //! merge_reasoning()           — request-scoped reasoning merge
+//! merge_shacl_opts()          — transaction-scoped SHACL merge
+//! merge_datalog_opts()        — query-scoped datalog merge
 //! ```
 //!
 //! Identity gating happens at the request boundary (not here) because
@@ -263,6 +265,64 @@ pub fn merge_reasoning(
     };
 
     Some((modes.clone(), precedence))
+}
+
+/// Transaction-time SHACL configuration from config graph.
+#[derive(Debug, Clone)]
+pub struct EffectiveShaclConfig {
+    /// Whether SHACL validation should run.
+    pub enabled: bool,
+    /// How to handle validation failures.
+    pub validation_mode: ValidationMode,
+}
+
+/// Compute effective SHACL settings from resolved config.
+///
+/// Returns `None` if no SHACL config section is present. When `None`,
+/// callers fall back to the shapes-exist heuristic (see `stage_with_config_shacl`).
+///
+/// Override control is recognized but not actively gated — there's no
+/// transaction-time SHACL override mechanism yet. When one is added
+/// (e.g., `TxnOpts.skip_shacl`), the gate goes here.
+pub fn merge_shacl_opts(
+    resolved: &ResolvedConfig,
+    _server_identity: Option<&str>,
+) -> Option<EffectiveShaclConfig> {
+    let shacl = resolved.shacl.as_ref()?;
+    Some(EffectiveShaclConfig {
+        enabled: shacl.enabled.unwrap_or(true), // present section → default enabled
+        validation_mode: shacl.validation_mode.unwrap_or(ValidationMode::Reject),
+    })
+}
+
+/// Query-time datalog configuration from config graph.
+#[derive(Debug, Clone)]
+pub struct EffectiveDatalogConfig {
+    /// Whether datalog rule execution is enabled.
+    pub enabled: bool,
+    /// Whether query-time rule injection (the `rules` JSON field) is permitted.
+    pub allow_query_time_rules: bool,
+    /// Whether the query can override these settings.
+    pub override_allowed: bool,
+}
+
+/// Compute effective datalog settings from resolved config, respecting override control.
+///
+/// The `override_allowed` flag follows the same pattern as reasoning precedence:
+/// when `true`, query-time options can override config defaults;
+/// when `false`, config settings are forced.
+pub fn merge_datalog_opts(
+    resolved: &ResolvedConfig,
+    server_identity: Option<&str>,
+) -> Option<EffectiveDatalogConfig> {
+    let datalog = resolved.datalog.as_ref()?;
+    let override_allowed = datalog.override_control.permits_override(server_identity);
+
+    Some(EffectiveDatalogConfig {
+        enabled: datalog.enabled.unwrap_or(true),
+        allow_query_time_rules: datalog.allow_query_time_rules.unwrap_or(true),
+        override_allowed,
+    })
 }
 
 // ============================================================================

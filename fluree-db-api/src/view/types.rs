@@ -154,6 +154,16 @@ pub struct GraphDb {
     /// Carried on `GraphDb` so downstream callers can apply identity gating
     /// at request time without re-reading the config graph.
     pub(crate) resolved_config: Option<ResolvedConfig>,
+
+    // ========================================================================
+    // Datalog config (from config graph, applied at query boundary)
+    // ========================================================================
+    /// Whether datalog reasoning is enabled (from config). Default: `true`.
+    pub(crate) datalog_enabled: bool,
+    /// Whether query-time rule injection is allowed (from config). Default: `true`.
+    pub(crate) query_time_rules_allowed: bool,
+    /// Whether the query can override datalog config settings. Default: `true`.
+    pub(crate) datalog_override_allowed: bool,
 }
 
 impl std::fmt::Debug for GraphDb {
@@ -212,6 +222,9 @@ impl GraphDb {
             default_context: None,
             ledger_config: None,
             resolved_config: None,
+            datalog_enabled: true,
+            query_time_rules_allowed: true,
+            datalog_override_allowed: true,
         }
     }
 
@@ -452,6 +465,45 @@ impl GraphDb {
     /// Get the resolved config for this view's graph (if any).
     pub fn resolved_config(&self) -> Option<&ResolvedConfig> {
         self.resolved_config.as_ref()
+    }
+}
+
+// ============================================================================
+// Datalog Config
+// ============================================================================
+
+impl GraphDb {
+    /// Set whether datalog reasoning is enabled for queries on this view.
+    pub fn with_datalog_enabled(mut self, enabled: bool) -> Self {
+        self.datalog_enabled = enabled;
+        self
+    }
+
+    /// Set whether query-time rule injection is allowed for this view.
+    pub fn with_query_time_rules_allowed(mut self, allowed: bool) -> Self {
+        self.query_time_rules_allowed = allowed;
+        self
+    }
+
+    /// Set whether queries can override datalog config settings.
+    pub fn with_datalog_override_allowed(mut self, allowed: bool) -> Self {
+        self.datalog_override_allowed = allowed;
+        self
+    }
+
+    /// Check if datalog reasoning is enabled (from config).
+    pub fn datalog_enabled(&self) -> bool {
+        self.datalog_enabled
+    }
+
+    /// Check if query-time rule injection is allowed (from config).
+    pub fn query_time_rules_allowed(&self) -> bool {
+        self.query_time_rules_allowed
+    }
+
+    /// Check if queries can override datalog config settings.
+    pub fn datalog_override_allowed(&self) -> bool {
+        self.datalog_override_allowed
     }
 }
 

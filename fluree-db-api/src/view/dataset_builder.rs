@@ -59,6 +59,7 @@ where
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
             let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             dataset = dataset.with_default(view);
         }
 
@@ -67,6 +68,7 @@ where
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
             let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -105,6 +107,7 @@ where
             let view = GraphDb::from_ledger_state(&ledger);
             let view = self.wrap_policy(view, opts, None).await?;
             let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             return Ok(DataSetDb::single(view).with_history_range(from_t, to_t));
         }
 
@@ -115,6 +118,7 @@ where
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
             let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             dataset = dataset.with_default(view);
         }
 
@@ -123,6 +127,7 @@ where
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
             let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)

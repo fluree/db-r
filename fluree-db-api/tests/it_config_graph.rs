@@ -868,3 +868,473 @@ async fn config_time_travel_consistent() {
         "at t=2, config should have defaultAllow=false"
     );
 }
+
+// =============================================================================
+// Test 14: SHACL config disables validation
+// =============================================================================
+
+/// When config sets `shaclDefaults.enabled = false`, SHACL violations should
+/// be ignored and the transaction should succeed.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_config_disables_validation() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-disable:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Seed a SHACL shape requiring ex:name on ex:Person
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1,
+                    "sh:datatype": {"@id": "xsd:string"}
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: Verify violation fails WITHOUT config (shapes-exist heuristic)
+    let err = fluree
+        .insert(
+            ledger.clone(),
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "without config, shapes-exist heuristic should trigger SHACL rejection: {err:?}"
+    );
+
+    // Step 3: Write config disabling SHACL
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled false .
+        }}
+    "#
+    );
+
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+    let ledger = result.ledger;
+
+    // Step 4: Same violating data should now succeed
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .expect("SHACL disabled by config — violation should be ignored");
+}
+
+// =============================================================================
+// Test 15: SHACL config warn mode
+// =============================================================================
+
+/// When config sets `validationMode = f:ValidationWarn`, SHACL violations
+/// should be logged but the transaction should still succeed.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_config_warn_mode() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-warn:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed a SHACL shape
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1,
+                    "sh:datatype": {"@id": "xsd:string"}
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Write config: SHACL enabled but in Warn mode
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+            <urn:config:shacl> f:validationMode f:ValidationWarn .
+        }}
+    "#
+    );
+
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+    let ledger = result.ledger;
+
+    // Violating data should succeed in Warn mode (logged, not rejected)
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:charlie",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .expect("SHACL warn mode — violation should be logged but transaction succeeds");
+}
+
+// =============================================================================
+// Test 16: SHACL shapes-exist heuristic (no config)
+// =============================================================================
+
+/// When no config graph exists but SHACL shapes are present in the database,
+/// the shapes-exist heuristic kicks in and SHACL validation runs (backward compat).
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_default_shapes_exist_heuristic() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-heuristic:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed SHACL shapes — no config graph at all
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1,
+                    "sh:datatype": {"@id": "xsd:string"}
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Violating data should fail — shapes exist → implicit SHACL enablement
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:alice",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "shapes-exist heuristic should trigger SHACL rejection: {err:?}"
+    );
+}
+
+// =============================================================================
+// Test 17: No shapes, no config — SHACL skips
+// =============================================================================
+
+/// When neither SHACL shapes nor config graph exist, SHACL validation is
+/// entirely skipped and any data transacts successfully.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_no_shapes_no_config_skips() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-noop:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // No shapes, no config — any data should succeed
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:anything",
+                "@type": "ex:Whatever",
+                "ex:arbitrary": "value"
+            }),
+        )
+        .await
+        .expect("no shapes + no config = SHACL has nothing to do");
+}
+
+// =============================================================================
+// Test 18: Datalog config disables reasoning (merge_datalog_opts)
+// =============================================================================
+
+/// When config sets `datalogDefaults.enabled = false` with OverrideNone,
+/// merge_datalog_opts should return enabled=false and override_allowed=false.
+#[tokio::test]
+async fn datalog_config_disables_reasoning() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/datalog-disable:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Write config: datalog disabled, no overrides permitted
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:datalogDefaults <urn:config:datalog> .
+            <urn:config:datalog> f:datalogEnabled false .
+            <urn:config:datalog> f:overrideControl f:OverrideNone .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let resolved = view.resolved_config().expect("resolved config");
+    let datalog = config_resolver::merge_datalog_opts(resolved, None)
+        .expect("datalog config should be present");
+
+    assert!(!datalog.enabled, "datalog should be disabled by config");
+    assert!(
+        !datalog.override_allowed,
+        "OverrideNone should block overrides"
+    );
+}
+
+// =============================================================================
+// Test 19: Datalog config blocks query-time rules
+// =============================================================================
+
+/// When config sets `allowQueryTimeRules = false`, merge_datalog_opts should
+/// reflect this. Combined with override_allowed=false, query-time rule
+/// injection is blocked.
+#[tokio::test]
+async fn datalog_config_blocks_query_time_rules() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/datalog-no-rules:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Write config: datalog enabled but query-time rules blocked
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:datalogDefaults <urn:config:datalog> .
+            <urn:config:datalog> f:datalogEnabled true .
+            <urn:config:datalog> f:allowQueryTimeRules false .
+            <urn:config:datalog> f:overrideControl f:OverrideNone .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let resolved = view.resolved_config().expect("resolved config");
+    let datalog = config_resolver::merge_datalog_opts(resolved, None)
+        .expect("datalog config should be present");
+
+    assert!(datalog.enabled, "datalog should remain enabled");
+    assert!(
+        !datalog.allow_query_time_rules,
+        "query-time rules should be blocked"
+    );
+    assert!(
+        !datalog.override_allowed,
+        "OverrideNone should block overrides"
+    );
+}
+
+// =============================================================================
+// Test 20: Datalog override control identity-restricted
+// =============================================================================
+
+/// When config uses IdentityRestricted override control, only the allowed
+/// identity can override datalog settings.
+#[tokio::test]
+async fn datalog_override_control_identity_restricted() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/datalog-identity:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Write config: datalog disabled with identity-restricted override
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:datalogDefaults <urn:config:datalog> .
+            <urn:config:datalog> f:datalogEnabled false .
+            <urn:config:datalog> f:overrideControl <urn:config:oc> .
+            <urn:config:oc> f:controlMode f:IdentityRestricted .
+            <urn:config:oc> f:allowedIdentities <did:key:admin> .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let resolved = view.resolved_config().expect("resolved config");
+
+    // No identity → override denied
+    let no_identity = config_resolver::merge_datalog_opts(resolved, None).expect("datalog config");
+    assert!(!no_identity.enabled, "datalog disabled by config");
+    assert!(
+        !no_identity.override_allowed,
+        "no identity → override denied"
+    );
+
+    // Admin identity → override permitted
+    let admin = config_resolver::merge_datalog_opts(resolved, Some("did:key:admin"))
+        .expect("datalog config");
+    assert!(!admin.enabled, "config still says disabled");
+    assert!(
+        admin.override_allowed,
+        "admin identity → override permitted"
+    );
+
+    // Non-admin identity → override denied
+    let other = config_resolver::merge_datalog_opts(resolved, Some("did:key:other"))
+        .expect("datalog config");
+    assert!(
+        !other.override_allowed,
+        "non-admin identity → override denied"
+    );
+}
+
+// =============================================================================
+// Test 21: merge_shacl_opts unit test
+// =============================================================================
+
+/// Verify merge_shacl_opts correctly resolves SHACL config from a written
+/// config graph, including ValidationWarn mode.
+#[tokio::test]
+async fn merge_shacl_opts_unit_test() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-merge:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Write config with SHACL in Warn mode
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+            <urn:config:shacl> f:validationMode f:ValidationWarn .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let resolved = view.resolved_config().expect("resolved config");
+    let shacl =
+        config_resolver::merge_shacl_opts(resolved, None).expect("shacl config should be present");
+
+    assert!(shacl.enabled, "SHACL should be enabled");
+    assert_eq!(
+        shacl.validation_mode,
+        fluree_db_core::ledger_config::ValidationMode::Warn,
+        "validation mode should be Warn"
+    );
+}
