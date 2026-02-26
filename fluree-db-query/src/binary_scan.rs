@@ -24,10 +24,10 @@
 //! - **Overlay merge** — translates Flake overlay ops to integer-ID space
 //!   and merges with decoded leaflet columns at query time
 
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::expression::passes_filters;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -163,30 +163,22 @@ pub struct BinaryScanOperator {
     /// strings, and lang tags that are in novelty but not yet in the persisted
     /// binary index.
     dict_overlay: Option<crate::dict_overlay::DictOverlay>,
-    /// Filter expressions to evaluate during batch processing.
-    /// Applied per-row before adding to output columns.
-    filters: Vec<crate::ir::Expression>,
+    /// Inline operators evaluated per-row during batch processing.
+    /// Applied after building triple bindings, before adding to output columns.
+    inline_ops: Vec<InlineOperator>,
 }
 
 impl BinaryScanOperator {
-    /// Check whether a row should be skipped due to inline filters.
-    fn should_skip_bindings(
-        &self,
-        bindings: &[Binding],
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> bool {
-        !passes_filters(&self.filters, &self.schema, bindings, ctx)
-    }
-
     /// Create a new BinaryScanOperator for a triple pattern.
     ///
     /// The `graph_view` provides a graph-scoped view of the binary index store.
-    /// Filters are evaluated per-row before adding bindings to output columns.
+    /// Inline operators are evaluated per-row before adding
+    /// bindings to output columns.
     pub fn new(
         pattern: TriplePattern,
         graph_view: BinaryGraphView,
         object_bounds: Option<ObjectBounds>,
-        filters: Vec<crate::ir::Expression>,
+        inline_ops: Vec<InlineOperator>,
     ) -> Self {
         let mut index = IndexType::for_query(
             pattern.s_bound(),
@@ -201,8 +193,11 @@ impl BinaryScanOperator {
             index = IndexType::Post;
         }
 
-        let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
         let p_is_var = pattern.p.is_var();
+
+        // Extend schema with new bind variables from inline operators.
+        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
 
         Self {
             pattern,
@@ -222,7 +217,7 @@ impl BinaryScanOperator {
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
             dict_overlay: None,
-            filters,
+            inline_ops,
         }
     }
 
@@ -231,9 +226,9 @@ impl BinaryScanOperator {
         pattern: TriplePattern,
         graph_view: BinaryGraphView,
         index: IndexType,
-        filters: Vec<crate::ir::Expression>,
+        inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let mut op = Self::new(pattern, graph_view, None, filters);
+        let mut op = Self::new(pattern, graph_view, None, inline_ops);
         op.index = index;
         op
     }
@@ -617,36 +612,35 @@ impl BinaryScanOperator {
         ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<usize> {
         let mut produced = 0;
+        let ncols = self.schema.len();
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
                 continue;
             }
 
-            // Build bindings into stack array (at most 3: s, p, o)
-            let mut bindings: [Binding; 3] = [Binding::Unbound, Binding::Unbound, Binding::Unbound];
-            let mut count = 0;
+            // Build triple bindings into a reusable vec (capacity = full schema
+            // including inline bind vars).
+            let mut bindings = Vec::with_capacity(ncols);
 
             if let Some(b) = self.build_subject_binding(decoded.s_ids[row])? {
-                bindings[count] = b;
-                count += 1;
+                bindings.push(b);
             }
             if let Some(b) = self.build_predicate_binding(decoded.p_ids[row]) {
-                bindings[count] = b;
-                count += 1;
+                bindings.push(b);
             }
             if let Some(b) = self.build_object_binding(decoded, row)? {
-                bindings[count] = b;
-                count += 1;
+                bindings.push(b);
             }
 
-            if self.should_skip_bindings(&bindings[..count], ctx) {
+            // Apply inline operators; may extend `bindings` or skip the row.
+            if !apply_inline(&self.inline_ops, &self.schema, &mut bindings, ctx)? {
                 continue;
             }
 
             // Push to columns
-            for i in 0..count {
-                columns[i].push(std::mem::replace(&mut bindings[i], Binding::Unbound));
+            for (i, binding) in bindings.into_iter().enumerate() {
+                columns[i].push(binding);
             }
 
             produced += 1;
@@ -1391,31 +1385,33 @@ pub struct ScanOperator {
     schema: Arc<[VarId]>,
     inner: Option<BoxedOperator>,
     state: OperatorState,
-    /// Inline filter expressions to evaluate during batch processing.
+    /// Inline operators evaluated during batch processing.
     /// Applied after building bindings, before returning the batch.
-    /// This reduces operator overhead by avoiding separate FilterOperator nodes.
-    filters: Vec<crate::ir::Expression>,
+    /// This reduces operator overhead by avoiding separate FilterOperator/BindOperator nodes.
+    inline_ops: Vec<InlineOperator>,
 }
 
 impl ScanOperator {
     /// Create a new scan operator for a triple pattern.
     ///
-    /// Schema is computed from the pattern variables. Filters are evaluated
-    /// inline during batch processing, which is more efficient than wrapping
-    /// with a separate FilterOperator.
+    /// Schema is computed from the pattern variables, extended with any bind
+    /// variables from inline operators. Inline operators are evaluated during batch
+    /// processing, which is more efficient than wrapping with separate
+    /// FilterOperator/BindOperator nodes.
     pub fn new(
         pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
-        filters: Vec<crate::ir::Expression>,
+        inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let (schema, _, _, _) = schema_from_pattern(&pattern);
+        let (base_schema, _, _, _) = schema_from_pattern(&pattern);
+        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
         Self {
             pattern,
             object_bounds,
             schema,
             inner: None,
             state: OperatorState::Created,
-            filters,
+            inline_ops,
         }
     }
 }
@@ -1513,7 +1509,7 @@ impl Operator for ScanOperator {
                 self.pattern.clone(),
                 gv,
                 self.object_bounds.clone(),
-                std::mem::take(&mut self.filters),
+                std::mem::take(&mut self.inline_ops),
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
@@ -1528,7 +1524,7 @@ impl Operator for ScanOperator {
             Box::new(RangeScanOperator::new(
                 self.pattern.clone(),
                 self.object_bounds.clone(),
-                std::mem::take(&mut self.filters),
+                std::mem::take(&mut self.inline_ops),
             ))
         };
 
@@ -1590,27 +1586,19 @@ struct RangeScanOperator {
     g_id: GraphId,
     state: OperatorState,
     batches: VecDeque<Batch>,
-    /// Inline filter expressions to evaluate during batch building.
-    filters: Vec<crate::ir::Expression>,
+    /// Inline operators evaluated during batch building.
+    inline_ops: Vec<InlineOperator>,
 }
 
 impl RangeScanOperator {
-    /// Check whether a row should be skipped due to inline filters.
-    fn should_skip_bindings(
-        &self,
-        bindings: &[Binding],
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> bool {
-        !passes_filters(&self.filters, &self.schema, bindings, ctx)
-    }
-
     fn new(
         pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
-        filters: Vec<crate::ir::Expression>,
+        inline_ops: Vec<InlineOperator>,
     ) -> Self {
         let p_is_var = pattern.p.is_var();
-        let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
 
         Self {
             pattern,
@@ -1623,7 +1611,7 @@ impl RangeScanOperator {
             g_id: 0,
             state: OperatorState::Created,
             batches: VecDeque::new(),
-            filters,
+            inline_ops,
         }
     }
 
@@ -1960,9 +1948,10 @@ impl Operator for RangeScanOperator {
                     continue;
                 }
 
-                let row = self.flake_to_row(f, ctx.history_mode);
+                let mut row = self.flake_to_row(f, ctx.history_mode);
 
-                if self.should_skip_bindings(&row, Some(ctx)) {
+                // Apply inline operators; may extend `row` or skip it.
+                if !apply_inline(&self.inline_ops, &self.schema, &mut row, Some(ctx))? {
                     continue;
                 }
 

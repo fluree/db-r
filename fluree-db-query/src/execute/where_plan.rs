@@ -10,6 +10,7 @@
 //! - And more...
 
 use crate::bind::BindOperator;
+use crate::operator::inline::InlineOperator;
 use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
@@ -358,11 +359,100 @@ fn build_property_join_block(
     Ok(operator)
 }
 
+/// Build an optimally-ordered sequence of inline operators.
+///
+/// First inlines any filters already eligible, then delegates to
+/// [`inline_chain`] to iteratively inline binds and the filters they unlock.
+/// The resulting sequence drops rows at the earliest possible point.
+///
+/// Returns (inline_operators, remaining_binds, remaining_filters) — remaining
+/// items are those whose dependencies are not yet satisfied by `available_vars`.
+fn build_inline_ops(
+    pending_binds: Vec<BindPattern>,
+    pending_filters: Vec<FilterPattern>,
+    available_vars: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<InlineOperator>, Vec<BindPattern>, Vec<FilterPattern>) {
+    let mut ops = Vec::new();
+    let mut available = available_vars.clone();
+
+    let remaining_filters =
+        inline_eligible_filters(&mut ops, pending_filters, &available, filter_idxs_consumed);
+
+    let (remaining_binds, remaining_filters) = inline_chain(
+        &mut ops,
+        pending_binds,
+        remaining_filters,
+        &mut available,
+        filter_idxs_consumed,
+    );
+
+    (ops, remaining_binds, remaining_filters)
+}
+
+/// Inline filters whose required variables are already available.
+fn inline_eligible_filters(
+    ops: &mut Vec<InlineOperator>,
+    pending_filters: Vec<FilterPattern>,
+    available: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> Vec<FilterPattern> {
+    let (ready, remaining) =
+        partition_eligible_filters(pending_filters, available, filter_idxs_consumed);
+    for expr in ready {
+        ops.push(InlineOperator::Filter(expr));
+    }
+    remaining
+}
+
+/// Iteratively inline binds and the filters they unlock.
+///
+/// Loops until no more binds can be inlined. Each eligible bind is added,
+/// then [`inline_eligible_filters`] runs to pick up any filters the new
+/// variable made eligible. Returns the binds and filters that remain.
+fn inline_chain(
+    ops: &mut Vec<InlineOperator>,
+    pending_binds: Vec<BindPattern>,
+    pending_filters: Vec<FilterPattern>,
+    available: &mut HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<BindPattern>, Vec<FilterPattern>) {
+    let mut remaining_binds = pending_binds;
+    let mut remaining_filters = pending_filters;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut still_pending = Vec::new();
+        for bind in remaining_binds {
+            if bind.required_vars.is_subset(available) {
+                available.insert(bind.var);
+                ops.push(InlineOperator::Bind {
+                    var: bind.var,
+                    expr: bind.expr,
+                });
+                changed = true;
+
+                remaining_filters = inline_eligible_filters(
+                    ops,
+                    remaining_filters,
+                    available,
+                    filter_idxs_consumed,
+                );
+            } else {
+                still_pending.push(bind);
+            }
+        }
+        remaining_binds = still_pending;
+    }
+
+    (remaining_binds, remaining_filters)
+}
+
 /// Build an operator tree for a sequential scan/join block of triples.
 ///
 /// Applies VALUES first (if any), then iterates triples building scan/join
-/// operators, inlining eligible filters into each step and applying deferred
-/// BINDs/FILTERs as their dependencies become bound.
+/// operators, inlining eligible filters and binds into each step and applying
+/// deferred BINDs/FILTERs as their dependencies become bound.
 fn build_sequential_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
@@ -388,14 +478,28 @@ fn build_sequential_join_block(
             vars_after.insert(v);
         }
 
-        let (inlined, remaining) =
-            partition_eligible_filters(pending_filters, &vars_after, filter_idxs_consumed);
-        pending_filters = remaining;
+        // Build interleaved inline operators: eligible filters first, then binds
+        // whose required vars are all available after this triple, interleaved
+        // with the filters each bind unlocks.
+        let (inline_ops, remaining_binds, remaining_filters) = build_inline_ops(
+            pending_binds,
+            pending_filters,
+            &vars_after,
+            filter_idxs_consumed,
+        );
+        pending_binds = remaining_binds;
+        pending_filters = remaining_filters;
 
-        operator = Some(build_scan_or_join(operator, tp, object_bounds, inlined));
+        operator = Some(build_scan_or_join(operator, tp, object_bounds, inline_ops));
 
+        // Update bound vars with triple vars + any bind vars from inline operators.
         for v in tp.variables() {
             bound.insert(v);
+        }
+        if let Some(op) = &operator {
+            for &v in op.schema() {
+                bound.insert(v);
+            }
         }
 
         if let Some(child) = operator.take() {
@@ -842,13 +946,13 @@ pub fn build_where_operators_seeded(
 fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-    inline_filters: Vec<Expression>,
+    inline_ops: Vec<InlineOperator>,
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     Box::new(crate::binary_scan::ScanOperator::new(
         tp.clone(),
         obj_bounds,
-        inline_filters,
+        inline_ops,
     ))
 }
 
@@ -857,20 +961,20 @@ fn make_first_scan(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline filters
+/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline operators
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 ///
-/// The `inline_filters` are evaluated inline on the operator: baked into `ScanOperator`
+/// The `inline_ops` are evaluated inline on the operator: baked into `ScanOperator`
 /// for the first scan, or evaluated per combined row in `NestedLoopJoinOperator` for joins.
 pub fn build_scan_or_join(
     left: Option<BoxedOperator>,
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-    inline_filters: Vec<Expression>,
+    inline_ops: Vec<InlineOperator>,
 ) -> BoxedOperator {
     match left {
-        None => make_first_scan(tp, object_bounds, inline_filters),
+        None => make_first_scan(tp, object_bounds, inline_ops),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
@@ -883,7 +987,7 @@ pub fn build_scan_or_join(
                 left_schema,
                 tp.clone(),
                 bounds,
-                inline_filters,
+                inline_ops,
             ))
         }
     }
