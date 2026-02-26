@@ -1917,8 +1917,8 @@ impl Operator for RangeScanOperator {
         let batch_size = ctx.batch_size;
         let ncols = self.schema.len();
 
-        if ncols == 0 {
-            // All terms bound (existence check): count matches, emit empty-schema batch.
+        if ncols == 0 && self.inline_ops.is_empty() {
+            // All terms bound, no inline operators: count matches, emit empty-schema batch.
             let match_count = if self.p_is_var && self.g_id == 0 {
                 flakes
                     .iter()
