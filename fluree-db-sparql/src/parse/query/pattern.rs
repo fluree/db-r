@@ -43,6 +43,11 @@ impl<'a> super::Parser<'a> {
         let mut current_triples: Vec<crate::ast::TriplePattern> = Vec::new();
 
         while !self.stream.check(&TokenKind::RBrace) && !self.stream.is_eof() {
+            // Safety: track position to detect sub-parsers that return None
+            // without advancing. If we make no progress, force-advance to
+            // prevent infinite loops from unhandled token types.
+            let loop_start_pos = self.stream.position();
+
             // Check for graph pattern keywords
             if self.stream.check_keyword(TokenKind::KwOptional) {
                 super::flush_current_triples(&mut current_triples, &mut patterns);
@@ -115,21 +120,8 @@ impl<'a> super::Parser<'a> {
                     } else {
                         // Subquery parse failed — skip to matching } to prevent
                         // the unparsed tokens from leaking into the outer scope.
-                        let mut depth = 1u32;
-                        while depth > 0 && !self.stream.is_eof() {
-                            match &self.stream.peek().kind {
-                                TokenKind::LBrace => depth += 1,
-                                TokenKind::RBrace => depth -= 1,
-                                _ => {}
-                            }
-                            if depth > 0 {
-                                self.stream.advance();
-                            }
-                        }
-                        // Consume the final }
-                        if self.stream.check(&TokenKind::RBrace) {
-                            self.stream.advance();
-                        }
+                        self.stream
+                            .skip_balanced(&TokenKind::LBrace, &TokenKind::RBrace);
                     }
                 } else if let Some(inner) = self.parse_group_graph_pattern() {
                     // Check for UNION after the group
@@ -168,6 +160,15 @@ impl<'a> super::Parser<'a> {
                 // Unknown token
                 self.stream
                     .error_at_current("unexpected token in graph pattern");
+                self.stream.advance();
+            }
+
+            // Safety net: if no branch consumed any tokens, force-advance to prevent
+            // infinite loops. This catches cases where a sub-parser returns None
+            // without advancing (e.g., an unhandled token type in parse_subject).
+            if self.stream.position() == loop_start_pos {
+                self.stream
+                    .error_at_current("parser failed to make progress — skipping token");
                 self.stream.advance();
             }
         }

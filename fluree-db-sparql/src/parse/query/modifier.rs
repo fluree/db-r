@@ -313,14 +313,7 @@ impl<'a> super::Parser<'a> {
         if !self.stream.match_token(&TokenKind::LParen) {
             return;
         }
-        let mut depth = 1;
-        while depth > 0 && !self.stream.is_eof() {
-            match &self.stream.peek().kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => depth -= 1,
-                _ => {}
-            }
-            self.stream.advance();
-        }
+        self.stream
+            .skip_balanced(&TokenKind::LParen, &TokenKind::RParen);
     }
 }

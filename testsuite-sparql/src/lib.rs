@@ -2,6 +2,7 @@ pub mod evaluator;
 pub mod files;
 pub mod manifest;
 pub mod query_handler;
+pub mod rdfxml;
 pub mod report;
 pub mod result_comparison;
 pub mod result_format;
