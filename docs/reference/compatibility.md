@@ -49,8 +49,8 @@ Supported SPARQL features:
 - UNION patterns
 - FILTER expressions
 - BIND expressions
-- Aggregations (COUNT, SUM, AVG, MIN, MAX)
-- GROUP BY
+- Aggregations (COUNT, SUM, AVG, MIN, MAX, SAMPLE, GROUP_CONCAT) with DISTINCT modifier
+- GROUP BY (variables and expressions)
 - ORDER BY
 - LIMIT and OFFSET
 - Subqueries

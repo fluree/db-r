@@ -1157,9 +1157,10 @@ mod tests {
         let group_var = query.options.group_by[0];
 
         // Patterns should contain a Bind for the expression, targeting the same variable
-        let has_bind = query.patterns.iter().any(|p| {
-            matches!(p, Pattern::Bind { var, .. } if *var == group_var)
-        });
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == group_var));
         assert!(has_bind, "expected a BIND pattern from expression GROUP BY");
     }
 

@@ -250,10 +250,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// - `GROUP BY (?x)` → `(var_id, None)` (unwrap brackets)
     /// - `GROUP BY (expr AS ?alias)` → `(alias_id, Some(Pattern::Bind { alias_id, lowered_expr }))`
     /// - `GROUP BY (expr)` (no alias) → synthetic variable `?__group_expr_N`
-    fn lower_group_condition(
-        &mut self,
-        cond: &GroupCondition,
-    ) -> Result<(VarId, Option<Pattern>)> {
+    fn lower_group_condition(&mut self, cond: &GroupCondition) -> Result<(VarId, Option<Pattern>)> {
         match cond {
             GroupCondition::Var(var) => Ok((self.register_var(var), None)),
             GroupCondition::Expr { expr, alias, .. } => {
@@ -267,11 +264,16 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                             self.register_var(alias_var)
                         } else {
                             // No alias — generate a synthetic variable
-                            let name =
-                                format!("?__group_expr_{}", self.vars.len());
+                            let name = format!("?__group_expr_{}", self.vars.len());
                             self.vars.get_or_insert(&name)
                         };
-                        Ok((var_id, Some(Pattern::Bind { var: var_id, expr: lowered })))
+                        Ok((
+                            var_id,
+                            Some(Pattern::Bind {
+                                var: var_id,
+                                expr: lowered,
+                            }),
+                        ))
                     }
                 }
             }

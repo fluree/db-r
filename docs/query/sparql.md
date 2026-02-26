@@ -325,7 +325,7 @@ WHERE {
 
 ### GROUP BY
 
-Group results:
+Group results by variable:
 
 ```sparql
 SELECT ?category (COUNT(?product) AS ?count)
@@ -334,6 +334,20 @@ WHERE {
 }
 GROUP BY ?category
 ```
+
+**Expression-based GROUP BY:**
+
+Group by a computed expression using `(expr AS ?alias)` syntax:
+
+```sparql
+SELECT ?initial (COUNT(?name) AS ?count)
+WHERE {
+  ?person ex:name ?name .
+}
+GROUP BY (SUBSTR(?name, 1, 1) AS ?initial)
+```
+
+The expression is evaluated per row and bound to the alias variable before grouping. Any SPARQL expression is supported, including function calls, arithmetic, and type casts.
 
 ### HAVING
 

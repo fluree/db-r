@@ -542,8 +542,8 @@ impl GroupAggregateOperator {
                     | AggregateFn::Max
             );
             // DISTINCT SUM/AVG need to collect all values for dedup — not streamable
-            let distinct_blocks = spec.distinct
-                && matches!(spec.function, AggregateFn::Sum | AggregateFn::Avg);
+            let distinct_blocks =
+                spec.distinct && matches!(spec.function, AggregateFn::Sum | AggregateFn::Avg);
             is_streamable_fn && !distinct_blocks
         })
     }
