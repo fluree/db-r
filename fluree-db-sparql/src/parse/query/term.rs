@@ -73,6 +73,15 @@ impl<'a> super::Parser<'a> {
             return self.parse_quoted_triple().map(SubjectTerm::QuotedTriple);
         }
 
+        // RDF collection (list) syntax: ( item1 item2 ... ) or ()
+        // Not yet implemented — skip and emit error so the parser doesn't infinite-loop.
+        if self.stream.check(&TokenKind::LParen) || self.stream.check(&TokenKind::Nil) {
+            self.stream
+                .error_at_current("RDF collection (list) syntax is not yet supported");
+            self.skip_collection();
+            return None;
+        }
+
         None
     }
 
@@ -195,6 +204,15 @@ impl<'a> super::Parser<'a> {
         // Blank node
         if let Some(bnode) = self.parse_blank_node() {
             return Some(Term::BlankNode(bnode));
+        }
+
+        // RDF collection (list) syntax: ( item1 item2 ... ) or ()
+        // Not yet implemented — skip and emit error so the parser doesn't infinite-loop.
+        if self.stream.check(&TokenKind::LParen) || self.stream.check(&TokenKind::Nil) {
+            self.stream
+                .error_at_current("RDF collection (list) syntax is not yet supported");
+            self.skip_collection();
+            return None;
         }
 
         self.stream.error_at_current("expected object");
@@ -329,6 +347,25 @@ impl<'a> super::Parser<'a> {
         }
 
         None
+    }
+
+    /// Skip an RDF collection (list) in the token stream.
+    ///
+    /// Handles both `Nil` (empty list `()`) and `LParen ... RParen` (non-empty list).
+    /// Used for error recovery when encountering unsupported collection syntax.
+    fn skip_collection(&mut self) {
+        if self.stream.match_token(&TokenKind::Nil) {
+            return;
+        }
+        debug_assert!(
+            self.stream.check(&TokenKind::LParen),
+            "skip_collection called on non-collection token: {:?}",
+            self.stream.peek().kind
+        );
+        if self.stream.match_token(&TokenKind::LParen) {
+            self.stream
+                .skip_balanced(&TokenKind::LParen, &TokenKind::RParen);
+        }
     }
 
     /// Check if current token can start a verb (predicate or path).

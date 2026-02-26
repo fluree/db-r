@@ -154,20 +154,7 @@ impl<'a> super::Parser<'a> {
 
     /// Skip tokens until we find a closing paren at depth 0.
     pub(super) fn skip_to_closing_paren(&mut self) {
-        let mut depth = 1;
-        while depth > 0 && !self.stream.is_eof() {
-            match &self.stream.peek().kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.stream.advance(); // consume the closing paren
-                        return;
-                    }
-                }
-                _ => {}
-            }
-            self.stream.advance();
-        }
+        self.stream
+            .skip_balanced(&TokenKind::LParen, &TokenKind::RParen);
     }
 }

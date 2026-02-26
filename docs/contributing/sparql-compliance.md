@@ -110,7 +110,7 @@ For syntax tests, failures fall into three categories:
 | ----------------------- | ----------------------------- | ------------------------------------------------------- |
 | **Positive test fails** | Parser rejects valid SPARQL   | Missing feature (subqueries, property path `\|`)        |
 | **Negative test fails** | Parser accepts invalid SPARQL | Missing validation (BIND scope, GROUP BY scope)         |
-| **Parser timeout**      | Parser enters infinite loop   | Bug in grammar handling (collections, BIND expressions) |
+| **Parser timeout**      | Parser enters infinite loop   | Bug in grammar handling (mitigated by safety-net forward-progress check) |
 
 ### Test IDs
 
@@ -134,7 +134,7 @@ cargo test -p testsuite-sparql sparql11_syntax_query_tests -- --nocapture 2>&1 |
 
 Determine which category:
 
-- **Parser timeout** → Bug in `fluree-db-sparql` grammar rules causing infinite loop
+- **Parser timeout** → Bug in `fluree-db-sparql` grammar rules causing infinite loop (mitigated by safety-net forward-progress check in `parse_group_graph_pattern()`, but can still occur in other parse entry points)
 - **Positive syntax rejected** → Missing parser feature or incorrect grammar
 - **Negative syntax accepted** → Missing semantic validation pass
 - **Query evaluation mismatch** → Bug in query engine, data loading, or result formatting
