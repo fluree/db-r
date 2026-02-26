@@ -4,15 +4,17 @@
 //! (GraphDb, GraphDbRef, HistoricalLedgerView, etc.) can resolve graph
 //! IRIs without depending on a binary index.
 //!
-//! ## System graph ID layout (format invariant)
+//! ## System graph ID layout
 //!
 //! - GraphId 0 = default graph (implicit, never stored in registry)
 //! - GraphId 1 = txn-meta graph (`urn:fluree:{ledger_id}#txn-meta`)
 //! - GraphId 2 = config graph (`urn:fluree:{ledger_id}#config`)
 //! - GraphId 3+ = user-defined named graphs
 //!
-//! This layout must hold across all encode/decode paths (index root,
-//! commit envelopes, binary index dictionaries, etc.).
+//! **New ledgers** (via [`new_for_ledger`]) always seed both g_id=1 and
+//! g_id=2. **Existing roots** decoded via [`seed_from_root_iris`] are
+//! accepted permissively — a legacy root with only txn-meta is valid.
+//! User-defined graphs always start at g_id >= 3.
 //!
 //! ## Other invariants
 //!
@@ -123,14 +125,17 @@ impl GraphRegistry {
     /// Populate from index root graph IRIs.
     ///
     /// Accepts the raw root format: a list of IRIs where **index 0 = g_id 1**
-    /// (txn-meta), **index 1 = g_id 2** (first user graph), etc. This matches
-    /// the encoding in `IndexRootV5.graph_iris` and the IRB1 binary root.
+    /// (txn-meta), **index 1 = g_id 2** (config), **index 2 = g_id 3**
+    /// (first user graph), etc. This matches the encoding in
+    /// `IndexRootV5.graph_iris` and the IRB1 binary root.
     ///
     /// The method builds the internal padded representation:
     /// `[None, Some(iris[0]), Some(iris[1]), ...]`
     ///
-    /// The IRI at iris[0] is trusted as the txn-meta IRI (no validation
-    /// against a specific constant — the root is authoritative).
+    /// Legacy roots may contain only a txn-meta IRI (no config graph).
+    /// The method accepts any non-empty list — it does not enforce the
+    /// system graph layout. The config graph will be seeded on first
+    /// write if absent.
     ///
     /// # Errors
     ///
@@ -262,7 +267,7 @@ impl GraphRegistry {
         let mut assigned = Vec::with_capacity(new_iris.len());
         for arc in new_iris {
             let g_id = self.next_id;
-            debug_assert!(
+            assert!(
                 g_id >= FIRST_USER_GRAPH_ID,
                 "apply_delta must never assign system graph IDs (0, 1, or 2)"
             );
