@@ -486,7 +486,11 @@ impl LedgerSnapshot {
 
     /// Encode an IRI to a SID using this db's namespace codes.
     ///
-    /// Returns None if the namespace is not registered.
+    /// If no registered namespace prefix matches the IRI, falls back to the
+    /// EMPTY namespace (code 0), storing the full IRI as the local name.
+    /// This matches the transaction layer's behavior for bare-string
+    /// identifiers and ensures queries return empty results (rather than
+    /// erroring) for truly unknown IRIs.
     pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
         let mut best_match: Option<(u16, usize)> = None;
 
@@ -496,9 +500,16 @@ impl LedgerSnapshot {
             }
         }
 
-        best_match.map(|(code, prefix_len)| {
-            let name = &iri[prefix_len..];
-            Sid::new(code, name)
+        Some(match best_match {
+            Some((code, prefix_len)) => {
+                let name = &iri[prefix_len..];
+                Sid::new(code, name)
+            }
+            // EMPTY namespace (code 0) is the universal fallback.
+            // The longest-prefix loop can't select it (0 > 0 is false), so we
+            // handle it explicitly here. No persisted data uses this code, so
+            // queries naturally produce empty results for unknown IRIs.
+            None => Sid::new(fluree_vocab::namespaces::EMPTY, iri),
         })
     }
 

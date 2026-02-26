@@ -493,17 +493,26 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_namespace_error() {
-        let result = lower_query(
+    fn test_unknown_namespace_produces_fallback_sid() {
+        // An unregistered namespace is benign: the IRI encodes to a fallback
+        // SID (EMPTY namespace, code 0) that won't match data in the indexes.
+        let query = lower_query(
             "PREFIX other: <http://other.example.org/>
              SELECT ?s ?name WHERE { ?s other:name ?name }",
-        );
+        )
+        .unwrap();
 
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            LowerError::UnknownNamespace { .. }
-        ));
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            if let Ref::Sid(sid) = &tp.p {
+                assert_eq!(sid.namespace_code, fluree_vocab::namespaces::EMPTY);
+                assert_eq!(sid.name.as_ref(), "http://other.example.org/name");
+            } else {
+                panic!("Expected Sid for predicate");
+            }
+        } else {
+            panic!("Expected Triple pattern");
+        }
     }
 
     #[test]
