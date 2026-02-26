@@ -530,7 +530,7 @@ mod tests {
         let path = dir.path().join("stable.ttl");
 
         let mem = make_test_memory();
-        write_memory_file(&path, &[mem.clone()], REPO_HEADER).unwrap();
+        write_memory_file(&path, std::slice::from_ref(&mem), REPO_HEADER).unwrap();
 
         let mtime1 = fs::metadata(&path).unwrap().modified().unwrap();
         // Small delay to ensure mtime would differ
