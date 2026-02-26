@@ -94,7 +94,7 @@ pub struct MemoryRecallRequest {
     pub query: String,
 
     /// Maximum number of results
-    #[schemars(description = "Maximum number of memories to return (default: 10)")]
+    #[schemars(description = "Maximum number of memories to return (default: 3)")]
     pub limit: Option<usize>,
 
     /// Skip the first N results (for pagination)

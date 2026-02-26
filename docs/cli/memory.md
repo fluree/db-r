@@ -33,16 +33,49 @@ See [Developer memory layer](../design/memory-layer.md) for the full design.
 
 ## fluree memory init
 
-Create the `__memory` ledger and transact the memory schema. Idempotent — safe to run multiple times.
+Initialize the memory store and optionally configure MCP for detected AI coding tools. Idempotent — safe to run multiple times.
 
 ```bash
-fluree memory init
+fluree memory init [OPTIONS]
 ```
 
-Output:
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--yes, -y` | Auto-confirm all MCP installations (non-interactive) |
+| `--no-mcp` | Skip AI tool detection and MCP configuration entirely |
+
+### What init does
+
+1. **Creates the `__memory` ledger** and transacts the memory schema.
+2. **Creates `.fluree-memory/`** at the project root with `repo.ttl`, `.gitignore`, and `.local/user.ttl`.
+3. **Migrates existing memories** — if the ledger already has memories (e.g., from a pre-TTL version), they are exported to the appropriate `.ttl` files.
+4. **Detects AI coding tools** (Claude Code, Cursor, VS Code, Windsurf, Zed) and offers to install MCP config for each.
+
+### Example
+
+```bash
+$ fluree memory init
+
+Memory store initialized at /path/to/project/.fluree-memory
+
+Repo memories are stored in .fluree-memory/repo.ttl (git-tracked).
+Commit this directory to share project knowledge with your team.
+
+Detected AI coding tools:
+  - Claude Code (already configured)
+  - Cursor
+  - VS Code (Copilot) (already configured)
+
+Install MCP config for Cursor? [Y/n] Y
+  Installed: .cursor/mcp.json
+  Installed: .cursor/rules/fluree_rules.md
+
+Configured 1 tool.
 ```
-Memory store initialized.
-```
+
+With `--yes`: auto-confirms all installations without prompting. In a non-interactive shell (piped stdin) without `--yes`, MCP installation is skipped with a message.
 
 ## fluree memory add
 
@@ -293,9 +326,21 @@ fluree memory mcp-install [--ide <IDE>]
 
 | Option | Description |
 |--------|-------------|
-| `--ide <IDE>` | Target IDE: `claude-code`, `claude-vscode`, `cursor` (auto-detected if omitted) |
+| `--ide <IDE>` | Target IDE (auto-detected if omitted) |
 
-Auto-detection checks for `.cursor/` then `.vscode/` directories; defaults to `claude-code`.
+Supported IDE values:
+
+| Value | Config written | Notes |
+|-------|----------------|-------|
+| `claude-code` | `claude mcp add` (local scope → `~/.claude.json`) | Also appends to `CLAUDE.md` |
+| `vscode` | `.vscode/mcp.json` (key: `servers`) | Also installs `.vscode/fluree_rules.md` |
+| `cursor` | `.cursor/mcp.json` (key: `mcpServers`) | Also installs `.cursor/rules/fluree_rules.md` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` (global) | — |
+| `zed` | `.zed/settings.json` (key: `context_servers`) | Skips if JSONC (comments) detected |
+
+Legacy aliases: `claude-vscode` and `github-copilot` map to `vscode`.
+
+When `--ide` is omitted, the first unconfigured detected tool is used; defaults to `claude-code` if none detected.
 
 ### Example
 
@@ -305,9 +350,39 @@ fluree memory mcp-install --ide cursor
 
 Output:
 ```
-Installed MCP config: .cursor/mcp.json
-Installed agent rules: .cursor/rules/fluree_rules.md
+  Installed: .cursor/mcp.json
+  Installed: .cursor/rules/fluree_rules.md
 ```
+
+### Cursor notes (recommended config)
+
+Cursor’s MCP configuration supports stdio servers with a `type` field and config interpolation like `${workspaceFolder}`. A portable repo-scoped setup looks like:
+
+```json
+{
+  "mcpServers": {
+    "fluree-memory": {
+      "type": "stdio",
+      "command": "fluree",
+      "args": ["mcp", "serve", "--transport", "stdio"],
+      "env": {
+        "FLUREE_HOME": "${workspaceFolder}/.fluree"
+      }
+    }
+  }
+}
+```
+
+Setting `FLUREE_HOME` ensures the MCP server uses the current workspace’s `.fluree/` directory even if Cursor spawns the process from a different working directory. That keeps repo memory/logs under `<repo>/.fluree-memory/` instead of a global location.
+
+### Troubleshooting: repo vs global memory
+
+- **Repo-scoped expected**:
+  - Memories: `<repo>/.fluree-memory/repo.ttl`
+  - MCP log: `<repo>/.fluree-memory/.local/mcp.log` (should show `client initialized` after a full Cursor restart)
+- **If it’s using global dirs on macOS**:
+  - Memories/log: `~/Library/Application Support/.fluree-memory/...`
+  - Fix: ensure your Cursor config sets `env.FLUREE_HOME = "${workspaceFolder}/.fluree"` and restart Cursor fully.
 
 ## See Also
 
