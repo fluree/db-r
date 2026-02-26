@@ -2395,10 +2395,12 @@ dependencies = [
  "clap_complete",
  "colored",
  "comfy-table",
+ "dirs 5.0.1",
  "fluree-db-api",
  "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-credential",
+ "fluree-db-memory",
  "fluree-db-nameservice",
  "fluree-db-nameservice-sync",
  "fluree-db-novelty",
@@ -2417,6 +2419,7 @@ dependencies = [
  "predicates",
  "rand 0.8.5",
  "reqwest",
+ "rmcp",
  "serde",
  "serde_json",
  "sha2",
@@ -2595,6 +2598,29 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "fluree-db-memory"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fluree-db-api",
+ "fluree-db-core",
+ "fluree-db-nameservice",
+ "fluree-graph-turtle",
+ "fs2",
+ "regex",
+ "rmcp",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "ulid",
 ]
 
 [[package]]
@@ -3105,6 +3131,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

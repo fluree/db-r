@@ -215,6 +215,19 @@ fn is_vector_search_pattern(
             || map_get_by_iri(map, search_iris::DISTANCE_METRIC, context).is_some())
 }
 
+/// Check if a node-map is a bare subject variable: `{"@id": "?s"}` with no other properties.
+/// Used to detect "select all subjects" queries that need a full-scan pattern.
+fn is_bare_subject_variable(
+    map: &serde_json::Map<String, JsonValue>,
+    context: &ParsedContext,
+) -> bool {
+    if map.len() != 1 {
+        return false;
+    }
+    let id_val = map.get("@id").or_else(|| map.get(context.id_key.as_str()));
+    matches!(id_val, Some(v) if v.as_str().is_some_and(is_variable))
+}
+
 /// Parse an index search pattern from a node-map.
 ///
 /// Index search pattern syntax (with `"f": "https://ns.flur.ee/db#"` in `@context`):
@@ -500,6 +513,24 @@ pub fn parse_node_map(
     // Check for BM25 index search pattern (has f:graphSource + f:searchText)
     if is_index_search_pattern(map, context) {
         return parse_index_search_pattern(map, context, query);
+    }
+
+    // Bare subject variable: {"@id": "?s"} with no other properties.
+    // Emit a full-scan triple (?s ?p ?o) so the subject variable is bound.
+    // This handles the "select all subjects" query: {"where": {"@id": "?s"}}.
+    // TODO: ideally this would use a subject-only scan pattern to avoid binding
+    // the unused ?p/?o variables; that requires a new pattern type.
+    if is_bare_subject_variable(map, context) {
+        let id_val = map
+            .get("@id")
+            .or_else(|| map.get(context.id_key.as_str()))
+            .expect("bare subject checked by is_bare_subject_variable");
+        let subject = parse_subject(id_val, context)?;
+        let p_var = UnresolvedTerm::var(format!("?__p{}", *nested_counter));
+        let o_var = UnresolvedTerm::var(format!("?__o{}", *nested_counter));
+        *nested_counter += 1;
+        query.add_pattern(UnresolvedTriplePattern::new(subject, p_var, o_var));
+        return Ok(());
     }
 
     // Determine subject: explicit @id (or aliased @id) or generated unique variable

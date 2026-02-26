@@ -8,8 +8,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
-use crate::expression::passes_filters;
-use crate::ir::Expression;
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -171,25 +170,15 @@ pub struct NestedLoopJoinOperator {
     ///
     /// This prevents storing/cloning the same `current_left_batch` repeatedly.
     current_left_batch_stored_idx: Option<usize>,
-    /// Inline filter expressions evaluated on combined rows during the join.
+    /// Inline operators evaluated on combined rows during the join.
     ///
-    /// These filters have all required variables bound by the combined (left + right)
+    /// These have all required variables bound by the combined (left + right)
     /// schema, so they can be evaluated immediately on each combined row rather than
-    /// requiring a separate FilterOperator wrapper. This eliminates per-batch allocation
-    /// overhead for filters whose last required variable is bound by this join.
-    filters: Vec<Expression>,
+    /// requiring separate Operator wrappers.
+    inline_ops: Vec<InlineOperator>,
 }
 
 impl NestedLoopJoinOperator {
-    /// Check whether a combined row should be skipped due to inline filters.
-    fn should_skip_bindings(
-        &self,
-        bindings: &[Binding],
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> bool {
-        !passes_filters(&self.filters, &self.combined_schema, bindings, ctx)
-    }
-
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -198,13 +187,13 @@ impl NestedLoopJoinOperator {
     /// * `left_schema` - Schema of the left operator
     /// * `right_pattern` - Pattern to execute for each left row
     /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
-    /// * `filters` - Inline filter expressions evaluated on combined rows during the join
+    /// * `inline_ops` - Inline operators evaluated on combined rows
     pub fn new(
         left: Box<dyn Operator>,
         left_schema: Arc<[VarId]>,
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
-        filters: Vec<Expression>,
+        inline_ops: Vec<InlineOperator>,
     ) -> Self {
         // Build bind instructions: which left columns bind which right pattern positions
         let mut bind_instructions = Vec::new();
@@ -251,10 +240,10 @@ impl NestedLoopJoinOperator {
             .filter(|v| !left_var_positions.contains_key(v))
             .collect();
 
-        // Build combined schema: left schema + new right vars
+        // Build combined schema: left schema + new right vars + inline bind vars
         let mut combined = left_schema.to_vec();
         combined.extend(right_output_vars.iter().copied());
-        let combined_schema: Arc<[VarId]> = Arc::from(combined.into_boxed_slice());
+        let combined_schema: Arc<[VarId]> = extend_schema(&combined, &inline_ops).into();
 
         // Build unify instructions for shared vars
         //
@@ -345,7 +334,7 @@ impl NestedLoopJoinOperator {
             stored_left_batches: Vec::new(),
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
-            filters,
+            inline_ops,
         }
     }
 
@@ -816,10 +805,16 @@ impl NestedLoopJoinOperator {
                 // Unification check: shared vars must match
                 if self.unify_check(left_batch, left_row, right_batch, right_row) {
                     // Combine and add to output
-                    let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
+                    let mut combined =
+                        self.combine_rows(left_batch, left_row, right_batch, right_row);
 
-                    // Inline filter evaluation on the combined row
-                    if self.should_skip_bindings(&combined, Some(ctx)) {
+                    // Inline operators on the combined row
+                    if !apply_inline(
+                        &self.inline_ops,
+                        &self.combined_schema,
+                        &mut combined,
+                        Some(ctx),
+                    )? {
                         right_row += 1;
                         continue;
                     }
@@ -1374,8 +1369,13 @@ impl NestedLoopJoinOperator {
                                 combined.push(obj_binding.clone());
                             }
 
-                            // Inline filter evaluation before scatter
-                            if self.should_skip_bindings(&combined, Some(ctx)) {
+                            // Inline operators before scatter
+                            if !apply_inline(
+                                &self.inline_ops,
+                                &self.combined_schema,
+                                &mut combined,
+                                Some(ctx),
+                            )? {
                                 continue;
                             }
 
