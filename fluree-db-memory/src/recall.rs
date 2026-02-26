@@ -273,7 +273,8 @@ mod tests {
         let memories = vec![mem];
         let bm25_hits = vec![("mem:a".to_string(), 1.0)];
 
-        let results = RecallEngine::rerank("fact", &bm25_hits, &memories, Some("feature/memory"));
+        let results =
+            RecallEngine::rerank("some query", &bm25_hits, &memories, Some("feature/memory"));
         assert_eq!(results[0].score, 1.0 + 3.0 + 2.0); // bm25 + branch + recency
     }
 }
