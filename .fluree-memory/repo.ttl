@@ -1,0 +1,281 @@
+# Fluree Memory — repo-scoped
+# Auto-managed by `fluree memory`. Manual edits are supported.
+@prefix mem: <https://ns.flur.ee/memory#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+mem:constraint-01kj8k4mfr2w5h0k2w67w07nz8 a mem:Constraint ;
+    mem:content "Important patterns and gotchas:\n- Binary index PSOT range queries may return a SUPERSET of matching flakes — post-filtering by subject/predicate is required (see datalog_rules.rs fix)\n- `spawn_blocking` + `handle.block_on()` pattern in indexer for non-Send types across await points\n- `max_t` tracking in index_build.rs must happen BEFORE retraction skip (op=0) — otherwise retraction-only commits don't update max_t, causing waiter deadlocks" ;
+    mem:tag "deadlock" ;
+    mem:tag "gotchas" ;
+    mem:tag "max-t" ;
+    mem:tag "patterns" ;
+    mem:tag "post-filtering" ;
+    mem:tag "psot" ;
+    mem:tag "range-queries" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "must" ;
+    mem:artifactRef "fluree-db-indexer/src/index_build.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:40.056044+00:00"^^xsd:dateTime .
+
+mem:fact-01kj8gagwrzqmgfay2nw8y7aqb a mem:Fact ;
+    mem:content "CI/CD validation commands (must all pass before PR):\n- Format: `cargo fmt --all -- --check`\n- Clippy: `cargo clippy --all --all-features --all-targets -- -D warnings`\n- Tests: `cargo nextest run --workspace --all-features --no-fail-fast`\n\nScoped commands for during development:\n- Single crate check: `cargo check -p <crate>` or `cargo check -p <crate> --all-features`\n- Full workspace check: `cargo check --workspace --all-features --all-targets`\n- Single crate clippy: `cargo clippy -p <crate> --all-features -- -D warnings`\n- Single crate test: `cargo test -p <crate> --all-features`" ;
+    mem:tag "build" ;
+    mem:tag "cd" ;
+    mem:tag "ci" ;
+    mem:tag "clippy" ;
+    mem:tag "fmt" ;
+    mem:tag "nextest" ;
+    mem:tag "testing" ;
+    mem:tag "validation" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "CLAUDE.md" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T18:59:27.256465+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kj8k4e2c8qztn5d52w6z1p3z a mem:Fact ;
+    mem:content "Key architecture structs and renames:\n- `LedgerSnapshot` in fluree-db-core/src/db.rs (renamed from `Db`) — immutable index snapshot at a point in time\n- `GraphDb` in fluree-db-api/src/view/types.rs (renamed from `FlureeView`) — queryable database value with overlay, policy, reasoning\n- `BinaryGraphView` in fluree-db-binary-index (moved from indexer) — graph-scoped binary index handle\n- `DataSetDb` (renamed from `FlureeDataSetView`) — multi-graph dataset\n- `CachedLedgerState` (renamed from `LedgerSnapshot` in ledger_manager.rs) — cached ledger state\n- `RangeProvider` trait — delegated range queries (binary index), g_id passed per-call\n- `BinaryRangeProvider` wraps `BinaryIndexStore` for PSOT/SPOT/etc queries (no embedded g_id)\n- `range_with_overlay()` in fluree-db-core/src/range.rs — main range query function (takes g_id param)\n- `BackgroundIndexerWorker` with `IndexCompletion` oneshot waiters for async indexing\n- Factory methods: `fluree.db()`, `fluree.db_at_t()`, `fluree.db_at()`, `fluree.db_with_policy()`\n- Dead code deleted: fluree-db-query/src/graph_view.rs (entire module), `*_for_view()` methods in enforcer" ;
+    mem:tag "architecture" ;
+    mem:tag "graph-db" ;
+    mem:tag "ledger-snapshot" ;
+    mem:tag "range-provider" ;
+    mem:tag "renames" ;
+    mem:tag "structs" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/view/types.rs" ;
+    mem:artifactRef "fluree-db-core/src/db.rs" ;
+    mem:artifactRef "fluree-db-core/src/range.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:33.484178+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k4gvpbtb4njvzqt6tdz1g a mem:Fact ;
+    mem:content "Index pipeline:\n- `build_binary_index()` in fluree-db-indexer/src/lib.rs — direct entry point (takes NsRecord, always builds)\n- `build_index_for_ledger()` — wraps above with nameservice lookup + early-return if current\n- `reindex()` in fluree-db-api/src/admin.rs uses `build_binary_index` for forced rebuilds\n- Old B-tree pipeline fully removed (BatchedRebuild, checkpoints, ReindexProgress, etc.)" ;
+    mem:tag "binary-index" ;
+    mem:tag "index-pipeline" ;
+    mem:tag "indexer" ;
+    mem:tag "reindex" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/admin.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/lib.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:36.342399+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k4q4rysa5ba61nxjngzmw a mem:Fact ;
+    mem:content "Commit format (commit-v2):\n- `CommitV2Header` fields: version, flags, t, op_count, envelope_len, sig_block_len\n- `CommitV2Envelope` fields include txn_signature (Option&lt;TxnSignature&gt;)\n- `Commit` struct has `txn_signature: None, commit_signatures: Vec::new()` for test construction\n- Magic bytes: `FCV2` (binary commit-v2 only; legacy JSON path fully removed)" ;
+    mem:tag "FCV2" ;
+    mem:tag "binary-format" ;
+    mem:tag "commit-format" ;
+    mem:tag "commit-v2" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:42.776648+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k4v897jghnsy7dtjpg475 a mem:Fact ;
+    mem:content "OPST index changes:\n- OPST now stores ALL object types (not just refs) — changed in run_writer.rs, leaflet.rs, binary_index_store.rs\n- Leaflet format: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64] (breaking change, requires rebuild)\n- `is_iri_ref()` on RunRecord removed (was only used for OPST filtering)\n- OPST guard in `translate_range()` removed" ;
+    mem:tag "breaking-change" ;
+    mem:tag "index-format" ;
+    mem:tag "leaflet" ;
+    mem:tag "object-types" ;
+    mem:tag "opst" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:46.985249+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k4wy34fgvmg3r6vt142pm a mem:Fact ;
+    mem:content "Stats pipeline (bulk import):\n- `IdStatsHook` collects per-property HLL stats during commit resolution (stats.rs)\n- `on_record()` signature: (g_id, p_id, s_id, dt, o_hash, o_kind, o_key, t, op) — includes object for class tracking\n- `set_rdf_type_p_id()` enables class tracking; rdf:type pre-inserted into predicate dict before resolution\n- `finalize_with_aggregate_properties()` returns (IdStatsResult, Vec&lt;GraphPropertyStatEntry&gt;, class_counts, class_properties)\n- Class property attribution: tracks subject_classes + subject_props maps; handles both orderings (type before/after props)\n- Stats JSON includes top-level `properties` (SID-keyed), `classes` (with property usages), and per-graph `graphs`\n- Class JSON format: [[ns_code, \"suffix\"], [count, [[[prop_ns, prop_name]], ...]]]\n- `StatsView::from_db_stats_with_namespaces()` derives IRI-keyed from SID-keyed using namespace_codes" ;
+    mem:tag "bulk-import" ;
+    mem:tag "class-tracking" ;
+    mem:tag "hll" ;
+    mem:tag "stats" ;
+    mem:tag "stats-pipeline" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:48.707971+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k505wm9rz9609edzry5r8 a mem:Fact ;
+    mem:content "BinaryRangeProvider / LedgerState loading (fixed):\n- `fluree.ledger()` in loading.rs now attaches BinaryRangeProvider + binary_store from index root\n- `TypeErasedStore(Arc&lt;dyn Any + Send + Sync&gt;)` for cross-crate type erasure (fluree-db-ledger → fluree-db-indexer)\n- `execute_query_internal` uses `prepare_execution` + `execute_prepared` with `ContextConfig` containing binary_store\n- `upload_dicts_to_cas()` must strip namespace prefixes before building subject trees (matches `upload_dicts_from_disk`)\n- `resolve_subject_iri` has defensive check against double-prefixing (CAS trees may store full IRIs)\n- `cache_bytes_to_file` uses atomic counter for unique tmp names (race condition fix)" ;
+    mem:tag "binary-range-provider" ;
+    mem:tag "ledger-state" ;
+    mem:tag "loading" ;
+    mem:tag "query-execution" ;
+    mem:tag "type-erasure" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/loading.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:52.028106+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k54dgr5qsah3cfbbdp4xs a mem:Fact ;
+    mem:content "Namespace augmentation after indexing (fixed):\n- BinaryIndexStore.namespace_codes only has namespaces from index root\n- Novelty commits can introduce new namespace codes not in the index\n- `DictOverlay.resolve_subject_iri()` delegates to `store.namespace_prefix()` → fails for new codes\n- Fix: `BinaryIndexStore::augment_namespace_codes(&amp;mut self, extra)` merges novelty ns codes + rebuilds prefix_trie\n- Called in 4 store-loading paths (before Arc::new): loading.rs (Fluree::ledger), ledger_manager.rs (load_and_attach_binary_store), fluree_ext.rs (load_view, load_view_at_t)\n- Note: cached path in `apply_index_v2` creates store from root; subsequent novelty commits adding new ns codes would need store invalidation or DictOverlay fallback" ;
+    mem:tag "augmentation" ;
+    mem:tag "dict-overlay" ;
+    mem:tag "namespace" ;
+    mem:tag "namespace-codes" ;
+    mem:tag "prefix-trie" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-api/src/loading.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:48:56.368004+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k5anm83eax0rx47tc92jd a mem:Fact ;
+    mem:content "Spatial index pipeline (S2 complex geometries):\n- `fluree-db-spatial` crate: S2 cell-based indexing for polygons, linestrings, etc.\n- `SpatialHook` in indexer collects geo:wktLiteral during commit resolution (skips POINTs). SpatialEntry includes g_id for graph scoping.\n- `SpatialIndexBuilder.add_geometry()` → S2 covering → CellEntry records\n- `BuildResult.write_to_cas()` returns WriteResult with all CAS addresses for GC\n- `SpatialIndexRef` in IndexRoot.spatial_indexes tracks: g_id, predicate, root_address, manifest, arena, leaflets\n- Graph-scoped routing: indexes grouped by (g_id, p_id), provider map key format \"g{g_id}:{predicate_iri}\", S2SearchOperator uses ctx.binary_g_id, fallback to g_id=0\n- Loading: Fluree::ledger() calls load_spatial_indexes() → SpatialIndexSnapshot::load_from_cas()\n- Storage: LedgerState.spatial_indexes = TypeErasedStore(Arc&lt;HashMap&lt;String, Arc&lt;dyn SpatialIndexProvider&gt;&gt;&gt;)\n- Query wiring: execute_query_internal → ContextConfig.spatial_providers; FlureeView.spatial_indexes from LedgerState; query_historical() rejects S2 queries\n- Predicate-based routing: S2SearchPattern.predicate specifies which index (idx:property expanded via details())\n- Query syntax: { \"idx:spatial\": \"within\", \"idx:property\": \"ex:hasGeometry\", \"idx:geometry\": \"POLYGON(...)\", \"idx:result\": \"?place\" }" ;
+    mem:tag "geometry" ;
+    mem:tag "graph-scoped" ;
+    mem:tag "polygon" ;
+    mem:tag "s2" ;
+    mem:tag "spatial" ;
+    mem:tag "spatial-index" ;
+    mem:tag "wkt" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-spatial/" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:49:02.772655+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k5hrrafnwdwnjvvk8jk35 a mem:Fact ;
+    mem:content "Storage-agnostic commits (CID migration) — core complete:\n- All identity fields are CID-based. Address strings are now derived internal details.\n- NsRecord: CID-only (commit_head_id, index_head_id). No commit_address/index_address.\n- LedgerState: CID-only (head_commit_id, head_index_id). No head_commit: Option&lt;String&gt;.\n- BinaryIndexRoot v3: All artifact refs are ContentId (DictRefs, GraphOrderRefs, etc.)\n- GraphSourceRecord: index_id: Option&lt;ContentId&gt; (no address field)\n- Commit/CommitRef/IndexRef: Use ContentId (no address/v/data fields)\n- CommitReceipt: Has commit_id: ContentId; address: Option&lt;String&gt; from storage write result\n- IndexResult: Has root_id: ContentId (root_address still derived for GC/Db::load)\n- Push/import integrity: commit_hash_hex_from_bytes() recomputes SHA-256, compares to trailer, rejects tampering. Chain continuity via previous_ref.id.\n- ContentId::verify(): Correct for txn/index blobs. NOT for commit-v2 (excludes trailing hash+sig). Commit uses commit_hash_hex_from_bytes().\n- Remaining derived-address affordances: IndexResult.root_address, CommitReceipt.address, Db::load(), GC pipeline" ;
+    mem:tag "cid" ;
+    mem:tag "commit" ;
+    mem:tag "content-id" ;
+    mem:tag "identity" ;
+    mem:tag "integrity" ;
+    mem:tag "sha256" ;
+    mem:tag "storage-agnostic" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:49:10.040895+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k5nzpe59p5vp7zrehbrr9 a mem:Fact ;
+    mem:content "Forward dictionary packing (feature/tsv-format branch):\n- Replaced CoW B-tree forward dicts (many ~2MB DLF1 CAS leaves) with large FPK1 pack files (~256MB)\n- FPK1 format: 40-byte header + concatenated pages + page directory. O(1) lookup via offset indexing\n- ForwardPackReader: mmap-backed multi-pack reader, binary search packs by ID range\n- DictionarySet now has subject_forward_packs: BTreeMap&lt;u16, ForwardPackReader&gt; + string_forward_packs: ForwardPackReader\n- write_subject_iri_bytes() / write_string_value_bytes() — zero-copy hot path for TSV export\n- IRB1 root bumped to v2; DictPackRefs replaces forward tree refs; reverse dicts unchanged (DLF1 tree)\n- db.rs lightweight IRB1 parser updated for v2 (version-conditional dict ref parsing)\n- Clean break — no backward compatibility with v1 forward trees\n- Key files: dict_tree/forward_pack.rs, dict_tree/pack_reader.rs, dict_tree/pack_builder.rs" ;
+    mem:tag "dictionary" ;
+    mem:tag "forward-dict" ;
+    mem:tag "fpk1" ;
+    mem:tag "mmap" ;
+    mem:tag "pack-files" ;
+    mem:tag "tsv-export" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:49:14.358637+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8k5tywx7y294awm0g0cmas a mem:Fact ;
+    mem:content "fluree-db-binary-index crate (extracted from indexer):\n- Owns on-disk binary index formats (IRB1, FBR2, FLI2, FPK1, DTB1, DLR1, VAS1, NB1) and read-side runtime\n- fluree-db-query depends on binary-index (not indexer) for read-side types\n- fluree-db-indexer depends on binary-index + provides backward-compat shim re-exports in run_index/mod.rs and dict_tree/mod.rs\n- Modules: format/ (run_record, index_root, branch, leaf, leaflet, stats_wire), dict/ (branch, builder, reader, forward_pack, pack_reader, etc.), read/ (binary_index_store, binary_cursor, spot_cursor, query, leaflet_cache, batched_lookup, replay), arena/ (numbig, vector), types.rs\n- dict/dict_io.rs and dict/global_dict.rs are trimmed read-only copies (write-side stays in indexer)\n- Key re-exports: BinaryIndexStore, BinaryGraphView, BinaryCursor, RunRecord, RunSortOrder, IndexRootV5, etc." ;
+    mem:tag "binary-index" ;
+    mem:tag "crate-extraction" ;
+    mem:tag "fbr2" ;
+    mem:tag "index-formats" ;
+    mem:tag "irb1" ;
+    mem:tag "read-side" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T19:49:19.452768+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kj8sz7j1ps9p8772n0kxga15 a mem:Fact ;
+    mem:content "Building the CLI binary:\n- Crate: `fluree-db-cli`, binary name: `fluree`, output: `target/release/fluree`\n- Basic build: `cargo build -p fluree-db-cli --release`\n- With OTEL: `cargo build -p fluree-db-cli --features otel --release`\n- All features: `cargo build -p fluree-db-cli --all-features --release`\n- Features: `server` (default, embeds HTTP server subcommands), `otel` (OpenTelemetry tracing)\n- Without `server` feature, CLI operates in standalone mode (import/admin commands only)" ;
+    mem:tag "binary" ;
+    mem:tag "build" ;
+    mem:tag "cli" ;
+    mem:tag "otel" ;
+    mem:tag "release" ;
+    mem:tag "server" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-cli/Cargo.toml" ;
+    mem:artifactRef "fluree-db-cli/src/main.rs" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-24T21:48:03.009493+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kjbvcr4qregkesdn5z54ycnv a mem:Fact ;
+    mem:content "Cursor may ignore per-repo MCP config at .cursor/mcp.json depending on version/settings; installing the same entry in ~/.cursor/mcp.json is a reliable fallback. If MCP tools still don’t appear, check whether Cursor ever connects by looking for client initialization lines in .fluree-memory/.local/mcp.log (only written when running in a repo with local .fluree/.)." ;
+    mem:tag "cursor" ;
+    mem:tag "mcp" ;
+    mem:tag "memory" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T02:10:37.847383+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:fact-01kjbwb9bs1hvhxnvw4n12jh27 a mem:Fact ;
+    mem:content "Cursor MCP config should not hard-code a repo path. Use Cursor config interpolation + env: set stdio server entry with 'type': 'stdio' and env { FLUREE_HOME: '/.fluree' }. This forces fluree mcp serve to use the current workspace’s .fluree/ regardless of the process cwd, so memory/logs live in <repo>/.fluree-memory/ instead of ~/Library/Application Support/.fluree-memory/. (See https://cursor.com/docs/context/mcp)" ;
+    mem:tag "cursor" ;
+    mem:tag "mcp" ;
+    mem:tag "memory" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T02:27:18.521997+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:fact-01kjbwsaxnfg0wjmg5xpt9snr9 a mem:Fact ;
+    mem:content "Cursor MCP install + config (Fluree Developer Memory)\n\nInstall\n- Preferred: fluree memory mcp-install --ide cursor\n  - Writes: .cursor/mcp.json\n  - Writes: .cursor/rules/fluree_rules.md\n- Cursor spawns: fluree mcp serve --transport stdio (stdio pipes)\n\nProject config (.cursor/mcp.json)\n- Use type: \"stdio\" (Cursor expects this for stdio servers)\n- Force repo-scoped memory even if Cursor spawns the process from a different cwd:\n  - env.FLUREE_HOME = \"${workspaceFolder}/.fluree\"\n\nExample\n{\n  \"mcpServers\": {\n    \"fluree-memory\": {\n      \"type\": \"stdio\",\n      \"command\": \"fluree\",\n      \"args\": [\"mcp\", \"serve\", \"--transport\", \"stdio\"],\n      \"env\": { \"FLUREE_HOME\": \"${workspaceFolder}/.fluree\" }\n    }\n  }\n}\n\nAfter changes: fully restart Cursor.\n\nVerification\n- Repo-scoped MCP log: <repo>/.fluree-memory/.local/mcp.log should show client initialized (client often cursor-vscode).\n- Repo memories (e.g., CI/CD commands) should be visible via memory_recall once repo-scoped.\n" ;
+    mem:tag "configuration" ;
+    mem:tag "cursor" ;
+    mem:tag "fluree-home" ;
+    mem:tag "install" ;
+    mem:tag "mcp" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef ".cursor/mcp.json" ;
+    mem:artifactRef ".cursor/rules/fluree_rules.md" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T02:34:58.869828+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:fact-01kjbx27ger7j3rpjh45yw4gv3 a mem:Fact ;
+    mem:content "Cursor MCP setup (VERIFIED WORKING)\n\nWorking config (Cursor stdio MCP):\n- In `.cursor/mcp.json` (project) and optionally `~/.cursor/mcp.json` (global), define `fluree-memory` with:\n  - `type: \"stdio\"`\n  - `args: [\"mcp\", \"serve\", \"--transport\", \"stdio\"]`\n  - `env.FLUREE_HOME = \"${workspaceFolder}/.fluree\"`\n\nWhy: Cursor may spawn the MCP process from a different cwd; `FLUREE_HOME` forces Fluree to use the workspace `.fluree/` so memories/logs live at `<repo>/.fluree-memory/` (not `~/Library/Application Support/.fluree-memory/`).\n\nVerification:\n- After full restart, `<repo>/.fluree-memory/.local/mcp.log` shows `client initialized` with client name often `cursor-vscode`.\n- Global log does not get new entries when repo-scoped is working." ;
+    mem:tag "configuration" ;
+    mem:tag "cursor" ;
+    mem:tag "mcp" ;
+    mem:tag "setup" ;
+    mem:tag "verified" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef ".cursor/mcp.json" ;
+    mem:artifactRef ".fluree-memory/.local/mcp.log" ;
+    mem:artifactRef "~/.cursor/mcp.json" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T02:39:50.286687+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
+    mem:content "memory_recall smart score filtering heuristic (MCP tool only):\n\nWhen the LLM calls memory_recall with NO explicit limit or offset, apply score-based trimming before returning results:\n- Fetch limit+1 candidates (the extra is a peek-ahead for reporting next score)\n- Threshold: top_score * 0.5 — drop any result below 50% of the top score\n- Always return at least 1 result (even if everything is below threshold)\n- Report the score of the first non-returned result in the <pagination> element so the LLM can decide whether to fetch more\n- Pagination hint: \"Results 1–N, next score: X.X. Use offset=N to retrieve more.\"\n\nWhen explicit limit or offset IS provided, bypass all smart filtering — honor the request exactly.\n\nKey files: fluree-db-memory/src/mcp.rs (use_smart_filter logic), fluree-db-memory/src/format.rs (next_score: Option<f64> param added to format_context_paged)" ;
+    mem:tag "bm25" ;
+    mem:tag "heuristic" ;
+    mem:tag "mcp" ;
+    mem:tag "memory" ;
+    mem:tag "recall" ;
+    mem:tag "scoring" ;
+    mem:tag "ux" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
+    mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
+    mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .

@@ -35,6 +35,7 @@ members = [
     "fluree-search-service",
     "fluree-search-httpd",
     "fluree-db-cli",
+    "fluree-db-memory",
     "bench-filter-query",
 ]
 exclude = [
@@ -162,6 +163,7 @@ rmcp = { git = "https://github.com/fluree/rust-sdk-fork", rev = "ed14e6d6f0e2370
     "server",
     "macros",
     "transport-streamable-http-server",
+    "transport-io",
     "tower",
 ] }
 

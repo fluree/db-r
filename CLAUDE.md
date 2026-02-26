@@ -4,7 +4,13 @@
 
 Fluree DB-R is a 37-crate Rust workspace implementing a semantic, immutable, time-travel-capable graph database with W3C standards compliance (RDF, JSON-LD, SPARQL). The core is runtime-agnostic; storage and networking are feature-gated.
 
-Use Fluree memory MCP (if installed) as the primary way for managing memories as you work. For every new concept, first search Fluree memory for any insights, and then when you have new concepts that should be incorporated into memory be sure to add it there.
+## Memory — Required Workflow
+
+**Before starting any coding task**, run `memory_recall` on the primary topic(s) involved. The MEMORY.md topic list tells you what's stored — match it against the task and recall the relevant entries. Do not skip this; the summaries in MEMORY.md are just labels, not the full content.
+
+**After completing any task** where you learned something non-obvious (a gotcha, a subtle invariant, a struct rename, a wiring detail), add it to memory via `memory_add` without waiting to be asked. Ask yourself: "Would a future session benefit from knowing this before touching this code?" If yes, add it.
+
+Use `memory_update` to correct or extend existing entries rather than creating duplicates. Keep entries accurate — stale facts (e.g., specific test counts, branch names) should be removed, not accumulated.
 
 ## Documentation — Use It
 
