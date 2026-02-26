@@ -1,7 +1,9 @@
-//! Operator trait and base types for query execution
+//! Operator trait and lifecycle types for query execution.
 //!
-//! Operators form a tree that produces batches of results through
-//! the `open/next_batch/close` lifecycle pattern.
+//! Operators form a tree that produces batches of results through the
+//! `open/next_batch/close` lifecycle pattern.
+
+pub mod inline;
 
 use crate::binding::Batch;
 use crate::context::ExecutionContext;

@@ -17,6 +17,7 @@ use crate::filter::FilterOperator;
 use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
+use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
 use crate::planner::{is_property_join, reorder_patterns};
@@ -358,11 +359,100 @@ fn build_property_join_block(
     Ok(operator)
 }
 
+/// Build an optimally-ordered sequence of inline operators.
+///
+/// First inlines any filters already eligible, then delegates to
+/// [`inline_chain`] to iteratively inline binds and the filters they unlock.
+/// The resulting sequence drops rows at the earliest possible point.
+///
+/// Returns (inline_operators, remaining_binds, remaining_filters) — remaining
+/// items are those whose dependencies are not yet satisfied by `available_vars`.
+fn build_inline_ops(
+    pending_binds: Vec<BindPattern>,
+    pending_filters: Vec<FilterPattern>,
+    available_vars: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<InlineOperator>, Vec<BindPattern>, Vec<FilterPattern>) {
+    let mut ops = Vec::new();
+    let mut available = available_vars.clone();
+
+    let remaining_filters =
+        inline_eligible_filters(&mut ops, pending_filters, &available, filter_idxs_consumed);
+
+    let (remaining_binds, remaining_filters) = inline_chain(
+        &mut ops,
+        pending_binds,
+        remaining_filters,
+        &mut available,
+        filter_idxs_consumed,
+    );
+
+    (ops, remaining_binds, remaining_filters)
+}
+
+/// Inline filters whose required variables are already available.
+fn inline_eligible_filters(
+    ops: &mut Vec<InlineOperator>,
+    pending_filters: Vec<FilterPattern>,
+    available: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> Vec<FilterPattern> {
+    let (ready, remaining) =
+        partition_eligible_filters(pending_filters, available, filter_idxs_consumed);
+    for expr in ready {
+        ops.push(InlineOperator::Filter(expr));
+    }
+    remaining
+}
+
+/// Iteratively inline binds and the filters they unlock.
+///
+/// Loops until no more binds can be inlined. Each eligible bind is added,
+/// then [`inline_eligible_filters`] runs to pick up any filters the new
+/// variable made eligible. Returns the binds and filters that remain.
+fn inline_chain(
+    ops: &mut Vec<InlineOperator>,
+    pending_binds: Vec<BindPattern>,
+    pending_filters: Vec<FilterPattern>,
+    available: &mut HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<BindPattern>, Vec<FilterPattern>) {
+    let mut remaining_binds = pending_binds;
+    let mut remaining_filters = pending_filters;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut still_pending = Vec::new();
+        for bind in remaining_binds {
+            if bind.required_vars.is_subset(available) {
+                available.insert(bind.var);
+                ops.push(InlineOperator::Bind {
+                    var: bind.var,
+                    expr: bind.expr,
+                });
+                changed = true;
+
+                remaining_filters = inline_eligible_filters(
+                    ops,
+                    remaining_filters,
+                    available,
+                    filter_idxs_consumed,
+                );
+            } else {
+                still_pending.push(bind);
+            }
+        }
+        remaining_binds = still_pending;
+    }
+
+    (remaining_binds, remaining_filters)
+}
+
 /// Build an operator tree for a sequential scan/join block of triples.
 ///
 /// Applies VALUES first (if any), then iterates triples building scan/join
-/// operators, inlining eligible filters into each step and applying deferred
-/// BINDs/FILTERs as their dependencies become bound.
+/// operators, inlining eligible filters and binds into each step and applying
+/// deferred BINDs/FILTERs as their dependencies become bound.
 fn build_sequential_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
@@ -388,15 +478,21 @@ fn build_sequential_join_block(
             vars_after.insert(v);
         }
 
-        let (inlined, remaining) =
-            partition_eligible_filters(pending_filters, &vars_after, filter_idxs_consumed);
-        pending_filters = remaining;
+        // Build interleaved inline operators: eligible filters first, then binds
+        // whose required vars are all available after this triple, interleaved
+        // with the filters each bind unlocks.
+        let (inline_ops, remaining_binds, remaining_filters) = build_inline_ops(
+            pending_binds,
+            pending_filters,
+            &vars_after,
+            filter_idxs_consumed,
+        );
+        pending_binds = remaining_binds;
+        pending_filters = remaining_filters;
 
-        operator = Some(build_scan_or_join(operator, tp, object_bounds, inlined));
-
-        for v in tp.variables() {
-            bound.insert(v);
-        }
+        let op = build_scan_or_join(operator, tp, object_bounds, inline_ops);
+        bound.extend(op.schema().iter().copied());
+        operator = Some(op);
 
         if let Some(child) = operator.take() {
             let (child, new_binds, new_filters) = apply_deferred_patterns(
@@ -842,13 +938,13 @@ pub fn build_where_operators_seeded(
 fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-    inline_filters: Vec<Expression>,
+    inline_ops: Vec<InlineOperator>,
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     Box::new(crate::binary_scan::ScanOperator::new(
         tp.clone(),
         obj_bounds,
-        inline_filters,
+        inline_ops,
     ))
 }
 
@@ -857,20 +953,20 @@ fn make_first_scan(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline filters
+/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline operators
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 ///
-/// The `inline_filters` are evaluated inline on the operator: baked into `ScanOperator`
+/// The `inline_ops` are evaluated inline on the operator: baked into `ScanOperator`
 /// for the first scan, or evaluated per combined row in `NestedLoopJoinOperator` for joins.
 pub fn build_scan_or_join(
     left: Option<BoxedOperator>,
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-    inline_filters: Vec<Expression>,
+    inline_ops: Vec<InlineOperator>,
 ) -> BoxedOperator {
     match left {
-        None => make_first_scan(tp, object_bounds, inline_filters),
+        None => make_first_scan(tp, object_bounds, inline_ops),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
@@ -883,7 +979,7 @@ pub fn build_scan_or_join(
                 left_schema,
                 tp.clone(),
                 bounds,
-                inline_filters,
+                inline_ops,
             ))
         }
     }
@@ -1676,5 +1772,270 @@ mod tests {
         assert!(schema.contains(&VarId(0)), "subject var present");
         assert!(schema.contains(&VarId(1)), "?x var present");
         assert!(schema.contains(&VarId(2)), "?y (BIND output) var present");
+    }
+
+    // ========================================================================
+    // Inline operator tests — verify that build_inline_ops produces the right
+    // sequence of InlineOperator values for representative scenarios.
+    // ========================================================================
+
+    /// Helper: build a BindPattern from a var and expression.
+    fn make_bind(var: VarId, expr: Expression) -> BindPattern {
+        let required_vars = expr.variables().into_iter().collect();
+        BindPattern {
+            required_vars,
+            var,
+            expr,
+        }
+    }
+
+    #[test]
+    fn test_inline_filter_on_single_triple() {
+        // ?s :age ?age . FILTER(?age > 18)
+        // The filter's required var (?age) is bound by the triple,
+        // so it should be inlined.
+        let age = VarId(1);
+        let filter_expr = Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(18)),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            Vec::new(),
+            vec![FilterPattern::new(0, filter_expr.clone())],
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 1, "filter should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Filter(_)),
+            "should be a Filter"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_bind_on_single_triple() {
+        // ?s :age ?age . BIND(?age + 1 AS ?age2)
+        // The bind's required var (?age) is bound by the triple,
+        // so it should be inlined.
+        let age = VarId(1);
+        let age2 = VarId(2);
+        let bind_expr = Expression::add(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(1)),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(age2, bind_expr)],
+            Vec::new(),
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 1, "bind should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == age2),
+            "should be a Bind targeting ?age2"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_bind_unlocks_filter() {
+        // ?s :age ?age . BIND(?age + 10 AS ?y) . FILTER(?y > 25)
+        // The bind is eligible (depends on ?age), and the filter depends on ?y
+        // which isn't available until the bind executes. Both should be inlined,
+        // with the filter after the bind.
+        let age = VarId(1);
+        let y = VarId(2);
+        let bind_expr = Expression::add(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(10)),
+        );
+        let filter_expr =
+            Expression::gt(Expression::Var(y), Expression::Const(FilterValue::Long(25)));
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(y, bind_expr)],
+            vec![FilterPattern::new(0, filter_expr)],
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 2, "bind + unlocked filter should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == y),
+            "bind should come first"
+        );
+        assert!(
+            matches!(&ops[1], InlineOperator::Filter(_)),
+            "filter should follow the bind that unlocked it"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_chained_binds() {
+        // ?s :age ?age . BIND(?age + 1 AS ?a) . BIND(?a * 2 AS ?b)
+        // ?b depends on ?a which depends on ?age. Both should be inlined
+        // in dependency order.
+        let age = VarId(1);
+        let a = VarId(2);
+        let b = VarId(3);
+        let bind_a = make_bind(
+            a,
+            Expression::add(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(1)),
+            ),
+        );
+        let bind_b = make_bind(
+            b,
+            Expression::mul(Expression::Var(a), Expression::Const(FilterValue::Long(2))),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) =
+            build_inline_ops(vec![bind_a, bind_b], Vec::new(), &available, &[]);
+
+        assert_eq!(ops.len(), 2, "both binds should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == a),
+            "?a should be first (no dependencies beyond ?age)"
+        );
+        assert!(
+            matches!(&ops[1], InlineOperator::Bind { var, .. } if *var == b),
+            "?b should be second (depends on ?a)"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_non_inlinable_bind_remains() {
+        // ?s :age ?age . BIND(?name AS ?alias)
+        // ?name is not in the available vars, so the bind can't be inlined.
+        let name = VarId(3);
+        let alias = VarId(4);
+        let bind_expr = Expression::Var(name);
+        let available: HashSet<VarId> = [VarId(0), VarId(1)].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(alias, bind_expr)],
+            Vec::new(),
+            &available,
+            &[],
+        );
+
+        assert!(ops.is_empty(), "nothing should be inlined");
+        assert_eq!(remaining_binds.len(), 1, "bind should remain");
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_filter_into_join() {
+        // ?s :name ?name . ?s :age ?age . FILTER(?age > 18)
+        // After the second triple, ?age is available, so the filter
+        // should be inlined into the join operator.
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(18)),
+            )),
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // The filter should be inlined into the join, not wrapped as a
+        // separate FilterOperator. If it were a wrapper, the outermost
+        // operator's schema would still contain the same vars, but the
+        // schema should include ?s, ?name, ?age with no extra wrapper layer.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 3);
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&name));
+        assert!(schema.contains(&age));
+    }
+
+    #[test]
+    fn test_inline_bind_into_join() {
+        // ?s :name ?name . ?s :age ?age . BIND(?age + 10 AS ?y)
+        // After the second triple, ?age is available, so the bind should be
+        // inlined into the join. The schema should include ?y without a
+        // separate BindOperator wrapper.
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+        let y = VarId(3);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Bind {
+                var: y,
+                expr: Expression::add(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(10)),
+                ),
+            },
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // ?y should appear in the schema — it was inlined into the join,
+        // extending the join's output schema rather than requiring a
+        // BindOperator wrapper.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 4, "schema should have s, name, age, y");
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&name));
+        assert!(schema.contains(&age));
+        assert!(schema.contains(&y));
+    }
+
+    #[test]
+    fn test_inline_bind_into_scan_extends_schema() {
+        // ?s :age ?age . BIND(?age + 10 AS ?y)
+        // Single triple + bind: the bind should be inlined into the scan,
+        // and the scan's schema should include ?y.
+        let s = VarId(0);
+        let age = VarId(1);
+        let y = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Bind {
+                var: y,
+                expr: Expression::add(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(10)),
+                ),
+            },
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // If the bind were a separate BindOperator, the top-level operator
+        // would be a BindOperator wrapping a ScanOperator. But since it's
+        // inlined, the ScanOperator itself has the extended schema.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 3, "schema should have s, age, y");
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&age));
+        assert!(schema.contains(&y));
     }
 }

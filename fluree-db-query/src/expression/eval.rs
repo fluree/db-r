@@ -5,7 +5,7 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
-use crate::binding::{Binding, BindingRow, RowAccess, RowView};
+use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FilterValue, Function};
@@ -124,7 +124,11 @@ impl Expression {
     ///
     /// The `ctx` parameter provides access to the execution context for resolving
     /// `Binding::EncodedLit` values (late materialization).
-    pub fn eval_to_binding(&self, row: &RowView, ctx: Option<&ExecutionContext<'_>>) -> Binding {
+    pub fn eval_to_binding<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Binding {
         match self.try_eval_to_binding(row, ctx) {
             Ok(binding) => binding,
             Err(_) => Binding::Unbound,
@@ -135,9 +139,9 @@ impl Expression {
     ///
     /// Unlike [`eval_to_binding`], this returns errors rather than converting
     /// them to `Binding::Unbound`.
-    pub fn try_eval_to_binding(
+    pub fn try_eval_to_binding<R: RowAccess>(
         &self,
-        row: &RowView,
+        row: &R,
         ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<Binding> {
         let comparable = match self.eval_to_comparable(row, ctx) {
