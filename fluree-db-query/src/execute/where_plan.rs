@@ -1773,4 +1773,278 @@ mod tests {
         assert!(schema.contains(&VarId(1)), "?x var present");
         assert!(schema.contains(&VarId(2)), "?y (BIND output) var present");
     }
+
+    // ========================================================================
+    // Inline operator tests — verify that build_inline_ops produces the right
+    // sequence of InlineOperator values for representative scenarios.
+    // ========================================================================
+
+    /// Helper: build a BindPattern from a var and expression.
+    fn make_bind(var: VarId, expr: Expression) -> BindPattern {
+        let required_vars = expr.variables().into_iter().collect();
+        BindPattern {
+            required_vars,
+            var,
+            expr,
+        }
+    }
+
+    #[test]
+    fn test_inline_filter_on_single_triple() {
+        // ?s :age ?age . FILTER(?age > 18)
+        // The filter's required var (?age) is bound by the triple,
+        // so it should be inlined.
+        let age = VarId(1);
+        let filter_expr = Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(18)),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            Vec::new(),
+            vec![FilterPattern::new(0, filter_expr.clone())],
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 1, "filter should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Filter(_)),
+            "should be a Filter"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_bind_on_single_triple() {
+        // ?s :age ?age . BIND(?age + 1 AS ?age2)
+        // The bind's required var (?age) is bound by the triple,
+        // so it should be inlined.
+        let age = VarId(1);
+        let age2 = VarId(2);
+        let bind_expr = Expression::add(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(1)),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(age2, bind_expr)],
+            Vec::new(),
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 1, "bind should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == age2),
+            "should be a Bind targeting ?age2"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_bind_unlocks_filter() {
+        // ?s :age ?age . BIND(?age + 10 AS ?y) . FILTER(?y > 25)
+        // The bind is eligible (depends on ?age), and the filter depends on ?y
+        // which isn't available until the bind executes. Both should be inlined,
+        // with the filter after the bind.
+        let age = VarId(1);
+        let y = VarId(2);
+        let bind_expr = Expression::add(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(10)),
+        );
+        let filter_expr = Expression::gt(
+            Expression::Var(y),
+            Expression::Const(FilterValue::Long(25)),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(y, bind_expr)],
+            vec![FilterPattern::new(0, filter_expr)],
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 2, "bind + unlocked filter should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == y),
+            "bind should come first"
+        );
+        assert!(
+            matches!(&ops[1], InlineOperator::Filter(_)),
+            "filter should follow the bind that unlocked it"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_chained_binds() {
+        // ?s :age ?age . BIND(?age + 1 AS ?a) . BIND(?a * 2 AS ?b)
+        // ?b depends on ?a which depends on ?age. Both should be inlined
+        // in dependency order.
+        let age = VarId(1);
+        let a = VarId(2);
+        let b = VarId(3);
+        let bind_a = make_bind(
+            a,
+            Expression::add(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(1)),
+            ),
+        );
+        let bind_b = make_bind(
+            b,
+            Expression::mul(
+                Expression::Var(a),
+                Expression::Const(FilterValue::Long(2)),
+            ),
+        );
+        let available: HashSet<VarId> = [VarId(0), age].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![bind_a, bind_b],
+            Vec::new(),
+            &available,
+            &[],
+        );
+
+        assert_eq!(ops.len(), 2, "both binds should be inlined");
+        assert!(
+            matches!(&ops[0], InlineOperator::Bind { var, .. } if *var == a),
+            "?a should be first (no dependencies beyond ?age)"
+        );
+        assert!(
+            matches!(&ops[1], InlineOperator::Bind { var, .. } if *var == b),
+            "?b should be second (depends on ?a)"
+        );
+        assert!(remaining_binds.is_empty());
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_non_inlinable_bind_remains() {
+        // ?s :age ?age . BIND(?name AS ?alias)
+        // ?name is not in the available vars, so the bind can't be inlined.
+        let name = VarId(3);
+        let alias = VarId(4);
+        let bind_expr = Expression::Var(name);
+        let available: HashSet<VarId> = [VarId(0), VarId(1)].into();
+
+        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
+            vec![make_bind(alias, bind_expr)],
+            Vec::new(),
+            &available,
+            &[],
+        );
+
+        assert!(ops.is_empty(), "nothing should be inlined");
+        assert_eq!(remaining_binds.len(), 1, "bind should remain");
+        assert!(remaining_filters.is_empty());
+    }
+
+    #[test]
+    fn test_inline_filter_into_join() {
+        // ?s :name ?name . ?s :age ?age . FILTER(?age > 18)
+        // After the second triple, ?age is available, so the filter
+        // should be inlined into the join operator.
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(18)),
+            )),
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // The filter should be inlined into the join, not wrapped as a
+        // separate FilterOperator. If it were a wrapper, the outermost
+        // operator's schema would still contain the same vars, but the
+        // schema should include ?s, ?name, ?age with no extra wrapper layer.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 3);
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&name));
+        assert!(schema.contains(&age));
+    }
+
+    #[test]
+    fn test_inline_bind_into_join() {
+        // ?s :name ?name . ?s :age ?age . BIND(?age + 10 AS ?y)
+        // After the second triple, ?age is available, so the bind should be
+        // inlined into the join. The schema should include ?y without a
+        // separate BindOperator wrapper.
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+        let y = VarId(3);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Bind {
+                var: y,
+                expr: Expression::add(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(10)),
+                ),
+            },
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // ?y should appear in the schema — it was inlined into the join,
+        // extending the join's output schema rather than requiring a
+        // BindOperator wrapper.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 4, "schema should have s, name, age, y");
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&name));
+        assert!(schema.contains(&age));
+        assert!(schema.contains(&y));
+    }
+
+    #[test]
+    fn test_inline_bind_into_scan_extends_schema() {
+        // ?s :age ?age . BIND(?age + 10 AS ?y)
+        // Single triple + bind: the bind should be inlined into the scan,
+        // and the scan's schema should include ?y.
+        let s = VarId(0);
+        let age = VarId(1);
+        let y = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Bind {
+                var: y,
+                expr: Expression::add(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(10)),
+                ),
+            },
+        ];
+
+        let op = build_where_operators(&patterns, None).unwrap();
+
+        // If the bind were a separate BindOperator, the top-level operator
+        // would be a BindOperator wrapping a ScanOperator. But since it's
+        // inlined, the ScanOperator itself has the extended schema.
+        let schema = op.schema();
+        assert_eq!(schema.len(), 3, "schema should have s, age, y");
+        assert!(schema.contains(&s));
+        assert!(schema.contains(&age));
+        assert!(schema.contains(&y));
+    }
 }
