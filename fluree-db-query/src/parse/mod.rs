@@ -139,6 +139,34 @@ fn parse_query_ast_internal(
         );
     }
 
+    // Check for ASK query — boolean existence check, no select clause
+    if let Some(ask_val) = obj.get("ask") {
+        if ask_val != &JsonValue::Bool(true) {
+            return Err(ParseError::InvalidWhere(
+                "\"ask\" must be exactly `true`".to_string(),
+            ));
+        }
+        let object_var_parsing = options::parse_object_var_parsing(obj);
+        if let Some(where_clause) = obj.get("where") {
+            where_clause::parse_where_with_counters(
+                where_clause,
+                &context,
+                &path_aliases,
+                &mut query,
+                subject_counter,
+                nested_counter,
+                object_var_parsing,
+            )?;
+        } else {
+            return Err(ParseError::MissingField(
+                "where (required for ask queries)",
+            ));
+        }
+        // LIMIT 1 for efficiency — only need to know if any solution exists
+        query.options.limit = Some(1);
+        return Ok((query, SelectMode::Boolean));
+    }
+
     // Determine select mode based on which key is present.
     //
     // Clojure parity:
@@ -164,7 +192,7 @@ fn parse_query_ast_internal(
             }
         } else {
             return Err(ParseError::MissingField(
-                "select, selectOne, select-one, selectDistinct, select-distinct, or construct",
+                "select, selectOne, select-one, selectDistinct, select-distinct, construct, or ask",
             ));
         };
 

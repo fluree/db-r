@@ -56,6 +56,24 @@ Specifies which variables to return in results:
 
 Returns all variables bound in the query.
 
+### ask
+
+Tests whether the `where` patterns have any solution, returning `true` or `false`. No variables are projected. Equivalent to SPARQL `ASK`.
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "ask": true,
+  "where": [
+    { "@id": "?person", "ex:name": "Alice" }
+  ]
+}
+```
+
+Returns `true` if at least one solution exists, `false` otherwise.
+
+The value of `ask` must be exactly `true`. A `where` clause is required. Solution modifiers (`groupBy`, `orderBy`, `limit`, `offset`) are not supported with `ask` — internally, `LIMIT 1` is applied for efficiency.
+
 ### from
 
 Specifies which ledger(s) to query:

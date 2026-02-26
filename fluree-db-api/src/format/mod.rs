@@ -135,7 +135,10 @@ pub fn format_results(
     // ASK queries: return boolean based on solution existence
     if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
         let has_solution = result.batches.iter().any(|b| !b.is_empty());
-        return Ok(json!({"head": {}, "boolean": has_solution}));
+        return match config.format {
+            OutputFormat::SparqlJson => Ok(json!({"head": {}, "boolean": has_solution})),
+            _ => Ok(JsonValue::Bool(has_solution)),
+        };
     }
 
     // Graph crawl queries require async formatting for database access
@@ -250,7 +253,10 @@ pub async fn format_results_async(
     // ASK queries: return boolean based on solution existence
     if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
         let has_solution = result.batches.iter().any(|b| !b.is_empty());
-        return Ok(json!({"head": {}, "boolean": has_solution}));
+        return match config.format {
+            OutputFormat::SparqlJson => Ok(json!({"head": {}, "boolean": has_solution})),
+            _ => Ok(JsonValue::Bool(has_solution)),
+        };
     }
 
     // Graph crawl queries use async formatter with DB access
