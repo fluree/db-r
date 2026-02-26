@@ -3,15 +3,24 @@
 //! These tests are designed to validate end-to-end operator semantics without
 //! requiring the on-disk `test-database` fixture.
 
-use fluree_db_core::{LedgerSnapshot, Sid};
+use std::sync::Arc;
+
+use fluree_db_core::comparator::IndexType;
+use fluree_db_core::flake::Flake;
+use fluree_db_core::overlay::OverlayProvider;
+use fluree_db_core::value::FlakeValue;
+use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+
 use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
+use fluree_db_query::ir::{Expression, FilterValue};
 use fluree_db_query::join::NestedLoopJoinOperator;
+use fluree_db_query::operator::inline::InlineOperator;
 use fluree_db_query::operator::Operator;
 use fluree_db_query::optional::{OptionalBuilder, OptionalOperator};
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
-use std::sync::Arc;
+use fluree_db_query::ScanOperator;
 
 /// A simple operator that yields a single batch then exhausts.
 struct SingleBatchOp {
@@ -142,5 +151,82 @@ async fn test_optional_poison_blocks_subsequent() {
     assert!(
         join_out.is_none(),
         "Expected no results when a poisoned var is required for binding"
+    );
+}
+
+struct SimpleOverlay {
+    epoch: u64,
+    flakes: Vec<Flake>,
+}
+
+impl OverlayProvider for SimpleOverlay {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        _g_id: GraphId,
+        _index: IndexType,
+        _first: Option<&Flake>,
+        _rhs: Option<&Flake>,
+        _leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        for flake in &self.flakes {
+            if flake.t <= to_t {
+                callback(flake);
+            }
+        }
+    }
+}
+
+/// Regression guard: empty-schema RangeScanOperator must still apply inline filters.
+#[tokio::test]
+async fn test_range_scan_empty_schema_respects_inline_filter() {
+    // Genesis snapshot => ScanOperator will select the RangeScanOperator path (no binary_store).
+    let snapshot = LedgerSnapshot::genesis("test/main");
+    let vars = VarRegistry::new();
+
+    // One asserted flake matching a fully-bound triple pattern.
+    // Use t=0 so it's visible at genesis ctx.to_t.
+    let s = Sid::new(100, "s");
+    let p = Sid::new(100, "p");
+    let o = Sid::new(100, "o");
+    let ref_dt = Sid::new(1, "id");
+
+    let overlay = SimpleOverlay {
+        epoch: 1,
+        flakes: vec![Flake::new(
+            s.clone(),
+            p.clone(),
+            FlakeValue::Ref(o.clone()),
+            ref_dt,
+            0,
+            true,
+            None,
+        )],
+    };
+
+    let ctx = ExecutionContext::with_overlay(&snapshot, &vars, &overlay);
+
+    // Fully-bound triple => empty output schema (existence semantics).
+    let tp = TriplePattern::new(Ref::Sid(s), Ref::Sid(p), Term::Sid(o));
+
+    // Inline constant filter that should drop all rows.
+    let inline_ops = vec![InlineOperator::Filter(Expression::Const(
+        FilterValue::Bool(false),
+    ))];
+
+    let mut op = ScanOperator::new(tp, None, inline_ops);
+    op.open(&ctx).await.unwrap();
+
+    let out = op.next_batch(&ctx).await.unwrap();
+    op.close();
+
+    assert!(
+        out.is_none(),
+        "expected FILTER(false) to drop the only match (no empty-schema batch)"
     );
 }
