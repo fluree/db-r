@@ -72,6 +72,14 @@ fn optional_memory_clauses() -> String {
         .join("\n  ")
 }
 
+fn optional_memory_clauses_for_subject(subject_iri: &str) -> String {
+    crate::vocab::OPTIONAL_PROPS
+        .iter()
+        .map(|(iri, var)| format!("OPTIONAL {{ <{subject_iri}> <{iri}> ?{var} }}"))
+        .collect::<Vec<_>>()
+        .join("\n  ")
+}
+
 /// Name of the internal memory ledger.
 pub const MEMORY_LEDGER: &str = "__memory";
 
@@ -297,27 +305,15 @@ impl MemoryStore {
         // Compact form is canonical for Memory.id
         let compact = compact_id(&expanded);
         let id = &expanded;
+        let optional = optional_memory_clauses_for_subject(id);
         let sparql = format!(
-            r#"SELECT ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind
-WHERE {{
-  <{id}> a ?type .
-  <{id}> <https://ns.flur.ee/memory#content> ?content .
-  <{id}> <https://ns.flur.ee/memory#createdAt> ?createdAt .
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#scope> ?scope }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#sensitivity> ?sensitivity }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#severity> ?severity }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#tag> ?tag }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#artifactRef> ?artifactRef }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#branch> ?branch }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#supersedes> ?supersedes }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#validFrom> ?validFrom }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#validTo> ?validTo }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#rationale> ?rationale }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#alternatives> ?alternatives }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#factKind> ?factKind }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#prefScope> ?prefScope }}
-  OPTIONAL {{ <{id}> <https://ns.flur.ee/memory#artifactKind> ?artifactKind }}
-}}"#
+            "SELECT ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\n\
+WHERE {{\n\
+  <{id}> a ?type .\n\
+  <{id}> <https://ns.flur.ee/memory#content> ?content .\n\
+  <{id}> <https://ns.flur.ee/memory#createdAt> ?createdAt .\n\
+  {optional}\n\
+}}"
         );
 
         let result = self
