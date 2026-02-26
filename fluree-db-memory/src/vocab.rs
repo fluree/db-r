@@ -31,3 +31,23 @@ pub const PROP_ARTIFACT_KIND: &str = "https://ns.flur.ee/memory#artifactKind";
 // Scope IRIs (named graph identifiers)
 pub const SCOPE_REPO: &str = "https://ns.flur.ee/memory#repo";
 pub const SCOPE_USER: &str = "https://ns.flur.ee/memory#user";
+
+/// Properties that are OPTIONAL in most SPARQL projections for Memory rows.
+///
+/// Each tuple is `(property_iri, var_name)` where `var_name` is used as `?{var_name}`.
+pub const OPTIONAL_PROPS: [(&str, &str); 14] = [
+    (PROP_SCOPE, "scope"),
+    (PROP_SENSITIVITY, "sensitivity"),
+    (PROP_SEVERITY, "severity"),
+    (PROP_TAG, "tag"),
+    (PROP_ARTIFACT_REF, "artifactRef"),
+    (PROP_BRANCH, "branch"),
+    (PROP_SUPERSEDES, "supersedes"),
+    (PROP_VALID_FROM, "validFrom"),
+    (PROP_VALID_TO, "validTo"),
+    (PROP_RATIONALE, "rationale"),
+    (PROP_ALTERNATIVES, "alternatives"),
+    (PROP_FACT_KIND, "factKind"),
+    (PROP_PREF_SCOPE, "prefScope"),
+    (PROP_ARTIFACT_KIND, "artifactKind"),
+];

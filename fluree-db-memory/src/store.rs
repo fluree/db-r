@@ -13,23 +13,6 @@ use tracing::debug;
 const MEM_PREFIX: &str = "mem:";
 const MEM_NAMESPACE: &str = "https://ns.flur.ee/memory#";
 
-const OPTIONAL_MEMORY_CLAUSES: [&str; 14] = [
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#scope> ?scope }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#sensitivity> ?sensitivity }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#severity> ?severity }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#tag> ?tag }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactRef> ?artifactRef }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#branch> ?branch }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#supersedes> ?supersedes }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#validFrom> ?validFrom }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#validTo> ?validTo }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#rationale> ?rationale }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#alternatives> ?alternatives }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#factKind> ?factKind }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#prefScope> ?prefScope }",
-    "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactKind> ?artifactKind }",
-];
-
 /// Expand compact `mem:` prefix IDs to full IRIs for SPARQL queries.
 /// Passes through already-expanded IRIs unchanged.
 fn expand_id(id: &str) -> String {
@@ -79,6 +62,14 @@ fn preview_utf8(s: &str, max_bytes: usize) -> String {
         return "...".to_string();
     }
     format!("{}...", &s[..end])
+}
+
+fn optional_memory_clauses() -> String {
+    crate::vocab::OPTIONAL_PROPS
+        .iter()
+        .map(|(iri, var)| format!("OPTIONAL {{ ?id <{iri}> ?{var} }}"))
+        .collect::<Vec<_>>()
+        .join("\n  ")
 }
 
 /// Name of the internal memory ledger.
@@ -507,7 +498,7 @@ WHERE {{
         let sparql = format!(
             "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n}}\nORDER BY ASC(?id)",
             where_clauses.join(" .\n  "),
-            OPTIONAL_MEMORY_CLAUSES.join("\n  "),
+            optional_memory_clauses(),
         );
 
         let result = self
@@ -572,7 +563,7 @@ WHERE {{
         let sparql = format!(
             "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n  {}\n}}\nORDER BY DESC(?createdAt)",
             where_clauses.join(" .\n  "),
-            OPTIONAL_MEMORY_CLAUSES.join("\n  "),
+            optional_memory_clauses(),
             filter_clauses.join("\n  "),
         );
 

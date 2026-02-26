@@ -2,7 +2,7 @@
   "mcpServers": {
     "fluree-memory": {
       "type": "stdio",
-      "command": "/usr/local/bin/fluree",
+      "command": "fluree",
       "args": [
         "mcp",
         "serve",
