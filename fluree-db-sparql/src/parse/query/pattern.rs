@@ -120,21 +120,8 @@ impl<'a> super::Parser<'a> {
                     } else {
                         // Subquery parse failed — skip to matching } to prevent
                         // the unparsed tokens from leaking into the outer scope.
-                        let mut depth = 1u32;
-                        while depth > 0 && !self.stream.is_eof() {
-                            match &self.stream.peek().kind {
-                                TokenKind::LBrace => depth += 1,
-                                TokenKind::RBrace => depth -= 1,
-                                _ => {}
-                            }
-                            if depth > 0 {
-                                self.stream.advance();
-                            }
-                        }
-                        // Consume the final }
-                        if self.stream.check(&TokenKind::RBrace) {
-                            self.stream.advance();
-                        }
+                        self.stream
+                            .skip_balanced(&TokenKind::LBrace, &TokenKind::RBrace);
                     }
                 } else if let Some(inner) = self.parse_group_graph_pattern() {
                     // Check for UNION after the group

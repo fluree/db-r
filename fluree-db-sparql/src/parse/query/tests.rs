@@ -1636,3 +1636,118 @@ fn test_modify_full() {
         _ => panic!("Expected Modify operation"),
     }
 }
+
+// ========================================================================
+// RDF Collection (List) Syntax — Error Recovery Tests
+// ========================================================================
+
+#[test]
+fn test_rdf_collection_in_subject_position() {
+    // RDF collection syntax in subject position should produce an error, not hang.
+    let result = parse("SELECT * WHERE { (1 2 3) ?p ?o }");
+    assert!(
+        result.has_errors(),
+        "RDF collection in subject position should produce an error"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("collection")),
+        "Error should mention 'collection': {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_rdf_collection_in_object_position() {
+    // RDF collection syntax in object position should produce an error, not hang.
+    let result = parse("SELECT * WHERE { ?s ?p (1 2 3) }");
+    assert!(
+        result.has_errors(),
+        "RDF collection in object position should produce an error"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("collection")),
+        "Error should mention 'collection': {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_rdf_nil_in_subject_position() {
+    // Empty list () in subject position should produce an error, not hang.
+    let result = parse("SELECT * WHERE { () ?p ?o }");
+    assert!(
+        result.has_errors(),
+        "Nil in subject position should produce an error"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("collection")),
+        "Error should mention 'collection': {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_rdf_nil_in_object_position() {
+    // Empty list () in object position should produce an error, not hang.
+    let result = parse("SELECT * WHERE { ?s ?p () }");
+    assert!(
+        result.has_errors(),
+        "Nil in object position should produce an error"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("collection")),
+        "Error should mention 'collection': {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_nested_rdf_collection_no_hang() {
+    // Nested collections should be skipped without hanging.
+    let result = parse("SELECT * WHERE { ((1 2) (3 4)) ?p ?o }");
+    assert!(
+        result.has_errors(),
+        "Nested collections should produce errors"
+    );
+}
+
+#[test]
+fn test_rdf_collection_parser_recovers() {
+    // After skipping a collection, the parser should recover and parse
+    // subsequent triple patterns.
+    let result = parse("SELECT * WHERE { ?s ?p (1 2) . ?x ?y ?z }");
+    assert!(result.has_errors(), "Collection should produce an error");
+    // The AST should still be produced (error recovery, not fatal).
+    assert!(
+        result.ast.is_some(),
+        "Parser should recover and produce an AST despite collection error"
+    );
+}

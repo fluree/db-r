@@ -378,6 +378,23 @@ impl TokenStream {
         )
     }
 
+    /// Skip tokens until a balanced closing delimiter is found.
+    ///
+    /// Assumes the opening delimiter has already been consumed (depth starts
+    /// at 1). Tracks nesting and advances past the matching closing delimiter.
+    /// No-ops at EOF without panicking.
+    pub fn skip_balanced(&mut self, open: &TokenKind, close: &TokenKind) {
+        let mut depth = 1u32;
+        while depth > 0 && !self.is_eof() {
+            if self.check(open) {
+                depth += 1;
+            } else if self.check(close) {
+                depth -= 1;
+            }
+            self.advance();
+        }
+    }
+
     /// Check if current token can start a term (subject, predicate, or object).
     pub fn is_term_start(&self) -> bool {
         matches!(
@@ -396,7 +413,8 @@ impl TokenStream {
                 | TokenKind::KwFalse
                 | TokenKind::KwA
                 | TokenKind::LBracket  // Property list syntax
-                | TokenKind::LParen    // Collection syntax
+                | TokenKind::LParen    // Collection syntax (non-empty)
+                | TokenKind::Nil       // Collection syntax (empty list)
                 | TokenKind::TripleStart // RDF-star quoted triple
         )
     }
