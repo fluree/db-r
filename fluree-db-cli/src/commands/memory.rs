@@ -301,8 +301,8 @@ fn detect_ai_tools() -> Vec<DetectedTool> {
 
 /// Returns true if stdin is a terminal (not piped).
 fn stdin_is_tty() -> bool {
-    use std::os::unix::io::AsRawFd;
-    unsafe { libc::isatty(std::io::stdin().as_raw_fd()) != 0 }
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 /// Prompt for Y/n confirmation on stderr. Returns true for Y (default).

@@ -89,4 +89,3 @@ CLI tracing is disabled when running `fluree mcp serve` to avoid any log output 
 ## See Also
 
 - [memory](memory.md) - CLI commands for memory management
-- [Developer memory layer](../design/memory-layer.md) - Design doc with architecture and data model

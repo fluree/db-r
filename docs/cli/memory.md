@@ -29,8 +29,6 @@ The memory system stores project knowledge as RDF triples in a dedicated `__memo
 
 Run `fluree memory init` before using other memory commands. The MCP server auto-initializes on first tool call.
 
-See [Developer memory layer](../design/memory-layer.md) for the full design.
-
 ## fluree memory init
 
 Initialize the memory store and optionally configure MCP for detected AI coding tools. Idempotent — safe to run multiple times.
@@ -387,4 +385,3 @@ Setting `FLUREE_HOME` ensures the MCP server uses the current workspace’s `.fl
 ## See Also
 
 - [mcp](mcp.md) - MCP server for IDE agent integration
-- [Developer memory layer](../design/memory-layer.md) - Design doc with architecture, data model, and scoring algorithm

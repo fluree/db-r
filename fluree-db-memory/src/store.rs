@@ -13,6 +13,23 @@ use tracing::debug;
 const MEM_PREFIX: &str = "mem:";
 const MEM_NAMESPACE: &str = "https://ns.flur.ee/memory#";
 
+const OPTIONAL_MEMORY_CLAUSES: [&str; 14] = [
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#scope> ?scope }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#sensitivity> ?sensitivity }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#severity> ?severity }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#tag> ?tag }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactRef> ?artifactRef }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#branch> ?branch }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#supersedes> ?supersedes }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#validFrom> ?validFrom }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#validTo> ?validTo }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#rationale> ?rationale }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#alternatives> ?alternatives }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#factKind> ?factKind }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#prefScope> ?prefScope }",
+    "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactKind> ?artifactKind }",
+];
+
 /// Expand compact `mem:` prefix IDs to full IRIs for SPARQL queries.
 /// Passes through already-expanded IRIs unchanged.
 fn expand_id(id: &str) -> String {
@@ -32,6 +49,36 @@ fn compact_id(id: &str) -> String {
     } else {
         id.to_string()
     }
+}
+
+fn escape_sparql_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn preview_utf8(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return "...".to_string();
+    }
+    format!("{}...", &s[..end])
 }
 
 /// Name of the internal memory ledger.
@@ -457,27 +504,10 @@ WHERE {{
             ));
         }
 
-        let optional_clauses = vec![
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#scope> ?scope }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#sensitivity> ?sensitivity }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#severity> ?severity }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#tag> ?tag }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactRef> ?artifactRef }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#branch> ?branch }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#supersedes> ?supersedes }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#validFrom> ?validFrom }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#validTo> ?validTo }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#rationale> ?rationale }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#alternatives> ?alternatives }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#factKind> ?factKind }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#prefScope> ?prefScope }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactKind> ?artifactKind }".to_string(),
-        ];
-
         let sparql = format!(
             "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n}}\nORDER BY ASC(?id)",
             where_clauses.join(" .\n  "),
-            optional_clauses.join("\n  "),
+            OPTIONAL_MEMORY_CLAUSES.join("\n  "),
         );
 
         let result = self
@@ -507,23 +537,6 @@ WHERE {{
             "FILTER NOT EXISTS { ?newer <https://ns.flur.ee/memory#supersedes> ?id }".to_string(),
         ];
 
-        let optional_clauses = vec![
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#scope> ?scope }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#sensitivity> ?sensitivity }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#severity> ?severity }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#tag> ?tag }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactRef> ?artifactRef }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#branch> ?branch }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#supersedes> ?supersedes }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#validFrom> ?validFrom }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#validTo> ?validTo }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#rationale> ?rationale }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#alternatives> ?alternatives }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#factKind> ?factKind }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#prefScope> ?prefScope }".to_string(),
-            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactKind> ?artifactKind }".to_string(),
-        ];
-
         // Apply kind filter
         if let Some(kind) = &filter.kind {
             where_clauses.push(format!(
@@ -535,11 +548,13 @@ WHERE {{
 
         // Apply tag filter
         for tag in &filter.tags {
+            let tag = escape_sparql_string(tag);
             where_clauses.push(format!("?id <https://ns.flur.ee/memory#tag> \"{}\"", tag));
         }
 
         // Apply branch filter
         if let Some(branch) = &filter.branch {
+            let branch = escape_sparql_string(branch);
             where_clauses.push(format!(
                 "?id <https://ns.flur.ee/memory#branch> \"{}\"",
                 branch
@@ -557,7 +572,7 @@ WHERE {{
         let sparql = format!(
             "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n  {}\n}}\nORDER BY DESC(?createdAt)",
             where_clauses.join(" .\n  "),
-            optional_clauses.join("\n  "),
+            OPTIONAL_MEMORY_CLAUSES.join("\n  "),
             filter_clauses.join("\n  "),
         );
 
@@ -605,11 +620,7 @@ WHERE {{
             .iter()
             .take(10)
             .map(|m| {
-                let summary = if m.content.len() > 100 {
-                    format!("{}...", &m.content[..100])
-                } else {
-                    m.content.clone()
-                };
+                let summary = preview_utf8(&m.content, 100);
                 MemoryPreview {
                     id: m.id.clone(),
                     kind: m.kind,
@@ -776,8 +787,22 @@ WHERE {{
         let memories: Vec<Memory> = serde_json::from_value(data)?;
         let count = memories.len();
 
-        for mem in &memories {
-            let doc = memory_to_jsonld(mem);
+        for mut mem in memories {
+            if crate::secrets::SecretDetector::has_secrets(&mem.content) {
+                mem.content = crate::secrets::SecretDetector::redact(&mem.content);
+            }
+            if let Some(rationale) = mem.rationale.as_deref() {
+                if crate::secrets::SecretDetector::has_secrets(rationale) {
+                    mem.rationale = Some(crate::secrets::SecretDetector::redact(rationale));
+                }
+            }
+            if let Some(alternatives) = mem.alternatives.as_deref() {
+                if crate::secrets::SecretDetector::has_secrets(alternatives) {
+                    mem.alternatives = Some(crate::secrets::SecretDetector::redact(alternatives));
+                }
+            }
+
+            let doc = memory_to_jsonld(&mem);
 
             self.fluree
                 .graph(MEMORY_LEDGER_ID)
