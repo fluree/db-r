@@ -1256,7 +1256,7 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             ParseError::MissingField(
-                "select, selectOne, select-one, selectDistinct, select-distinct, or construct"
+                "select, selectOne, select-one, selectDistinct, select-distinct, construct, or ask"
             )
         ));
     }
