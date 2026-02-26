@@ -490,17 +490,9 @@ fn build_sequential_join_block(
         pending_binds = remaining_binds;
         pending_filters = remaining_filters;
 
-        operator = Some(build_scan_or_join(operator, tp, object_bounds, inline_ops));
-
-        // Update bound vars with triple vars + any bind vars from inline operators.
-        for v in tp.variables() {
-            bound.insert(v);
-        }
-        if let Some(op) = &operator {
-            for &v in op.schema() {
-                bound.insert(v);
-            }
-        }
+        let op = build_scan_or_join(operator, tp, object_bounds, inline_ops);
+        bound.extend(op.schema().iter().copied());
+        operator = Some(op);
 
         if let Some(child) = operator.take() {
             let (child, new_binds, new_filters) = apply_deferred_patterns(
