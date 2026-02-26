@@ -13,6 +13,7 @@
 //! merge_policy_opts()         — request-scoped policy merge
 //! merge_reasoning()           — request-scoped reasoning merge
 //! merge_shacl_opts()          — transaction-scoped SHACL merge
+//! merge_transact_opts()       — transaction-scoped uniqueness merge
 //! merge_datalog_opts()        — query-scoped datalog merge
 //! ```
 //!
@@ -24,8 +25,8 @@ use std::sync::Arc;
 
 use fluree_db_core::ledger_config::{
     DatalogDefaults, GraphConfig, GraphSourceRef, LedgerConfig, OverrideControl, PolicyDefaults,
-    ReasoningDefaults, ResolvedConfig, RollbackGuard, ShaclDefaults, TrustMode, TrustPolicy,
-    ValidationMode,
+    ReasoningDefaults, ResolvedConfig, RollbackGuard, ShaclDefaults, TransactDefaults, TrustMode,
+    TrustPolicy, ValidationMode,
 };
 use fluree_db_core::{GraphDbRef, LedgerSnapshot, OverlayProvider, Sid, CONFIG_GRAPH_ID};
 use fluree_db_query::{
@@ -108,6 +109,7 @@ pub async fn resolve_ledger_config(
     let shacl = read_shacl_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let reasoning = read_reasoning_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let datalog = read_datalog_defaults(snapshot, overlay, to_t, &config_sid).await?;
+    let transact = read_transact_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let graph_overrides = read_graph_overrides(snapshot, overlay, to_t, &config_sid).await?;
 
     Ok(Some(LedgerConfig {
@@ -116,6 +118,7 @@ pub async fn resolve_ledger_config(
         shacl,
         reasoning,
         datalog,
+        transact,
         graph_overrides,
     }))
 }
@@ -156,6 +159,10 @@ pub fn resolve_effective_config(config: &LedgerConfig, graph_iri: Option<&str>) 
         datalog: merge_setting_group(
             &config.datalog,
             graph_override.and_then(|gc| gc.datalog.as_ref()),
+        ),
+        transact: merge_setting_group(
+            &config.transact,
+            graph_override.and_then(|gc| gc.transact.as_ref()),
         ),
     }
 }
@@ -325,6 +332,31 @@ pub fn merge_datalog_opts(
     })
 }
 
+/// Transaction-time uniqueness configuration from config graph.
+#[derive(Debug, Clone)]
+pub struct EffectiveTransactConfig {
+    /// Whether unique constraint enforcement should run.
+    pub unique_enabled: bool,
+    /// Graphs containing `f:enforceUnique` annotations.
+    pub constraints_sources: Vec<GraphSourceRef>,
+}
+
+/// Compute effective transact settings from resolved config.
+///
+/// Returns `None` if no transact config section is present. When `None`,
+/// callers skip uniqueness enforcement entirely (zero-cost path).
+pub fn merge_transact_opts(resolved: &ResolvedConfig) -> Option<EffectiveTransactConfig> {
+    let transact = resolved.transact.as_ref()?;
+    let enabled = transact.unique_enabled.unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    Some(EffectiveTransactConfig {
+        unique_enabled: true,
+        constraints_sources: transact.constraints_sources.clone(),
+    })
+}
+
 // ============================================================================
 // Internal: Setting group merge helpers
 // ============================================================================
@@ -422,6 +454,28 @@ impl MergeableGroup for DatalogDefaults {
             enabled: self.enabled.or(base.enabled),
             rules_source: self.rules_source.clone().or(base.rules_source.clone()),
             allow_query_time_rules: self.allow_query_time_rules.or(base.allow_query_time_rules),
+            override_control: base.override_control.effective_min(&self.override_control),
+        }
+    }
+}
+
+impl MergeableGroup for TransactDefaults {
+    fn override_control(&self) -> &OverrideControl {
+        &self.override_control
+    }
+
+    /// Additive merge: once enabled at ledger level, stays enabled;
+    /// per-graph sources ADD TO ledger-wide sources.
+    fn merge_over(&self, base: &Self) -> Self {
+        TransactDefaults {
+            unique_enabled: Some(
+                self.unique_enabled.unwrap_or(false) || base.unique_enabled.unwrap_or(false),
+            ),
+            constraints_sources: {
+                let mut sources = base.constraints_sources.clone();
+                sources.extend(self.constraints_sources.iter().cloned());
+                sources
+            },
             override_control: base.override_control.effective_min(&self.override_control),
         }
     }
@@ -829,6 +883,55 @@ async fn read_datalog_defaults(
     }))
 }
 
+/// Read transact defaults from a parent subject (LedgerConfig or GraphConfig).
+///
+/// `f:transactDefaults` points to a group with `f:uniqueEnabled` (bool) and
+/// `f:constraintsSource` (one or more `f:GraphRef`). Multiple sources are
+/// supported for additive per-graph merging.
+async fn read_transact_defaults(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn OverlayProvider,
+    to_t: i64,
+    parent_sid: &Sid,
+) -> Result<Option<TransactDefaults>> {
+    let group_sid = match read_ref_field(
+        snapshot,
+        overlay,
+        to_t,
+        parent_sid,
+        config_iris::TRANSACT_DEFAULTS,
+    )
+    .await?
+    {
+        Some(sid) => sid,
+        None => return Ok(None),
+    };
+
+    let unique_enabled = read_bool_field(
+        snapshot,
+        overlay,
+        to_t,
+        &group_sid,
+        config_iris::UNIQUE_ENABLED,
+    )
+    .await?;
+    let constraints_sources = read_graph_source_refs(
+        snapshot,
+        overlay,
+        to_t,
+        &group_sid,
+        config_iris::CONSTRAINTS_SOURCE,
+    )
+    .await?;
+    let override_control = read_override_control(snapshot, overlay, to_t, &group_sid).await?;
+
+    Ok(Some(TransactDefaults {
+        unique_enabled,
+        constraints_sources,
+        override_control,
+    }))
+}
+
 /// Read per-graph config overrides (`f:graphOverrides`).
 async fn read_graph_overrides(
     snapshot: &LedgerSnapshot,
@@ -876,6 +979,7 @@ async fn read_single_graph_config(
     let shacl = read_shacl_defaults(snapshot, overlay, to_t, gc_sid).await?;
     let reasoning = read_reasoning_defaults(snapshot, overlay, to_t, gc_sid).await?;
     let datalog = read_datalog_defaults(snapshot, overlay, to_t, gc_sid).await?;
+    let transact = read_transact_defaults(snapshot, overlay, to_t, gc_sid).await?;
 
     Ok(Some(GraphConfig {
         target_graph,
@@ -883,6 +987,7 @@ async fn read_single_graph_config(
         shacl,
         reasoning,
         datalog,
+        transact,
     }))
 }
 
@@ -1028,6 +1133,96 @@ async fn read_graph_source_ref(
     }))
 }
 
+/// Read zero or more `GraphSourceRef` values from a multi-valued predicate.
+///
+/// Unlike `read_graph_source_ref()` which returns `Option<GraphSourceRef>`,
+/// this returns a `Vec` — each object of the predicate is independently
+/// resolved as a `GraphSourceRef`. Used for `f:constraintsSource` which
+/// supports multiple constraint annotation sources.
+async fn read_graph_source_refs(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn OverlayProvider,
+    to_t: i64,
+    parent_sid: &Sid,
+    pred_iri: &str,
+) -> Result<Vec<GraphSourceRef>> {
+    let pred_sid = match try_encode(snapshot, pred_iri) {
+        Some(sid) => sid,
+        None => return Ok(Vec::new()),
+    };
+
+    let bindings = query_config_predicate(snapshot, overlay, to_t, parent_sid, &pred_sid).await?;
+
+    let mut refs = Vec::new();
+    for binding in bindings {
+        if let Some(ref_sid) = binding.as_sid() {
+            if let Some(gsr) =
+                read_single_graph_ref_from_sid(snapshot, overlay, to_t, ref_sid).await?
+            {
+                refs.push(gsr);
+            }
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Read a `GraphSourceRef` from a known ref SID (the `f:GraphRef` subject).
+///
+/// Shared logic between `read_graph_source_ref()` (single-valued) and
+/// `read_graph_source_refs()` (multi-valued).
+async fn read_single_graph_ref_from_sid(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn OverlayProvider,
+    to_t: i64,
+    ref_sid: &Sid,
+) -> Result<Option<GraphSourceRef>> {
+    // Follow f:graphSource to the nested source object
+    let source_sid =
+        match read_ref_field(snapshot, overlay, to_t, ref_sid, config_iris::GRAPH_SOURCE).await? {
+            Some(sid) => sid,
+            None => {
+                tracing::debug!("GraphRef without f:graphSource — no source coordinates");
+                return Ok(Some(GraphSourceRef {
+                    ledger: None,
+                    graph_selector: None,
+                    at_t: None,
+                    trust_policy: read_trust_policy(snapshot, overlay, to_t, ref_sid).await?,
+                    rollback_guard: read_rollback_guard(snapshot, overlay, to_t, ref_sid).await?,
+                }));
+            }
+        };
+
+    let ledger = read_iri_field(
+        snapshot,
+        overlay,
+        to_t,
+        &source_sid,
+        config_iris::LEDGER_PRED,
+    )
+    .await?;
+    let graph_selector = read_iri_field(
+        snapshot,
+        overlay,
+        to_t,
+        &source_sid,
+        config_iris::GRAPH_SELECTOR,
+    )
+    .await?;
+    let at_t = read_i64_field(snapshot, overlay, to_t, &source_sid, config_iris::AT_T).await?;
+
+    let trust_policy = read_trust_policy(snapshot, overlay, to_t, ref_sid).await?;
+    let rollback_guard = read_rollback_guard(snapshot, overlay, to_t, ref_sid).await?;
+
+    Ok(Some(GraphSourceRef {
+        ledger,
+        graph_selector,
+        at_t,
+        trust_policy,
+        rollback_guard,
+    }))
+}
+
 /// Read a `TrustPolicy` from a subject.
 async fn read_trust_policy(
     snapshot: &LedgerSnapshot,
@@ -1133,6 +1328,7 @@ mod tests {
         assert!(resolved.shacl.is_none());
         assert!(resolved.reasoning.is_none());
         assert!(resolved.datalog.is_none());
+        assert!(resolved.transact.is_none());
     }
 
     #[test]
@@ -1172,6 +1368,7 @@ mod tests {
                 shacl: None,
                 reasoning: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1199,6 +1396,7 @@ mod tests {
                 policy: None,
                 shacl: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1225,6 +1423,7 @@ mod tests {
                 shacl: None,
                 reasoning: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1252,6 +1451,7 @@ mod tests {
                 shacl: None,
                 reasoning: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1280,6 +1480,7 @@ mod tests {
                 policy: None,
                 shacl: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1307,6 +1508,7 @@ mod tests {
                 policy: None,
                 reasoning: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1342,6 +1544,7 @@ mod tests {
                 }),
                 shacl: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1367,6 +1570,7 @@ mod tests {
                 policy: None,
                 shacl: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };
@@ -1391,6 +1595,7 @@ mod tests {
                 policy: None,
                 shacl: None,
                 datalog: None,
+                transact: None,
             }],
             ..Default::default()
         };

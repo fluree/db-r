@@ -279,3 +279,83 @@ mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
     mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
     mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
     mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .
+
+mem:constraint-01kjcyjgszs18b9h4jg7h3xpfj a mem:Constraint ;
+    mem:content "Consensus/multisig gotcha for config graph: commit validity rules (validator set/threshold) used to validate a proposed commit at t must come from already-committed state (effectively config as-of t-1), not from config mutations inside the same commit; otherwise a commit could authorize itself by changing validator set/threshold in its own payload. Config can declare consensus parameters, but validation must treat them as lagging state." ;
+    mem:tag "commit-validation" ;
+    mem:tag "config-graph" ;
+    mem:tag "consensus" ;
+    mem:tag "gotcha" ;
+    mem:tag "multisig" ;
+    mem:tag "raft" ;
+    mem:tag "tendermint" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-02-26T12:25:27.104151+00:00"^^xsd:dateTime .
+
+
+mem:constraint-01kjd0p1bpj6n5nw00ssap82h0 a mem:Constraint ;
+    mem:content "Memory hygiene when recalling: if memory_recall returns multiple overlapping/near-duplicate memories about the same concept, consolidate them into a single canonical memory. Prefer creating the canonical version via memory_update so it supersedes an older entry (superseded entries are filtered from “current” results). For any remaining duplicates, either forget them if they add no unique value, or rewrite them into a short pointer that links to the canonical memory ID." ;
+    mem:tag "agent-rules" ;
+    mem:tag "dedup" ;
+    mem:tag "hygiene" ;
+    mem:tag "memory" ;
+    mem:tag "recall" ;
+    mem:tag "supersedes" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "should" ;
+    mem:artifactRef ".cursor/rules/fluree_rules.md" ;
+    mem:createdAt "2026-02-26T13:02:19.510395+00:00"^^xsd:dateTime .
+
+mem:artifact-01kjdzhtx6em3sg77t7faxyzpz a mem:Artifact ;
+    mem:content "The `config_iris` module in `fluree-vocab/src/lib.rs` (line 1673–1838) defines ~50 full-IRI string constants for the Fluree ledger config graph vocabulary. All IRIs live under `https://ns.flur.ee/db#`.\n\n**Organization by section:**\n- **Type classes** — `LEDGER_CONFIG`, `GRAPH_CONFIG`, `GRAPH_REF`, `TRUST_POLICY`\n- **Setting group predicates** — `POLICY_DEFAULTS`, `SHACL_DEFAULTS`, `REASONING_DEFAULTS`, `DATALOG_DEFAULTS`, `GRAPH_OVERRIDES`\n- **Policy fields** — `DEFAULT_ALLOW`, `POLICY_SOURCE`\n- **SHACL fields** — `SHACL_ENABLED`, `SHAPES_SOURCE`, `VALIDATION_MODE`, `VALIDATION_REJECT`, `VALIDATION_WARN`\n- **Reasoning fields** — `REASONING_MODES`, `SCHEMA_SOURCE`\n- **Datalog fields** — `DATALOG_ENABLED`, `RULES_SOURCE`, `ALLOW_QUERY_TIME_RULES`\n- **Override control** — `OVERRIDE_CONTROL`, `CONTROL_MODE`, `ALLOWED_IDENTITIES`, `OVERRIDE_NONE`, `OVERRIDE_ALL`, `IDENTITY_RESTRICTED`\n- **GraphConfig fields** — `TARGET_GRAPH`, `DEFAULT_GRAPH` (sentinel for g_id=0), `TXN_META_GRAPH` (sentinel for g_id=1)\n- **GraphRef / GraphSource fields** — `GRAPH_SOURCE`, `LEDGER_PRED`, `GRAPH_SELECTOR`\n- **TrustPolicy fields** — `TRUST_POLICY_PRED`, `TRUST_MODE`, `TRUSTED`, `SIGNED_INDEX`, `COMMIT_VERIFIED`\n- **Temporal** — `AT_T`\n- **Rollback guard** — `ROLLBACK_GUARD`, `MIN_T`\n- **Transact defaults** — `TRANSACT_DEFAULTS`, `UNIQUE_ENABLED`, `CONSTRAINTS_SOURCE`, `ENFORCE_UNIQUE`\n\n**Primary consumer:** `fluree-db-api/src/config_resolver.rs` — reads the config graph by encoding these IRIs into SIDs and querying the ledger snapshot. The config resolver uses these constants to hydrate `LedgerConfig`, `GraphConfig`, `PolicyDefaults`, `ShaclDefaults`, `ReasoningDefaults`, `DatalogDefaults`, trust policies, rollback guards, and override controls.\n\n**Sentinel IRIs:** `DEFAULT_GRAPH` and `TXN_META_GRAPH` are sentinel values used in `matches_graph_target()` to match graph overrides — `DEFAULT_GRAPH` matches `None` (g_id=0) and `TXN_META_GRAPH` matches any IRI ending with `#txn-meta`." ;
+    mem:tag "IRI-constants" ;
+    mem:tag "config-graph" ;
+    mem:tag "config-iris" ;
+    mem:tag "config-resolver" ;
+    mem:tag "ledger-config" ;
+    mem:tag "vocab" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-vocab/src/lib.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:01:47.686885+00:00"^^xsd:dateTime ;
+    mem:artifactKind "module" .
+
+mem:fact-01kje110tp07nwqae7av5amd5s a mem:Fact ;
+    mem:content "f:enforceUnique implementation: transaction-time property uniqueness enforcement. Annotations (f:enforceUnique true) are triples on property IRIs in source graphs. Config activation via f:transactDefaults with f:uniqueEnabled and f:constraintsSource. Uses POST index with datatype-aware (g, p, o, dt) matching. Stale removal in range_with_overlay handles last-op-wins. Enforcement runs after staging, reads config from pre-txn state (lagging). Independent of shacl feature flag. Files: fluree-vocab config_iris (4 constants), ledger_config.rs TransactDefaults, config_resolver.rs (MergeableGroup + reader + merge_transact_opts), tx.rs (enforce_unique_after_staging → resolve_per_graph_unique_sids → enforce_unique_constraints)." ;
+    mem:tag "config-graph" ;
+    mem:tag "enforce-unique" ;
+    mem:tag "transact-defaults" ;
+    mem:tag "tx-pipeline" ;
+    mem:tag "uniqueness" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-db-api/src/tx.rs" ;
+    mem:artifactRef "fluree-db-core/src/ledger_config.rs" ;
+    mem:artifactRef "fluree-db-transact/src/error.rs" ;
+    mem:artifactRef "fluree-vocab/src/lib.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:27:33.846975+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:decision-01kje2pt9maxrxjw49ydgejmpe a mem:Decision ;
+    mem:content "f:enforceUnique uses storage-layer value identity, NOT RDF strict equality. The uniqueness key is (graph, predicate, FlakeValue) — it ignores the RDF datatype IRI (flake.dt) and language tag (FlakeMeta.lang). This matches \"how humans think of the value\": if the bytes are the same, it's a duplicate regardless of what datatype or language annotation is attached. Callers cannot subvert uniqueness by asserting the same string with a different datatype IRI or lang tag. Different FlakeValue variants (e.g., FlakeValue::String(\"42\") vs FlakeValue::Long(42)) are naturally distinct at the storage layer and do NOT conflict. The RangeMatch query uses predicate_object(p, o) without .with_datatype(), which matches all datatypes for that (p, o) pair in the POST index." ;
+    mem:tag "FlakeValue" ;
+    mem:tag "POST-index" ;
+    mem:tag "RDF" ;
+    mem:tag "config-graph" ;
+    mem:tag "datatype" ;
+    mem:tag "enforceUnique" ;
+    mem:tag "transact" ;
+    mem:tag "uniqueness" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/tx.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:56:56.628412+00:00"^^xsd:dateTime ;
+    mem:rationale "RDF strict equality treats \"hello\"^^xsd:string and \"hello\"^^ex:custom as different values because their datatype IRIs differ. For a uniqueness constraint this is surprising and easily subverted — users expect \"same text = same value.\" Storage-layer identity (FlakeValue enum variant + payload) is the right granularity: it's what the index actually stores and compares, it's deterministic, and it prevents accidental or intentional duplicate sneaking via datatype annotation." ;
+    mem:alternatives "RDF strict equality (datatype-aware key including dt Sid), datatype-family matching via dt_compatible()" .

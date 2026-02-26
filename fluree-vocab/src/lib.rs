@@ -1821,4 +1821,18 @@ pub mod config_iris {
 
     /// `f:minT` — reject any resolved head where `head_t < minT`.
     pub const MIN_T: &str = "https://ns.flur.ee/db#minT";
+
+    // ---- Transact defaults fields ----
+
+    /// `f:transactDefaults` — transact-time constraint defaults on LedgerConfig/GraphConfig.
+    pub const TRANSACT_DEFAULTS: &str = "https://ns.flur.ee/db#transactDefaults";
+
+    /// `f:uniqueEnabled` — boolean, enable unique constraint enforcement.
+    pub const UNIQUE_ENABLED: &str = "https://ns.flur.ee/db#uniqueEnabled";
+
+    /// `f:constraintsSource` — GraphRef(s) pointing to graphs containing constraint annotations.
+    pub const CONSTRAINTS_SOURCE: &str = "https://ns.flur.ee/db#constraintsSource";
+
+    /// `f:enforceUnique` — annotation on property IRIs requiring unique values per graph.
+    pub const ENFORCE_UNIQUE: &str = "https://ns.flur.ee/db#enforceUnique";
 }

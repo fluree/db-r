@@ -33,6 +33,8 @@ pub struct LedgerConfig {
     pub reasoning: Option<ReasoningDefaults>,
     /// Datalog rules defaults (`f:datalogDefaults`).
     pub datalog: Option<DatalogDefaults>,
+    /// Transact-time constraint defaults (`f:transactDefaults`).
+    pub transact: Option<TransactDefaults>,
     /// Per-graph config overrides (`f:graphOverrides`).
     pub graph_overrides: Vec<GraphConfig>,
 }
@@ -53,6 +55,8 @@ pub struct ResolvedConfig {
     pub reasoning: Option<ReasoningDefaults>,
     /// Effective datalog defaults.
     pub datalog: Option<DatalogDefaults>,
+    /// Effective transact-time constraint defaults.
+    pub transact: Option<TransactDefaults>,
 }
 
 // ============================================================================
@@ -109,6 +113,24 @@ pub struct DatalogDefaults {
     pub override_control: OverrideControl,
 }
 
+/// Transact-time constraint defaults from the config graph (`f:transactDefaults`).
+///
+/// Controls enforcement of property-level constraints (e.g., `f:enforceUnique`)
+/// during transaction staging. Constraint annotations are triples on property
+/// IRIs that live in source graphs; this setting group activates enforcement
+/// and points to those source graphs.
+#[derive(Debug, Clone, Default)]
+pub struct TransactDefaults {
+    /// `f:uniqueEnabled` — enable/disable unique constraint enforcement.
+    pub unique_enabled: Option<bool>,
+    /// `f:constraintsSource` — references to graphs containing constraint annotations.
+    /// Multiple sources are supported for additive per-graph merging.
+    /// Defaults to `[defaultGraph]` (g_id=0) when empty and uniqueEnabled is true.
+    pub constraints_sources: Vec<GraphSourceRef>,
+    /// Override control for this setting group.
+    pub override_control: OverrideControl,
+}
+
 // ============================================================================
 // Per-graph overrides
 // ============================================================================
@@ -131,6 +153,8 @@ pub struct GraphConfig {
     pub reasoning: Option<ReasoningDefaults>,
     /// Datalog overrides for this graph.
     pub datalog: Option<DatalogDefaults>,
+    /// Transact-time constraint overrides for this graph.
+    pub transact: Option<TransactDefaults>,
 }
 
 // ============================================================================
@@ -465,6 +489,7 @@ mod tests {
         assert!(config.shacl.is_none());
         assert!(config.reasoning.is_none());
         assert!(config.datalog.is_none());
+        assert!(config.transact.is_none());
         assert!(config.graph_overrides.is_empty());
     }
 

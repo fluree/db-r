@@ -77,12 +77,16 @@ pub fn format_recall_json(result: &RecallResult) -> serde_json::Value {
 ///
 /// This is the format that agents receive when they call the `memory_recall` MCP tool.
 pub fn format_context(memories: &[ScoredMemory]) -> String {
-    format_context_paged(memories, 0, memories.len(), memories.len(), false, None)
+    format_context_paged(memories, 0, None, memories.len(), false, None)
 }
 
 /// Format memories as an XML context block with pagination metadata.
 ///
-/// `offset` and `limit` describe the current page.
+/// `offset` and `limit` describe the current page.  When `limit` is `None`
+/// (caller used the default), it is omitted from the pagination tag to avoid
+/// confusing the LLM — the smart score-based filter may return fewer results
+/// than the internal default, and showing a limit the caller never asked for
+/// looks like a mismatch.
 /// `total_store` is the total number of current memories in the store.
 /// `has_more` indicates that additional results may be available at `offset + shown`.
 /// `next_score` is the BM25 score of the first result not returned, giving the LLM a
@@ -90,7 +94,7 @@ pub fn format_context(memories: &[ScoredMemory]) -> String {
 pub fn format_context_paged(
     memories: &[ScoredMemory],
     offset: usize,
-    limit: usize,
+    limit: Option<usize>,
     total_store: usize,
     has_more: bool,
     next_score: Option<f64>,
@@ -136,17 +140,20 @@ pub fn format_context_paged(
     }
 
     let shown = memories.len();
+    let limit_attr = limit
+        .map(|l| format!(" limit=\"{}\"", l))
+        .unwrap_or_default();
     if has_more {
         let next_offset = offset + shown;
         let next_score_hint = next_score
             .map(|s| format!(", next score: {:.1}", s))
             .unwrap_or_default();
         out.push_str(&format!(
-            "  <pagination shown=\"{}\" offset=\"{}\" limit=\"{}\" total_in_store=\"{}\">\
+            "  <pagination shown=\"{}\" offset=\"{}\"{} total_in_store=\"{}\">\
              Results {}\u{2013}{}{next_score_hint}. Use offset={} to retrieve more.</pagination>\n",
             shown,
             offset,
-            limit,
+            limit_attr,
             total_store,
             offset + 1,
             offset + shown,

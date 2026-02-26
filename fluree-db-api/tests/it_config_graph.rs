@@ -1338,3 +1338,281 @@ async fn merge_shacl_opts_unit_test() {
         "validation mode should be Warn"
     );
 }
+
+// =============================================================================
+// Unique constraint enforcement tests
+// =============================================================================
+
+/// Helper: write config enabling unique enforcement with default graph as constraint source.
+async fn write_unique_config(
+    fluree: &fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
+    ledger: fluree_db_ledger::LedgerState,
+    ledger_id: &str,
+) -> fluree_db_api::tx::TransactResult {
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:transactDefaults <urn:config:transact> .
+            <urn:config:transact> f:uniqueEnabled true .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed")
+}
+
+/// Test: annotations + config enabled → duplicate values rejected.
+#[tokio::test]
+async fn unique_basic_enforcement() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-basic:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Add enforceUnique annotation + seed data
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [
+                    {"@id": "ex:email", "f:enforceUnique": true},
+                    {"@id": "ex:alice", "ex:email": "alice@example.com"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: Enable unique enforcement in config
+    let result = write_unique_config(&fluree, ledger, ledger_id).await;
+    let ledger = result.ledger;
+
+    // Step 3: Try to insert duplicate email — should fail
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "ex:email": "alice@example.com"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(
+                fluree_db_transact::TransactError::UniqueConstraintViolation { .. }
+            )
+        ),
+        "duplicate email should trigger unique constraint violation: {err:?}"
+    );
+}
+
+/// Test: annotations exist but uniqueEnabled not set → duplicates allowed.
+#[tokio::test]
+async fn unique_not_enabled_no_enforcement() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-not-enabled:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Add enforceUnique annotation + data but NO config enabling it
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [
+                    {"@id": "ex:email", "f:enforceUnique": true},
+                    {"@id": "ex:alice", "ex:email": "alice@example.com"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Insert duplicate — should succeed (no config enabling uniqueness)
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "ex:email": "alice@example.com"
+            }),
+        )
+        .await
+        .expect("duplicate should be allowed when uniqueEnabled is not set");
+}
+
+/// Test: enable config in same txn as duplicates → allowed (lagging config).
+#[tokio::test]
+async fn unique_config_not_retroactive() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-not-retroactive:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Add annotation only
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@id": "ex:email",
+                "f:enforceUnique": true
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: In a SINGLE transaction, enable config AND insert duplicates.
+    // The config enablement is lagging (read from pre-txn state), so
+    // the duplicates should be allowed.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        ex:alice ex:email "alice@example.com" .
+        ex:bob ex:email "alice@example.com" .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:transactDefaults <urn:config:transact> .
+            <urn:config:transact> f:uniqueEnabled true .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config + duplicates in same txn should succeed (lagging config)");
+}
+
+/// Test: two subjects with same unique value in one txn → rejected.
+#[tokio::test]
+async fn unique_intra_txn_bulk() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-bulk:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Add annotation
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@id": "ex:email",
+                "f:enforceUnique": true
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: Enable config
+    let result = write_unique_config(&fluree, ledger, ledger_id).await;
+    let ledger = result.ledger;
+
+    // Step 3: Insert TWO subjects with the same email in one txn → should fail
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@graph": [
+                    {"@id": "ex:alice", "ex:email": "shared@example.com"},
+                    {"@id": "ex:bob", "ex:email": "shared@example.com"}
+                ]
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(
+                fluree_db_transact::TransactError::UniqueConstraintViolation { .. }
+            )
+        ),
+        "intra-txn duplicates should be rejected: {err:?}"
+    );
+}
+
+/// Test: different values for unique property → allowed.
+#[tokio::test]
+async fn unique_different_values_allowed() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-diff-vals:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Add annotation + first subject
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [
+                    {"@id": "ex:email", "f:enforceUnique": true},
+                    {"@id": "ex:alice", "ex:email": "alice@example.com"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Enable config
+    let result = write_unique_config(&fluree, ledger, ledger_id).await;
+    let ledger = result.ledger;
+
+    // Insert with different value → should succeed
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "ex:email": "bob@example.com"
+            }),
+        )
+        .await
+        .expect("different values for unique property should be allowed");
+}
