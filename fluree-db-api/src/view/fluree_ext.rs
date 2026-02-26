@@ -488,6 +488,35 @@ where
     ) -> GraphDb {
         view.with_reasoning_precedence(modes, precedence)
     }
+
+    /// Apply config-graph reasoning defaults to a view.
+    ///
+    /// Reads `ResolvedConfig.reasoning` and converts to reasoning wrapper
+    /// with the appropriate precedence based on override control.
+    ///
+    /// `server_identity` is the auth-layer-verified identity (NOT opts.identity).
+    /// Pass `None` when no auth layer is present (Phase 1).
+    pub fn apply_config_reasoning(&self, view: GraphDb, server_identity: Option<&str>) -> GraphDb {
+        let resolved = match &view.resolved_config {
+            Some(r) => r,
+            None => return view,
+        };
+
+        match config_resolver::merge_reasoning(resolved, server_identity) {
+            Some((mode_strings, precedence)) => {
+                let modes = ReasoningModes::from_mode_strings(&mode_strings);
+                // Always wrap if modes has enabled flags or explicit_none=true
+                // (config can force-disable reasoning via "none").
+                // Only skip if from_mode_strings produced a truly empty default.
+                if modes.has_any_enabled() || modes.is_disabled() {
+                    view.with_reasoning_precedence(modes, precedence)
+                } else {
+                    view
+                }
+            }
+            None => view,
+        }
+    }
 }
 
 #[cfg(test)]

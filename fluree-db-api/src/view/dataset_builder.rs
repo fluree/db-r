@@ -54,17 +54,19 @@ where
 
         let mut dataset = DataSetDb::new();
 
-        // Load default graphs, applying per-source policy if present
+        // Load default graphs, applying per-source policy and config reasoning
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
+            let view = self.apply_config_reasoning(view, None);
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs, applying per-source policy if present
+        // Load named graphs, applying per-source policy and config reasoning
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
+            let view = self.apply_config_reasoning(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -102,22 +104,25 @@ where
 
             let view = GraphDb::from_ledger_state(&ledger);
             let view = self.wrap_policy(view, opts, None).await?;
+            let view = self.apply_config_reasoning(view, None);
             return Ok(DataSetDb::single(view).with_history_range(from_t, to_t));
         }
 
         let mut dataset = DataSetDb::new();
 
-        // Load default graphs with policy (per-source overrides global)
+        // Load default graphs with policy and config reasoning (per-source overrides global)
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
+            let view = self.apply_config_reasoning(view, None);
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs with policy (per-source overrides global)
+        // Load named graphs with policy and config reasoning (per-source overrides global)
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
+            let view = self.apply_config_reasoning(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
