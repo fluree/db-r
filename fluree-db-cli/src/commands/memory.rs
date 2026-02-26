@@ -615,7 +615,10 @@ fn install_cursor(fluree_bin: &str) -> CliResult<()> {
     if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
         servers.insert("fluree-memory".to_string(), entry);
     } else if let Some(obj) = config.as_object_mut() {
-        obj.insert("mcpServers".to_string(), serde_json::json!({ "fluree-memory": entry }));
+        obj.insert(
+            "mcpServers".to_string(),
+            serde_json::json!({ "fluree-memory": entry }),
+        );
     }
     write_config(&config_path, &config)?;
     println!("  Installed: .cursor/mcp.json");
