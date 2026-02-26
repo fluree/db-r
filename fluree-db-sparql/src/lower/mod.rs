@@ -40,10 +40,12 @@
 //! - [`pattern`] — Graph pattern dispatch (BGP, OPTIONAL, UNION, etc.)
 //! - [`path`] — Property path lowering
 //! - [`rdf_star`] — RDF-star quoted triple expansion
+//! - [`ask`] — ASK query lowering
 //! - [`construct`] — CONSTRUCT query lowering
 //! - [`select`] — SELECT clause, solution modifiers, subqueries
 
 mod aggregate;
+mod ask;
 mod construct;
 mod error;
 mod expression;
@@ -194,7 +196,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 })
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
-            QueryBody::Ask(_) => Err(LowerError::unsupported_form("ASK", self.ast.span)),
+            QueryBody::Ask(ask_query) => self.lower_ask(ask_query),
             QueryBody::Describe(_) => Err(LowerError::unsupported_form("DESCRIBE", self.ast.span)),
             QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
         }
@@ -876,6 +878,55 @@ mod tests {
 
         // CONSTRUCT doesn't project variables like SELECT does
         assert!(query.select.is_empty());
+    }
+
+    // =========================================================================
+    // ASK Query Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ask_basic() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:name \"Alice\" }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        assert!(query.select.is_empty(), "ASK should not project variables");
+        assert_eq!(query.options.limit, Some(1), "ASK should inject LIMIT 1");
+        assert!(
+            query.construct_template.is_none(),
+            "ASK should have no CONSTRUCT template"
+        );
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_ask_multiple_patterns() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:name ?name . ?s ex:age ?age }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        assert!(query.select.is_empty());
+        assert_eq!(query.patterns.len(), 2);
+    }
+
+    #[test]
+    fn test_ask_with_filter() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             ASK { ?s ex:age ?age FILTER(?age > 30) }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        // Patterns: Triple + Filter
+        assert!(query.patterns.len() >= 2);
     }
 
     // =========================================================================

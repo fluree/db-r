@@ -235,6 +235,11 @@ fn reject_non_tabular(result: &QueryResult, delimiter: Delimiter) -> Result<()> 
             "{name} format not supported for CONSTRUCT queries (use JSON-LD instead)"
         )));
     }
+    if result.select_mode == SelectMode::Boolean {
+        return Err(FormatError::InvalidBinding(format!(
+            "{name} format not supported for ASK queries (boolean result)"
+        )));
+    }
     if result.graph_select.is_some() {
         return Err(FormatError::InvalidBinding(format!(
             "{name} format not supported for graph crawl queries (use JSON-LD instead)"
