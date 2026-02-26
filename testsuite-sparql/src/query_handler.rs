@@ -8,6 +8,7 @@ use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext, Selec
 
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
+use crate::rdfxml;
 use crate::result_comparison::{are_results_isomorphic, format_results_diff};
 use crate::result_format::{
     fluree_construct_to_sparql_results, fluree_json_to_sparql_results, parse_expected_results,
@@ -70,16 +71,16 @@ pub async fn run_eval_test(
         .await
         .context("Failed to create test ledger")?;
 
-    // 2. Load default graph data (.ttl) if provided.
-    //    Prepend @base so relative IRIs (including <>) resolve correctly —
-    //    same pattern used in manifest.rs for manifest files.
+    // 2. Load default graph data (.ttl or .rdf) if provided.
+    //    For .ttl: prepend @base so relative IRIs resolve correctly.
+    //    For .rdf: convert RDF/XML to N-Triples (absolute IRIs) first.
     let ledger = if let Some(data_url) = data_url {
-        let raw_turtle = read_file_to_string(data_url)
+        let raw = read_file_to_string(data_url)
             .with_context(|| format!("Reading test data: {data_url}"))?;
-        if raw_turtle.trim().is_empty() {
+        if raw.trim().is_empty() {
             ledger
         } else {
-            let turtle = format!("@base <{data_url}> .\n{raw_turtle}");
+            let turtle = prepare_for_insert(&raw, data_url)?;
             fluree
                 .insert_turtle(ledger, &turtle)
                 .await
@@ -101,10 +102,10 @@ pub async fn run_eval_test(
     } else {
         let mut current_ledger = ledger;
         for (_graph_name, graph_url) in graph_data {
-            let raw_turtle = read_file_to_string(graph_url)
+            let raw = read_file_to_string(graph_url)
                 .with_context(|| format!("Reading named graph data: {graph_url}"))?;
-            if !raw_turtle.trim().is_empty() {
-                let turtle = format!("@base <{graph_url}> .\n{raw_turtle}");
+            if !raw.trim().is_empty() {
+                let turtle = prepare_for_insert(&raw, graph_url)?;
                 current_ledger = fluree
                     .insert_turtle(current_ledger, &turtle)
                     .await
@@ -166,4 +167,17 @@ pub async fn run_eval_test(
     }
 
     Ok(())
+}
+
+/// Prepare file content for insertion into Fluree.
+///
+/// - `.rdf` files: convert RDF/XML to N-Triples (absolute IRIs, valid Turtle)
+/// - All others: prepend `@base` so relative IRIs resolve correctly
+fn prepare_for_insert(content: &str, url: &str) -> Result<String> {
+    if url.ends_with(".rdf") {
+        rdfxml::rdfxml_to_ntriples(content, url)
+            .with_context(|| format!("Converting RDF/XML to N-Triples: {url}"))
+    } else {
+        Ok(format!("@base <{url}> .\n{content}"))
+    }
 }

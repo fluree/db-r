@@ -77,7 +77,7 @@ pub fn parse_expected_results(url: &str) -> Result<SparqlResults> {
     } else if url.ends_with(".srj") {
         parse_srj(&content).with_context(|| format!("Parsing .srj: {url}"))
     } else if url.ends_with(".ttl") {
-        parse_ttl_result(&content).with_context(|| format!("Parsing .ttl: {url}"))
+        parse_ttl_result(&content, url).with_context(|| format!("Parsing .ttl: {url}"))
     } else if url.ends_with(".rdf") {
         parse_rdf_dawg_result_set(&content)
             .with_context(|| format!("Parsing .rdf DAWG result set: {url}"))
@@ -365,9 +365,10 @@ pub fn fluree_json_to_sparql_results(json: &serde_json::Value) -> Result<SparqlR
 ///
 /// Detection: if the parsed triples contain `?s rdf:type rs:ResultSet`, treat
 /// as DAWG Result Set; otherwise return as a graph.
-fn parse_ttl_result(content: &str) -> Result<SparqlResults> {
+fn parse_ttl_result(content: &str, url: &str) -> Result<SparqlResults> {
+    let with_base = format!("@base <{url}> .\n{content}");
     let mut sink = GraphCollectorSink::new();
-    parse_turtle(content, &mut sink).context("Turtle parse error")?;
+    parse_turtle(&with_base, &mut sink).context("Turtle parse error")?;
     let graph = sink.finish();
 
     // Check for DAWG Result Set vocabulary
@@ -907,7 +908,7 @@ mod tests {
                   rs:binding [ rs:value "hello" ;
                                rs:variable "v" ] ] .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         match result {
             SparqlResults::Solutions {
                 variables,
@@ -944,7 +945,7 @@ mod tests {
 [] rdf:type rs:ResultSet ;
    rs:boolean "true"^^xsd:boolean .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         assert!(matches!(result, SparqlResults::Boolean(true)));
     }
 
@@ -958,7 +959,7 @@ mod tests {
 [] rdf:type rs:ResultSet ;
    rs:boolean "false"^^xsd:boolean .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         assert!(matches!(result, SparqlResults::Boolean(false)));
     }
 
@@ -972,7 +973,7 @@ mod tests {
    rs:solution [ rs:binding [ rs:value _:b1 ;
                                rs:variable "x" ] ] .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         match result {
             SparqlResults::Solutions { solutions, .. } => {
                 assert_eq!(solutions.len(), 1);
@@ -994,7 +995,7 @@ mod tests {
    rs:solution [ rs:binding [ rs:value "42"^^xsd:integer ;
                                rs:variable "v" ] ] .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         match result {
             SparqlResults::Solutions { solutions, .. } => {
                 assert_eq!(
@@ -1018,7 +1019,7 @@ mod tests {
 ex:alice ex:name "Alice" .
 ex:bob ex:name "Bob" .
 "#;
-        let result = parse_ttl_result(ttl).unwrap();
+        let result = parse_ttl_result(ttl, "http://example.org/test").unwrap();
         match result {
             SparqlResults::Graph(triples) => {
                 assert_eq!(triples.len(), 2);
