@@ -22,7 +22,7 @@ pub async fn run(transport: &str, dirs: &FlureeDir) -> CliResult<()> {
 /// Set up file-based tracing for the MCP server.
 ///
 /// MCP uses stdio for JSON-RPC, so we can't write to stdout/stderr.
-/// Writes to `.fluree/memory/.local/mcp.log` instead.
+/// Writes to `.fluree-memory/.local/mcp.log` instead.
 fn init_mcp_tracing(memory_dir: Option<&Path>) {
     let Some(dir) = memory_dir else { return };
 
@@ -63,9 +63,10 @@ fn init_mcp_tracing(memory_dir: Option<&Path>) {
 async fn run_stdio(dirs: &FlureeDir) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;
 
-    // Determine memory_dir (same logic as CLI)
+    // Determine memory_dir: .fluree-memory/ at the project root (same logic as CLI)
     let memory_dir = if dirs.is_unified() {
-        let dir = dirs.data_dir().join("memory");
+        let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
+        let dir = project_root.join(".fluree-memory");
         if dir.exists() || dirs.data_dir().join("storage").exists() {
             Some(dir)
         } else {

@@ -429,8 +429,16 @@ pub enum Commands {
 /// Memory subcommands.
 #[derive(Subcommand)]
 pub enum MemoryAction {
-    /// Initialize the memory store (creates __memory ledger)
-    Init,
+    /// Initialize the memory store and configure MCP for detected AI tools
+    Init {
+        /// Auto-confirm all detected tool installations (non-interactive)
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Skip MCP tool detection and installation
+        #[arg(long)]
+        no_mcp: bool,
+    },
 
     /// Store a new memory
     Add {
@@ -565,7 +573,7 @@ pub enum MemoryAction {
 
     /// Install MCP configuration for an IDE
     McpInstall {
-        /// Target IDE: claude-code, claude-vscode, cursor (auto-detected if omitted)
+        /// Target: claude-code, vscode, cursor, windsurf, zed (auto-detected if omitted)
         #[arg(long)]
         ide: Option<String>,
     },

@@ -6,10 +6,11 @@ use fluree_db_memory::{
     format_context_paged, MemoryFilter, MemoryInput, MemoryKind, MemoryStore, MemoryUpdate,
     RecallEngine, RecallResult, Scope, SecretDetector, Sensitivity,
 };
+use std::path::{Path, PathBuf};
 
 pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
     match action {
-        MemoryAction::Init => run_init(dirs).await,
+        MemoryAction::Init { yes, no_mcp } => run_init(dirs, yes, no_mcp).await,
         MemoryAction::Add {
             kind,
             text,
@@ -71,10 +72,11 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
 fn build_store(dirs: &FlureeDir) -> CliResult<MemoryStore> {
     let fluree = context::build_fluree(dirs)?;
 
-    // Determine memory_dir: use .fluree/memory/ in local mode
+    // Determine memory_dir: use .fluree-memory/ at the project root.
+    // In unified (local) mode, data_dir is .fluree/ so its parent is the project root.
     let memory_dir = if dirs.is_unified() {
-        // Local mode — data_dir is typically .fluree/
-        let dir = dirs.data_dir().join("memory");
+        let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
+        let dir = project_root.join(".fluree-memory");
         if dir.exists() || dirs.data_dir().join("storage").exists() {
             Some(dir)
         } else {
@@ -87,10 +89,198 @@ fn build_store(dirs: &FlureeDir) -> CliResult<MemoryStore> {
     Ok(MemoryStore::new(fluree, memory_dir))
 }
 
-async fn run_init(dirs: &FlureeDir) -> CliResult<()> {
-    let store = build_store(dirs)?;
+// ---------------------------------------------------------------------------
+// AI tool detection types
+// ---------------------------------------------------------------------------
 
-    // initialize() handles ledger + file structure (dirs, .gitignore, .ttl files)
+/// AI coding tools that support MCP server configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiTool {
+    /// Claude Code CLI + VS Code extension (share .mcp.json / ~/.claude.json)
+    ClaudeCode,
+    /// Cursor IDE
+    Cursor,
+    /// VS Code with GitHub Copilot (or other VS Code-native MCP consumers)
+    VsCode,
+    /// Windsurf (Codeium) — global config only
+    Windsurf,
+    /// Zed editor
+    Zed,
+}
+
+impl AiTool {
+    fn display_name(self) -> &'static str {
+        match self {
+            AiTool::ClaudeCode => "Claude Code",
+            AiTool::Cursor => "Cursor",
+            AiTool::VsCode => "VS Code (Copilot)",
+            AiTool::Windsurf => "Windsurf",
+            AiTool::Zed => "Zed",
+        }
+    }
+
+    fn ide_id(self) -> &'static str {
+        match self {
+            AiTool::ClaudeCode => "claude-code",
+            AiTool::Cursor => "cursor",
+            AiTool::VsCode => "vscode",
+            AiTool::Windsurf => "windsurf",
+            AiTool::Zed => "zed",
+        }
+    }
+}
+
+struct DetectedTool {
+    tool: AiTool,
+    already_configured: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem-only detection
+// ---------------------------------------------------------------------------
+
+fn home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
+/// Check `/Applications/{name}` on macOS. Returns false on other platforms.
+fn is_app_installed(app_name: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Path::new("/Applications").join(app_name).exists()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_name;
+        false
+    }
+}
+
+/// Read a JSON file and check if a nested key path exists.
+fn json_has_key(path: &Path, keys: &[&str]) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    let mut current = &json;
+    for key in keys {
+        match current.get(key) {
+            Some(v) => current = v,
+            None => return false,
+        }
+    }
+    true
+}
+
+fn detect_ai_tools() -> Vec<DetectedTool> {
+    let home = home_dir();
+    let mut detected = Vec::new();
+
+    // Claude Code — detected via ~/.claude/ directory
+    if home.as_ref().is_some_and(|h| h.join(".claude").is_dir()) {
+        detected.push(DetectedTool {
+            tool: AiTool::ClaudeCode,
+            already_configured: json_has_key(
+                Path::new(".mcp.json"),
+                &["mcpServers", "fluree-memory"],
+            ),
+        });
+    }
+
+    // Cursor — /Applications/Cursor.app or ~/.cursor/
+    if is_app_installed("Cursor.app") || home.as_ref().is_some_and(|h| h.join(".cursor").is_dir()) {
+        detected.push(DetectedTool {
+            tool: AiTool::Cursor,
+            already_configured: json_has_key(
+                Path::new(".cursor/mcp.json"),
+                &["mcpServers", "fluree-memory"],
+            ),
+        });
+    }
+
+    // VS Code — /Applications/Visual Studio Code.app or ~/.vscode/
+    if is_app_installed("Visual Studio Code.app")
+        || home.as_ref().is_some_and(|h| h.join(".vscode").is_dir())
+    {
+        detected.push(DetectedTool {
+            tool: AiTool::VsCode,
+            already_configured: json_has_key(
+                Path::new(".vscode/mcp.json"),
+                &["servers", "fluree-memory"],
+            ),
+        });
+    }
+
+    // Windsurf — /Applications/Windsurf.app or ~/.codeium/windsurf/
+    if is_app_installed("Windsurf.app")
+        || home
+            .as_ref()
+            .is_some_and(|h| h.join(".codeium").join("windsurf").is_dir())
+    {
+        let already = home.as_ref().is_some_and(|h| {
+            json_has_key(
+                &h.join(".codeium/windsurf/mcp_config.json"),
+                &["mcpServers", "fluree-memory"],
+            )
+        });
+        detected.push(DetectedTool {
+            tool: AiTool::Windsurf,
+            already_configured: already,
+        });
+    }
+
+    // Zed — /Applications/Zed.app or ~/.zed/ or ~/.config/zed/
+    if is_app_installed("Zed.app")
+        || home.as_ref().is_some_and(|h| h.join(".zed").is_dir())
+        || home
+            .as_ref()
+            .is_some_and(|h| h.join(".config").join("zed").is_dir())
+    {
+        detected.push(DetectedTool {
+            tool: AiTool::Zed,
+            already_configured: json_has_key(
+                Path::new(".zed/settings.json"),
+                &["context_servers", "fluree-memory"],
+            ),
+        });
+    }
+
+    detected
+}
+
+// ---------------------------------------------------------------------------
+// Interactive prompting
+// ---------------------------------------------------------------------------
+
+/// Returns true if stdin is a terminal (not piped).
+fn stdin_is_tty() -> bool {
+    use std::os::unix::io::AsRawFd;
+    unsafe { libc::isatty(std::io::stdin().as_raw_fd()) != 0 }
+}
+
+/// Prompt for Y/n confirmation on stderr. Returns true for Y (default).
+fn prompt_yn(question: &str) -> bool {
+    use std::io::Write;
+    eprint!("{} [Y/n] ", question);
+    let _ = std::io::stderr().flush();
+
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return true;
+    }
+    let trimmed = input.trim().to_lowercase();
+    trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+}
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
+async fn run_init(dirs: &FlureeDir, yes: bool, no_mcp: bool) -> CliResult<()> {
+    // === Phase 1: Initialize memory store (existing behavior) ===
+    let store = build_store(dirs)?;
     store.initialize().await.map_err(memory_err)?;
 
     // Migration: export existing ledger memories to .ttl files
@@ -142,18 +332,322 @@ async fn run_init(dirs: &FlureeDir) -> CliResult<()> {
 
         println!("Memory store initialized at {}", memory_dir.display());
         println!();
-        println!("To share repo memories via git, ensure .fluree/memory/ is not gitignored.");
-        println!("If your .gitignore has '.fluree/', add these exceptions:");
-        println!();
-        println!("  !.fluree/memory/");
-        println!("  !.fluree/memory/repo.ttl");
-        println!("  !.fluree/memory/.gitignore");
+        println!("Repo memories are stored in .fluree-memory/repo.ttl (git-tracked).");
+        println!("Commit this directory to share project knowledge with your team.");
     } else {
         println!("Memory store initialized.");
     }
 
+    // === Phase 2: Detect and configure AI tools ===
+    if no_mcp {
+        return Ok(());
+    }
+
+    let detected = detect_ai_tools();
+    if detected.is_empty() {
+        println!();
+        println!("No AI coding tools detected.");
+        println!("Run 'fluree memory mcp-install --ide <tool>' to configure manually.");
+        println!("Supported: claude-code, cursor, vscode, windsurf, zed");
+        return Ok(());
+    }
+
+    // Show detection summary
+    println!();
+    println!("Detected AI coding tools:");
+    for dt in &detected {
+        if dt.already_configured {
+            println!("  - {} (already configured)", dt.tool.display_name());
+        } else {
+            println!("  - {}", dt.tool.display_name());
+        }
+    }
+
+    let to_install: Vec<&DetectedTool> = detected
+        .iter()
+        .filter(|dt| !dt.already_configured)
+        .collect();
+
+    if to_install.is_empty() {
+        println!();
+        println!("All detected tools are already configured.");
+        return Ok(());
+    }
+
+    // Determine if we should prompt (only when stdin is a TTY and --yes not set)
+    let auto_confirm = yes || !stdin_is_tty();
+
+    let fluree_bin = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "fluree".to_string());
+
+    println!();
+    let mut installed_count = 0usize;
+    for dt in &to_install {
+        let confirmed = auto_confirm
+            || prompt_yn(&format!(
+                "Install MCP config for {}?",
+                dt.tool.display_name()
+            ));
+
+        if confirmed {
+            match install_tool(dt.tool, &fluree_bin) {
+                Ok(()) => {
+                    installed_count += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to configure {}: {}",
+                        dt.tool.display_name(),
+                        e
+                    );
+                }
+            }
+        } else {
+            println!("  Skipped.");
+        }
+    }
+
+    if installed_count > 0 {
+        println!();
+        println!(
+            "Configured {} tool{}.",
+            installed_count,
+            if installed_count == 1 { "" } else { "s" }
+        );
+    }
+
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Per-tool installation
+// ---------------------------------------------------------------------------
+
+fn install_tool(tool: AiTool, fluree_bin: &str) -> CliResult<()> {
+    match tool {
+        AiTool::ClaudeCode => install_claude_code(fluree_bin),
+        AiTool::Cursor => install_cursor(fluree_bin),
+        AiTool::VsCode => install_vscode(fluree_bin),
+        AiTool::Windsurf => install_windsurf(fluree_bin),
+        AiTool::Zed => install_zed(fluree_bin),
+    }
+}
+
+/// Server entry JSON used by tools with `mcpServers` key (Claude Code, Cursor, Windsurf).
+fn server_entry_json(fluree_bin: &str) -> serde_json::Value {
+    serde_json::json!({
+        "command": fluree_bin,
+        "args": ["mcp", "serve", "--transport", "stdio"]
+    })
+}
+
+/// Read a JSON file, or return a default object on missing/corrupt files.
+fn read_or_default(path: &Path, default: serde_json::Value) -> serde_json::Value {
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or(default),
+        Err(_) => default,
+    }
+}
+
+/// Merge our server entry into a JSON object under `top_key`.
+fn merge_server_entry(config: &mut serde_json::Value, top_key: &str, fluree_bin: &str) {
+    let entry = server_entry_json(fluree_bin);
+    if let Some(servers) = config.get_mut(top_key).and_then(|v| v.as_object_mut()) {
+        servers.insert("fluree-memory".to_string(), entry);
+    } else if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            top_key.to_string(),
+            serde_json::json!({ "fluree-memory": entry }),
+        );
+    }
+}
+
+/// Write JSON config to a file, creating parent directories if needed.
+fn write_config(path: &Path, config: &serde_json::Value) -> CliResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CliError::Config(format!("failed to create {}: {e}", parent.display())))?;
+    }
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(config).unwrap_or_default(),
+    )
+    .map_err(|e| CliError::Config(format!("failed to write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+fn install_claude_code(fluree_bin: &str) -> CliResult<()> {
+    // 1. Write/merge .mcp.json (project scope — shared via git)
+    let config_path = Path::new(".mcp.json");
+    let mut config = read_or_default(config_path, serde_json::json!({ "mcpServers": {} }));
+    merge_server_entry(&mut config, "mcpServers", fluree_bin);
+    write_config(config_path, &config)?;
+    println!("  Installed: .mcp.json");
+
+    // 2. Best-effort `claude mcp add` for local scope (~/.claude.json).
+    //    The VS Code extension reads local scope from ~/.claude.json, so this
+    //    ensures it picks up the server even if .mcp.json alone isn't enough.
+    let result = std::process::Command::new("claude")
+        .args([
+            "mcp",
+            "add",
+            "fluree-memory",
+            "--transport",
+            "stdio",
+            "--",
+            fluree_bin,
+            "mcp",
+            "serve",
+            "--transport",
+            "stdio",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match result {
+        Ok(status) if status.success() => {
+            println!("  Registered via `claude mcp add` (local scope for VS Code extension)");
+        }
+        _ => {
+            // claude binary not on PATH or command failed — .mcp.json is still in place
+        }
+    }
+
+    // 3. Append memory instructions to CLAUDE.md if it doesn't already mention us
+    let claude_md = Path::new("CLAUDE.md");
+    if claude_md.exists() {
+        let content = std::fs::read_to_string(claude_md)
+            .map_err(|e| CliError::Input(format!("failed to read CLAUDE.md: {e}")))?;
+        if !content.contains("fluree memory") && !content.contains("memory_recall") {
+            let snippet = "\n\n## Developer Memory\n\n\
+                Use the `memory_recall` MCP tool at the start of tasks to retrieve project context.\n\
+                Use `memory_add` to store important facts, decisions, and constraints.\n\
+                See `fluree memory --help` for CLI usage.\n";
+            std::fs::write(claude_md, format!("{}{}", content, snippet))
+                .map_err(|e| CliError::Config(format!("failed to update CLAUDE.md: {e}")))?;
+            println!("  Appended memory instructions to CLAUDE.md");
+        }
+    }
+
+    Ok(())
+}
+
+fn install_cursor(fluree_bin: &str) -> CliResult<()> {
+    let config_path = Path::new(".cursor/mcp.json");
+    let mut config = read_or_default(config_path, serde_json::json!({ "mcpServers": {} }));
+    merge_server_entry(&mut config, "mcpServers", fluree_bin);
+    write_config(config_path, &config)?;
+    println!("  Installed: .cursor/mcp.json");
+
+    // Rules file
+    let rules_dir = Path::new(".cursor/rules");
+    std::fs::create_dir_all(rules_dir)
+        .map_err(|e| CliError::Config(format!("failed to create .cursor/rules/: {e}")))?;
+    let rules_src = include_str!("../../../fluree-db-memory/rules/fluree_rules.md");
+    std::fs::write(rules_dir.join("fluree_rules.md"), rules_src)
+        .map_err(|e| CliError::Config(format!("failed to write rules: {e}")))?;
+    println!("  Installed: .cursor/rules/fluree_rules.md");
+
+    Ok(())
+}
+
+fn install_vscode(fluree_bin: &str) -> CliResult<()> {
+    // VS Code native MCP uses "servers" key (not "mcpServers")
+    let config_path = Path::new(".vscode/mcp.json");
+    let mut config = read_or_default(config_path, serde_json::json!({ "servers": {} }));
+    merge_server_entry(&mut config, "servers", fluree_bin);
+    write_config(config_path, &config)?;
+    println!("  Installed: .vscode/mcp.json");
+
+    // Rules file
+    let vscode_dir = Path::new(".vscode");
+    let rules_src = include_str!("../../../fluree-db-memory/rules/fluree_rules.md");
+    std::fs::write(vscode_dir.join("fluree_rules.md"), rules_src)
+        .map_err(|e| CliError::Config(format!("failed to write rules: {e}")))?;
+    println!("  Installed: .vscode/fluree_rules.md");
+
+    Ok(())
+}
+
+fn install_windsurf(fluree_bin: &str) -> CliResult<()> {
+    let home = home_dir()
+        .ok_or_else(|| CliError::Config("cannot determine home directory".to_string()))?;
+
+    let config_path = home.join(".codeium/windsurf/mcp_config.json");
+    let mut config = read_or_default(&config_path, serde_json::json!({ "mcpServers": {} }));
+    merge_server_entry(&mut config, "mcpServers", fluree_bin);
+    write_config(&config_path, &config)?;
+    println!("  Installed: {}", config_path.display());
+
+    Ok(())
+}
+
+fn install_zed(fluree_bin: &str) -> CliResult<()> {
+    let config_path = Path::new(".zed/settings.json");
+
+    // Zed's settings.json may contain JSONC (comments). If parsing fails,
+    // skip with a message rather than clobbering the file.
+    let mut config = if config_path.exists() {
+        let content = std::fs::read_to_string(config_path)
+            .map_err(|e| CliError::Input(format!("failed to read .zed/settings.json: {e}")))?;
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(val) => val,
+            Err(_) => {
+                eprintln!("  .zed/settings.json contains JSONC (comments) — cannot safely merge.");
+                eprintln!(
+                    "  Add manually: \"context_servers\": {{ \"fluree-memory\": {{ \"command\": \"{}\", \"args\": [\"mcp\", \"serve\", \"--transport\", \"stdio\"] }} }}",
+                    fluree_bin
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    merge_server_entry(&mut config, "context_servers", fluree_bin);
+    write_config(config_path, &config)?;
+    println!("  Installed: .zed/settings.json");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mcp-install (non-interactive escape hatch)
+// ---------------------------------------------------------------------------
+
+fn run_mcp_install(ide: Option<&str>) -> CliResult<()> {
+    let fluree_bin = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "fluree".to_string());
+
+    let ide = ide.map(String::from).unwrap_or_else(|| {
+        detect_ai_tools()
+            .into_iter()
+            .find(|dt| !dt.already_configured)
+            .map(|dt| dt.tool.ide_id().to_string())
+            .unwrap_or_else(|| "claude-code".to_string())
+    });
+
+    match ide.as_str() {
+        "claude-code" => install_claude_code(&fluree_bin),
+        // Accept old name for backward compatibility
+        "claude-vscode" | "vscode" | "github-copilot" => install_vscode(&fluree_bin),
+        "cursor" => install_cursor(&fluree_bin),
+        "windsurf" => install_windsurf(&fluree_bin),
+        "zed" => install_zed(&fluree_bin),
+        other => Err(CliError::Usage(format!(
+            "unknown IDE '{}'; valid: claude-code, vscode, cursor, windsurf, zed",
+            other
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remaining subcommands (unchanged)
+// ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 async fn run_add(
@@ -282,6 +776,7 @@ async fn run_add(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_recall(
     query: &str,
     limit: usize,
@@ -355,7 +850,10 @@ async fn run_recall(
             );
         }
         "context" => {
-            print!("{}", format_context_paged(&paged, offset, limit, total_store, has_more));
+            print!(
+                "{}",
+                format_context_paged(&paged, offset, limit, total_store, has_more)
+            );
         }
         _ => {
             print!("{}", fluree_db_memory::format_recall_text(&result));
@@ -468,166 +966,6 @@ async fn run_import(file: &std::path::Path, dirs: &FlureeDir) -> CliResult<()> {
     store.ensure_synced().await.map_err(memory_err)?;
     let count = store.import(data).await.map_err(memory_err)?;
     println!("Imported {} memories.", count);
-    Ok(())
-}
-
-fn run_mcp_install(ide: Option<&str>) -> CliResult<()> {
-    // Resolve the fluree binary path
-    let fluree_bin = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "fluree".to_string());
-
-    let ide = ide
-        .map(String::from)
-        .unwrap_or_else(|| detect_ide().unwrap_or_else(|| "claude-code".to_string()));
-
-    match ide.as_str() {
-        "claude-code" => install_claude_code(&fluree_bin),
-        "claude-vscode" => install_claude_vscode(&fluree_bin),
-        "cursor" => install_cursor(&fluree_bin),
-        other => Err(CliError::Usage(format!(
-            "unknown IDE '{}'; valid: claude-code, claude-vscode, cursor",
-            other
-        ))),
-    }
-}
-
-/// Auto-detect which IDE environment we're in.
-fn detect_ide() -> Option<String> {
-    // Check for Cursor-specific markers
-    if std::path::Path::new(".cursor").exists() {
-        return Some("cursor".to_string());
-    }
-    // Check for VS Code workspace
-    if std::path::Path::new(".vscode").exists() {
-        return Some("claude-vscode".to_string());
-    }
-    // Default to Claude Code CLI
-    None
-}
-
-fn mcp_config_json(fluree_bin: &str) -> serde_json::Value {
-    serde_json::json!({
-        "mcpServers": {
-            "fluree-memory": {
-                "command": fluree_bin,
-                "args": ["mcp", "serve", "--transport", "stdio"]
-            }
-        }
-    })
-}
-
-fn install_claude_code(fluree_bin: &str) -> CliResult<()> {
-    let config_path = std::path::Path::new(".mcp.json");
-
-    let mut config = if config_path.exists() {
-        let content = std::fs::read_to_string(config_path)
-            .map_err(|e| CliError::Input(format!("failed to read .mcp.json: {e}")))?;
-        serde_json::from_str::<serde_json::Value>(&content)?
-    } else {
-        serde_json::json!({ "mcpServers": {} })
-    };
-
-    // Add our server entry
-    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.insert(
-            "fluree-memory".to_string(),
-            serde_json::json!({
-                "command": fluree_bin,
-                "args": ["mcp", "serve", "--transport", "stdio"]
-            }),
-        );
-    }
-
-    std::fs::write(
-        config_path,
-        serde_json::to_string_pretty(&config).unwrap_or_default(),
-    )
-    .map_err(|e| CliError::Config(format!("failed to write .mcp.json: {e}")))?;
-
-    println!("Installed MCP config: .mcp.json");
-
-    // Append rules snippet to CLAUDE.md if it doesn't already mention fluree memory
-    let claude_md = std::path::Path::new("CLAUDE.md");
-    if claude_md.exists() {
-        let content = std::fs::read_to_string(claude_md)
-            .map_err(|e| CliError::Input(format!("failed to read CLAUDE.md: {e}")))?;
-        if !content.contains("fluree memory") && !content.contains("memory_recall") {
-            let snippet = "\n\n## Developer Memory\n\n\
-                Use the `memory_recall` MCP tool at the start of tasks to retrieve project context.\n\
-                Use `memory_add` to store important facts, decisions, and constraints.\n\
-                See `fluree memory --help` for CLI usage.\n";
-            std::fs::write(claude_md, format!("{}{}", content, snippet))
-                .map_err(|e| CliError::Config(format!("failed to update CLAUDE.md: {e}")))?;
-            println!("Appended memory instructions to CLAUDE.md");
-        }
-    }
-
-    Ok(())
-}
-
-fn install_claude_vscode(fluree_bin: &str) -> CliResult<()> {
-    let vscode_dir = std::path::Path::new(".vscode");
-    std::fs::create_dir_all(vscode_dir)
-        .map_err(|e| CliError::Config(format!("failed to create .vscode/: {e}")))?;
-
-    let config_path = vscode_dir.join("mcp.json");
-
-    // VS Code Claude extension uses "servers" key (not "mcpServers")
-    let config = serde_json::json!({
-        "servers": {
-            "fluree-memory": {
-                "command": fluree_bin,
-                "args": ["mcp", "serve", "--transport", "stdio"]
-            }
-        }
-    });
-
-    std::fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap_or_default(),
-    )
-    .map_err(|e| CliError::Config(format!("failed to write .vscode/mcp.json: {e}")))?;
-
-    println!("Installed MCP config: .vscode/mcp.json");
-
-    // Copy rules file
-    let rules_src = include_str!("../../../fluree-db-memory/rules/fluree_rules.md");
-    let rules_path = vscode_dir.join("fluree_rules.md");
-    std::fs::write(&rules_path, rules_src)
-        .map_err(|e| CliError::Config(format!("failed to write rules: {e}")))?;
-    println!("Installed agent rules: .vscode/fluree_rules.md");
-
-    Ok(())
-}
-
-fn install_cursor(fluree_bin: &str) -> CliResult<()> {
-    let cursor_dir = std::path::Path::new(".cursor");
-    std::fs::create_dir_all(cursor_dir)
-        .map_err(|e| CliError::Config(format!("failed to create .cursor/: {e}")))?;
-
-    let config_path = cursor_dir.join("mcp.json");
-    let config = mcp_config_json(fluree_bin);
-
-    std::fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap_or_default(),
-    )
-    .map_err(|e| CliError::Config(format!("failed to write .cursor/mcp.json: {e}")))?;
-
-    println!("Installed MCP config: .cursor/mcp.json");
-
-    // Copy rules file
-    let rules_dir = cursor_dir.join("rules");
-    std::fs::create_dir_all(&rules_dir)
-        .map_err(|e| CliError::Config(format!("failed to create .cursor/rules/: {e}")))?;
-
-    let rules_src = include_str!("../../../fluree-db-memory/rules/fluree_rules.md");
-    let rules_path = rules_dir.join("fluree_rules.md");
-    std::fs::write(&rules_path, rules_src)
-        .map_err(|e| CliError::Config(format!("failed to write rules: {e}")))?;
-    println!("Installed agent rules: .cursor/rules/fluree_rules.md");
-
     Ok(())
 }
 

@@ -24,7 +24,7 @@ Phase 1 (current) is fully local with no cloud dependency: template-based extrac
                                                │  (graph API)     │
                                                │                  │
                                                │  __memory ledger │
-                                               │  in .fluree/     │
+                                               │  .fluree-memory/ │
                                                └──────────────────┘
 ```
 
@@ -50,6 +50,8 @@ Phase 1 (current) is fully local with no cloud dependency: template-based extrac
 | `branch.rs` | `detect_git_branch()` via `git rev-parse` |
 | `id.rs` | `generate_memory_id(kind)` — ULID-based IDs (`mem:<kind>-<ulid>`) |
 | `vocab.rs` | Constants for `mem:` namespace IRIs |
+| `file_sync.rs` | TTL ↔ ledger sync via SHA-256 build-hash watermark |
+| `turtle_io.rs` | Read/write memories as Turtle (`.ttl`) files |
 
 ## Data model
 
@@ -107,7 +109,7 @@ The `explain` command walks the supersession chain to show how a memory evolved 
 
 ## CLI commands
 
-All commands require a Fluree project directory (`.fluree/`). Run `fluree init` first if needed.
+All commands require a Fluree project directory (`.fluree/`). Run `fluree init` first if needed. Memory data is stored in `.fluree-memory/` at the project root (separate from `.fluree/` so the latter can be fully gitignored).
 
 | Command | Description |
 |---------|-------------|
@@ -120,7 +122,7 @@ All commands require a Fluree project directory (`.fluree/`). Run `fluree init` 
 | `fluree memory status` | Show memory store summary (counts by kind) |
 | `fluree memory export` | Export all current memories as JSON |
 | `fluree memory import <file>` | Import memories from a JSON file |
-| `fluree memory mcp-install --ide cursor` | Install MCP config for an IDE |
+| `fluree memory mcp-install --ide cursor` | Install MCP config for an IDE (or auto-detected during init) |
 
 The `add` command reads from `--text` or stdin. Output format is controlled via `--format` (`text`, `json`, or `context` for recall).
 
@@ -141,15 +143,17 @@ The MCP server auto-initializes the memory store on first tool call, so agents d
 
 ### IDE setup
 
-Run `fluree memory mcp-install` to auto-configure your IDE:
+`fluree memory init` auto-detects installed AI coding tools and offers to install MCP config for each. You can also run `fluree memory mcp-install --ide <tool>` directly:
 
-| IDE | Config written | Rules written |
-|-----|----------------|---------------|
-| `claude-code` | `.mcp.json` | Snippet appended to `CLAUDE.md` |
-| `claude-vscode` | `.vscode/mcp.json` | `.vscode/fluree_rules.md` |
+| Tool | Config written | Rules / extras |
+|------|----------------|----------------|
+| `claude-code` | `.mcp.json` | Snippet appended to `CLAUDE.md`; also runs `claude mcp add` for VS Code extension |
+| `vscode` | `.vscode/mcp.json` (key: `servers`) | `.vscode/fluree_rules.md` |
 | `cursor` | `.cursor/mcp.json` | `.cursor/rules/fluree_rules.md` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` (global) | — |
+| `zed` | `.zed/settings.json` (key: `context_servers`) | — |
 
-All configs point to `fluree mcp serve --transport stdio`. The IDE auto-detects from `.cursor/` or `.vscode/` directory presence; defaults to `claude-code`.
+All configs point to `fluree mcp serve --transport stdio`. Use `--yes` on init to auto-confirm all installations (non-interactive). Use `--no-mcp` to skip tool detection entirely.
 
 ## Recall scoring
 
@@ -196,7 +200,18 @@ Secret detection is applied in both CLI commands and MCP tools.
 
 ## Storage
 
-The memory ledger is stored at `.fluree/__memory/` alongside other project ledgers. It uses the same `FileStorage` backend as regular ledgers, inheriting immutability, time-travel, and commit history.
+Memory data lives in `.fluree-memory/` at the project root, separate from `.fluree/` (which holds derived ledger data and can be fully gitignored).
+
+```text
+.fluree-memory/
+├── repo.ttl          # Repo-scoped memories (git-tracked, shared with team)
+├── .gitignore        # Ignores .local/
+└── .local/
+    ├── user.ttl      # User-scoped memories (private, not committed)
+    └── mcp.log       # MCP server log
+```
+
+The TTL files are the **source of truth**. On startup, a SHA-256 build-hash watermark detects changes and rebuilds the `__memory` Fluree ledger (stored in `.fluree/`) as a derived BM25 query cache. This means `.fluree/` can be deleted and regenerated at any time.
 
 The memory store is a standard Fluree ledger, so all Fluree capabilities apply: SPARQL queries, time-travel, commit logs, export/import. The `kg_query` MCP tool exposes raw SPARQL access to the memory graph.
 

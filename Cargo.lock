@@ -2395,6 +2395,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "comfy-table",
+ "dirs 5.0.1",
  "fluree-db-api",
  "fluree-db-binary-index",
  "fluree-db-core",

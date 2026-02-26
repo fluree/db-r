@@ -52,7 +52,7 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Create a new memory store wrapping a Fluree instance.
     ///
-    /// Pass `memory_dir` to enable file-based sync (e.g., `.fluree/memory/`).
+    /// Pass `memory_dir` to enable file-based sync (e.g., `.fluree-memory/`).
     /// Pass `None` for legacy behavior (ledger-only, no file sharing).
     pub fn new(fluree: Fluree<FileStorage, FileNameService>, memory_dir: Option<PathBuf>) -> Self {
         Self { fluree, memory_dir }

@@ -73,6 +73,7 @@ fluree-db-credential = { path = "../fluree-db-credential" }
 base64 = "0.22"
 bs58 = "0.5"
 shellexpand = "3"
+dirs = "5"
 hex.workspace = true
 rand.workspace = true
 sha2.workspace = true
