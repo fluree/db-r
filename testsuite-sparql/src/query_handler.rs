@@ -74,6 +74,8 @@ pub async fn run_eval_test(
     // 2. Load default graph data (.ttl or .rdf) if provided.
     //    For .ttl: prepend @base so relative IRIs resolve correctly.
     //    For .rdf: convert RDF/XML to N-Triples (absolute IRIs) first.
+    //    Some W3C tests (e.g., empty.ttl) have valid syntax but no triples —
+    //    Fluree rejects these as empty transactions, so we skip gracefully.
     let ledger = if let Some(data_url) = data_url {
         let raw = read_file_to_string(data_url)
             .with_context(|| format!("Reading test data: {data_url}"))?;
@@ -81,11 +83,13 @@ pub async fn run_eval_test(
             ledger
         } else {
             let turtle = prepare_for_insert(&raw, data_url)?;
-            fluree
-                .insert_turtle(ledger, &turtle)
-                .await
-                .with_context(|| format!("Loading test data: {data_url}"))?
-                .ledger
+            match fluree.insert_turtle(ledger.clone(), &turtle).await {
+                Ok(result) => result.ledger,
+                Err(e) if is_empty_transaction(&e) => ledger,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("Loading test data: {data_url}"))
+                }
+            }
         }
     } else {
         ledger
@@ -106,13 +110,20 @@ pub async fn run_eval_test(
                 .with_context(|| format!("Reading named graph data: {graph_url}"))?;
             if !raw.trim().is_empty() {
                 let turtle = prepare_for_insert(&raw, graph_url)?;
-                current_ledger = fluree
-                    .insert_turtle(current_ledger, &turtle)
+                match fluree
+                    .insert_turtle(current_ledger.clone(), &turtle)
                     .await
-                    .with_context(|| {
-                        format!("Loading named graph data: {graph_url} for test {test_id}")
-                    })?
-                    .ledger;
+                {
+                    Ok(result) => current_ledger = result.ledger,
+                    Err(e) if is_empty_transaction(&e) => { /* no triples — skip */ }
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!(
+                                "Loading named graph data: {graph_url} for test {test_id}"
+                            )
+                        })
+                    }
+                }
             }
         }
         current_ledger
@@ -167,6 +178,16 @@ pub async fn run_eval_test(
     }
 
     Ok(())
+}
+
+/// Check if an error is a Fluree "empty transaction" rejection.
+///
+/// Turtle files with only `@prefix` declarations and no triples produce zero
+/// flakes. Fluree rejects these as empty transactions, but for W3C tests we
+/// should treat them as a no-op (the test is querying an empty graph).
+fn is_empty_transaction(e: &fluree_db_api::ApiError) -> bool {
+    // ApiError::Transact(TransactError::EmptyTransaction)
+    e.to_string().contains("Empty transaction")
 }
 
 /// Prepare file content for insertion into Fluree.
