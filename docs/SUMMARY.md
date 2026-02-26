@@ -27,6 +27,8 @@
   - [clone](cli/clone.md)
   - [track](cli/track.md)
   - [server](cli/server.md)
+  - [memory](cli/memory.md)
+  - [mcp](cli/mcp.md)
   - [completions](cli/completions.md)
 
 - [Getting started](getting-started/README.md)
