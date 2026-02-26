@@ -63,15 +63,11 @@ fn init_mcp_tracing(memory_dir: Option<&Path>) {
 async fn run_stdio(dirs: &FlureeDir) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;
 
-    // Determine memory_dir: .fluree-memory/ at the project root (same logic as CLI)
+    // Determine memory_dir: .fluree-memory/ at the project root (same logic as CLI).
+    // Always enable in unified mode — MemoryStore creates the directory structure on init.
     let memory_dir = if dirs.is_unified() {
         let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
-        let dir = project_root.join(".fluree-memory");
-        if dir.exists() || dirs.data_dir().join("storage").exists() {
-            Some(dir)
-        } else {
-            None
-        }
+        Some(project_root.join(".fluree-memory"))
     } else {
         None
     };

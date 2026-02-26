@@ -147,7 +147,7 @@ The MCP server auto-initializes the memory store on first tool call, so agents d
 
 | Tool | Config written | Rules / extras |
 |------|----------------|----------------|
-| `claude-code` | `.mcp.json` | Snippet appended to `CLAUDE.md`; also runs `claude mcp add` for VS Code extension |
+| `claude-code` | `claude mcp add` (local scope → `~/.claude.json`) | Snippet appended to `CLAUDE.md` |
 | `vscode` | `.vscode/mcp.json` (key: `servers`) | `.vscode/fluree_rules.md` |
 | `cursor` | `.cursor/mcp.json` | `.cursor/rules/fluree_rules.md` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` (global) | — |

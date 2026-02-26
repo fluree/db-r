@@ -11,6 +11,7 @@ mod remote_client;
 use clap::Parser;
 use cli::{Cli, Commands};
 use error::exit_with_error;
+use fluree_db_api::server_defaults::{generate_config_template_for, ConfigFormat, FlureeDir};
 #[cfg(feature = "otel")]
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
@@ -520,7 +521,44 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         }
 
         Commands::Mcp { action } => {
-            let fluree_dir = config::require_fluree_dir(config_path)?;
+            // IDEs may spawn `fluree mcp serve` from a cwd that is not inside a
+            // project with a local `.fluree/` directory. In that case, fall back
+            // to global directories (creating them if needed) so the MCP server
+            // can still start and expose tools.
+            //
+            // IMPORTANT: This must not print to stdout/stderr (stdio transport
+            // uses stdout for JSON-RPC).
+            let fluree_dir = if let Some(p) = config_path {
+                config::require_fluree_dir(Some(p))?
+            } else if let Some(local) = config::find_fluree_dir() {
+                local
+            } else {
+                let global = FlureeDir::global().ok_or_else(|| {
+                    error::CliError::Config("cannot determine global directories".into())
+                })?;
+
+                // For split global dirs, use an absolute data-dir storage path
+                // so the server finds the right directory regardless of cwd.
+                let storage_override = if !global.is_unified() {
+                    let path = global.data_dir().join("storage");
+                    let path_str = path.to_str().ok_or_else(|| {
+                        error::CliError::Config(format!(
+                            "data directory path is not valid UTF-8: {}",
+                            path.display()
+                        ))
+                    })?;
+                    Some(path_str.to_owned())
+                } else {
+                    None
+                };
+
+                let template =
+                    generate_config_template_for(ConfigFormat::Toml, storage_override.as_deref());
+
+                // Create minimal directory structure if missing.
+                config::init_fluree_dir(&global, &template, ConfigFormat::Toml.filename())?;
+                global
+            };
             match action {
                 cli::McpAction::Serve { transport } => {
                     commands::mcp_serve::run(&transport, &fluree_dir).await

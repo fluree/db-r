@@ -59,8 +59,12 @@ Or manually add to your IDE's MCP config:
 {
   "mcpServers": {
     "fluree-memory": {
+      "type": "stdio",
       "command": "/path/to/fluree",
-      "args": ["mcp", "serve", "--transport", "stdio"]
+      "args": ["mcp", "serve", "--transport", "stdio"],
+      "env": {
+        "FLUREE_HOME": "${workspaceFolder}/.fluree"
+      }
     }
   }
 }
@@ -71,7 +75,11 @@ Or manually add to your IDE's MCP config:
 To test the server directly, pipe JSON-RPC to stdin:
 
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | fluree mcp serve
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | fluree mcp serve --transport stdio
 ```
 
 ### Tracing
