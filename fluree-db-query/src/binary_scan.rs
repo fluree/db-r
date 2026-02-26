@@ -613,15 +613,14 @@ impl BinaryScanOperator {
     ) -> Result<usize> {
         let mut produced = 0;
         let ncols = self.schema.len();
+        let mut bindings = Vec::with_capacity(ncols);
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
                 continue;
             }
 
-            // Build triple bindings into a reusable vec (capacity = full schema
-            // including inline bind vars).
-            let mut bindings = Vec::with_capacity(ncols);
+            bindings.clear();
 
             if let Some(b) = self.build_subject_binding(decoded.s_ids[row])? {
                 bindings.push(b);
@@ -639,7 +638,7 @@ impl BinaryScanOperator {
             }
 
             // Push to columns
-            for (i, binding) in bindings.into_iter().enumerate() {
+            for (i, binding) in bindings.drain(..).enumerate() {
                 columns[i].push(binding);
             }
 
