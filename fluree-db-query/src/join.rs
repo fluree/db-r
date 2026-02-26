@@ -4,11 +4,11 @@
 //! where left results drive right scans. It enforces var unification - shared
 //! vars between left and right must match exactly.
 
-use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;

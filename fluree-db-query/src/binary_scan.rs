@@ -24,10 +24,10 @@
 //! - **Overlay merge** — translates Flake overlay ops to integer-ID space
 //!   and merges with decoded leaflet columns at query time
 
-use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;

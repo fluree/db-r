@@ -10,7 +10,6 @@
 //! - And more...
 
 use crate::bind::BindOperator;
-use crate::operator::inline::InlineOperator;
 use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
@@ -18,6 +17,7 @@ use crate::filter::FilterOperator;
 use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
+use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
 use crate::planner::{is_property_join, reorder_patterns};
@@ -1858,10 +1858,8 @@ mod tests {
             Expression::Var(age),
             Expression::Const(FilterValue::Long(10)),
         );
-        let filter_expr = Expression::gt(
-            Expression::Var(y),
-            Expression::Const(FilterValue::Long(25)),
-        );
+        let filter_expr =
+            Expression::gt(Expression::Var(y), Expression::Const(FilterValue::Long(25)));
         let available: HashSet<VarId> = [VarId(0), age].into();
 
         let (ops, remaining_binds, remaining_filters) = build_inline_ops(
@@ -1901,19 +1899,12 @@ mod tests {
         );
         let bind_b = make_bind(
             b,
-            Expression::mul(
-                Expression::Var(a),
-                Expression::Const(FilterValue::Long(2)),
-            ),
+            Expression::mul(Expression::Var(a), Expression::Const(FilterValue::Long(2))),
         );
         let available: HashSet<VarId> = [VarId(0), age].into();
 
-        let (ops, remaining_binds, remaining_filters) = build_inline_ops(
-            vec![bind_a, bind_b],
-            Vec::new(),
-            &available,
-            &[],
-        );
+        let (ops, remaining_binds, remaining_filters) =
+            build_inline_ops(vec![bind_a, bind_b], Vec::new(), &available, &[]);
 
         assert_eq!(ops.len(), 2, "both binds should be inlined");
         assert!(
