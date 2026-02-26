@@ -33,6 +33,12 @@ pub fn format(
     compactor: &IriCompactor,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    // ASK queries: return boolean based on solution existence
+    if config.select_mode == SelectMode::Boolean {
+        let has_solution = result.batches.iter().any(|b| !b.is_empty());
+        return Ok(json!({"head": {}, "boolean": has_solution}));
+    }
+
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
     let head_vars: Vec<fluree_db_query::VarId> = match config.select_mode {

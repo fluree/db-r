@@ -57,7 +57,7 @@ use crate::QueryResult;
 use fluree_db_core::LedgerSnapshot;
 use fluree_db_core::{FuelExceededError, GraphDbRef, Tracker};
 use fluree_graph_json_ld::ParsedContext;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 /// Error type for formatting operations
 #[derive(Debug, thiserror::Error)]
@@ -130,6 +130,12 @@ pub fn format_results(
             ));
         }
         return construct::format(result, &compactor);
+    }
+
+    // ASK queries: return boolean based on solution existence
+    if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
+        let has_solution = result.batches.iter().any(|b| !b.is_empty());
+        return Ok(json!({"head": {}, "boolean": has_solution}));
     }
 
     // Graph crawl queries require async formatting for database access
@@ -239,6 +245,12 @@ pub async fn format_results_async(
             ));
         }
         return construct::format(result, &compactor);
+    }
+
+    // ASK queries: return boolean based on solution existence
+    if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
+        let has_solution = result.batches.iter().any(|b| !b.is_empty());
+        return Ok(json!({"head": {}, "boolean": has_solution}));
     }
 
     // Graph crawl queries use async formatter with DB access

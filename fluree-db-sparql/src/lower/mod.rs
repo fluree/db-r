@@ -44,6 +44,7 @@
 //! - [`select`] — SELECT clause, solution modifiers, subqueries
 
 mod aggregate;
+mod ask;
 mod construct;
 mod error;
 mod expression;
@@ -194,7 +195,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 })
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
-            QueryBody::Ask(_) => Err(LowerError::unsupported_form("ASK", self.ast.span)),
+            QueryBody::Ask(ask_query) => self.lower_ask(ask_query),
             QueryBody::Describe(_) => Err(LowerError::unsupported_form("DESCRIBE", self.ast.span)),
             QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
         }
