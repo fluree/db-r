@@ -188,8 +188,9 @@ impl MemoryStore {
     /// Returns the generated memory ID.
     ///
     /// In file-based mode, the `.ttl` file is written first (authoritative),
-    /// then the ledger cache is updated. If the ledger transact fails, the
-    /// next `ensure_synced()` will rebuild from the file.
+    /// then the ledger cache is updated. The build hash is only updated after
+    /// the ledger cache commit succeeds so that any cache failure leaves a hash
+    /// mismatch and triggers a rebuild on the next `ensure_synced()`.
     pub async fn add(&self, input: MemoryInput) -> Result<String> {
         self.initialize().await?;
 
@@ -230,7 +231,6 @@ impl MemoryStore {
                 ),
             };
             crate::turtle_io::append_memory_to_file(&path, &mem, header)?;
-            crate::file_sync::update_hash(dir)?;
         }
 
         // Then update the ledger cache
@@ -241,6 +241,11 @@ impl MemoryStore {
             .insert(&doc)
             .commit()
             .await?;
+
+        // Update the file watermark only after cache commit succeeds.
+        if let Some(dir) = &self.memory_dir {
+            crate::file_sync::update_hash(dir)?;
+        }
 
         debug!(id = %id, kind = %mem.kind, "Memory added");
         Ok(id)
@@ -294,7 +299,9 @@ WHERE {{
     /// Returns the new memory's ID.
     ///
     /// In file-based mode, the `.ttl` file is written first (authoritative),
-    /// then the ledger cache is updated.
+    /// then the ledger cache is updated. The build hash is only updated after
+    /// the ledger cache commit succeeds so that any cache failure leaves a hash
+    /// mismatch and triggers a rebuild on the next `ensure_synced()`.
     pub async fn update(&self, id: &str, update: MemoryUpdate) -> Result<String> {
         self.initialize().await?;
 
@@ -345,7 +352,6 @@ WHERE {{
                 ),
             };
             crate::turtle_io::append_memory_to_file(&path, &merged, header)?;
-            crate::file_sync::update_hash(dir)?;
         }
 
         // Then update the ledger cache
@@ -356,6 +362,11 @@ WHERE {{
             .insert(&doc)
             .commit()
             .await?;
+
+        // Update the file watermark only after cache commit succeeds.
+        if let Some(dir) = &self.memory_dir {
+            crate::file_sync::update_hash(dir)?;
+        }
 
         debug!(new_id = %new_id, supersedes = %id, "Memory updated (superseded)");
         Ok(new_id)
@@ -400,7 +411,6 @@ WHERE {{
                 .filter(|m| m.id != compact && m.id != expanded)
                 .collect();
             crate::turtle_io::write_memory_file(&path, &remaining, header)?;
-            crate::file_sync::update_hash(dir)?;
         }
 
         // Then update the ledger cache (JSON-LD @context expands mem: prefix)
@@ -418,6 +428,11 @@ WHERE {{
             .update(&delete_doc)
             .commit()
             .await?;
+
+        // Update the file watermark only after cache commit succeeds.
+        if let Some(dir) = &self.memory_dir {
+            crate::file_sync::update_hash(dir)?;
+        }
 
         debug!(id = %id, "Memory forgotten");
         Ok(())
@@ -559,6 +574,8 @@ WHERE {{
 
     /// Get memory store status summary, including previews of recent memories.
     pub async fn status(&self) -> Result<MemoryStatus> {
+        let memory_dir = self.memory_dir.as_ref().map(|p| p.display().to_string());
+
         if !self.is_initialized().await? {
             return Ok(MemoryStatus {
                 initialized: false,
@@ -566,6 +583,7 @@ WHERE {{
                 by_kind: Vec::new(),
                 total_tags: 0,
                 recent: Vec::new(),
+                memory_dir,
             });
         }
 
@@ -607,6 +625,7 @@ WHERE {{
             by_kind,
             total_tags,
             recent,
+            memory_dir,
         })
     }
 

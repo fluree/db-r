@@ -64,14 +64,6 @@ pub fn write_stored_hash(memory_dir: &Path, hash: &str) -> Result<()> {
 // Sync check
 // ---------------------------------------------------------------------------
 
-/// Remove the stored build hash so the next `ensure_synced()` triggers a rebuild.
-///
-/// Called when the in-memory ledger is freshly created (process restart).
-pub fn clear_hash(memory_dir: &Path) {
-    let hash_path = memory_dir.join(".local").join("build-hash");
-    let _ = fs::remove_file(hash_path);
-}
-
 /// Recompute and write the build hash.
 ///
 /// Called after any mutation to `.ttl` files (add, update, forget).

@@ -295,6 +295,8 @@ pub struct MemoryStatus {
     pub total_tags: usize,
     /// Preview of recent memories (content truncated) for discoverability.
     pub recent: Vec<MemoryPreview>,
+    /// The memory directory path (e.g. `<repo>/.fluree-memory/`), or `None` if ledger-only.
+    pub memory_dir: Option<String>,
 }
 
 /// A compact summary of a memory for status/listing output.

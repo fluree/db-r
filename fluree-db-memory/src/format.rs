@@ -207,6 +207,10 @@ pub fn format_status_text(status: &MemoryStatus) -> String {
         return "Memory store is empty. Use memory_add to store project knowledge.".to_string();
     }
 
+    if let Some(dir) = &status.memory_dir {
+        out.push_str(&format!("  Directory: {dir}\n"));
+    }
+
     out.push_str(&format!(
         "Memory Store: {} memories, {} tags\n",
         status.total_memories, status.total_tags
