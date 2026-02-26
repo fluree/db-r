@@ -86,9 +86,7 @@ pub async fn run_eval_test(
             match fluree.insert_turtle(ledger.clone(), &turtle).await {
                 Ok(result) => result.ledger,
                 Err(e) if is_empty_transaction(&e) => ledger,
-                Err(e) => {
-                    return Err(e).with_context(|| format!("Loading test data: {data_url}"))
-                }
+                Err(e) => return Err(e).with_context(|| format!("Loading test data: {data_url}")),
             }
         }
     } else {
@@ -110,17 +108,12 @@ pub async fn run_eval_test(
                 .with_context(|| format!("Reading named graph data: {graph_url}"))?;
             if !raw.trim().is_empty() {
                 let turtle = prepare_for_insert(&raw, graph_url)?;
-                match fluree
-                    .insert_turtle(current_ledger.clone(), &turtle)
-                    .await
-                {
+                match fluree.insert_turtle(current_ledger.clone(), &turtle).await {
                     Ok(result) => current_ledger = result.ledger,
                     Err(e) if is_empty_transaction(&e) => { /* no triples — skip */ }
                     Err(e) => {
                         return Err(e).with_context(|| {
-                            format!(
-                                "Loading named graph data: {graph_url} for test {test_id}"
-                            )
+                            format!("Loading named graph data: {graph_url} for test {test_id}")
                         })
                     }
                 }
