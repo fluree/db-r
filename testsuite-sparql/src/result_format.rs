@@ -1,15 +1,23 @@
-//! Parse W3C SPARQL expected result files (.srx, .srj, .ttl) into a
+//! Parse W3C SPARQL expected result files (.srx, .srj, .ttl, .rdf) into a
 //! format-independent [`SparqlResults`] representation.
+//!
+//! Handles four formats:
+//! - `.srx` — SPARQL Results XML (SELECT/ASK)
+//! - `.srj` — SPARQL Results JSON (SELECT/ASK)
+//! - `.ttl` — Turtle, auto-detected as either DAWG Result Set (SELECT/ASK)
+//!   or plain graph (CONSTRUCT)
+//! - `.rdf` — RDF/XML DAWG Result Set (SELECT, used by SPARQL 1.0 sort tests)
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
-use fluree_graph_ir::{GraphCollectorSink, Term as IrTerm};
+use fluree_graph_ir::{Graph as IrGraph, GraphCollectorSink, Term as IrTerm};
 use fluree_graph_turtle::parse as parse_turtle;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use crate::files::read_file_to_string;
+use crate::vocab::{rdf, rs};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,7 +66,8 @@ pub enum SparqlResults {
 /// Dispatches to the appropriate parser based on file extension:
 /// - `.srx` → SPARQL Results XML
 /// - `.srj` → SPARQL Results JSON
-/// - `.ttl` → Turtle (CONSTRUCT results — not yet supported)
+/// - `.ttl` → Turtle (auto-detected as DAWG Result Set or CONSTRUCT graph)
+/// - `.rdf` → RDF/XML DAWG Result Set
 pub fn parse_expected_results(url: &str) -> Result<SparqlResults> {
     let content =
         read_file_to_string(url).with_context(|| format!("Reading expected result file: {url}"))?;
@@ -67,8 +76,11 @@ pub fn parse_expected_results(url: &str) -> Result<SparqlResults> {
         parse_srx(&content).with_context(|| format!("Parsing .srx: {url}"))
     } else if url.ends_with(".srj") {
         parse_srj(&content).with_context(|| format!("Parsing .srj: {url}"))
-    } else if url.ends_with(".ttl") || url.ends_with(".rdf") {
-        parse_ttl_graph(&content).with_context(|| format!("Parsing .ttl/.rdf graph: {url}"))
+    } else if url.ends_with(".ttl") {
+        parse_ttl_result(&content).with_context(|| format!("Parsing .ttl: {url}"))
+    } else if url.ends_with(".rdf") {
+        parse_rdf_dawg_result_set(&content)
+            .with_context(|| format!("Parsing .rdf DAWG result set: {url}"))
     } else {
         bail!("Unknown result file format: {url}")
     }
@@ -341,27 +353,274 @@ pub fn fluree_json_to_sparql_results(json: &serde_json::Value) -> Result<SparqlR
 }
 
 // ---------------------------------------------------------------------------
-// Turtle / RDF graph parsing (CONSTRUCT expected results)
+// Turtle result parsing (.ttl) — auto-detects DAWG Result Set vs CONSTRUCT
 // ---------------------------------------------------------------------------
 
-/// Parse a Turtle document into a [`SparqlResults::Graph`].
+/// Parse a Turtle result file, auto-detecting whether it encodes a DAWG
+/// Result Set (SELECT/ASK) or a plain graph (CONSTRUCT).
 ///
-/// Used for `.ttl` and `.rdf` CONSTRUCT expected result files.
-fn parse_ttl_graph(content: &str) -> Result<SparqlResults> {
+/// SPARQL 1.0 tests frequently use `.ttl` files for SELECT expected results,
+/// encoding them with the DAWG Result Set vocabulary (`rs:ResultSet`,
+/// `rs:solution`, etc.). CONSTRUCT tests also use `.ttl` but as plain graphs.
+///
+/// Detection: if the parsed triples contain `?s rdf:type rs:ResultSet`, treat
+/// as DAWG Result Set; otherwise return as a graph.
+fn parse_ttl_result(content: &str) -> Result<SparqlResults> {
     let mut sink = GraphCollectorSink::new();
     parse_turtle(content, &mut sink).context("Turtle parse error")?;
     let graph = sink.finish();
 
-    let triples: Vec<Triple> = graph
+    // Check for DAWG Result Set vocabulary
+    let is_result_set = graph
         .iter()
-        .map(|t| Triple {
-            subject: ir_term_to_rdf_term(&t.s),
-            predicate: ir_term_to_rdf_term(&t.p),
-            object: ir_term_to_rdf_term(&t.o),
+        .any(|t| t.p.as_iri() == Some(rdf::TYPE) && t.o.as_iri() == Some(rs::RESULT_SET));
+
+    if is_result_set {
+        parse_dawg_result_set_from_graph(&graph)
+    } else {
+        let triples: Vec<Triple> = graph
+            .iter()
+            .map(|t| Triple {
+                subject: ir_term_to_rdf_term(&t.s),
+                predicate: ir_term_to_rdf_term(&t.p),
+                object: ir_term_to_rdf_term(&t.o),
+            })
+            .collect();
+        Ok(SparqlResults::Graph(triples))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DAWG Result Set from parsed Turtle graph
+// ---------------------------------------------------------------------------
+
+/// Parse a DAWG Result Set from a pre-parsed graph of Turtle triples.
+///
+/// The DAWG Result Set vocabulary encodes SPARQL SELECT/ASK results as RDF:
+/// - `?rs rdf:type rs:ResultSet` — identifies the result set node
+/// - `?rs rs:boolean "true"^^xsd:boolean` — ASK boolean result
+/// - `?rs rs:resultVariable "varName"` — variable declarations
+/// - `?rs rs:solution ?sol` — solution rows
+/// - `?sol rs:binding ?bind` — bindings within a solution
+/// - `?bind rs:variable "varName"` + `?bind rs:value ?term` — variable→term
+fn parse_dawg_result_set_from_graph(graph: &IrGraph) -> Result<SparqlResults> {
+    // Helper: find all objects for a given subject and predicate IRI.
+    let find_objects = |subj: &IrTerm, pred_iri: &str| -> Vec<&IrTerm> {
+        graph
+            .iter()
+            .filter(|t| t.s == *subj && t.p.as_iri() == Some(pred_iri))
+            .map(|t| &t.o)
+            .collect()
+    };
+
+    // 1. Find the ResultSet subject node
+    let rs_subject = graph
+        .iter()
+        .find(|t| t.p.as_iri() == Some(rdf::TYPE) && t.o.as_iri() == Some(rs::RESULT_SET))
+        .map(|t| &t.s)
+        .context("No rs:ResultSet type triple found in DAWG result set")?;
+
+    // 2. Check for boolean result (ASK query)
+    let boolean_values = find_objects(rs_subject, rs::BOOLEAN);
+    if let Some(IrTerm::Literal { value, .. }) = boolean_values.first() {
+        let lexical = value.lexical();
+        return Ok(SparqlResults::Boolean(lexical == "true" || lexical == "1"));
+    }
+
+    // 3. Extract variables
+    let var_terms = find_objects(rs_subject, rs::RESULT_VARIABLE);
+    let variables: Vec<String> = var_terms
+        .iter()
+        .filter_map(|t| {
+            if let IrTerm::Literal { value, .. } = t {
+                Some(value.lexical())
+            } else {
+                None
+            }
         })
         .collect();
 
-    Ok(SparqlResults::Graph(triples))
+    // 4. Extract solutions
+    let solution_nodes = find_objects(rs_subject, rs::SOLUTION);
+    let mut solutions: Vec<HashMap<String, RdfTerm>> = Vec::new();
+
+    for sol_node in &solution_nodes {
+        let mut solution = HashMap::new();
+        let binding_nodes = find_objects(sol_node, rs::BINDING);
+
+        for bind_node in &binding_nodes {
+            // Extract variable name
+            let var_name = find_objects(bind_node, rs::VARIABLE)
+                .into_iter()
+                .find_map(|t| {
+                    if let IrTerm::Literal { value, .. } = t {
+                        Some(value.lexical())
+                    } else {
+                        None
+                    }
+                });
+
+            // Extract value
+            let value = find_objects(bind_node, rs::VALUE)
+                .into_iter()
+                .next()
+                .map(ir_term_to_rdf_term);
+
+            if let (Some(name), Some(term)) = (var_name, value) {
+                solution.insert(name, term);
+            }
+        }
+
+        solutions.push(solution);
+    }
+
+    Ok(SparqlResults::Solutions {
+        variables,
+        solutions,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// RDF/XML DAWG Result Set parser (.rdf files)
+// ---------------------------------------------------------------------------
+
+/// Parse an RDF/XML DAWG Result Set file into [`SparqlResults`].
+///
+/// Used for `.rdf` files in SPARQL 1.0 test suites (primarily `sort/`).
+/// These encode SELECT results using the DAWG Result Set vocabulary in
+/// RDF/XML format. This is a purpose-built parser for this constrained
+/// format, not a general RDF/XML parser.
+fn parse_rdf_dawg_result_set(content: &str) -> Result<SparqlResults> {
+    let mut reader = Reader::from_str(content);
+
+    let mut variables: Vec<String> = Vec::new();
+    let mut solutions: Vec<HashMap<String, RdfTerm>> = Vec::new();
+    let mut current_solution: Option<HashMap<String, RdfTerm>> = None;
+    let mut current_var_name: Option<String> = None;
+    let mut current_value: Option<RdfTerm> = None;
+
+    #[derive(Clone, Debug)]
+    enum State {
+        Root,
+        ResultSet,
+        ResultVariable,
+        Solution,
+        Binding,
+        BindingVariable,
+        BindingValue { datatype: Option<String> },
+        Boolean,
+        Ignored,
+    }
+    let mut state_stack: Vec<State> = vec![State::Root];
+    let mut text_buf = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                text_buf.clear();
+
+                let new_state = match (state_stack.last().unwrap_or(&State::Root), local) {
+                    (State::Root, "ResultSet") => State::ResultSet,
+                    (State::Root, _) => State::Root, // stay in Root for rdf:RDF wrapper
+                    (State::ResultSet, "resultVariable") => State::ResultVariable,
+                    (State::ResultSet, "solution") => {
+                        current_solution = Some(HashMap::new());
+                        State::Solution
+                    }
+                    (State::ResultSet, "boolean") => State::Boolean,
+                    (State::Solution, "binding") => {
+                        current_var_name = None;
+                        current_value = None;
+                        State::Binding
+                    }
+                    (State::Binding, "variable") => State::BindingVariable,
+                    (State::Binding, "value") => {
+                        // Check for rdf:resource attribute (IRI value as attribute)
+                        for attr in e.attributes().flatten() {
+                            let key = std::str::from_utf8(attr.key.0).unwrap_or("");
+                            if key == "rdf:resource" || key.ends_with(":resource") {
+                                let iri = String::from_utf8_lossy(&attr.value).to_string();
+                                current_value = Some(RdfTerm::Iri(iri));
+                            }
+                        }
+                        let datatype = e.attributes().flatten().find_map(|attr| {
+                            let key = std::str::from_utf8(attr.key.0).unwrap_or("");
+                            if key == "rdf:datatype" || key.ends_with(":datatype") {
+                                Some(String::from_utf8_lossy(&attr.value).to_string())
+                            } else {
+                                None
+                            }
+                        });
+                        State::BindingValue { datatype }
+                    }
+                    _ => State::Ignored,
+                };
+
+                state_stack.push(new_state);
+            }
+            Ok(Event::End(_)) => {
+                let finished_state = state_stack.pop().unwrap_or(State::Root);
+                match finished_state {
+                    State::ResultVariable => {
+                        let var = text_buf.trim().to_string();
+                        if !var.is_empty() {
+                            variables.push(var);
+                        }
+                    }
+                    State::Boolean => {
+                        let val = text_buf.trim();
+                        return Ok(SparqlResults::Boolean(val == "true" || val == "1"));
+                    }
+                    State::Solution => {
+                        if let Some(sol) = current_solution.take() {
+                            solutions.push(sol);
+                        }
+                    }
+                    State::Binding => {
+                        if let (Some(name), Some(term)) =
+                            (current_var_name.take(), current_value.take())
+                        {
+                            if let Some(ref mut sol) = current_solution {
+                                sol.insert(name, term);
+                            }
+                        }
+                    }
+                    State::BindingVariable => {
+                        current_var_name = Some(text_buf.trim().to_string());
+                    }
+                    State::BindingValue { datatype } => {
+                        // Only set if not already set by rdf:resource attribute
+                        if current_value.is_none() {
+                            let val = text_buf.trim().to_string();
+                            if !val.is_empty() {
+                                current_value = Some(RdfTerm::Literal {
+                                    value: val,
+                                    datatype,
+                                    language: None,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if let Ok(unescaped) = e.unescape() {
+                    text_buf.push_str(&unescaped);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => bail!("RDF/XML parse error: {e}"),
+            _ => {}
+        }
+    }
+
+    Ok(SparqlResults::Solutions {
+        variables,
+        solutions,
+    })
 }
 
 /// Convert a `fluree_graph_ir::Term` to our local [`RdfTerm`].
@@ -631,5 +890,204 @@ mod tests {
         let json = r#"{ "head": {}, "boolean": false }"#;
         let result = parse_srj(json).unwrap();
         assert!(matches!(result, SparqlResults::Boolean(false)));
+    }
+
+    #[test]
+    fn test_parse_dawg_ttl_select() {
+        let ttl = r#"
+@prefix rs: <http://www.w3.org/2001/sw/DataAccess/tests/result-set#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+[] rdf:type rs:ResultSet ;
+   rs:resultVariable "x" ;
+   rs:resultVariable "v" ;
+   rs:solution [ rs:binding [ rs:value <http://example.org/a> ;
+                               rs:variable "x" ] ;
+                  rs:binding [ rs:value "hello" ;
+                               rs:variable "v" ] ] .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        match result {
+            SparqlResults::Solutions {
+                variables,
+                solutions,
+            } => {
+                assert_eq!(variables.len(), 2);
+                assert!(variables.contains(&"x".to_string()));
+                assert!(variables.contains(&"v".to_string()));
+                assert_eq!(solutions.len(), 1);
+                assert_eq!(
+                    solutions[0]["x"],
+                    RdfTerm::Iri("http://example.org/a".into())
+                );
+                assert_eq!(
+                    solutions[0]["v"],
+                    RdfTerm::Literal {
+                        value: "hello".into(),
+                        datatype: None,
+                        language: None,
+                    }
+                );
+            }
+            _ => panic!("Expected Solutions, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_dawg_ttl_boolean_true() {
+        let ttl = r#"
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rs: <http://www.w3.org/2001/sw/DataAccess/tests/result-set#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+[] rdf:type rs:ResultSet ;
+   rs:boolean "true"^^xsd:boolean .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        assert!(matches!(result, SparqlResults::Boolean(true)));
+    }
+
+    #[test]
+    fn test_parse_dawg_ttl_boolean_false() {
+        let ttl = r#"
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rs: <http://www.w3.org/2001/sw/DataAccess/tests/result-set#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+[] rdf:type rs:ResultSet ;
+   rs:boolean "false"^^xsd:boolean .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        assert!(matches!(result, SparqlResults::Boolean(false)));
+    }
+
+    #[test]
+    fn test_parse_dawg_ttl_blank_node_values() {
+        let ttl = r#"
+@prefix rs: <http://www.w3.org/2001/sw/DataAccess/tests/result-set#> .
+
+[] <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> rs:ResultSet ;
+   rs:resultVariable "x" ;
+   rs:solution [ rs:binding [ rs:value _:b1 ;
+                               rs:variable "x" ] ] .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        match result {
+            SparqlResults::Solutions { solutions, .. } => {
+                assert_eq!(solutions.len(), 1);
+                assert!(matches!(solutions[0]["x"], RdfTerm::BlankNode(_)));
+            }
+            _ => panic!("Expected Solutions, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_dawg_ttl_typed_literal() {
+        let ttl = r#"
+@prefix rs: <http://www.w3.org/2001/sw/DataAccess/tests/result-set#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+[] rdf:type rs:ResultSet ;
+   rs:resultVariable "v" ;
+   rs:solution [ rs:binding [ rs:value "42"^^xsd:integer ;
+                               rs:variable "v" ] ] .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        match result {
+            SparqlResults::Solutions { solutions, .. } => {
+                assert_eq!(
+                    solutions[0]["v"],
+                    RdfTerm::Literal {
+                        value: "42".into(),
+                        datatype: Some("http://www.w3.org/2001/XMLSchema#integer".into()),
+                        language: None,
+                    }
+                );
+            }
+            _ => panic!("Expected Solutions, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_construct_ttl_not_dawg() {
+        // A plain CONSTRUCT graph (no rs:ResultSet) should return Graph
+        let ttl = r#"
+@prefix ex: <http://example.org/> .
+ex:alice ex:name "Alice" .
+ex:bob ex:name "Bob" .
+"#;
+        let result = parse_ttl_result(ttl).unwrap();
+        match result {
+            SparqlResults::Graph(triples) => {
+                assert_eq!(triples.len(), 2);
+            }
+            _ => panic!("Expected Graph, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rdf_dawg_select() {
+        let xml = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rs="http://www.w3.org/2001/sw/DataAccess/tests/result-set#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rs:ResultSet>
+    <rs:resultVariable>name</rs:resultVariable>
+    <rs:solution rdf:parseType="Resource">
+      <rs:binding rdf:parseType="Resource">
+        <rs:variable>name</rs:variable>
+        <rs:value>Alice</rs:value>
+      </rs:binding>
+    </rs:solution>
+  </rs:ResultSet>
+</rdf:RDF>"#;
+        let result = parse_rdf_dawg_result_set(xml).unwrap();
+        match result {
+            SparqlResults::Solutions {
+                variables,
+                solutions,
+            } => {
+                assert_eq!(variables, vec!["name"]);
+                assert_eq!(solutions.len(), 1);
+                assert_eq!(
+                    solutions[0]["name"],
+                    RdfTerm::Literal {
+                        value: "Alice".into(),
+                        datatype: None,
+                        language: None,
+                    }
+                );
+            }
+            _ => panic!("Expected Solutions, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rdf_dawg_iri_values() {
+        let xml = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rs="http://www.w3.org/2001/sw/DataAccess/tests/result-set#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rs:ResultSet>
+    <rs:resultVariable>addr</rs:resultVariable>
+    <rs:solution rdf:parseType="Resource">
+      <rs:binding rdf:parseType="Resource">
+        <rs:variable>addr</rs:variable>
+        <rs:value rdf:resource="http://example.org/alice"/>
+      </rs:binding>
+    </rs:solution>
+  </rs:ResultSet>
+</rdf:RDF>"#;
+        let result = parse_rdf_dawg_result_set(xml).unwrap();
+        match result {
+            SparqlResults::Solutions { solutions, .. } => {
+                assert_eq!(solutions.len(), 1);
+                assert_eq!(
+                    solutions[0]["addr"],
+                    RdfTerm::Iri("http://example.org/alice".into())
+                );
+            }
+            _ => panic!("Expected Solutions, got {result:?}"),
+        }
     }
 }

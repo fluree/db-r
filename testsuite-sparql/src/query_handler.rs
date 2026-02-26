@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext};
+use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext, SelectMode};
 
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
@@ -129,8 +129,11 @@ pub async fn run_eval_test(
     // 5. Parse expected results
     let expected = parse_expected_results(result_url)?;
 
-    // 6. Detect CONSTRUCT vs SELECT/ASK by expected result file extension
-    let is_construct = result_url.ends_with(".ttl") || result_url.ends_with(".rdf");
+    // 6. Detect CONSTRUCT vs SELECT/ASK from the parsed query's select mode.
+    //    Previous heuristic checked file extension (.ttl/.rdf), but many SPARQL
+    //    1.0 SELECT tests use .ttl result files encoded in the DAWG Result Set
+    //    vocabulary — not CONSTRUCT graphs. See issue #44.
+    let is_construct = query_result.select_mode == SelectMode::Construct;
 
     let actual = if is_construct {
         // CONSTRUCT path: format as JSON-LD graph
