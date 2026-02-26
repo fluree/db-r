@@ -1797,4 +1797,28 @@ pub mod config_iris {
 
     /// `f:CommitVerified` — full commit chain verification
     pub const COMMIT_VERIFIED: &str = "https://ns.flur.ee/db#CommitVerified";
+
+    // ---- Override control mode values ----
+
+    /// `f:OverrideNone` — no overrides permitted, regardless of identity.
+    pub const OVERRIDE_NONE: &str = "https://ns.flur.ee/db#OverrideNone";
+
+    /// `f:OverrideAll` — any request can override.
+    pub const OVERRIDE_ALL: &str = "https://ns.flur.ee/db#OverrideAll";
+
+    /// `f:IdentityRestricted` — only requests with verified matching identity can override.
+    pub const IDENTITY_RESTRICTED: &str = "https://ns.flur.ee/db#IdentityRestricted";
+
+    // ---- Temporal predicates ----
+
+    /// `f:atT` — pin a GraphRef to a specific commit number.
+    pub const AT_T: &str = "https://ns.flur.ee/db#atT";
+
+    // ---- Rollback guard ----
+
+    /// `f:rollbackGuard` — freshness constraints for a GraphRef.
+    pub const ROLLBACK_GUARD: &str = "https://ns.flur.ee/db#rollbackGuard";
+
+    /// `f:minT` — reject any resolved head where `head_t < minT`.
+    pub const MIN_T: &str = "https://ns.flur.ee/db#minT";
 }

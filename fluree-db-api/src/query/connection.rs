@@ -350,12 +350,12 @@ where
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
                 let opts = policy_override.to_query_connection_options();
-                return self.wrap_policy(view, &opts).await;
+                return self.wrap_policy(view, &opts, None).await;
             }
         }
         // Fall back to global policy if present
         if global_opts.has_any_policy_inputs() {
-            self.wrap_policy(view, global_opts).await
+            self.wrap_policy(view, global_opts, None).await
         } else {
             Ok(view)
         }

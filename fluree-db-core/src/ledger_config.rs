@@ -37,6 +37,24 @@ pub struct LedgerConfig {
     pub graph_overrides: Vec<GraphConfig>,
 }
 
+/// Effective config for a specific graph within a ledger.
+///
+/// Produced by [`resolve_effective_config`](fluree_db_api::config_resolver::resolve_effective_config)
+/// which merges ledger-wide defaults with per-graph overrides.
+/// Carried on `GraphDb` so downstream callers can apply identity gating at
+/// request time without re-reading the config graph.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedConfig {
+    /// Effective policy defaults (ledger-wide merged with per-graph override).
+    pub policy: Option<PolicyDefaults>,
+    /// Effective SHACL defaults.
+    pub shacl: Option<ShaclDefaults>,
+    /// Effective reasoning defaults.
+    pub reasoning: Option<ReasoningDefaults>,
+    /// Effective datalog defaults.
+    pub datalog: Option<DatalogDefaults>,
+}
+
 // ============================================================================
 // Setting groups
 // ============================================================================
@@ -221,6 +239,8 @@ pub struct GraphSourceRef {
     pub at_t: Option<i64>,
     /// Trust policy for this reference.
     pub trust_policy: Option<TrustPolicy>,
+    /// Rollback guard — freshness constraints for this reference.
+    pub rollback_guard: Option<RollbackGuard>,
 }
 
 /// Trust verification model for a [`GraphSourceRef`].
@@ -228,7 +248,15 @@ pub struct GraphSourceRef {
 pub struct TrustPolicy {
     /// How to validate the referenced graph.
     pub trust_mode: TrustMode,
-    /// Rollback guard: reject any resolved head where `head_t < min_t`.
+}
+
+/// Freshness constraints for a [`GraphSourceRef`].
+///
+/// Corresponds to `f:RollbackGuard` in the config graph schema.
+/// Prevents accepting stale or rolled-back heads from a nameservice.
+#[derive(Debug, Clone)]
+pub struct RollbackGuard {
+    /// Reject any resolved head where `head_t < min_t`.
     pub min_t: Option<i64>,
 }
 
