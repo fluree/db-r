@@ -33,12 +33,6 @@ pub fn format(
     compactor: &IriCompactor,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
-    // ASK queries: return boolean based on solution existence
-    if config.select_mode == SelectMode::Boolean {
-        let has_solution = result.batches.iter().any(|b| !b.is_empty());
-        return Ok(json!({"head": {}, "boolean": has_solution}));
-    }
-
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
     let head_vars: Vec<fluree_db_query::VarId> = match config.select_mode {
@@ -469,32 +463,6 @@ mod tests {
             construct_template: None,
             graph_select: None,
         }
-    }
-
-    #[test]
-    fn test_boolean_true_when_solutions_exist() {
-        let compactor = make_test_compactor();
-        let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
-        result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
-
-        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
-        let output = format(&result, &compactor, &config).unwrap();
-
-        assert_eq!(output, json!({"head": {}, "boolean": true}));
-    }
-
-    #[test]
-    fn test_boolean_false_when_no_solutions() {
-        let compactor = make_test_compactor();
-        let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
-        // No batches = no solutions
-
-        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
-        let output = format(&result, &compactor, &config).unwrap();
-
-        assert_eq!(output, json!({"head": {}, "boolean": false}));
     }
 
     #[test]

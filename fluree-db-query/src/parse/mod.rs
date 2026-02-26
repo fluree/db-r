@@ -79,6 +79,7 @@ use node_map::is_variable;
 /// - `SelectMode::One` when using "selectOne" key (returns first row or null)
 /// - `SelectMode::Wildcard` when select value is "*" (returns all bound variables)
 /// - `SelectMode::Construct` when using "construct" key (returns JSON-LD graph)
+/// - `SelectMode::Boolean` when using "ask" key (returns boolean existence check)
 ///
 /// # Example
 ///

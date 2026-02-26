@@ -17,11 +17,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         // Lower WHERE clause patterns
         let patterns = self.lower_graph_pattern(&ask.where_clause.pattern)?;
 
-        // ASK supports ORDER BY, LIMIT, OFFSET but not GROUP BY/HAVING/aggregates
+        // Lower any solution modifiers the parser accepted (ORDER BY, LIMIT, OFFSET).
+        // Per SPARQL spec, these are meaningless for ASK — we override LIMIT below.
         let mut options = QueryOptions::default();
         self.lower_base_modifiers(&ask.modifiers, &mut options)?;
 
-        // LIMIT 1 for efficiency — only need to know if any solution exists
+        // Override to LIMIT 1 — ASK only needs to know if any solution exists
         options.limit = Some(1);
 
         let ctx = self.build_jsonld_context()?;

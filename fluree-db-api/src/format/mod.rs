@@ -133,12 +133,8 @@ pub fn format_results(
     }
 
     // ASK queries: return boolean based on solution existence
-    if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
-        let has_solution = result.batches.iter().any(|b| !b.is_empty());
-        return match config.format {
-            OutputFormat::SparqlJson => Ok(json!({"head": {}, "boolean": has_solution})),
-            _ => Ok(JsonValue::Bool(has_solution)),
-        };
+    if let Some(result) = format_boolean(result, config) {
+        return result;
     }
 
     // Graph crawl queries require async formatting for database access
@@ -187,6 +183,27 @@ pub fn format_results_string(
     } else {
         Ok(serde_json::to_string(&value)?)
     }
+}
+
+// ============================================================================
+// Boolean (ASK) formatting
+// ============================================================================
+
+/// If this is an ASK/Boolean query, produce the result directly.
+/// Returns `None` for non-Boolean queries (caller continues to normal dispatch).
+///
+/// Uses an OR-guard on config and result because, unlike CONSTRUCT (which
+/// requires template data from the result), Boolean formatting is stateless —
+/// either side asserting Boolean is sufficient to produce the correct output.
+fn format_boolean(result: &QueryResult, config: &FormatterConfig) -> Option<Result<JsonValue>> {
+    if config.select_mode != SelectMode::Boolean && result.select_mode != SelectMode::Boolean {
+        return None;
+    }
+    let has_solution = result.batches.iter().any(|b| !b.is_empty());
+    Some(match config.format {
+        OutputFormat::SparqlJson => Ok(json!({"head": {}, "boolean": has_solution})),
+        _ => Ok(JsonValue::Bool(has_solution)),
+    })
 }
 
 // ============================================================================
@@ -251,12 +268,8 @@ pub async fn format_results_async(
     }
 
     // ASK queries: return boolean based on solution existence
-    if config.select_mode == SelectMode::Boolean || result.select_mode == SelectMode::Boolean {
-        let has_solution = result.batches.iter().any(|b| !b.is_empty());
-        return match config.format {
-            OutputFormat::SparqlJson => Ok(json!({"head": {}, "boolean": has_solution})),
-            _ => Ok(JsonValue::Bool(has_solution)),
-        };
+    if let Some(result) = format_boolean(result, config) {
+        return result;
     }
 
     // Graph crawl queries use async formatter with DB access
@@ -330,5 +343,88 @@ pub async fn format_results_string_async(
         Ok(serde_json::to_string_pretty(&value)?)
     } else {
         Ok(serde_json::to_string(&value)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fluree_db_query::var_registry::VarRegistry;
+
+    fn make_test_result() -> QueryResult {
+        QueryResult {
+            vars: VarRegistry::new(),
+            t: 0,
+            novelty: None,
+            context: fluree_graph_json_ld::ParsedContext::default(),
+            orig_context: None,
+            select: vec![],
+            select_mode: SelectMode::Many,
+            batches: vec![],
+            binary_graph: None,
+            construct_template: None,
+            graph_select: None,
+        }
+    }
+
+    #[test]
+    fn format_boolean_returns_none_for_non_boolean() {
+        let result = make_test_result();
+        let config = FormatterConfig::jsonld();
+        assert!(format_boolean(&result, &config).is_none());
+    }
+
+    #[test]
+    fn format_boolean_true_sparql_json() {
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+        result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
+
+        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
+        let output = format_boolean(&result, &config).unwrap().unwrap();
+        assert_eq!(output, json!({"head": {}, "boolean": true}));
+    }
+
+    #[test]
+    fn format_boolean_false_sparql_json() {
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+
+        let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
+        let output = format_boolean(&result, &config).unwrap().unwrap();
+        assert_eq!(output, json!({"head": {}, "boolean": false}));
+    }
+
+    #[test]
+    fn format_boolean_true_jsonld() {
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+        result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
+
+        let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Boolean);
+        let output = format_boolean(&result, &config).unwrap().unwrap();
+        assert_eq!(output, JsonValue::Bool(true));
+    }
+
+    #[test]
+    fn format_boolean_false_jsonld() {
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+
+        let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Boolean);
+        let output = format_boolean(&result, &config).unwrap().unwrap();
+        assert_eq!(output, JsonValue::Bool(false));
+    }
+
+    #[test]
+    fn format_boolean_triggered_by_result_mode_only() {
+        // result says Boolean, config says Many — should still trigger
+        let mut result = make_test_result();
+        result.select_mode = SelectMode::Boolean;
+        result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
+
+        let config = FormatterConfig::jsonld(); // default: Many
+        let output = format_boolean(&result, &config).unwrap().unwrap();
+        assert_eq!(output, JsonValue::Bool(true));
     }
 }

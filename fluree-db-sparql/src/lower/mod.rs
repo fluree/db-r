@@ -40,6 +40,7 @@
 //! - [`pattern`] — Graph pattern dispatch (BGP, OPTIONAL, UNION, etc.)
 //! - [`path`] — Property path lowering
 //! - [`rdf_star`] — RDF-star quoted triple expansion
+//! - [`ask`] — ASK query lowering
 //! - [`construct`] — CONSTRUCT query lowering
 //! - [`select`] — SELECT clause, solution modifiers, subqueries
 
