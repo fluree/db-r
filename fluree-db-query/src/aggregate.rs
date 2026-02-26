@@ -66,6 +66,8 @@ pub struct AggregateSpec {
     pub input_var: Option<VarId>,
     /// Output variable for the aggregate result
     pub output_var: VarId,
+    /// Whether DISTINCT was specified (e.g., SUM(DISTINCT ?x))
+    pub distinct: bool,
 }
 
 /// Aggregate operator - applies aggregate functions to grouped values
@@ -224,7 +226,7 @@ impl Operator for AggregateOperator {
                         Some(agg_idx) => {
                             // This column needs aggregation
                             let spec = &self.aggregates[agg_idx];
-                            apply_aggregate(&spec.function, input_binding)
+                            apply_aggregate(&spec.function, input_binding, spec.distinct)
                         }
                         None => {
                             // Pass through unchanged
@@ -247,7 +249,7 @@ impl Operator for AggregateOperator {
                         Some(col_idx) => (0..batch.len())
                             .map(|row_idx| {
                                 let input_binding = batch.get_by_col(row_idx, *col_idx);
-                                apply_aggregate(&spec.function, input_binding)
+                                apply_aggregate(&spec.function, input_binding, spec.distinct)
                             })
                             .collect(),
                         None => {
@@ -304,9 +306,22 @@ impl Operator for AggregateOperator {
 ///
 /// If the binding is `Grouped(values)`, compute the aggregate.
 /// Otherwise, pass through unchanged (shouldn't happen in normal usage).
-pub fn apply_aggregate(func: &AggregateFn, binding: &Binding) -> Binding {
+/// When `distinct` is true, deduplicates values before aggregation.
+pub fn apply_aggregate(func: &AggregateFn, binding: &Binding, distinct: bool) -> Binding {
     match binding {
-        Binding::Grouped(values) => compute_aggregate(func, values),
+        Binding::Grouped(values) => {
+            if distinct {
+                let deduped: Vec<Binding> = values
+                    .iter()
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                compute_aggregate(func, &deduped)
+            } else {
+                compute_aggregate(func, values)
+            }
+        }
         // Non-grouped values pass through (e.g., group key columns)
         other => other.clone(),
     }
@@ -762,7 +777,7 @@ mod tests {
     fn test_apply_aggregate_non_grouped() {
         // Non-grouped values pass through unchanged
         let binding = Binding::lit(FlakeValue::Long(42), xsd_integer());
-        let result = apply_aggregate(&AggregateFn::Sum, &binding);
+        let result = apply_aggregate(&AggregateFn::Sum, &binding, false);
         assert_eq!(result, binding);
     }
 
@@ -774,8 +789,24 @@ mod tests {
             Binding::lit(FlakeValue::Long(3), xsd_integer()),
         ]);
 
-        let result = apply_aggregate(&AggregateFn::Sum, &grouped);
+        let result = apply_aggregate(&AggregateFn::Sum, &grouped, false);
         let (val, _, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(6));
+    }
+
+    #[test]
+    fn test_apply_aggregate_distinct() {
+        // SUM(DISTINCT) should deduplicate before summing
+        let grouped = Binding::Grouped(vec![
+            Binding::lit(FlakeValue::Long(1), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()),
+            Binding::lit(FlakeValue::Long(1), xsd_integer()), // duplicate
+            Binding::lit(FlakeValue::Long(3), xsd_integer()),
+            Binding::lit(FlakeValue::Long(2), xsd_integer()), // duplicate
+        ]);
+
+        let result = apply_aggregate(&AggregateFn::Sum, &grouped, true);
+        let (val, _, _) = result.as_lit().unwrap();
+        assert_eq!(*val, FlakeValue::Long(6)); // 1+2+3 = 6, not 1+2+1+3+2 = 9
     }
 }

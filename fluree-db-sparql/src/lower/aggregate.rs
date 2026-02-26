@@ -114,6 +114,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             function: agg_fn,
             input_var,
             output_var,
+            distinct,
         })
     }
 

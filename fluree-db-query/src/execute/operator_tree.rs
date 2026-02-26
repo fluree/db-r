@@ -342,6 +342,7 @@ pub fn build_operator_tree(
                     function: spec.function.clone(),
                     input_col,
                     output_var: spec.output_var,
+                    distinct: spec.distinct,
                 }
             })
             .collect();
