@@ -72,14 +72,37 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
 fn build_store(dirs: &FlureeDir) -> CliResult<MemoryStore> {
     let fluree = context::build_fluree(dirs)?;
 
-    // Determine memory_dir: use .fluree-memory/ at the project root.
-    // In unified (local) mode, data_dir is .fluree/ so its parent is the project root.
-    // Always enable in unified mode — MemoryStore creates the directory structure on init.
-    let memory_dir = if dirs.is_unified() {
-        let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
-        Some(project_root.join(".fluree-memory"))
-    } else {
-        None // Global mode — no file sharing
+    // Determine memory_dir:
+    // - Prefer the git repository root (so running from a subdir still uses <repo>/.fluree-memory)
+    // - Fall back to unified-mode heuristic (data_dir is <repo>/.fluree so parent is project root)
+    // - Otherwise (no git root and not unified), keep ledger-only behavior
+    let memory_dir = {
+        let git_root = {
+            let cwd = std::env::current_dir().ok();
+            let mut cur = cwd.clone();
+            let mut out = None;
+            while let Some(dir) = cur {
+                if dir.join(".git").exists() {
+                    out = Some(dir);
+                    break;
+                }
+                let mut next = dir;
+                if !next.pop() {
+                    break;
+                }
+                cur = Some(next);
+            }
+            out
+        };
+
+        if let Some(root) = git_root {
+            Some(root.join(".fluree-memory"))
+        } else if dirs.is_unified() {
+            let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
+            Some(project_root.join(".fluree-memory"))
+        } else {
+            None
+        }
     };
 
     Ok(MemoryStore::new(fluree, memory_dir))

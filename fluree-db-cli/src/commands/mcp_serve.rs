@@ -63,13 +63,37 @@ fn init_mcp_tracing(memory_dir: Option<&Path>) {
 async fn run_stdio(dirs: &FlureeDir) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;
 
-    // Determine memory_dir: .fluree-memory/ at the project root (same logic as CLI).
-    // Always enable in unified mode — MemoryStore creates the directory structure on init.
-    let memory_dir = if dirs.is_unified() {
-        let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
-        Some(project_root.join(".fluree-memory"))
-    } else {
-        None
+    // Determine memory_dir:
+    // - Prefer the git repository root (so IDE spawn cwd quirks don't change where TTL lives)
+    // - Fall back to unified-mode heuristic (data_dir is <repo>/.fluree so parent is project root)
+    // - Otherwise (no git root and not unified), keep ledger-only behavior
+    let memory_dir = {
+        let git_root = {
+            let cwd = std::env::current_dir().ok();
+            let mut cur = cwd.clone();
+            let mut out = None;
+            while let Some(dir) = cur {
+                if dir.join(".git").exists() {
+                    out = Some(dir);
+                    break;
+                }
+                let mut next = dir;
+                if !next.pop() {
+                    break;
+                }
+                cur = Some(next);
+            }
+            out
+        };
+
+        if let Some(root) = git_root {
+            Some(root.join(".fluree-memory"))
+        } else if dirs.is_unified() {
+            let project_root = dirs.data_dir().parent().unwrap_or(dirs.data_dir());
+            Some(project_root.join(".fluree-memory"))
+        } else {
+            None
+        }
     };
 
     // Set up file-based logging (stdout/stderr are reserved for JSON-RPC)

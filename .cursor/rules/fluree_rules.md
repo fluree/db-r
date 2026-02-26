@@ -34,6 +34,16 @@ Use consistent, lowercase tags. Common tags:
 
 Call `memory_update` when a previously stored fact or decision changes. This creates a new version that supersedes the old one, preserving audit history.
 
+## Consolidate Overlapping Memories (Important)
+
+When `memory_recall` returns multiple memories that are substantially overlapping (same concept repeated, near-duplicates, or fragments of the same idea), **consolidate them** so future recall is cleaner:
+
+- Prefer creating a **single canonical memory** that merges the best/most complete content.
+- Use `memory_update` to create the canonical version so it **supersedes** an older memory (and the superseded one is filtered from “current” results).
+- If there are additional near-duplicates beyond the one you superseded, either:
+  - `memory_forget` the duplicates if they add no unique value, or
+  - update them into a short pointer that they are redundant and point at the canonical memory ID.
+
 ## When to Forget
 
 Call `memory_forget` only when a memory is clearly incorrect or permanently obsolete. Prefer `memory_update` for evolving information.

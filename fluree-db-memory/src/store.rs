@@ -8,7 +8,7 @@ use fluree_db_api::{FileStorage, Fluree};
 use fluree_db_nameservice::file::FileNameService;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 const MEM_PREFIX: &str = "mem:";
 const MEM_NAMESPACE: &str = "https://ns.flur.ee/memory#";
@@ -218,14 +218,67 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Insert a JSON-LD document into the memory ledger (used by rebuild).
-    pub async fn transact_insert(&self, doc: &Value) -> Result<()> {
-        self.fluree
+    async fn cache_insert_with_fallback(&self, doc: &Value) -> Result<()> {
+        match self
+            .fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
             .insert(doc)
             .commit()
-            .await?;
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // In file-based mode, the `.ttl` files are the source of truth and the
+                // `__memory` ledger is a derived cache. Cache commits can fail due to
+                // stale cached state (e.g., another process dropped/rebuilt the ledger)
+                // or concurrent writers. In that case, evict cached state and rebuild
+                // from the authoritative files.
+                if self.memory_dir.is_some() {
+                    warn!(error = %e, "Memory cache commit failed; rebuilding from files");
+                    self.fluree.disconnect_ledger(MEMORY_LEDGER_ID).await;
+                    self.ensure_synced().await?;
+                    Ok(())
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    async fn cache_insert_retry_disconnect_once(&self, doc: &Value) -> Result<()> {
+        match self
+            .fluree
+            .graph(MEMORY_LEDGER_ID)
+            .transact()
+            .insert(doc)
+            .commit()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if self.memory_dir.is_some() {
+                    warn!(error = %e, "Memory cache commit failed; evicting and retrying once");
+                    self.fluree.disconnect_ledger(MEMORY_LEDGER_ID).await;
+                    self.fluree
+                        .graph(MEMORY_LEDGER_ID)
+                        .transact()
+                        .insert(doc)
+                        .commit()
+                        .await?;
+                    Ok(())
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    /// Insert a JSON-LD document into the memory ledger (used by rebuild).
+    pub async fn transact_insert(&self, doc: &Value) -> Result<()> {
+        // Rebuild should not recursively trigger another rebuild. If the cache commit
+        // fails (stale cache), evict and retry once.
+        self.cache_insert_retry_disconnect_once(doc).await?;
         Ok(())
     }
 
@@ -281,12 +334,7 @@ impl MemoryStore {
 
         // Then update the ledger cache
         let doc = memory_to_jsonld(&mem);
-        self.fluree
-            .graph(MEMORY_LEDGER_ID)
-            .transact()
-            .insert(&doc)
-            .commit()
-            .await?;
+        self.cache_insert_with_fallback(&doc).await?;
 
         // Update the file watermark only after cache commit succeeds.
         if let Some(dir) = &self.memory_dir {
@@ -390,12 +438,7 @@ WHERE {{\n\
 
         // Then update the ledger cache
         let doc = memory_to_jsonld(&merged);
-        self.fluree
-            .graph(MEMORY_LEDGER_ID)
-            .transact()
-            .insert(&doc)
-            .commit()
-            .await?;
+        self.cache_insert_with_fallback(&doc).await?;
 
         // Update the file watermark only after cache commit succeeds.
         if let Some(dir) = &self.memory_dir {
@@ -456,12 +499,25 @@ WHERE {{\n\
             "delete": { "@id": &compact, "?p": "?o" }
         });
 
-        self.fluree
+        match self
+            .fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
             .update(&delete_doc)
             .commit()
-            .await?;
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                if self.memory_dir.is_some() {
+                    warn!(error = %e, "Memory cache delete failed; rebuilding from files");
+                    self.fluree.disconnect_ledger(MEMORY_LEDGER_ID).await;
+                    self.ensure_synced().await?;
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
 
         // Update the file watermark only after cache commit succeeds.
         if let Some(dir) = &self.memory_dir {
