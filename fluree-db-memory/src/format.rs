@@ -77,7 +77,7 @@ pub fn format_recall_json(result: &RecallResult) -> serde_json::Value {
 ///
 /// This is the format that agents receive when they call the `memory_recall` MCP tool.
 pub fn format_context(memories: &[ScoredMemory]) -> String {
-    format_context_paged(memories, 0, memories.len(), memories.len(), false)
+    format_context_paged(memories, 0, memories.len(), memories.len(), false, None)
 }
 
 /// Format memories as an XML context block with pagination metadata.
@@ -85,12 +85,15 @@ pub fn format_context(memories: &[ScoredMemory]) -> String {
 /// `offset` and `limit` describe the current page.
 /// `total_store` is the total number of current memories in the store.
 /// `has_more` indicates that additional results may be available at `offset + shown`.
+/// `next_score` is the BM25 score of the first result not returned, giving the LLM a
+/// signal for whether it's worth requesting the next page.
 pub fn format_context_paged(
     memories: &[ScoredMemory],
     offset: usize,
     limit: usize,
     total_store: usize,
     has_more: bool,
+    next_score: Option<f64>,
 ) -> String {
     let mut out = String::new();
     out.push_str("<memory-context>\n");
@@ -134,17 +137,20 @@ pub fn format_context_paged(
 
     let shown = memories.len();
     if has_more {
-        let next = offset + shown;
+        let next_offset = offset + shown;
+        let next_score_hint = next_score
+            .map(|s| format!(", next score: {:.1}", s))
+            .unwrap_or_default();
         out.push_str(&format!(
             "  <pagination shown=\"{}\" offset=\"{}\" limit=\"{}\" total_in_store=\"{}\">\
-             Results {}\u{2013}{}. Use offset={} to retrieve more.</pagination>\n",
+             Results {}\u{2013}{}{next_score_hint}. Use offset={} to retrieve more.</pagination>\n",
             shown,
             offset,
             limit,
             total_store,
             offset + 1,
             offset + shown,
-            next,
+            next_offset,
         ));
     } else {
         out.push_str(&format!(

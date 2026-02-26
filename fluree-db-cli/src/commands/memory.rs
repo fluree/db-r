@@ -949,7 +949,7 @@ async fn run_recall(
         "context" => {
             print!(
                 "{}",
-                format_context_paged(&paged, offset, limit, total_store, has_more)
+                format_context_paged(&paged, offset, limit, total_store, has_more, None)
             );
         }
         _ => {

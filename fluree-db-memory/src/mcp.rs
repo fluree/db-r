@@ -386,10 +386,15 @@ impl MemoryToolService {
 
         let limit = req.limit.unwrap_or(3);
         let offset = req.offset.unwrap_or(0);
-        // Fetch enough candidates from BM25 to cover offset + limit
-        let fetch_n = offset + limit;
+        // Only apply smart score-based filtering when the caller did not explicitly
+        // request a specific limit or a non-zero offset.  Explicit pagination means
+        // the caller already knows what it wants.
+        let use_smart_filter = req.limit.is_none() && offset == 0;
+        // Fetch one extra beyond what we need so we can always report the score of
+        // the first result we did *not* return.
+        let fetch_n = offset + limit + 1;
 
-        debug!(query = %req.query, limit = limit, offset = offset, "Memory recall request");
+        debug!(query = %req.query, limit = limit, offset = offset, use_smart_filter, "Memory recall request");
 
         // BM25 fulltext search for content relevance
         let bm25_hits = match self.store.recall_fulltext(&req.query, fetch_n).await {
@@ -425,10 +430,10 @@ impl MemoryToolService {
                     RecallEngine::rerank(&req.query, &bm25_hits, &all, branch.as_deref())
                 };
 
-                // Apply offset + limit slicing
-                let paged: Vec<_> = scored.into_iter().skip(offset).take(limit).collect();
+                // Apply offset then take up to limit+1 (the extra is the peek-ahead).
+                let mut after_offset: Vec<_> = scored.into_iter().skip(offset).collect();
 
-                if paged.is_empty() {
+                if after_offset.is_empty() {
                     let msg = if offset > 0 {
                         format!("No more memories at offset={}.", offset)
                     } else {
@@ -438,10 +443,45 @@ impl MemoryToolService {
                     return Ok(CallToolResult::success(vec![Content::text(msg)]));
                 }
 
-                // has_more: we got a full page, so there may be more after this slice
-                let has_more = paged.len() == limit;
-                info!(query = %req.query, shown = paged.len(), offset = offset, has_more = has_more, "Memory recall complete");
-                let context = format_context_paged(&paged, offset, limit, all.len(), has_more);
+                // The peek item lives at index `limit` (if it exists).
+                let peek_score = after_offset.get(limit).map(|s| s.score);
+
+                // Truncate to at most `limit` results.
+                after_offset.truncate(limit);
+                let mut page = after_offset;
+
+                // Smart score-based trimming: when the caller did not request an
+                // explicit limit, drop results whose score is less than 50% of the
+                // top score.  This keeps only clearly relevant hits and avoids
+                // feeding the LLM noisy low-confidence memories.
+                let next_score = if use_smart_filter && !page.is_empty() {
+                    let top = page[0].score;
+                    if top > 0.0 {
+                        let threshold = top * 0.5;
+                        let keep = page
+                            .iter()
+                            .take_while(|s| s.score >= threshold)
+                            .count()
+                            .max(1); // always return at least 1 result
+                        if keep < page.len() {
+                            let trimmed_next = page[keep].score;
+                            page.truncate(keep);
+                            // Report the tighter of score-trim boundary vs peek-ahead.
+                            Some(peek_score.map_or(trimmed_next, |p| p.min(trimmed_next)))
+                        } else {
+                            peek_score
+                        }
+                    } else {
+                        peek_score
+                    }
+                } else {
+                    peek_score
+                };
+
+                let has_more = next_score.is_some();
+                info!(query = %req.query, shown = page.len(), offset = offset, has_more = has_more, "Memory recall complete");
+                let context =
+                    format_context_paged(&page, offset, limit, all.len(), has_more, next_score);
                 Ok(CallToolResult::success(vec![Content::text(context)]))
             }
             Err(e) => {

@@ -263,3 +263,19 @@ mem:fact-01kjbx27ger7j3rpjh45yw4gv3 a mem:Fact ;
     mem:branch "feature/memory" ;
     mem:createdAt "2026-02-26T02:39:50.286687+00:00"^^xsd:dateTime ;
     mem:factKind "configuration" .
+
+mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
+    mem:content "memory_recall smart score filtering heuristic (MCP tool only):\n\nWhen the LLM calls memory_recall with NO explicit limit or offset, apply score-based trimming before returning results:\n- Fetch limit+1 candidates (the extra is a peek-ahead for reporting next score)\n- Threshold: top_score * 0.5 — drop any result below 50% of the top score\n- Always return at least 1 result (even if everything is below threshold)\n- Report the score of the first non-returned result in the <pagination> element so the LLM can decide whether to fetch more\n- Pagination hint: \"Results 1–N, next score: X.X. Use offset=N to retrieve more.\"\n\nWhen explicit limit or offset IS provided, bypass all smart filtering — honor the request exactly.\n\nKey files: fluree-db-memory/src/mcp.rs (use_smart_filter logic), fluree-db-memory/src/format.rs (next_score: Option<f64> param added to format_context_paged)" ;
+    mem:tag "bm25" ;
+    mem:tag "heuristic" ;
+    mem:tag "mcp" ;
+    mem:tag "memory" ;
+    mem:tag "recall" ;
+    mem:tag "scoring" ;
+    mem:tag "ux" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "feature/memory" ;
+    mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
+    mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
+    mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .
