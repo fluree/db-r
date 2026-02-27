@@ -379,80 +379,120 @@ mem:fact-01kje30pfdnvpv5fx0ng4234jf a mem:Fact ;
     mem:factKind "architecture" .
 
 mem:fact-01kjjd0b982vvxq7kxvn9bs90s a mem:Fact ;
-    mem:content "Historical time-travel views must attach a BinaryRangeProvider when loading a BinaryIndexStore. `LedgerSnapshot::from_root_bytes()` produces a metadata-only snapshot with `range_provider=None`, so `Fluree::load_graph_db_at_t()` needs to set `LedgerSnapshot.range_provider = Some(BinaryRangeProvider::new(store, dict_novelty))` after loading the binary store; otherwise range-based operators can error with: \"binary-only db has no range_provider attached — load and attach BinaryIndexStore before queries\"." ;
-    mem:tag "binary-index" ;
-    mem:tag "binaryrangeprovider" ;
-    mem:tag "bugfix" ;
-    mem:tag "historical-view" ;
-    mem:tag "range-provider" ;
-    mem:tag "time-travel" ;
+    mem:content “Historical time-travel views must attach a BinaryRangeProvider when loading a BinaryIndexStore. `LedgerSnapshot::from_root_bytes()` produces a metadata-only snapshot with `range_provider=None`, so `Fluree::load_graph_db_at_t()` needs to set `LedgerSnapshot.range_provider = Some(BinaryRangeProvider::new(store, dict_novelty))` after loading the binary store; otherwise range-based operators can error with: \”binary-only db has no range_provider attached — load and attach BinaryIndexStore before queries\”.” ;
+    mem:tag “binary-index” ;
+    mem:tag “binaryrangeprovider” ;
+    mem:tag “bugfix” ;
+    mem:tag “historical-view” ;
+    mem:tag “range-provider” ;
+    mem:tag “time-travel” ;
     mem:scope mem:repo ;
-    mem:sensitivity "internal" ;
-    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
-    mem:artifactRef "fluree-db-core/src/db.rs" ;
-    mem:artifactRef "fluree-db-core/src/range.rs" ;
-    mem:createdAt "2026-02-28T15:13:52.424054+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
+    mem:sensitivity “internal” ;
+    mem:artifactRef “fluree-db-api/src/view/fluree_ext.rs” ;
+    mem:artifactRef “fluree-db-core/src/db.rs” ;
+    mem:artifactRef “fluree-db-core/src/range.rs” ;
+    mem:createdAt “2026-02-28T15:13:52.424054+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
 
 mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k a mem:Fact ;
-    mem:content "HTTP server caches ledger-info responses in an LRU keyed by (ledger_id, commit_t, index_t, realtime_property_details, include_property_datatypes, graph selector string). This avoids repeated novelty->stats merges when ledger-info is polled frequently; cache naturally busts when commit_t or index_t changes." ;
-    mem:tag "cache" ;
-    mem:tag "ledger-info" ;
-    mem:tag "lru" ;
-    mem:tag "novelty" ;
-    mem:tag "performance" ;
-    mem:tag "server" ;
-    mem:tag "stats" ;
+    mem:content “HTTP server caches ledger-info responses in an LRU keyed by (ledger_id, commit_t, index_t, realtime_property_details, include_property_datatypes, graph selector string). This avoids repeated novelty->stats merges when ledger-info is polled frequently; cache naturally busts when commit_t or index_t changes.” ;
+    mem:tag “cache” ;
+    mem:tag “ledger-info” ;
+    mem:tag “lru” ;
+    mem:tag “novelty” ;
+    mem:tag “performance” ;
+    mem:tag “server” ;
+    mem:tag “stats” ;
     mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "fluree-db-server/src/routes/ledger.rs" ;
-    mem:artifactRef "fluree-db-server/src/state.rs" ;
-    mem:createdAt "2026-02-28T17:25:10.649801+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
+    mem:sensitivity “public” ;
+    mem:artifactRef “fluree-db-server/src/routes/ledger.rs” ;
+    mem:artifactRef “fluree-db-server/src/state.rs” ;
+    mem:createdAt “2026-02-28T17:25:10.649801+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
 
 mem:fact-01kjjmk1nva80w5cj3ey87asnj a mem:Fact ;
-    mem:content "Global LRU “leaflet cache” (single memory budget):\n- Implementation: `fluree-db-binary-index/src/read/leaflet_cache.rs` (`LeafletCache`) uses a single `moka::sync::Cache` (TinyLFU) shared across decoded entry types (R1/R2 leaflet regions + dict leaves + BM25 leaflets + vector shards). One pool = one cache budget.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB) sets the max bytes for the cache.\n- Wiring: enabled by default in `fluree-db-api/src/ledger_manager.rs` (`LedgerManagerConfig::default()` creates `LeafletCache::with_max_bytes(...)`), and used by `BinaryIndexStore` load paths when ledger caching is on.\n- Note: Region 3 (history journal) is intentionally never cached (cold path)." ;
-    mem:tag "binary-index" ;
-    mem:tag "cache" ;
-    mem:tag "leaflet-cache" ;
-    mem:tag "lru" ;
-    mem:tag "moka" ;
-    mem:tag "performance" ;
+    mem:content “Global LRU “leaflet cache” (single memory budget):\n- Implementation: `fluree-db-binary-index/src/read/leaflet_cache.rs` (`LeafletCache`) uses a single `moka::sync::Cache` (TinyLFU) shared across decoded entry types (R1/R2 leaflet regions + dict leaves + BM25 leaflets + vector shards). One pool = one cache budget.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB) sets the max bytes for the cache.\n- Wiring: enabled by default in `fluree-db-api/src/ledger_manager.rs` (`LedgerManagerConfig::default()` creates `LeafletCache::with_max_bytes(...)`), and used by `BinaryIndexStore` load paths when ledger caching is on.\n- Note: Region 3 (history journal) is intentionally never cached (cold path).” ;
+    mem:tag “binary-index” ;
+    mem:tag “cache” ;
+    mem:tag “leaflet-cache” ;
+    mem:tag “lru” ;
+    mem:tag “moka” ;
+    mem:tag “performance” ;
     mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
-    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
-    mem:createdAt "2026-02-28T17:26:25.211748+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
+    mem:sensitivity “public” ;
+    mem:artifactRef “fluree-db-api/src/ledger_manager.rs” ;
+    mem:artifactRef “fluree-db-binary-index/src/read/leaflet_cache.rs” ;
+    mem:createdAt “2026-02-28T17:26:25.211748+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
 
 mem:fact-01kjjn8bsqjesph3fya636nt4f a mem:Fact ;
-    mem:content "(Superseded) Ledger-info caching was initially prototyped at the HTTP server layer, but the intended caching lives in the API layer (fluree-db-api) for upstream app reuse. See newer memory entry about API-level ledger-info caching via the global LeafletCache budget." ;
-    mem:tag "api" ;
-    mem:tag "cache" ;
-    mem:tag "ledger-info" ;
-    mem:tag "performance" ;
-    mem:tag "superseded" ;
+    mem:content “(Superseded) Ledger-info caching was initially prototyped at the HTTP server layer, but the intended caching lives in the API layer (fluree-db-api) for upstream app reuse. See newer memory entry about API-level ledger-info caching via the global LeafletCache budget.” ;
+    mem:tag “api” ;
+    mem:tag “cache” ;
+    mem:tag “ledger-info” ;
+    mem:tag “performance” ;
+    mem:tag “superseded” ;
     mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
-    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:sensitivity “public” ;
+    mem:artifactRef “fluree-db-api/src/ledger_info.rs” ;
+    mem:artifactRef “fluree-db-binary-index/src/read/leaflet_cache.rs” ;
     mem:supersedes mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k ;
-    mem:createdAt "2026-02-28T17:38:03.703314+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
+    mem:createdAt “2026-02-28T17:38:03.703314+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
 
 mem:fact-01kjjn8kspr3gnkcsmq9t1fsvf a mem:Fact ;
-    mem:content "API-level ledger-info caching (for upstream apps):\n- Location: `fluree-db-api/src/ledger_info.rs` (`LedgerInfoBuilder::execute`).\n- Cache backend: the global unified `LeafletCache` (TinyLFU) so ledger-info shares the single memory budget with other cached decode artifacts.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB).\n- Key: xxh3_128 hash of a canonical string including (ledger_id, commit_t=ledger.t(), index_t=ledger.snapshot.t, realtime_property_details, include_property_datatypes, graph selector, context JSON hash).\n- Value: serialized JSON bytes (`Arc<[u8]>`) stored in `fluree-db-binary-index/src/read/leaflet_cache.rs` under a new `LedgerInfo` entry type.\n- Behavior: cache hit returns parsed JSON without recomputing novelty-merged stats; cache naturally busts when commit_t or index_t changes." ;
-    mem:tag "api" ;
-    mem:tag "cache" ;
-    mem:tag "leaflet-cache" ;
-    mem:tag "ledger-info" ;
-    mem:tag "moka" ;
-    mem:tag "performance" ;
-    mem:tag "tinylfu" ;
+    mem:content “API-level ledger-info caching (for upstream apps):\n- Location: `fluree-db-api/src/ledger_info.rs` (`LedgerInfoBuilder::execute`).\n- Cache backend: the global unified `LeafletCache` (TinyLFU) so ledger-info shares the single memory budget with other cached decode artifacts.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB).\n- Key: xxh3_128 hash of a canonical string including (ledger_id, commit_t=ledger.t(), index_t=ledger.snapshot.t, realtime_property_details, include_property_datatypes, graph selector, context JSON hash).\n- Value: serialized JSON bytes (`Arc<[u8]>`) stored in `fluree-db-binary-index/src/read/leaflet_cache.rs` under a new `LedgerInfo` entry type.\n- Behavior: cache hit returns parsed JSON without recomputing novelty-merged stats; cache naturally busts when commit_t or index_t changes.” ;
+    mem:tag “api” ;
+    mem:tag “cache” ;
+    mem:tag “leaflet-cache” ;
+    mem:tag “ledger-info” ;
+    mem:tag “moka” ;
+    mem:tag “performance” ;
+    mem:tag “tinylfu” ;
     mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
-    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
-    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
-    mem:createdAt "2026-02-28T17:38:11.894884+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
+    mem:sensitivity “public” ;
+    mem:artifactRef “fluree-db-api/src/ledger_info.rs” ;
+    mem:artifactRef “fluree-db-api/src/ledger_manager.rs” ;
+    mem:artifactRef “fluree-db-binary-index/src/read/leaflet_cache.rs” ;
+    mem:createdAt “2026-02-28T17:38:11.894884+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
+
+mem:fact-01kjg3zmevnz6mdn53wkqn08p0 a mem:Fact ;
+    mem:content “Fluree uses CIDv1 (Content Identifier v1) for all content-addressed blobs. Implementation is in fluree-db-core/src/content_id.rs wrapping the `cid` crate's `Cid` struct.\n\n**Format:** CIDv1 = version(1) + multicodec + multihash(SHA2-256, 32 bytes)\n\n**Multicodec values** (private-use range 0x300000+, defined in fluree-db-core/src/content_kind.rs):\n- 0x300001 Commit, 0x300002 Txn, 0x300003 IndexRoot, 0x300004 IndexBranch, 0x300005 IndexLeaf\n- 0x300006 DictBlob, 0x300007 Garbage, 0x300008 LedgerConfig, 0x300009 StatsSketch\n- 0x30000A GraphSourceSnapshot, 0x30000B SpatialIndex\n\n**Key APIs:**\n- `ContentId::new(kind, bytes)` — hashes bytes with SHA-256, tags with Fluree multicodec\n- `ContentId::verify(bytes)` — re-hashes and compares (NOT valid for commit-v2 blobs which exclude trailing hash+sig)\n- `ContentId::digest_hex()` — 64-char hex SHA-256 hash string\n- `ContentId::codec()` — returns the multicodec u64 value\n- Display uses base32-lower multibase encoding (produces `bafy...`/`bafk...` prefixes)\n- `from_codec(u64) -> Option<ContentKind>` reverse mapping\n\n**ContentKind enum** maps each blob type to its codec. `DictBlob { dict: DictKind }` sub-kinds all share one codec (0x300006); the dict sub-kind is in the stored bytes, not the CID.\n\n**Crate dependencies:** `cid = \”0.11\”`, `multihash = \”0.19\”`, `sha2 = \”0.10\”`” ;
+    mem:tag “CIDv1” ;
+    mem:tag “SHA-256” ;
+    mem:tag “architecture” ;
+    mem:tag “content-id” ;
+    mem:tag “content-kind” ;
+    mem:tag “multicodec” ;
+    mem:tag “multihash” ;
+    mem:scope mem:repo ;
+    mem:sensitivity “public” ;
+    mem:artifactRef “fluree-db-core/src/content_id.rs” ;
+    mem:artifactRef “fluree-db-core/src/content_kind.rs” ;
+    mem:branch “feature/ipfs” ;
+    mem:createdAt “2026-02-27T17:57:43.003928+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
+
+mem:fact-01kjg407n8cqjy24njyyhz6dnz a mem:Fact ;
+    mem:content “IPFS storage backend (fluree-db-storage-ipfs crate) — full implementation details:\n\n**Crate structure:**\n- `src/lib.rs` — IpfsStorage struct implementing ContentStore + full Storage trait (StorageRead, StorageWrite, ContentAddressedWrite, StorageMethod)\n- `src/kubo.rs` — Thin HTTP RPC client for Kubo (block/put, block/get, block/stat, pin/add, id). Uses `reqwest` with multipart form upload.\n- `src/address.rs` — Parses `fluree:ipfs://ledger/kind/{hash}.ext` addresses. `extract_hash_hex()` gets the 64-char SHA-256 hex from the filename stem. `hash_hex_to_cid_string()` constructs a raw-codec CIDv1 for retrieval.\n- `src/error.rs` — IpfsStorageError enum (ConnectionFailed, NotFound, Rpc, Http, CidMismatch, Other). Implements `From<IpfsStorageError> for fluree_db_core::error::Error`.\n- `tests/it_kubo_block_api.rs` — 7 integration tests gated behind `integration-tests` feature. Require running Kubo at localhost:5001.\n\n**Key design decisions:**\n- `put()` uses Fluree's native multicodec (e.g. `cid-codec=0x300001`) — Kubo accepts private-use codecs\n- Retrieval uses cross-codec resolution: Kubo resolves by multihash regardless of codec, so a raw-codec CID works for fetching blocks stored with any Fluree codec\n- `delete()` is a no-op (IPFS is immutable; GC via unpin)\n- `list_prefix()` returns error (IPFS has no directory listing; needs manifest-based tracking)\n- `STORAGE_METHOD_IPFS = \”ipfs\”` constant in fluree-db-core/src/lib.rs\n\n**Feature flag chain:** cli/ipfs → server/ipfs → api/ipfs → connection/ipfs → dep:fluree-db-storage-ipfs\n\n**Connection config:**\n- JSON-LD: `ipfsApiUrl` and `ipfsPinOnPut` fields on Storage node (vocab constants in fluree-db-connection/src/vocab.rs)\n- Flat JSON: `@type: \”IpfsStorage\”` with `ipfsApiUrl`/`ipfsPinOnPut` fields\n- IpfsStorageConfig struct in fluree-db-connection/src/config.rs\n- IpfsConnection type alias and connect_ipfs factory in fluree-db-connection/src/ipfs.rs\n\n**Documentation:** docs/operations/ipfs-storage.md (comprehensive guide), updates to storage.md, connection-config-jsonld.md, SUMMARY.md” ;
+    mem:tag “IPFS” ;
+    mem:tag “architecture” ;
+    mem:tag “connection” ;
+    mem:tag “feature-flags” ;
+    mem:tag “integration-tests” ;
+    mem:tag “kubo” ;
+    mem:tag “storage” ;
+    mem:scope mem:repo ;
+    mem:sensitivity “public” ;
+    mem:artifactRef “docs/operations/ipfs-storage.md” ;
+    mem:artifactRef “fluree-db-connection/src/config.rs” ;
+    mem:artifactRef “fluree-db-connection/src/ipfs.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/address.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/error.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/kubo.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/lib.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/tests/it_kubo_block_api.rs” ;
+    mem:branch “feature/ipfs” ;
+    mem:createdAt “2026-02-27T17:58:02.664595+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .

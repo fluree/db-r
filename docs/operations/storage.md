@@ -1,6 +1,6 @@
 # Storage Modes
 
-Fluree supports three storage modes, each optimized for different deployment scenarios. This document provides detailed information about each storage mode and guidance for choosing the right one.
+Fluree supports four storage modes, each optimized for different deployment scenarios. This document provides detailed information about each storage mode and guidance for choosing the right one.
 
 ## Storage Modes
 
@@ -88,6 +88,44 @@ Distributed storage using S3 and DynamoDB:
 - Usage costs
 - More complex setup
 
+### IPFS Storage
+
+Decentralized content-addressed storage via a local Kubo node:
+
+```json
+{
+  "@context": {"@vocab": "https://ns.flur.ee/system#"},
+  "@graph": [{
+    "@type": "Connection",
+    "indexStorage": {
+      "@type": "Storage",
+      "ipfsApiUrl": "http://127.0.0.1:5001",
+      "ipfsPinOnPut": true
+    }
+  }]
+}
+```
+
+**Characteristics:**
+- Content-addressed (every blob identified by SHA-256 hash)
+- Immutable, tamper-evident storage
+- Decentralized replication via IPFS network
+- Fluree's native CIDs work directly with IPFS
+
+**Use Cases:**
+- Decentralized / censorship-resistant deployments
+- Content integrity verification
+- Cross-organization data sharing
+- Foundation for IPNS/ENS-based ledger discovery
+
+**Limitations:**
+- Requires a running Kubo node
+- No prefix listing (manifest-based tracking needed)
+- No native deletion (unpin + GC)
+- Higher write latency than local file I/O
+
+See [IPFS Storage Guide](ipfs-storage.md) for complete setup and configuration.
+
 ## Storage Architecture
 
 ### Memory Storage
@@ -144,6 +182,30 @@ Data persisted to local files.
 ```
 
 Multiple processes coordinate via AWS.
+
+### IPFS Storage
+
+```text
+┌──────────────────────┐
+│   Fluree Process     │
+│  ┌────────────────┐  │
+│  │  IpfsStorage   │  │
+│  │  (HTTP client) │  │
+│  └────────┬───────┘  │
+└───────────┼──────────┘
+            │ HTTP RPC
+     ┌──────▼──────┐
+     │  Kubo Node  │
+     │  (IPFS)     │
+     └──────┬──────┘
+            │ libp2p
+     ┌──────▼──────┐
+     │  IPFS P2P   │
+     │  Network    │
+     └─────────────┘
+```
+
+Data stored as content-addressed blocks in IPFS via Kubo.
 
 ## Storage Encryption
 
@@ -360,17 +422,19 @@ Required IAM permissions:
 
 ### Decision Matrix
 
-| Requirement | Memory | File | AWS |
-|-------------|--------|------|-----|
-| **Development** | Best | Good | Overkill |
-| **Single server** | No | Best | Overkill |
-| **Multi-server** | No | No | Best |
-| **Persistence** | No | Yes | Yes |
-| **Cloud-native** | No | No | Yes |
-| **Cost** | Free | Free | Monthly |
-| **Setup complexity** | Trivial | Simple | Complex |
-| **Performance** | Fastest | Fast | Good |
-| **Durability** | None | Local | 11 9's |
+| Requirement | Memory | File | AWS | IPFS |
+|-------------|--------|------|-----|------|
+| **Development** | Best | Good | Overkill | Overkill |
+| **Single server** | No | Best | Overkill | Good |
+| **Multi-server** | No | No | Best | Good |
+| **Persistence** | No | Yes | Yes | Yes |
+| **Cloud-native** | No | No | Yes | No |
+| **Decentralized** | No | No | No | Best |
+| **Content integrity** | No | No | No | Best |
+| **Cost** | Free | Free | Monthly | Free |
+| **Setup complexity** | Trivial | Simple | Complex | Moderate |
+| **Performance** | Fastest | Fast | Good | Good |
+| **Durability** | None | Local | 11 9's | Network-wide |
 
 ### Recommendations
 
@@ -391,6 +455,13 @@ Required IAM permissions:
 - High availability required
 - Geographic distribution needed
 - Cloud-native architecture
+
+**Use IPFS when:**
+- Decentralized storage required
+- Content integrity verification is critical
+- Cross-organization data sharing
+- Building toward IPNS/ENS-based ledger discovery
+- Censorship resistance is a requirement
 
 ## Switching Storage Modes
 
@@ -545,5 +616,7 @@ curl -X POST http://localhost:8090/admin/compact
 ## Related Documentation
 
 - [Configuration](configuration.md) - Configuration options
+- [IPFS Storage Guide](ipfs-storage.md) - IPFS/Kubo setup and configuration
+- [DynamoDB Nameservice Guide](dynamodb-guide.md) - DynamoDB-specific setup
 - [Getting Started: Server](../getting-started/quickstart-server.md) - Initial setup
 - [Admin and Health](admin-and-health.md) - Administrative operations

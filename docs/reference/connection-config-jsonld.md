@@ -221,6 +221,38 @@ Internally, Rust routes:
 }
 ```
 
+### IPFS storage (requires `ipfs`)
+
+Supported:
+- `ipfsApiUrl` (default `http://127.0.0.1:5001`): Kubo HTTP RPC API base URL
+- `ipfsPinOnPut` (default `true`): pin blocks after writing
+
+```json
+{
+  "@id": "ipfsStorage",
+  "@type": "Storage",
+  "ipfsApiUrl": "http://127.0.0.1:5001",
+  "ipfsPinOnPut": true
+}
+```
+
+With env var indirection:
+
+```json
+{
+  "@id": "ipfsStorage",
+  "@type": "Storage",
+  "ipfsApiUrl": { "envVar": "FLUREE_IPFS_API_URL", "defaultVal": "http://127.0.0.1:5001" },
+  "ipfsPinOnPut": true
+}
+```
+
+Notes:
+- Requires a running Kubo node at the specified URL
+- Fluree's CIDs (SHA-256 + private-use multicodec) are stored directly into IPFS
+- No encryption support (`AES256Key` is not applicable)
+- See [IPFS Storage Guide](../operations/ipfs-storage.md) for Kubo setup and operational details
+
 ## Publisher (nameservice) node fields
 
 ### Storage-backed nameservice
