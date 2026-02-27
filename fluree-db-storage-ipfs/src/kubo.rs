@@ -209,4 +209,70 @@ impl KuboClient {
         let _ = response.bytes().await;
         Ok(())
     }
+
+    /// `POST /api/v0/pin/ls?arg={cid}` — check if a specific CID is pinned.
+    ///
+    /// Returns `true` if the CID is directly or recursively pinned, `false` otherwise.
+    pub async fn is_pinned(&self, cid: &str) -> Result<bool> {
+        let url = format!("{}/api/v0/pin/ls?arg={}", self.base_url, cid);
+
+        let response = self
+            .client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| IpfsStorageError::ConnectionFailed(e.to_string()))?;
+
+        if response.status().is_success() {
+            // Consume response body
+            let _ = response.bytes().await;
+            return Ok(true);
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        // Kubo returns 500 with "is not pinned" when the CID isn't pinned
+        if body.contains("is not pinned") {
+            return Ok(false);
+        }
+
+        Err(IpfsStorageError::Rpc(format!("pin/ls failed: {}", body)))
+    }
+
+    /// `POST /api/v0/pin/rm` — unpin a block by CID.
+    ///
+    /// Idempotent for drop/GC use: returns `Ok(())` if Kubo reports the CID is
+    /// "not pinned" or the block is "not found" in the blockstore. Other errors
+    /// (connection failures, RPC errors) are propagated.
+    pub async fn pin_rm(&self, cid: &str) -> Result<()> {
+        let url = format!("{}/api/v0/pin/rm?arg={}", self.base_url, cid);
+
+        let response = self
+            .client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| IpfsStorageError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            // Tolerate "not pinned" (already unpinned) and "not found" (block
+            // missing from blockstore) — both are expected during idempotent
+            // drop/GC operations.
+            if body.contains("not pinned") || body.contains("not found") {
+                return Ok(());
+            }
+            return Err(IpfsStorageError::Rpc(format!("pin/rm failed: {}", body)));
+        }
+
+        // Consume response body
+        let _ = response.bytes().await;
+        Ok(())
+    }
 }

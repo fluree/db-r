@@ -46,12 +46,8 @@ async fn drop_ledger_soft_mode_retracts_only() {
         .expect("drop");
     assert_eq!(report.status, DropStatus::Dropped);
     assert_eq!(
-        report.index_files_deleted, 0,
-        "Soft mode should not delete index files"
-    );
-    assert_eq!(
-        report.commit_files_deleted, 0,
-        "Soft mode should not delete commit files"
+        report.artifacts_deleted, 0,
+        "Soft mode should not delete artifacts"
     );
 
     // Verify retracted in nameservice
@@ -119,8 +115,8 @@ async fn drop_ledger_hard_mode_deletes_files() {
         .expect("drop");
     assert_eq!(report.status, DropStatus::Dropped);
     assert!(
-        report.commit_files_deleted > 0,
-        "Should have deleted commit files"
+        report.artifacts_deleted > 0,
+        "Should have deleted artifacts"
     );
 
     // Verify nameservice purged (hard drop removes the record entirely,
@@ -368,8 +364,8 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
         .expect("hard drop");
     assert_eq!(r2.status, DropStatus::AlreadyRetracted);
     assert!(
-        r2.commit_files_deleted > 0,
-        "Hard drop should delete files even when already retracted"
+        r2.artifacts_deleted > 0,
+        "Hard drop should delete artifacts even when already retracted"
     );
 
     // Verify files deleted

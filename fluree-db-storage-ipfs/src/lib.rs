@@ -236,10 +236,17 @@ impl StorageWrite for IpfsStorage {
         Ok(())
     }
 
-    async fn delete(&self, _addr: &str) -> fluree_db_core::error::Result<()> {
-        // IPFS content is immutable. Deletion is handled by unpinning + GC,
-        // which is a different operational concern. Returning Ok here is safe
-        // because the data remains accessible via CID regardless.
+    async fn delete(&self, addr: &str) -> fluree_db_core::error::Result<()> {
+        // IPFS content is immutable — "deletion" means unpinning so the block
+        // becomes eligible for Kubo's garbage collector.
+        let hash_hex = address::extract_hash_hex(addr)
+            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
+        let cid_str = address::hash_hex_to_cid_string(hash_hex)
+            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
+        self.kubo
+            .pin_rm(&cid_str)
+            .await
+            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
         Ok(())
     }
 }

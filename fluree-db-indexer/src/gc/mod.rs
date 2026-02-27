@@ -33,7 +33,7 @@
 //!
 //! Both thresholds must be satisfied for GC to occur.
 
-mod collector;
+pub(crate) mod collector;
 mod record;
 
 pub use collector::clean_garbage;

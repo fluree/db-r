@@ -19,13 +19,13 @@ use crate::error::Result;
 use fluree_db_core::{ContentId, ContentKind, Storage};
 
 /// Entry in the prev-index chain.
-struct IndexChainEntry {
+pub(crate) struct IndexChainEntry {
     /// Transaction time of this index.
-    t: i64,
+    pub(crate) t: i64,
     /// CID of this root blob.
-    root_id: ContentId,
+    pub(crate) root_id: ContentId,
     /// CID of this root's garbage manifest (if any).
-    garbage_id: Option<ContentId>,
+    pub(crate) garbage_id: Option<ContentId>,
 }
 
 /// Extract the GC-relevant fields from an IRB1 index root blob.
@@ -41,7 +41,7 @@ fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<Co
 }
 
 /// Derive a storage address from a ContentId.
-fn derive_address(
+pub(crate) fn derive_address(
     cid: &ContentId,
     kind: ContentKind,
     storage_method: &str,
@@ -57,7 +57,7 @@ fn derive_address(
 /// **Tolerant behavior**: If a prev_index link cannot be loaded (e.g., it was
 /// deleted by prior GC), the walk stops gracefully at that point rather than
 /// returning an error. This ensures GC is idempotent.
-async fn walk_prev_index_chain<S: Storage>(
+pub(crate) async fn walk_prev_index_chain<S: Storage>(
     storage: &S,
     current_root_id: &ContentId,
     ledger_id: &str,

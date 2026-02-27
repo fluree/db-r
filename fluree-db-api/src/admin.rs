@@ -43,8 +43,8 @@ pub enum DropMode {
 /// Result status of drop operation
 ///
 /// NOTE: This reflects the **nameservice state at lookup time**, not deletion success.
-/// Deletion success is reported via `index_files_deleted`, `commit_files_deleted`,
-/// and `warnings` fields in `DropReport`.
+/// Deletion success is reported via `artifacts_deleted` and `warnings` fields
+/// in `DropReport`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropStatus {
     /// Record existed and was not retracted at lookup time
@@ -67,10 +67,11 @@ pub struct DropReport {
     pub ledger_id: String,
     /// Status based on nameservice state at lookup time
     pub status: DropStatus,
-    /// Number of index files deleted (Hard mode only)
-    pub index_files_deleted: usize,
-    /// Number of commit files deleted (Hard mode only)
-    pub commit_files_deleted: usize,
+    /// Number of storage artifacts deleted (Hard mode only).
+    ///
+    /// Includes commits, transactions, index roots, leaves, branches, dicts,
+    /// garbage records, config, and context blobs.
+    pub artifacts_deleted: usize,
     /// Any non-fatal errors or warnings encountered during the operation
     pub warnings: Vec<String>,
 }
@@ -259,32 +260,9 @@ where
         // 4. Delete artifacts (Hard mode)
         // Run deletion even for NotFound/AlreadyRetracted - enables admin cleanup
         if matches!(mode, DropMode::Hard) {
-            // Canonical storage layout: `ledger/branch/...` (no ':') for portability.
-            // Note: this applies to commits, txns, and indexes.
-            let prefix = ledger_id_to_path_prefix(&ledger_id).map_err(|e| {
-                ApiError::config(format!("Invalid ledger ID '{}': {}", ledger_id, e))
-            })?;
-
-            let commit_prefix = format!("fluree:file://{}/commit/", prefix);
-            let index_prefix = format!("fluree:file://{}/index/", prefix);
-
-            info!(commit_prefix = %commit_prefix, index_prefix = %index_prefix, "Deleting artifacts");
-
-            let (commit_count, commit_warnings) =
-                self.delete_by_prefix(self.storage(), &commit_prefix).await;
-            let (index_count, index_warnings) =
-                self.delete_by_prefix(self.storage(), &index_prefix).await;
-
-            report.commit_files_deleted = commit_count;
-            report.index_files_deleted = index_count;
-            report.warnings.extend(commit_warnings);
-            report.warnings.extend(index_warnings);
-
-            info!(
-                commit_deleted = commit_count,
-                index_deleted = index_count,
-                "Artifact deletion complete"
-            );
+            let (count, warnings) = self.drop_artifacts(&ledger_id, record.as_ref()).await;
+            report.artifacts_deleted = count;
+            report.warnings.extend(warnings);
         }
 
         // 5. Retract or purge from nameservice
@@ -313,35 +291,139 @@ where
         Ok(report)
     }
 
-    /// Delete all files matching a prefix
+    /// Delete all storage artifacts for a ledger.
     ///
-    /// Returns (count_deleted, warnings). Files are sorted before deletion
-    /// for deterministic ordering across backends.
-    async fn delete_by_prefix(&self, storage: &S, prefix: &str) -> (usize, Vec<String>) {
+    /// Uses a two-path strategy:
+    /// - **Fast path**: `list_prefix` on the entire ledger root — catches all
+    ///   subdirectories (commit/, txn/, index/, config/, etc.). Works for
+    ///   file, S3, and memory backends.
+    /// - **Slow path**: If `list_prefix` fails (e.g., IPFS), walks the commit
+    ///   chain + index tree to collect all CIDs, derives storage addresses, and
+    ///   deletes each individually.
+    ///
+    /// Returns `(count_deleted, warnings)`.
+    async fn drop_artifacts(
+        &self,
+        ledger_id: &str,
+        record: Option<&fluree_db_nameservice::NsRecord>,
+    ) -> (usize, Vec<String>) {
         let mut warnings = Vec::new();
+        let storage = self.storage();
+        let storage_method = storage.storage_method();
 
-        let mut files = match storage.list_prefix(prefix).await {
-            Ok(f) => f,
+        // Build the ledger root prefix: fluree:{method}://{ledger_path}/
+        let prefix = match ledger_id_to_path_prefix(ledger_id) {
+            Ok(p) => p,
             Err(e) => {
-                warn!(prefix = %prefix, error = %e, "Failed to list prefix for deletion");
-                warnings.push(format!("Failed to list {}: {}", prefix, e));
+                warnings.push(format!("Invalid ledger ID '{}': {}", ledger_id, e));
                 return (0, warnings);
             }
         };
+        let ledger_root = format!("fluree:{}://{}/", storage_method, prefix);
 
-        // Sort for deterministic deletion order across backends (helps with debugging/logs)
-        files.sort();
+        // Fast path: list everything under the ledger root and batch delete
+        match storage.list_prefix(&ledger_root).await {
+            Ok(mut files) => {
+                files.sort();
+                let mut count = 0;
+                for file in &files {
+                    if let Err(e) = storage.delete(file).await {
+                        warn!(file = %file, error = %e, "Failed to delete artifact");
+                        warnings.push(format!("Failed to delete {}: {}", file, e));
+                    } else {
+                        count += 1;
+                    }
+                }
+                info!(count = count, "Fast-path artifact deletion complete");
+                (count, warnings)
+            }
+            Err(e) => {
+                // Slow path: walk CID chains (IPFS, or any backend without list_prefix)
+                info!(
+                    error = %e,
+                    "list_prefix unavailable, falling back to CID-walking drop"
+                );
+                self.drop_artifacts_by_cid_walk(ledger_id, record, &mut warnings)
+                    .await
+            }
+        }
+    }
+
+    /// Slow-path artifact deletion: walk commit + index chains to collect CIDs,
+    /// derive storage addresses, and delete each.
+    async fn drop_artifacts_by_cid_walk(
+        &self,
+        ledger_id: &str,
+        record: Option<&fluree_db_nameservice::NsRecord>,
+        warnings: &mut Vec<String>,
+    ) -> (usize, Vec<String>) {
+        let storage = self.storage();
+        let storage_method = storage.storage_method();
+
+        let (commit_head, index_head, config_id, default_context) = match record {
+            Some(r) => (
+                r.commit_head_id.as_ref(),
+                r.index_head_id.as_ref(),
+                r.config_id.as_ref(),
+                r.default_context.as_ref(),
+            ),
+            None => {
+                warnings.push("No NsRecord available for CID-walking drop".to_string());
+                return (0, std::mem::take(warnings));
+            }
+        };
+
+        let cids = match fluree_db_indexer::collect_ledger_cids(
+            storage,
+            ledger_id,
+            commit_head,
+            index_head,
+            config_id,
+            default_context,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "Failed to collect ledger CIDs for drop");
+                warnings.push(format!("CID collection failed: {}", e));
+                return (0, std::mem::take(warnings));
+            }
+        };
+
+        info!(cid_count = cids.len(), "Collected CIDs for slow-path drop");
 
         let mut count = 0;
-        for file in files {
-            if let Err(e) = storage.delete(&file).await {
-                warn!(file = %file, error = %e, "Failed to delete file");
-                warnings.push(format!("Failed to delete {}: {}", file, e));
+        for cid in &cids {
+            let kind = match cid.content_kind() {
+                Some(k) => k,
+                None => {
+                    warnings.push(format!("Unknown content kind for CID {}", cid));
+                    continue;
+                }
+            };
+            let addr =
+                fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex());
+            if let Err(e) = storage.delete(&addr).await {
+                let msg = e.to_string();
+                if msg.contains("not found")
+                    || msg.contains("No such file")
+                    || msg.contains("not pinned")
+                {
+                    // Expected: GC or a prior drop already removed this artifact
+                    tracing::debug!(addr = %addr, error = %e, "artifact already removed");
+                } else {
+                    // Unexpected: connection failure, permission error, etc.
+                    warn!(addr = %addr, error = %e, "unexpected error deleting artifact");
+                    warnings.push(format!("Delete failed for {}: {}", addr, e));
+                }
             } else {
                 count += 1;
             }
         }
-        (count, warnings)
+
+        info!(count = count, "Slow-path artifact deletion complete");
+        (count, std::mem::take(warnings))
     }
 }
 
