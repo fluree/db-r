@@ -524,10 +524,7 @@ impl RemoteLedgerClient {
     // Transact
     // =========================================================================
 
-    // Kept for: `fluree transact` CLI command (combined insert+delete with WHERE).
-    // Use when: a `transact` subcommand is added to the CLI.
     /// Execute a full JSON-LD transaction (insert + delete with WHERE).
-    #[expect(dead_code)]
     pub async fn transact_jsonld(
         &self,
         ledger: &str,
@@ -543,10 +540,7 @@ impl RemoteLedgerClient {
         .await
     }
 
-    // Kept for: `fluree transact` CLI command (SPARQL UPDATE support).
-    // Use when: a `transact` subcommand is added to the CLI.
     /// Execute a SPARQL UPDATE transaction.
-    #[expect(dead_code)]
     pub async fn transact_sparql(
         &self,
         ledger: &str,
