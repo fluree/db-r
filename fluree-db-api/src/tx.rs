@@ -214,7 +214,7 @@ async fn stage_with_config_shacl(
     txn: Txn,
     ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
-) -> Result<(LedgerView, NamespaceRegistry)> {
+) -> std::result::Result<(LedgerView, NamespaceRegistry), fluree_db_transact::TransactError> {
     // 1. Load config from pre-transaction state
     let config = load_transaction_config(&ledger).await;
 
@@ -236,7 +236,7 @@ async fn stage_with_config_shacl(
     };
 
     if !shacl_enabled {
-        return Ok(stage_txn(ledger, txn, ns_registry, options).await?);
+        return stage_txn(ledger, txn, ns_registry, options).await;
     }
 
     // 4. Build SHACL engine
@@ -247,7 +247,7 @@ async fn stage_with_config_shacl(
 
     // No config + no shapes → skip (backward compat: no shapes = no SHACL)
     if shacl_config.is_none() && shacl_cache.is_empty() {
-        return Ok(stage_txn(ledger, txn, ns_registry, options).await?);
+        return stage_txn(ledger, txn, ns_registry, options).await;
     }
 
     // 5. Stage with appropriate validation mode
@@ -277,7 +277,7 @@ async fn stage_with_config_shacl(
             Ok((view, ns_registry))
         }
         ValidationMode::Reject => {
-            Ok(stage_with_shacl(ledger, txn, ns_registry, options, shacl_cache).await?)
+            stage_with_shacl(ledger, txn, ns_registry, options, shacl_cache).await
         }
     }
 }
@@ -294,7 +294,7 @@ async fn stage_with_config_shacl(
 async fn enforce_unique_after_staging(
     view: &LedgerView,
     graph_delta: &FxHashMap<u16, String>,
-) -> Result<()> {
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
     let config = load_transaction_config(view.base()).await;
     if let Some(cfg) = &config {
         let per_graph_unique = resolve_per_graph_unique_sids(view, cfg, graph_delta).await?;
@@ -314,7 +314,7 @@ async fn resolve_per_graph_unique_sids(
     view: &LedgerView,
     config: &LedgerConfig,
     graph_delta: &FxHashMap<u16, String>,
-) -> Result<HashMap<GraphId, FxHashSet<Sid>>> {
+) -> std::result::Result<HashMap<GraphId, FxHashSet<Sid>>, fluree_db_transact::TransactError> {
     let snapshot = view.db();
 
     // Build reverse map: graph SID → g_id for flake graph resolution
@@ -427,7 +427,7 @@ fn resolve_constraint_source_g_ids(
 async fn read_enforce_unique_from_graph(
     view: &LedgerView,
     source_g_id: GraphId,
-) -> Result<Vec<Sid>> {
+) -> std::result::Result<Vec<Sid>, fluree_db_transact::TransactError> {
     let snapshot = view.db();
 
     let enforce_unique_sid = match snapshot.encode_iri(config_iris::ENFORCE_UNIQUE) {
@@ -474,7 +474,7 @@ async fn enforce_unique_constraints(
     view: &LedgerView,
     per_graph_unique: &HashMap<GraphId, FxHashSet<Sid>>,
     graph_delta: &FxHashMap<u16, String>,
-) -> Result<()> {
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
     // Fast path: nothing configured
     if per_graph_unique.is_empty() {
         return Ok(());
@@ -576,8 +576,7 @@ async fn enforce_unique_constraints(
                     graph: graph_label,
                     existing_subject: existing_iri,
                     new_subject: new_iri,
-                }
-                .into(),
+                },
             );
         }
     }
