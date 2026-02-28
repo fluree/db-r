@@ -25,7 +25,7 @@ use fluree_db_api::{
 };
 use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
-use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use support::genesis_ledger;
 
@@ -434,8 +434,7 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     let mut parsed = ParsedQuery::new(ParsedContext::default());
     parsed.patterns = vec![graph_pattern];
-    parsed.select = vec![airline_var, name_var, country_var];
-    parsed.select_mode = SelectMode::Many;
+    parsed.output = QueryOutput::Select(vec![airline_var, name_var, country_var]);
 
     let executable = ExecutableQuery::simple(parsed);
     let tracker = Tracker::disabled();
@@ -1083,8 +1082,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     // Build ParsedQuery with this pattern
     let mut parsed = ParsedQuery::new(ParsedContext::default());
     parsed.patterns = vec![graph_pattern];
-    parsed.select = vec![subject_var, name_var];
-    parsed.select_mode = SelectMode::Many;
+    parsed.output = QueryOutput::Select(vec![subject_var, name_var]);
 
     let executable = ExecutableQuery::simple(parsed);
     let tracker = Tracker::disabled();
@@ -1203,8 +1201,7 @@ async fn engine_e2e_provider_method_calls() {
 
     let mut parsed = ParsedQuery::new(ParsedContext::default());
     parsed.patterns = vec![graph_pattern];
-    parsed.select = vec![subject_var];
-    parsed.select_mode = SelectMode::Many;
+    parsed.output = QueryOutput::Select(vec![subject_var]);
 
     let executable = ExecutableQuery::simple(parsed);
     let tracker = Tracker::disabled();
@@ -1837,8 +1834,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     let mut parsed = ParsedQuery::new(ParsedContext::default());
     parsed.patterns = vec![graph_pattern];
-    parsed.select = vec![route_var, airline_var];
-    parsed.select_mode = SelectMode::Many;
+    parsed.output = QueryOutput::Select(vec![route_var, airline_var]);
 
     let executable = ExecutableQuery::simple(parsed);
     let tracker = Tracker::disabled();

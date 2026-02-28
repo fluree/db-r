@@ -42,7 +42,7 @@ pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};
 pub use lower::{
     lower_query, lower_unresolved_pattern, lower_unresolved_patterns, ConstructTemplate,
-    GraphSelectSpec, NestedSelectSpec, ParsedQuery, Root, SelectMode, SelectionSpec,
+    GraphSelectSpec, NestedSelectSpec, ParsedQuery, QueryOutput, Root, SelectMode, SelectionSpec,
 };
 pub use where_clause::parse_where_with_counters;
 
@@ -1410,7 +1410,7 @@ mod tests {
         let mut vars = VarRegistry::new();
         let query = parse_query(&json, &encoder, &mut vars).unwrap();
 
-        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
 
         // query.patterns now contains Pattern, not TriplePattern
