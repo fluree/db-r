@@ -126,6 +126,11 @@ impl QueryOutput {
         }
     }
 
+    /// Get select vars, or an empty slice for non-select outputs.
+    pub fn select_vars_or_empty(&self) -> &[VarId] {
+        self.select_vars().unwrap_or(&[])
+    }
+
     /// Get the construct template for Construct, `None` otherwise.
     pub fn construct_template(&self) -> Option<&ConstructTemplate> {
         match self {

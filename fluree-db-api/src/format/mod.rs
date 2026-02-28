@@ -50,7 +50,7 @@ mod materialize;
 mod sparql;
 mod typed;
 
-pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
+pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput, SelectMode};
 pub use iri::IriCompactor;
 
 use crate::QueryResult;
@@ -115,10 +115,10 @@ pub fn format_results(
     let compactor = IriCompactor::new(snapshot.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format
-    // Guard on BOTH config.select_mode AND result.select_mode for safety
+    // Guard on BOTH config.select_mode AND result.output for safety
     if config.select_mode == SelectMode::Construct {
         // Validate that result is actually a CONSTRUCT query
-        if result.select_mode != SelectMode::Construct || result.construct_template.is_none() {
+        if result.output.construct_template().is_none() {
             return Err(FormatError::InvalidBinding(
                 "CONSTRUCT format requested but query is not CONSTRUCT".to_string(),
             ));
@@ -196,7 +196,9 @@ pub fn format_results_string(
 /// requires template data from the result), Boolean formatting is stateless —
 /// either side asserting Boolean is sufficient to produce the correct output.
 fn format_boolean(result: &QueryResult, config: &FormatterConfig) -> Option<Result<JsonValue>> {
-    if config.select_mode != SelectMode::Boolean && result.select_mode != SelectMode::Boolean {
+    if config.select_mode != SelectMode::Boolean
+        && result.output.select_mode() != SelectMode::Boolean
+    {
         return None;
     }
     let has_solution = result.batches.iter().any(|b| !b.is_empty());
@@ -254,7 +256,7 @@ pub async fn format_results_async(
 
     // CONSTRUCT queries have dedicated output format (sync, no DB access needed)
     if config.select_mode == SelectMode::Construct {
-        if result.select_mode != SelectMode::Construct || result.construct_template.is_none() {
+        if result.output.construct_template().is_none() {
             return Err(FormatError::InvalidBinding(
                 "CONSTRUCT format requested but query is not CONSTRUCT".to_string(),
             ));
@@ -358,11 +360,9 @@ mod tests {
             novelty: None,
             context: fluree_graph_json_ld::ParsedContext::default(),
             orig_context: None,
-            select: vec![],
-            select_mode: SelectMode::Many,
+            output: QueryOutput::Select(vec![]),
             batches: vec![],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn format_boolean_true_sparql_json() {
         let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
+        result.output = QueryOutput::Boolean;
         result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
 
         let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn format_boolean_false_sparql_json() {
         let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
+        result.output = QueryOutput::Boolean;
 
         let config = FormatterConfig::sparql_json().with_select_mode(SelectMode::Boolean);
         let output = format_boolean(&result, &config).unwrap().unwrap();
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn format_boolean_true_jsonld() {
         let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
+        result.output = QueryOutput::Boolean;
         result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
 
         let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Boolean);
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn format_boolean_false_jsonld() {
         let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
+        result.output = QueryOutput::Boolean;
 
         let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Boolean);
         let output = format_boolean(&result, &config).unwrap().unwrap();
@@ -420,7 +420,7 @@ mod tests {
     fn format_boolean_triggered_by_result_mode_only() {
         // result says Boolean, config says Many — should still trigger
         let mut result = make_test_result();
-        result.select_mode = SelectMode::Boolean;
+        result.output = QueryOutput::Boolean;
         result.batches = vec![fluree_db_query::binding::Batch::single_empty()];
 
         let config = FormatterConfig::jsonld(); // default: Many

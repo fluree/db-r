@@ -67,8 +67,8 @@ pub fn format(result: &QueryResult, compactor: &IriCompactor) -> Result<JsonValu
 /// at the formatting step, not here.
 fn instantiate_template(result: &QueryResult, compactor: &IriCompactor) -> Result<Graph> {
     let template = result
-        .construct_template
-        .as_ref()
+        .output
+        .construct_template()
         .ok_or_else(|| FormatError::InvalidBinding("CONSTRUCT missing template".into()))?;
 
     let mut graph = Graph::new();

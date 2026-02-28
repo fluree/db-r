@@ -230,12 +230,12 @@ fn format_delimited_limited(
 /// Reject non-tabular results (CONSTRUCT, graph crawl).
 fn reject_non_tabular(result: &QueryResult, delimiter: Delimiter) -> Result<()> {
     let name = delimiter.name();
-    if result.select_mode == SelectMode::Construct {
+    if result.output.select_mode() == SelectMode::Construct {
         return Err(FormatError::InvalidBinding(format!(
             "{name} format not supported for CONSTRUCT queries (use JSON-LD instead)"
         )));
     }
-    if result.select_mode == SelectMode::Boolean {
+    if result.output.select_mode() == SelectMode::Boolean {
         return Err(FormatError::InvalidBinding(format!(
             "{name} format not supported for ASK queries (boolean result)"
         )));
@@ -250,7 +250,7 @@ fn reject_non_tabular(result: &QueryResult, delimiter: Delimiter) -> Result<()> 
 
 /// Resolve the select variable list, handling Wildcard mode.
 fn resolve_select_vars(result: &QueryResult) -> Vec<VarId> {
-    match result.select_mode {
+    match result.output.select_mode() {
         SelectMode::Wildcard => {
             let mut pairs: Vec<(String, VarId)> = result
                 .batches
@@ -275,7 +275,7 @@ fn resolve_select_vars(result: &QueryResult) -> Vec<VarId> {
             pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
             pairs.into_iter().map(|(_, vid)| vid).collect()
         }
-        _ => result.select.clone(),
+        _ => result.output.select_vars_or_empty().to_vec(),
     }
 }
 
@@ -305,7 +305,7 @@ fn write_data_rows(
 ) -> Result<()> {
     let max_rows = limit.unwrap_or(usize::MAX);
     let mut emitted = 0usize;
-    let select_one = result.select_mode == SelectMode::One;
+    let select_one = result.output.select_mode() == SelectMode::One;
 
     // Reusable cell buffer to avoid per-cell allocation
     let mut cell_buf = Vec::with_capacity(256);
@@ -625,11 +625,9 @@ mod tests {
             novelty: None,
             context,
             orig_context: None,
-            select: var_ids,
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(var_ids),
             batches: vec![batch],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

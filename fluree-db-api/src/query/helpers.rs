@@ -118,22 +118,6 @@ pub(crate) fn prepare_for_execution(parsed: &ParsedQuery) -> ExecutableQuery {
 // Query Result Building
 // =============================================================================
 
-/// Destructure a `QueryOutput` into flat fields for `QueryResult`.
-fn destructure_output(
-    output: QueryOutput,
-) -> (
-    Vec<fluree_db_query::VarId>,
-    crate::SelectMode,
-    Option<fluree_db_query::parse::ConstructTemplate>,
-) {
-    let select_mode = output.select_mode();
-    match output {
-        QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => (vars, select_mode, None),
-        QueryOutput::Wildcard | QueryOutput::Boolean => (Vec::new(), select_mode, None),
-        QueryOutput::Construct(template) => (Vec::new(), select_mode, Some(template)),
-    }
-}
-
 /// Build a QueryResult from execution results and parsed query metadata.
 ///
 /// This consolidates the repetitive QueryResult construction that appears
@@ -146,18 +130,15 @@ pub(crate) fn build_query_result(
     novelty: Option<Arc<dyn OverlayProvider>>,
     binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
-    let (select, select_mode, construct_template) = destructure_output(parsed.output);
     QueryResult {
         vars,
         t,
         novelty,
         context: parsed.context,
         orig_context: parsed.orig_context,
-        select,
-        select_mode,
+        output: parsed.output,
         batches,
         binary_graph,
-        construct_template,
         graph_select: parsed.graph_select,
     }
 }

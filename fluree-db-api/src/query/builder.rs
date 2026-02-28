@@ -266,7 +266,7 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
-        let config = format_config.with_select_mode(result.select_mode);
+        let config = format_config.with_select_mode(result.output.select_mode());
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &config, policy)
@@ -295,7 +295,7 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
-        let config = format_config.with_select_mode(result.select_mode);
+        let config = format_config.with_select_mode(result.output.select_mode());
         crate::format::format_results_string_async(
             &result,
             &result.context,
@@ -453,7 +453,7 @@ where
 
         // Use primary view's db for formatting
         if let Some(primary) = self.dataset.primary() {
-            let config = format_config.with_select_mode(result.select_mode);
+            let config = format_config.with_select_mode(result.output.select_mode());
             match primary.policy() {
                 Some(policy) => Ok(result
                     .format_async_with_policy(primary.as_graph_db_ref(), &config, policy)
@@ -487,7 +487,7 @@ where
         let result = self.fluree.query_dataset_view(self.dataset, input).await?;
 
         if let Some(primary) = self.dataset.primary() {
-            let config = format_config.with_select_mode(result.select_mode);
+            let config = format_config.with_select_mode(result.output.select_mode());
             crate::format::format_results_string_async(
                 &result,
                 &result.context,
@@ -686,7 +686,7 @@ where
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.select_mode);
+                    let config = format_config.with_select_mode(result.output.select_mode());
                     Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
@@ -705,7 +705,7 @@ where
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.select_mode);
+                    let config = format_config.with_select_mode(result.output.select_mode());
                     Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
@@ -744,7 +744,7 @@ where
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.select_mode);
+                    let config = format_config.with_select_mode(result.output.select_mode());
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,
@@ -771,7 +771,7 @@ where
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.select_mode);
+                    let config = format_config.with_select_mode(result.output.select_mode());
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,

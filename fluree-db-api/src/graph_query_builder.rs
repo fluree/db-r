@@ -146,7 +146,7 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.graph.fluree.query_view(&view, input).await?;
-        let config = format_config.with_select_mode(result.select_mode);
+        let config = format_config.with_select_mode(result.output.select_mode());
         match view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(view.as_graph_db_ref(), &config, policy)
@@ -292,7 +292,7 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
-        let config = format_config.with_select_mode(result.select_mode);
+        let config = format_config.with_select_mode(result.output.select_mode());
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &config, policy)

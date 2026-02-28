@@ -41,7 +41,7 @@ pub fn format(
                 _ => format_row(
                     batch,
                     row_idx,
-                    &result.select,
+                    result.output.select_vars_or_empty(),
                     &result.vars,
                     compactor,
                     result,
@@ -325,11 +325,9 @@ mod tests {
             novelty: None,
             context: crate::ParsedContext::default(),
             orig_context: None,
-            select: vec![],
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(vec![]),
             batches: vec![],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

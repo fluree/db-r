@@ -32,14 +32,18 @@ pub fn format(
                 _ => {
                     // Normal select: use select list
                     match config.jsonld_row_shape {
-                        JsonLdRowShape::Array => {
-                            format_row_array(result, batch, row_idx, &result.select, compactor)?
-                        }
+                        JsonLdRowShape::Array => format_row_array(
+                            result,
+                            batch,
+                            row_idx,
+                            result.output.select_vars_or_empty(),
+                            compactor,
+                        )?,
                         JsonLdRowShape::Object => format_row_object(
                             result,
                             batch,
                             row_idx,
-                            &result.select,
+                            result.output.select_vars_or_empty(),
                             &result.vars,
                             compactor,
                         )?,
@@ -62,7 +66,7 @@ pub fn format(
     // (not `[ [v1], [v2] ]`).
     if config.jsonld_row_shape == JsonLdRowShape::Array
         && config.select_mode != SelectMode::Wildcard
-        && result.select.len() == 1
+        && result.output.select_vars_or_empty().len() == 1
     {
         rows = rows
             .into_iter()
