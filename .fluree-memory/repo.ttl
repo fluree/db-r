@@ -393,3 +393,66 @@ mem:fact-01kjjd0b982vvxq7kxvn9bs90s a mem:Fact ;
     mem:artifactRef "fluree-db-core/src/range.rs" ;
     mem:createdAt "2026-02-28T15:13:52.424054+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k a mem:Fact ;
+    mem:content "HTTP server caches ledger-info responses in an LRU keyed by (ledger_id, commit_t, index_t, realtime_property_details, include_property_datatypes, graph selector string). This avoids repeated novelty->stats merges when ledger-info is polled frequently; cache naturally busts when commit_t or index_t changes." ;
+    mem:tag "cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "lru" ;
+    mem:tag "novelty" ;
+    mem:tag "performance" ;
+    mem:tag "server" ;
+    mem:tag "stats" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-server/src/routes/ledger.rs" ;
+    mem:artifactRef "fluree-db-server/src/state.rs" ;
+    mem:createdAt "2026-02-28T17:25:10.649801+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjmk1nva80w5cj3ey87asnj a mem:Fact ;
+    mem:content "Global LRU “leaflet cache” (single memory budget):\n- Implementation: `fluree-db-binary-index/src/read/leaflet_cache.rs` (`LeafletCache`) uses a single `moka::sync::Cache` (TinyLFU) shared across decoded entry types (R1/R2 leaflet regions + dict leaves + BM25 leaflets + vector shards). One pool = one cache budget.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB) sets the max bytes for the cache.\n- Wiring: enabled by default in `fluree-db-api/src/ledger_manager.rs` (`LedgerManagerConfig::default()` creates `LeafletCache::with_max_bytes(...)`), and used by `BinaryIndexStore` load paths when ledger caching is on.\n- Note: Region 3 (history journal) is intentionally never cached (cold path)." ;
+    mem:tag "binary-index" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet-cache" ;
+    mem:tag "lru" ;
+    mem:tag "moka" ;
+    mem:tag "performance" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-02-28T17:26:25.211748+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjn8bsqjesph3fya636nt4f a mem:Fact ;
+    mem:content "(Superseded) Ledger-info caching was initially prototyped at the HTTP server layer, but the intended caching lives in the API layer (fluree-db-api) for upstream app reuse. See newer memory entry about API-level ledger-info caching via the global LeafletCache budget." ;
+    mem:tag "api" ;
+    mem:tag "cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "performance" ;
+    mem:tag "superseded" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:supersedes mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k ;
+    mem:createdAt "2026-02-28T17:38:03.703314+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjn8kspr3gnkcsmq9t1fsvf a mem:Fact ;
+    mem:content "API-level ledger-info caching (for upstream apps):\n- Location: `fluree-db-api/src/ledger_info.rs` (`LedgerInfoBuilder::execute`).\n- Cache backend: the global unified `LeafletCache` (TinyLFU) so ledger-info shares the single memory budget with other cached decode artifacts.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB).\n- Key: xxh3_128 hash of a canonical string including (ledger_id, commit_t=ledger.t(), index_t=ledger.snapshot.t, realtime_property_details, include_property_datatypes, graph selector, context JSON hash).\n- Value: serialized JSON bytes (`Arc<[u8]>`) stored in `fluree-db-binary-index/src/read/leaflet_cache.rs` under a new `LedgerInfo` entry type.\n- Behavior: cache hit returns parsed JSON without recomputing novelty-merged stats; cache naturally busts when commit_t or index_t changes." ;
+    mem:tag "api" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet-cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "moka" ;
+    mem:tag "performance" ;
+    mem:tag "tinylfu" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-02-28T17:38:11.894884+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

@@ -176,6 +176,10 @@ enum CacheKey {
     /// For CAS-loaded stores: CID bytes. For local builds: CAS address
     /// string from the manifest. Immutable once written.
     VectorShard(u128),
+    /// Cached `ledger-info` response blob (JSON bytes).
+    ///
+    /// Key = xxh3_128 of a canonical ledger-info cache key string.
+    LedgerInfo(u128),
 }
 
 // ============================================================================
@@ -261,6 +265,7 @@ enum CachedEntry {
     DictLeaf(Arc<[u8]>),
     Bm25Leaflet(Arc<[u8]>),
     VectorShard(Arc<crate::arena::vector::VectorShard>),
+    LedgerInfo(Arc<[u8]>),
 }
 
 impl CachedEntry {
@@ -277,6 +282,7 @@ impl CachedEntry {
                 std::mem::size_of::<crate::arena::vector::VectorShard>()
                     + shard.values.capacity() * std::mem::size_of::<f32>()
             }
+            CachedEntry::LedgerInfo(bytes) => bytes.len(),
         }
     }
 }
@@ -462,6 +468,24 @@ impl LeafletCache {
             Ok(_) => unreachable!("VectorShard key always maps to VectorShard entry"),
             Err(arc_err) => Err(io::Error::new(arc_err.kind(), arc_err.to_string())),
         }
+    }
+
+    // ========================================================================
+    // Ledger-info response cache (JSON bytes)
+    // ========================================================================
+
+    /// Check if a ledger-info response blob is cached (read-only, no insertion).
+    pub fn get_ledger_info(&self, key: u128) -> Option<Arc<[u8]>> {
+        match self.inner.get(&CacheKey::LedgerInfo(key)) {
+            Some(CachedEntry::LedgerInfo(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Insert a ledger-info response blob into the unified cache.
+    pub fn insert_ledger_info(&self, key: u128, bytes: Arc<[u8]>) {
+        self.inner
+            .insert(CacheKey::LedgerInfo(key), CachedEntry::LedgerInfo(bytes));
     }
 
     // ========================================================================
