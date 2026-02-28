@@ -79,6 +79,7 @@ use node_map::is_variable;
 /// - `SelectMode::One` when using "selectOne" key (returns first row or null)
 /// - `SelectMode::Wildcard` when select value is "*" (returns all bound variables)
 /// - `SelectMode::Construct` when using "construct" key (returns JSON-LD graph)
+/// - `SelectMode::Boolean` when using "ask" key (value is the where clause; returns boolean)
 ///
 /// # Example
 ///
@@ -139,6 +140,31 @@ fn parse_query_ast_internal(
         );
     }
 
+    // Check for ASK query — boolean existence check, no select clause.
+    // The value of `ask` IS the where clause (array or object), e.g.:
+    //   { "ask": [{ "@id": "?person", "ex:name": "Alice" }] }
+    //   { "ask": { "@id": "?person", "ex:name": "Alice" } }
+    if let Some(ask_val) = obj.get("ask") {
+        if !ask_val.is_array() && !ask_val.is_object() {
+            return Err(ParseError::InvalidWhere(
+                "\"ask\" must be an array or object of where-clause patterns".to_string(),
+            ));
+        }
+        let object_var_parsing = options::parse_object_var_parsing(obj);
+        where_clause::parse_where_with_counters(
+            ask_val,
+            &context,
+            &path_aliases,
+            &mut query,
+            subject_counter,
+            nested_counter,
+            object_var_parsing,
+        )?;
+        // LIMIT 1 for efficiency — only need to know if any solution exists
+        query.options.limit = Some(1);
+        return Ok((query, SelectMode::Boolean));
+    }
+
     // Determine select mode based on which key is present.
     //
     // Clojure parity:
@@ -164,7 +190,7 @@ fn parse_query_ast_internal(
             }
         } else {
             return Err(ParseError::MissingField(
-                "select, selectOne, select-one, selectDistinct, select-distinct, or construct",
+                "select, selectOne, select-one, selectDistinct, select-distinct, construct, or ask",
             ));
         };
 
@@ -1230,7 +1256,7 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             ParseError::MissingField(
-                "select, selectOne, select-one, selectDistinct, select-distinct, or construct"
+                "select, selectOne, select-one, selectDistinct, select-distinct, construct, or ask"
             )
         ));
     }
