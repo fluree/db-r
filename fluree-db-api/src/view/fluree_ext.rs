@@ -228,6 +228,22 @@ where
         ledger_id: &str,
         target_t: i64,
     ) -> Result<GraphDb> {
+        // Fast path: time travel to the current head is equivalent to no time travel.
+        //
+        // Avoid the historical loader (which may fetch index roots / binary stores)
+        // when the requested t is already the latest ledger version.
+        let handle = self.ledger_cached(ledger_id).await?;
+        let snap = handle.snapshot().await;
+        if target_t == snap.t {
+            let binary_store = snap.binary_store.clone();
+            let ledger = snap.to_ledger_state();
+            let view = GraphDb::from_ledger_state(&ledger);
+            return Ok(match binary_store {
+                Some(store) => view.with_binary_store(store),
+                None => view,
+            });
+        }
+
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = GraphDb::from_historical(&historical);
 
