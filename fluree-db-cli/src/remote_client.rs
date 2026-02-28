@@ -412,6 +412,10 @@ impl RemoteLedgerClient {
         format!("{}/{}/{}", self.base_url, op, Self::ledger_tail(ledger))
     }
 
+    fn op_url_root(&self, op: &str) -> String {
+        format!("{}/{}", self.base_url, op)
+    }
+
     // =========================================================================
     // Query
     // =========================================================================
@@ -439,6 +443,36 @@ impl RemoteLedgerClient {
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = self.op_url("query", ledger);
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-query",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
+    }
+
+    /// Execute a JSON-LD connection query (ledger specified via `from` in body).
+    pub async fn query_connection_jsonld(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("query");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
+
+    /// Execute a SPARQL connection query (ledger specified via `FROM` clause).
+    pub async fn query_connection_sparql(
+        &self,
+        sparql: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("query");
         self.send_json(
             reqwest::Method::POST,
             &url,

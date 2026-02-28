@@ -2829,6 +2829,7 @@ dependencies = [
  "fluree-db-novelty",
  "fluree-db-peer",
  "fluree-db-query",
+ "fluree-db-sparql",
  "fluree-sse",
  "fluree-vocab",
  "futures",

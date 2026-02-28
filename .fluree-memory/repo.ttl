@@ -377,3 +377,19 @@ mem:fact-01kje30pfdnvpv5fx0ng4234jf a mem:Fact ;
     mem:branch "feature/config-graph" ;
     mem:createdAt "2026-02-26T23:02:20.397376+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kjjd0b982vvxq7kxvn9bs90s a mem:Fact ;
+    mem:content "Historical time-travel views must attach a BinaryRangeProvider when loading a BinaryIndexStore. `LedgerSnapshot::from_root_bytes()` produces a metadata-only snapshot with `range_provider=None`, so `Fluree::load_graph_db_at_t()` needs to set `LedgerSnapshot.range_provider = Some(BinaryRangeProvider::new(store, dict_novelty))` after loading the binary store; otherwise range-based operators can error with: \"binary-only db has no range_provider attached — load and attach BinaryIndexStore before queries\"." ;
+    mem:tag "binary-index" ;
+    mem:tag "binaryrangeprovider" ;
+    mem:tag "bugfix" ;
+    mem:tag "historical-view" ;
+    mem:tag "range-provider" ;
+    mem:tag "time-travel" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-core/src/db.rs" ;
+    mem:artifactRef "fluree-db-core/src/range.rs" ;
+    mem:createdAt "2026-02-28T15:13:52.424054+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

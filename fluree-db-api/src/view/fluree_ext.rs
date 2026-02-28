@@ -275,6 +275,24 @@ where
                     store.augment_namespace_codes(&view.snapshot.namespace_codes);
 
                     view.binary_store = Some(Arc::new(store));
+
+                    // Historical views loaded from an index root are metadata-only by default
+                    // (`LedgerSnapshot::from_root_bytes` sets `range_provider = None`).
+                    // If we loaded a BinaryIndexStore, attach a BinaryRangeProvider so
+                    // range-based operators (joins, index lookups) work correctly.
+                    if view.snapshot.range_provider.is_none() {
+                        let (Some(store), Some(dict_novelty)) =
+                            (view.binary_store.as_ref(), view.dict_novelty.as_ref())
+                        else {
+                            return Ok(view);
+                        };
+                        let store = Arc::clone(store);
+                        let dict_novelty = Arc::clone(dict_novelty);
+                        let provider = BinaryRangeProvider::new(store, dict_novelty);
+                        let mut db = (*view.snapshot).clone();
+                        db.range_provider = Some(Arc::new(provider));
+                        view.snapshot = Arc::new(db);
+                    }
                 }
             }
         }
