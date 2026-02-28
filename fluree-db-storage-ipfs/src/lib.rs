@@ -92,12 +92,33 @@ impl IpfsStorage {
     }
 
     /// Pin a block if pin_on_put is enabled.
+    ///
+    /// Converts the CID to raw codec (0x55) before pinning. Kubo rejects
+    /// `pin/add` for CIDs with unregistered codecs (like Fluree's private-use
+    /// range) because it tries to decode the block for DAG traversal. Using
+    /// raw codec avoids this — Kubo treats the block as opaque bytes and pins
+    /// it by multihash, which is all we need.
     async fn maybe_pin(&self, cid: &str) {
         if self.pin_on_put {
-            if let Err(e) = self.kubo.pin_add(cid).await {
-                tracing::warn!(cid = %cid, error = %e, "failed to pin block");
+            let pin_cid = match Self::to_raw_cid(cid) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(cid = %cid, error = %e, "failed to convert CID for pinning");
+                    return;
+                }
+            };
+            if let Err(e) = self.kubo.pin_add(&pin_cid).await {
+                tracing::warn!(cid = %cid, raw_cid = %pin_cid, error = %e, "failed to pin block");
             }
         }
+    }
+
+    /// Convert any CID string to its raw-codec (0x55) equivalent with the same
+    /// multihash. Used for pin operations since Kubo can't pin custom codecs.
+    fn to_raw_cid(cid_str: &str) -> std::result::Result<String, String> {
+        let cid = cid::Cid::try_from(cid_str).map_err(|e| format!("invalid CID: {e}"))?;
+        let raw = cid::Cid::new_v1(0x55, *cid.hash());
+        Ok(raw.to_string())
     }
 }
 

@@ -260,20 +260,27 @@ async fn test_put_with_id() {
 }
 
 // ============================================================================
-// 7. Cross-codec pin semantics: does pin/rm with raw CID remove a Fluree-codec pin?
+// 7. Pin lifecycle with raw-codec CIDs
 //
-// Blocks are stored with Fluree's custom codec (e.g. 0x300001) and pinned
-// with that CID. But IpfsStorage::delete() constructs a raw-codec (0x55) CID
-// from the address hash. If Kubo's pin set is keyed by exact CID string,
-// pin/rm with the raw CID will silently fail, leaving the original pin intact.
+// Kubo rejects pin/add for CIDs with unregistered codecs ("no decoder
+// registered for multicodec code 0x300001"). So IpfsStorage pins blocks
+// using the raw-codec (0x55) CID derived from the same multihash.
+//
+// This test verifies the full lifecycle that IpfsStorage actually uses:
+//   1. block_put with Fluree custom codec (stores the block)
+//   2. pin_add with raw-codec CID (pins the block without decode)
+//   3. pin_rm with raw-codec CID (unpins cleanly)
+//
+// It also verifies that pin/add with a Fluree-codec CID is rejected,
+// confirming that the raw-codec pin strategy is necessary.
 // ============================================================================
 
 #[tokio::test]
-async fn test_cross_codec_pin_rm_semantics() {
+async fn test_pin_lifecycle_raw_codec() {
     let kubo = require_kubo().await;
-    let data = b"cross-codec pin/rm test payload";
+    let data = b"pin lifecycle test payload";
 
-    // 1. Put with Fluree custom codec and pin it
+    // 1. Put with Fluree custom codec
     let fluree_cid = ContentId::new(ContentKind::Commit, data);
     let codec_hex = format!("0x{:x}", ContentKind::Commit.to_codec());
     let put_resp = kubo
@@ -281,54 +288,44 @@ async fn test_cross_codec_pin_rm_semantics() {
         .await
         .unwrap();
     let fluree_cid_str = put_resp.key.clone();
-    println!("Fluree-codec CID (pinned):   {}", fluree_cid_str);
+    println!("Fluree-codec CID (from put): {}", fluree_cid_str);
 
-    // Pin explicitly with the Fluree-codec CID
-    kubo.pin_add(&fluree_cid_str).await.unwrap();
-
-    // Verify it's pinned
+    // 2. Verify that pinning with Fluree-codec CID FAILS
+    let pin_fluree_result = kubo.pin_add(&fluree_cid_str).await;
     assert!(
-        kubo.is_pinned(&fluree_cid_str).await.unwrap(),
-        "block should be pinned with Fluree-codec CID"
+        pin_fluree_result.is_err(),
+        "pin/add should reject Fluree-codec CIDs (no decoder registered)"
+    );
+    println!(
+        "pin/add with Fluree CID correctly rejected: {}",
+        pin_fluree_result.unwrap_err()
     );
 
-    // 2. Construct the raw-codec CID with the same multihash
+    // 3. Construct raw-codec CID (same multihash, codec 0x55)
     let raw_cid_str =
         fluree_db_storage_ipfs::address::hash_hex_to_cid_string(&fluree_cid.digest_hex()).unwrap();
-    println!("Raw-codec CID (for unpin):   {}", raw_cid_str);
-    assert_ne!(
-        fluree_cid_str, raw_cid_str,
-        "CID strings must differ (different codecs)"
+    println!("Raw-codec CID (for pin):     {}", raw_cid_str);
+
+    // 4. Pin with raw-codec CID — this is what IpfsStorage::maybe_pin does
+    kubo.pin_add(&raw_cid_str).await.unwrap();
+    assert!(
+        kubo.is_pinned(&raw_cid_str).await.unwrap(),
+        "block should be pinned with raw-codec CID"
     );
+    println!("pin/add with raw CID succeeded");
 
-    // 3. Try to unpin with the raw-codec CID (this is what delete() does)
-    let unpin_result = kubo.pin_rm(&raw_cid_str).await;
-    println!("pin/rm with raw CID result:  {:?}", unpin_result);
-
-    // 4. Check if the Fluree-codec pin is still present
-    let still_pinned = kubo.is_pinned(&fluree_cid_str).await.unwrap();
-    println!(
-        "Fluree-codec CID still pinned after raw unpin: {}",
-        still_pinned
+    // 5. Unpin with raw-codec CID — this is what IpfsStorage::delete does
+    kubo.pin_rm(&raw_cid_str).await.unwrap();
+    assert!(
+        !kubo.is_pinned(&raw_cid_str).await.unwrap(),
+        "block should be unpinned after pin/rm"
     );
+    println!("pin/rm with raw CID succeeded — block is unpinned");
 
-    if still_pinned {
-        println!();
-        println!("*** CROSS-CODEC PIN/RM DOES NOT WORK ***");
-        println!("Kubo pin sets ARE keyed by exact CID string.");
-        println!("IpfsStorage::delete() must unpin using the Fluree-codec CID,");
-        println!("not a raw-codec CID derived from the same multihash.");
-        // Clean up: unpin with the correct CID
-        kubo.pin_rm(&fluree_cid_str).await.unwrap();
-        panic!(
-            "Cross-codec pin/rm failed: raw-codec unpin did not remove Fluree-codec pin. \
-             IpfsStorage::delete() needs to be fixed to use the original codec."
-        );
-    } else {
-        println!();
-        println!("Cross-codec pin/rm WORKS — Kubo resolves pins by multihash.");
-        println!("IpfsStorage::delete() is correct as-is.");
-    }
+    // 6. Verify the block data is still accessible (just unpinned, not deleted)
+    let retrieved = kubo.block_get(&fluree_cid_str).await.unwrap();
+    assert_eq!(retrieved, data);
+    println!("Block data still accessible after unpin (until GC)");
 }
 
 // ============================================================================

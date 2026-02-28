@@ -183,6 +183,11 @@ impl KuboClient {
     }
 
     /// `POST /api/v0/pin/add` — pin a block by CID.
+    ///
+    /// **Important**: Kubo rejects `pin/add` for CIDs with unregistered codecs
+    /// (like Fluree's private-use range 0x300001–0x30000B) because it tries
+    /// to decode the block for DAG traversal. Callers must pass a raw-codec
+    /// (0x55) CID with the same multihash — see `IpfsStorage::to_raw_cid()`.
     pub async fn pin_add(&self, cid: &str) -> Result<()> {
         let url = format!("{}/api/v0/pin/add?arg={}", self.base_url, cid);
 

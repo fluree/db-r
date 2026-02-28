@@ -496,3 +496,30 @@ mem:fact-01kjg407n8cqjy24njyyhz6dnz a mem:Fact ;
     mem:branch “feature/ipfs” ;
     mem:createdAt “2026-02-27T17:58:02.664595+00:00”^^xsd:dateTime ;
     mem:factKind “architecture” .
+
+mem:fact-01kjj80gw99c7hp8qh0tfp60kg a mem:Fact ;
+    mem:content “IPFS storage backend (fluree-db-storage-ipfs crate) — full implementation details:\n\n**Crate structure:**\n- `src/lib.rs` — IpfsStorage struct implementing ContentStore + full Storage trait (StorageRead, StorageWrite, ContentAddressedWrite, StorageMethod)\n- `src/kubo.rs` — Thin HTTP RPC client for Kubo (block/put, block/get, block/stat, pin/add, pin/rm, is_pinned, id). Uses `reqwest` with multipart form upload.\n- `src/address.rs` — Parses `fluree:ipfs://ledger/kind/{hash}.ext` addresses. `extract_hash_hex()` gets the 64-char SHA-256 hex from the filename stem. `hash_hex_to_cid_string()` constructs a raw-codec CIDv1 for retrieval.\n- `src/error.rs` — IpfsStorageError enum (ConnectionFailed, NotFound, Rpc, Http, CidMismatch, Other). Implements `From<IpfsStorageError> for fluree_db_core::error::Error`.\n- `tests/it_kubo_block_api.rs` — 8 integration tests gated behind `integration-tests` feature. Require running Kubo at localhost:5001.\n\n**Kubo codec/pin behavior (verified by integration tests):**\n- `block/put` with Fluree's private-use multicodec (e.g. `cid-codec=0x300001`) — Kubo ACCEPTS it, stores the block, returns a CID with that codec\n- `block/get` with cross-codec CID — Kubo resolves by multihash regardless of codec, so a raw-codec CID retrieves blocks stored with any Fluree codec\n- `pin/add` with Fluree-codec CID — Kubo REJECTS it (\”no decoder registered for multicodec code 0x300001\”) because pin/add tries to decode the block for DAG traversal\n- **Workaround:** pin using a raw-codec (0x55) CID built from the same SHA-256 multihash. `IpfsStorage::to_raw_cid()` and `address::hash_hex_to_cid_string()` handle this. Same approach for pin/rm (unpin).\n\n**Key design decisions:**\n- `put()` stores with Fluree's native multicodec — preserves CID identity in IPFS\n- Retrieval uses raw-codec CID constructed from address hash hex\n- `delete()` is a no-op (IPFS is immutable; GC via unpin)\n- `list_prefix()` returns error — NOT needed because: (1) nameservice always runs locally (file/DynamoDB) and handles all_records/all_graph_source_records, (2) drop_ledger Hard mode should walk commit chain + index chain + tree structure to discover CIDs rather than listing by prefix (existing code: walk_commit_chain_full, walk_prev_index_chain, clean_garbage, load_from_root_v5)\n\n**Feature flag chain:** cli/ipfs → server/ipfs → api/ipfs → connection/ipfs → dep:fluree-db-storage-ipfs\n\n**Connection config:**\n- JSON-LD: `ipfsApiUrl` and `ipfsPinOnPut` fields on Storage node (vocab constants in fluree-db-connection/src/vocab.rs)\n- Flat JSON: `@type: \”IpfsStorage\”` with `ipfsApiUrl`/`ipfsPinOnPut` fields\n- IpfsStorageConfig struct in fluree-db-connection/src/config.rs\n- IpfsConnection type alias and connect_ipfs factory in fluree-db-connection/src/ipfs.rs\n\n**Documentation:** docs/operations/ipfs-storage.md (comprehensive guide), updates to storage.md, connection-config-jsonld.md, SUMMARY.md” ;
+    mem:tag “CID” ;
+    mem:tag “IPFS” ;
+    mem:tag “architecture” ;
+    mem:tag “codec” ;
+    mem:tag “connection” ;
+    mem:tag “feature-flags” ;
+    mem:tag “integration-tests” ;
+    mem:tag “kubo” ;
+    mem:tag “pinning” ;
+    mem:tag “storage” ;
+    mem:scope mem:repo ;
+    mem:sensitivity “public” ;
+    mem:artifactRef “docs/operations/ipfs-storage.md” ;
+    mem:artifactRef “fluree-db-connection/src/config.rs” ;
+    mem:artifactRef “fluree-db-connection/src/ipfs.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/address.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/error.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/kubo.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/src/lib.rs” ;
+    mem:artifactRef “fluree-db-storage-ipfs/tests/it_kubo_block_api.rs” ;
+    mem:branch “feature/ipfs” ;
+    mem:supersedes mem:fact-01kjg407n8cqjy24njyyhz6dnz ;
+    mem:createdAt “2026-02-28T13:46:35.273059+00:00”^^xsd:dateTime ;
+    mem:factKind “architecture” .
