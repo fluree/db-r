@@ -4,7 +4,8 @@
 //! are formatted. Supports JSON-based formats (JSON-LD, SPARQL JSON, TypedJson)
 //! and high-performance delimited-text formats (TSV, CSV).
 
-// Re-export SelectMode from fluree-db-query (canonical source)
+// Re-export SelectMode and QueryOutput from fluree-db-query (canonical source)
+pub use fluree_db_query::parse::QueryOutput;
 pub use fluree_db_query::SelectMode;
 
 /// Output format selection

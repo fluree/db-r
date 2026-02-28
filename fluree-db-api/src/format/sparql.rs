@@ -48,7 +48,7 @@ pub fn format(
                     .collect()
             })
             .unwrap_or_default(),
-        _ => result.select.clone(),
+        _ => result.output.select_vars_or_empty().to_vec(),
     };
 
     // Clojure parity: order head vars lexicographically by variable name (without '?').
@@ -456,11 +456,9 @@ mod tests {
             novelty: None,
             context: crate::ParsedContext::default(),
             orig_context: None,
-            select: vec![],
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(vec![]),
             batches: vec![],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

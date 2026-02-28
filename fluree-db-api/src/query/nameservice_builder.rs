@@ -291,7 +291,7 @@ where
                         .query(&result.ledger, query_json)
                         .await
                         .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
-                    let config = config.with_select_mode(query_result.select_mode);
+                    let config = config.with_select_mode(query_result.output.select_mode());
                     Ok(query_result
                         .format_async(result.ledger.as_graph_db_ref(0), &config)
                         .await?)
@@ -313,7 +313,7 @@ where
 
                 let config = format_config
                     .unwrap_or_else(FormatterConfig::sparql_json)
-                    .with_select_mode(query_result.select_mode);
+                    .with_select_mode(query_result.output.select_mode());
                 Ok(query_result
                     .format_async(result.ledger.as_graph_db_ref(0), &config)
                     .await?)
