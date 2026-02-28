@@ -15,7 +15,7 @@ use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
-use crate::parse::{ParsedQuery, SelectMode};
+use crate::parse::ParsedQuery;
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
@@ -110,9 +110,7 @@ fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(VarId, Vec<(crate::triple::Ref, VarId)>, VarId)> {
-    if query.select_mode == SelectMode::Construct {
-        return None;
-    }
+    let select_vars = query.output.select_vars()?;
     if query.patterns.len() < 2 {
         return None;
     }
@@ -130,7 +128,7 @@ fn detect_property_join_count_all(
     }
 
     // SELECT must be exactly the aggregate output var (avoid surprising projections).
-    if query.select.len() != 1 || query.select[0] != agg.output_var {
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
         return None;
     }
 
@@ -203,8 +201,10 @@ pub fn build_operator_tree(
             }
 
             // PROJECT (select specific columns)
-            if query.select_mode != SelectMode::Construct && !query.select.is_empty() {
-                operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+            if let Some(vars) = query.output.select_vars() {
+                if !vars.is_empty() {
+                    operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+                }
             }
 
             // DISTINCT
@@ -243,8 +243,10 @@ pub fn build_operator_tree(
         }
 
         // PROJECT
-        if !query.select.is_empty() {
-            operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+        if let Some(vars) = query.output.select_vars() {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
         }
 
         // DISTINCT
@@ -350,11 +352,12 @@ pub fn build_operator_tree(
         // If the SELECT projects any *grouped* variables (non-key, non-aggregate),
         // we must use the traditional GroupByOperator path so those vars become
         // `Binding::Grouped(Vec<Binding>)` and remain selectable.
-        let select_needs_grouped_vars = query.select_mode != SelectMode::Construct
-            && query.select.iter().any(|v| {
+        let select_needs_grouped_vars = query.output.select_vars().is_some_and(|vars| {
+            vars.iter().any(|v| {
                 !options.group_by.contains(v)
                     && !options.aggregates.iter().any(|a| a.output_var == *v)
-            });
+            })
+        });
 
         let use_streaming = !options.aggregates.is_empty()
             && GroupAggregateOperator::all_streamable(&streaming_specs)
@@ -439,18 +442,20 @@ pub fn build_operator_tree(
     }
 
     // PROJECT (select specific columns)
-    // Skip projection for CONSTRUCT - we need all bindings for templating
-    if query.select_mode != SelectMode::Construct && !query.select.is_empty() {
-        // Validate all select vars exist in schema
-        for var in &query.select {
-            if !post_group_schema.contains(var) {
-                return Err(QueryError::VariableNotFound(format!(
-                    "Selected variable {:?} not found in query schema",
-                    var
-                )));
+    // Skip projection for CONSTRUCT/Wildcard/Boolean - only Select/SelectOne project
+    if let Some(vars) = query.output.select_vars() {
+        if !vars.is_empty() {
+            // Validate all select vars exist in schema
+            for var in vars {
+                if !post_group_schema.contains(var) {
+                    return Err(QueryError::VariableNotFound(format!(
+                        "Selected variable {:?} not found in query schema",
+                        var
+                    )));
+                }
             }
+            operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
         }
-        operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
     }
 
     // DISTINCT (after projection)
@@ -478,7 +483,7 @@ mod tests {
     use super::*;
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
-    use crate::parse::ParsedQuery;
+    use crate::parse::{ParsedQuery, QueryOutput};
     use crate::sort::SortSpec;
     use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
@@ -493,14 +498,17 @@ mod tests {
     }
 
     fn make_simple_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
+        let output = if select.is_empty() {
+            QueryOutput::Wildcard
+        } else {
+            QueryOutput::Select(select)
+        };
         ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select,
+            output,
             patterns,
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -510,11 +518,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(99)], // Variable not in pattern
+            output: QueryOutput::Select(vec![VarId(99)]), // Variable not in pattern
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 
@@ -530,11 +536,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(0)],
+            output: QueryOutput::Select(vec![VarId(0)]),
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 

@@ -4,12 +4,12 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     ApiError, Batch, DatasetSpec, ExecutableQuery, OverlayProvider, QueryConnectionOptions, Result,
-    SelectMode, Tracker, TrackingOptions, VarRegistry,
+    Tracker, TrackingOptions, VarRegistry,
 };
 
 use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_query::parse::{parse_query, ParsedQuery};
+use fluree_db_query::parse::{parse_query, ParsedQuery, QueryOutput};
 
 use super::QueryResult;
 
@@ -107,8 +107,7 @@ pub(crate) fn parse_sparql_to_ir(
 pub(crate) fn prepare_for_execution(parsed: &ParsedQuery) -> ExecutableQuery {
     if parsed.graph_select.is_some() {
         let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.select_mode = SelectMode::Wildcard;
-        parsed_for_exec.select.clear();
+        parsed_for_exec.output = QueryOutput::Wildcard;
         ExecutableQuery::simple(parsed_for_exec)
     } else {
         ExecutableQuery::simple(parsed.clone())
@@ -118,6 +117,22 @@ pub(crate) fn prepare_for_execution(parsed: &ParsedQuery) -> ExecutableQuery {
 // =============================================================================
 // Query Result Building
 // =============================================================================
+
+/// Destructure a `QueryOutput` into flat fields for `QueryResult`.
+fn destructure_output(
+    output: QueryOutput,
+) -> (
+    Vec<fluree_db_query::VarId>,
+    crate::SelectMode,
+    Option<fluree_db_query::parse::ConstructTemplate>,
+) {
+    let select_mode = output.select_mode();
+    match output {
+        QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => (vars, select_mode, None),
+        QueryOutput::Wildcard | QueryOutput::Boolean => (Vec::new(), select_mode, None),
+        QueryOutput::Construct(template) => (Vec::new(), select_mode, Some(template)),
+    }
+}
 
 /// Build a QueryResult from execution results and parsed query metadata.
 ///
@@ -131,17 +146,18 @@ pub(crate) fn build_query_result(
     novelty: Option<Arc<dyn OverlayProvider>>,
     binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
+    let (select, select_mode, construct_template) = destructure_output(parsed.output);
     QueryResult {
         vars,
         t,
         novelty,
         context: parsed.context,
         orig_context: parsed.orig_context,
-        select: parsed.select,
-        select_mode: parsed.select_mode,
+        select,
+        select_mode,
         batches,
         binary_graph,
-        construct_template: parsed.construct_template,
+        construct_template,
         graph_select: parsed.graph_select,
     }
 }
@@ -149,25 +165,14 @@ pub(crate) fn build_query_result(
 /// Build a QueryResult for SPARQL queries (no graph_select support).
 pub(crate) fn build_sparql_result(
     vars: VarRegistry,
-    parsed: ParsedQuery,
+    mut parsed: ParsedQuery,
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
     binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
-    QueryResult {
-        vars,
-        t,
-        novelty,
-        context: parsed.context,
-        orig_context: parsed.orig_context,
-        select: parsed.select,
-        select_mode: parsed.select_mode,
-        batches,
-        binary_graph,
-        construct_template: parsed.construct_template,
-        graph_select: None, // SPARQL doesn't support graph crawl
-    }
+    parsed.graph_select = None; // SPARQL doesn't support graph crawl
+    build_query_result(vars, parsed, batches, t, novelty, binary_graph)
 }
 
 // =============================================================================

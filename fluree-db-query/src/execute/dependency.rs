@@ -6,7 +6,7 @@
 //! be projected away early.
 
 use crate::options::QueryOptions;
-use crate::parse::{ParsedQuery, SelectMode};
+use crate::parse::ParsedQuery;
 use crate::var_registry::VarId;
 use std::collections::HashSet;
 
@@ -19,23 +19,7 @@ use std::collections::HashSet;
 /// Returns `None` for `Wildcard` mode (all WHERE vars are needed).
 pub fn compute_where_deps(query: &ParsedQuery, options: &QueryOptions) -> Option<HashSet<VarId>> {
     // Start with variables needed at the final output.
-    let mut deps: HashSet<VarId> = match query.select_mode {
-        // Wildcard: all WHERE vars are output — nothing to drop.
-        SelectMode::Wildcard => return None,
-        // CONSTRUCT needs all template variables.
-        SelectMode::Construct => match &query.construct_template {
-            Some(ct) => ct.variables(),
-            None => return None,
-        },
-        // Many | One: deps = query.select.
-        // Empty select means "no explicit projection" — keep all vars.
-        _ => {
-            if query.select.is_empty() {
-                return None;
-            }
-            query.select.iter().copied().collect()
-        }
-    };
+    let mut deps: HashSet<VarId> = query.output.output_vars()?;
 
     // ORDER BY vars must survive to the sort operator.
     for spec in &options.order_by {
@@ -79,7 +63,7 @@ mod tests {
     use crate::aggregate::{AggregateFn, AggregateSpec};
     use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
-    use crate::parse::{ConstructTemplate, ParsedQuery, SelectMode};
+    use crate::parse::{ConstructTemplate, ParsedQuery, QueryOutput, SelectMode};
     use crate::sort::SortSpec;
     use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
@@ -90,14 +74,19 @@ mod tests {
         patterns: Vec<Pattern>,
         select_mode: SelectMode,
     ) -> ParsedQuery {
+        let output = match select_mode {
+            SelectMode::Many => QueryOutput::Select(select),
+            SelectMode::One => QueryOutput::SelectOne(select),
+            SelectMode::Wildcard => QueryOutput::Wildcard,
+            SelectMode::Construct => QueryOutput::Construct(ConstructTemplate::new(Vec::new())),
+            SelectMode::Boolean => QueryOutput::Boolean,
+        };
         ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select,
+            output,
             patterns,
             options: QueryOptions::default(),
-            select_mode,
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -189,12 +178,18 @@ mod tests {
 
     #[test]
     fn construct_uses_template_vars() {
-        let mut query = make_query(vec![], vec![], SelectMode::Construct);
-        query.construct_template = Some(ConstructTemplate::new(vec![make_tp(
-            VarId(0),
-            "name",
-            VarId(1),
-        )]));
+        let query = ParsedQuery {
+            context: ParsedContext::default(),
+            orig_context: None,
+            output: QueryOutput::Construct(ConstructTemplate::new(vec![make_tp(
+                VarId(0),
+                "name",
+                VarId(1),
+            )])),
+            patterns: vec![],
+            options: QueryOptions::default(),
+            graph_select: None,
+        };
 
         let deps = compute_where_deps(&query, &QueryOptions::default()).unwrap();
         assert!(deps.contains(&VarId(0)));

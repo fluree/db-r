@@ -28,6 +28,7 @@ use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Select mode determines result shape
@@ -79,6 +80,71 @@ impl ConstructTemplate {
     pub fn new(patterns: Vec<TriplePattern>) -> Self {
         Self { patterns }
     }
+
+    /// Collect all variables referenced in the template patterns.
+    pub fn variables(&self) -> HashSet<VarId> {
+        self.patterns.iter().flat_map(|tp| tp.variables()).collect()
+    }
+}
+
+/// Describes what the query produces.
+///
+/// Combines the select mode, selected variables, and construct template into a
+/// single enum so that invalid combinations (e.g. `Construct` without a
+/// template, or `Many` with an empty variable list) are unrepresentable.
+#[derive(Debug, Clone)]
+pub enum QueryOutput {
+    /// Normal SELECT with explicit variable list.
+    Select(Vec<VarId>),
+    /// selectOne — same as Select but formatters return first row or null.
+    SelectOne(Vec<VarId>),
+    /// SELECT * — all bound variables from WHERE.
+    Wildcard,
+    /// CONSTRUCT — template patterns instantiated with bindings.
+    Construct(ConstructTemplate),
+    /// ASK — boolean result.
+    Boolean,
+}
+
+impl QueryOutput {
+    /// Derive the legacy `SelectMode` for format code compatibility.
+    pub fn select_mode(&self) -> SelectMode {
+        match self {
+            QueryOutput::Select(_) => SelectMode::Many,
+            QueryOutput::SelectOne(_) => SelectMode::One,
+            QueryOutput::Wildcard => SelectMode::Wildcard,
+            QueryOutput::Construct(_) => SelectMode::Construct,
+            QueryOutput::Boolean => SelectMode::Boolean,
+        }
+    }
+
+    /// Get select vars for Select/SelectOne, `None` otherwise.
+    pub fn select_vars(&self) -> Option<&[VarId]> {
+        match self {
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => Some(vars),
+            _ => None,
+        }
+    }
+
+    /// Get the construct template for Construct, `None` otherwise.
+    pub fn construct_template(&self) -> Option<&ConstructTemplate> {
+        match self {
+            QueryOutput::Construct(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Variables the output depends on; `None` for Wildcard (all vars needed).
+    pub fn output_vars(&self) -> Option<HashSet<VarId>> {
+        match self {
+            QueryOutput::Wildcard => None,
+            QueryOutput::Boolean => Some(HashSet::new()),
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => {
+                Some(vars.iter().copied().collect())
+            }
+            QueryOutput::Construct(t) => Some(t.variables()),
+        }
+    }
 }
 
 /// Resolved query ready for execution
@@ -88,21 +154,12 @@ pub struct ParsedQuery {
     pub context: ParsedContext,
     /// Original JSON context from the query (for CONSTRUCT output)
     pub orig_context: Option<serde_json::Value>,
-    /// Selected variable IDs
-    pub select: Vec<VarId>,
+    /// Query output specification (replaces select, select_mode, construct_template)
+    pub output: QueryOutput,
     /// Resolved patterns (triples, filters, optionals, etc.)
     pub patterns: Vec<Pattern>,
     /// Query options (limit, offset, order by, group by, etc.)
     pub options: QueryOptions,
-    /// Select mode (from parsed query)
-    ///
-    /// Controls whether result is an array, single value, or JSON-LD graph.
-    pub select_mode: SelectMode,
-    /// CONSTRUCT template (None for SELECT queries)
-    ///
-    /// Contains the resolved template patterns that will be instantiated
-    /// with query bindings to produce output triples.
-    pub construct_template: Option<ConstructTemplate>,
     /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
     ///
     /// When present, controls nested JSON-LD object expansion during formatting.
@@ -110,30 +167,14 @@ pub struct ParsedQuery {
 }
 
 impl ParsedQuery {
-    /// Create a new parsed query
+    /// Create a new parsed query with default Wildcard output.
     pub fn new(context: ParsedContext) -> Self {
         Self {
             context,
             orig_context: None,
-            select: Vec::new(),
+            output: QueryOutput::Wildcard,
             patterns: Vec::new(),
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
-            graph_select: None,
-        }
-    }
-
-    /// Create a new parsed query with a specific select mode
-    pub fn with_select_mode(context: ParsedContext, select_mode: SelectMode) -> Self {
-        Self {
-            context,
-            orig_context: None,
-            select: Vec::new(),
-            patterns: Vec::new(),
-            options: QueryOptions::default(),
-            select_mode,
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -184,11 +225,9 @@ impl ParsedQuery {
         Self {
             context: self.context.clone(),
             orig_context: self.orig_context.clone(),
-            select: self.select.clone(),
+            output: self.output.clone(),
             patterns,
             options: self.options.clone(),
-            select_mode: self.select_mode,
-            construct_template: self.construct_template.clone(),
             graph_select: self.graph_select.clone(),
         }
     }
@@ -212,39 +251,56 @@ pub fn lower_query<E: IriEncoder>(
     vars: &mut VarRegistry,
     select_mode: SelectMode,
 ) -> Result<ParsedQuery> {
-    let mut query = ParsedQuery::with_select_mode(ast.context, select_mode);
     let mut pp_counter: u32 = 0;
 
-    // Copy original context JSON for CONSTRUCT output
-    query.orig_context = ast.orig_context;
-
     // Lower select variables
-    for var_name in &ast.select {
-        let var_id = vars.get_or_insert(var_name);
-        query.select.push(var_id);
-    }
+    let select_vars: Vec<VarId> = ast
+        .select
+        .iter()
+        .map(|name| vars.get_or_insert(name))
+        .collect();
 
     // Lower patterns
+    let mut patterns = Vec::new();
     for unresolved_pattern in ast.patterns {
-        let patterns =
+        let lowered =
             lower_unresolved_pattern(&unresolved_pattern, encoder, vars, &mut pp_counter)?;
-        query.patterns.extend(patterns);
+        patterns.extend(lowered);
     }
 
     // Lower options
-    query.options = lower_options(&ast.options, vars)?;
+    let options = lower_options(&ast.options, vars)?;
 
-    // Lower construct template if present
-    if let Some(ref template) = ast.construct_template {
-        query.construct_template = Some(lower_construct_template(template, encoder, vars)?);
-    }
+    // Build QueryOutput from mode + lowered components
+    let output = match select_mode {
+        SelectMode::Many => QueryOutput::Select(select_vars),
+        SelectMode::One => QueryOutput::SelectOne(select_vars),
+        SelectMode::Wildcard => QueryOutput::Wildcard,
+        SelectMode::Construct => {
+            let template = match ast.construct_template {
+                Some(ref t) => lower_construct_template(t, encoder, vars)?,
+                None => ConstructTemplate::new(Vec::new()),
+            };
+            QueryOutput::Construct(template)
+        }
+        SelectMode::Boolean => QueryOutput::Boolean,
+    };
 
     // Lower graph select if present
-    if let Some(ref graph_select) = ast.graph_select {
-        query.graph_select = Some(lower_graph_select(graph_select, encoder, vars)?);
-    }
+    let graph_select = ast
+        .graph_select
+        .as_ref()
+        .map(|gs| lower_graph_select(gs, encoder, vars))
+        .transpose()?;
 
-    Ok(query)
+    Ok(ParsedQuery {
+        context: ast.context,
+        orig_context: ast.orig_context,
+        output,
+        patterns,
+        options,
+        graph_select,
+    })
 }
 
 /// Lower an unresolved pattern to resolved Pattern(s).
@@ -1641,10 +1697,10 @@ mod tests {
 
         let query = lower_query(ast, &encoder, &mut vars, SelectMode::Many).unwrap();
 
-        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
         assert_eq!(vars.len(), 2);
-        assert_eq!(query.select_mode, SelectMode::Many);
+        assert_eq!(query.output.select_mode(), SelectMode::Many);
     }
 
     #[test]
