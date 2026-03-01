@@ -50,6 +50,23 @@ pub struct FilterPushdown {
     pub consumed_indices: Vec<usize>,
 }
 
+/// Augment required_where_vars with variables from suffix patterns.
+///
+/// When projection pushdown is active, each operator must keep variables
+/// that are either required by the post-WHERE pipeline (`required_where_vars`)
+/// or referenced by subsequent patterns (suffix). This union ensures that
+/// operators don't trim variables that later patterns need for correlation.
+fn augment_required_vars(
+    required_where_vars: Option<&[VarId]>,
+    suffix_patterns: &[Pattern],
+) -> Option<Vec<VarId>> {
+    required_where_vars.map(|rwv| {
+        let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+        combined.extend(suffix_patterns.iter().flat_map(|p| p.variables()));
+        combined.into_iter().collect()
+    })
+}
+
 /// A single VALUES pattern: its bound variables and constant rows.
 #[derive(Debug, Clone)]
 pub struct ValuesPattern {
@@ -526,18 +543,11 @@ fn build_sequential_join_block(
             live_var_context
                 .as_ref()
                 .map(|(base, all_filter_vars, all_bind_expr_vars)| {
-                    let suffix_vars: HashSet<VarId> = triples[k + 1..]
-                        .iter()
-                        .flat_map(|t| t.variables())
-                        .collect();
-                    base.iter()
-                        .chain(suffix_vars.iter())
-                        .chain(all_filter_vars.iter())
-                        .chain(all_bind_expr_vars.iter())
-                        .copied()
-                        .collect::<HashSet<VarId>>()
-                        .into_iter()
-                        .collect::<Vec<VarId>>()
+                    let mut live: HashSet<VarId> = base.clone();
+                    live.extend(triples[k + 1..].iter().flat_map(|t| t.variables()));
+                    live.extend(all_filter_vars);
+                    live.extend(all_bind_expr_vars);
+                    live.into_iter().collect::<Vec<VarId>>()
                 });
 
         let op = build_scan_or_join(
@@ -739,16 +749,7 @@ pub fn build_where_operators_seeded(
                 }
                 i = end;
 
-                // Augment required_where_vars with variables from subsequent
-                // patterns (OPTIONAL, UNION, MINUS, etc.) that reference vars
-                // produced by this block.
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> =
-                        patterns[end..].iter().flat_map(|p| p.variables()).collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[end..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Hot path: triples only (no BIND/FILTER).
@@ -829,16 +830,7 @@ pub fn build_where_operators_seeded(
                 // 2. General path: multi-pattern uses PlanTreeOptionalBuilder (full operator tree)
                 let child = require_child(operator, "OPTIONAL pattern")?;
 
-                // Augment required_where_vars with suffix pattern vars
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 if let Pattern::Optional(inner_patterns) = &patterns[i] {
@@ -882,16 +874,7 @@ pub fn build_where_operators_seeded(
                     ));
                 }
 
-                // Augment required_where_vars with suffix pattern vars
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Correlated UNION: execute each branch per input row (seeded from child).
@@ -929,15 +912,7 @@ pub fn build_where_operators_seeded(
             Pattern::PropertyPath(pp) => {
                 // Property path - transitive graph traversal
                 // Pass existing operator as child for correlation
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -950,15 +925,7 @@ pub fn build_where_operators_seeded(
             Pattern::Subquery(sq) => {
                 // Subquery - execute nested query and merge results
                 let child = require_child(operator, "SUBQUERY pattern")?;
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -972,15 +939,7 @@ pub fn build_where_operators_seeded(
                 // BM25 full-text search against a graph source
                 // If no child operator, use EmptyOperator as seed (allows IndexSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -993,15 +952,7 @@ pub fn build_where_operators_seeded(
                 // Vector similarity search against a vector graph source
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -1024,15 +975,7 @@ pub fn build_where_operators_seeded(
             Pattern::GeoSearch(gsp) => {
                 // Geographic proximity search against binary index
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -1045,15 +988,7 @@ pub fn build_where_operators_seeded(
             Pattern::S2Search(s2p) => {
                 // S2 spatial search against spatial index sidecar
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = required_where_vars.map(|rwv| {
-                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
-                        .iter()
-                        .flat_map(|p| p.variables())
-                        .collect();
-                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-                    combined.extend(suffix_vars);
-                    combined.into_iter().collect::<Vec<VarId>>()
-                });
+                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
