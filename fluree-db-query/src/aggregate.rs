@@ -90,6 +90,8 @@ pub struct AggregateOperator {
     group_size_col: Option<usize>,
     /// Number of columns from child schema (before extra additions)
     child_col_count: usize,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl AggregateOperator {
@@ -154,7 +156,7 @@ impl AggregateOperator {
             group_size_col = Some(0);
         }
 
-        let schema = Arc::from(output_vars.into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(output_vars.into_boxed_slice());
 
         Self {
             child,
@@ -165,14 +167,27 @@ impl AggregateOperator {
             extra_specs,
             group_size_col,
             child_col_count,
+            required_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
     }
 }
 
 #[async_trait]
 impl Operator for AggregateOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -284,7 +299,10 @@ impl Operator for AggregateOperator {
 
             let out = Batch::new(self.schema.clone(), output_columns)?;
             span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-            Ok(Some(out))
+            match &self.required_vars {
+                Some(vars) => Ok(out.retain(vars)),
+                None => Ok(Some(out)),
+            }
         }
         .instrument(span)
         .await

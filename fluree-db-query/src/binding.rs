@@ -1012,6 +1012,46 @@ impl Batch {
     pub fn rows(&self) -> impl Iterator<Item = RowView<'_>> {
         (0..self.len).map(move |row| RowView { batch: self, row })
     }
+
+    /// Retain only the specified variables, dropping all other columns.
+    ///
+    /// The output preserves the original schema order (i.e. columns that
+    /// appear earlier in `self.schema` will still appear earlier in the
+    /// result).  The order of `vars` does NOT affect the output order —
+    /// it is treated as a *set* of variables to keep.
+    ///
+    /// Returns `self` unchanged when `vars` is a superset of (or equal
+    /// to) the current schema.  Returns `None` if any variable in `vars`
+    /// is not present in the current schema.
+    pub fn retain(self, vars: &[VarId]) -> Option<Self> {
+        // Fast path: nothing to trim.
+        if vars.len() == self.schema.len() && vars.iter().all(|v| self.schema.contains(v)) {
+            return Some(self);
+        }
+
+        // Verify all requested vars exist in the schema.
+        if !vars.iter().all(|v| self.schema.contains(v)) {
+            return None;
+        }
+
+        // Walk the current schema in order, keeping only columns whose
+        // variable is in the retain set.  Moves columns instead of cloning
+        // since `self` is consumed.
+        let len = self.len;
+        let (new_schema, new_columns): (Vec<VarId>, Vec<Vec<Binding>>) = self
+            .schema
+            .iter()
+            .copied()
+            .zip(self.columns)
+            .filter(|(var, _)| vars.contains(var))
+            .unzip();
+
+        Some(Self {
+            len,
+            schema: Arc::from(new_schema.into_boxed_slice()),
+            columns: new_columns,
+        })
+    }
 }
 
 /// Zero-copy view of selected columns in a batch

@@ -10,39 +10,75 @@ use crate::parse::ParsedQuery;
 use crate::var_registry::VarId;
 use std::collections::HashSet;
 
-/// Compute the set of variables the query output depends on from WHERE.
+/// Per-operator required variable sets.
 ///
-/// Works backward from the query output (SELECT, CONSTRUCT, ORDER BY, etc.)
-/// through post-binds, HAVING, aggregates, and GROUP BY to determine which
-/// WHERE-produced variables are actually needed downstream.
+/// Each field holds the variables that the operator's output must contain
+/// for all downstream consumers to function correctly.  The sets are
+/// computed once (backward from SELECT) and consulted by each operator to
+/// trim dead columns from its output.
+#[derive(Debug)]
+pub struct VariableDeps {
+    // Kept for: WHERE operator trimming (not yet implemented).
+    // Use when: build_where_operators receives pipeline deps to trim its output.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub required_where_vars: Vec<VarId>,
+    pub required_groupby_vars: Vec<VarId>,
+    pub required_aggregate_vars: Vec<VarId>,
+    pub required_having_vars: Vec<VarId>,
+    pub required_bind_vars: Vec<Vec<VarId>>,
+    pub required_sort_vars: Vec<VarId>,
+}
+
+/// Compute per-operator downstream dependency sets.
 ///
-/// Returns `None` for `Wildcard` mode (all WHERE vars are needed).
-pub fn compute_where_deps(query: &ParsedQuery, options: &QueryOptions) -> Option<HashSet<VarId>> {
-    // Start with variables needed at the final output.
-    let mut deps: HashSet<VarId> = query.output.output_vars()?;
+/// Works backward from SELECT through ORDER BY, post-binds, HAVING,
+/// aggregates, and GROUP BY, recording the dependency set at each stage
+/// boundary.
+///
+/// Returns `None` when trimming is not applicable:
+/// - `Wildcard` / `Boolean` select mode (all WHERE vars are needed)
+/// - Empty select list (no explicit projection)
+/// - `Construct` without a template
+pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Option<VariableDeps> {
+    // ---- backward walk ----
+
+    // Seed deps from the query output requirements.
+    let mut deps: HashSet<VarId> = query.output.variables()?;
 
     // ORDER BY vars must survive to the sort operator.
     for spec in &options.order_by {
         deps.insert(spec.var);
     }
+    let required_sort_vars: Vec<VarId> = deps.iter().copied().collect();
 
-    // Post-binds (reverse order): if the output var is a dependency, trace its inputs.
-    // Reverse order is required so chained binds resolve correctly. E.g. given
-    // binds [?b = f(?a), ?c = g(?b)], processing ?c first adds ?b to the set,
-    // then processing ?b traces through to ?a. Forward order would miss the chain.
+    // Post-binds (reverse order): trace expression inputs.
+    // Record deps BEFORE processing each bind backward, since that
+    // represents what the bind's output must contain for downstream.
+    let mut required_bind_vars: Vec<Vec<VarId>> = Vec::with_capacity(options.post_binds.len());
     for (var, expr) in options.post_binds.iter().rev() {
+        // Record what this bind's output must contain.
+        required_bind_vars.push(deps.iter().copied().collect());
+        // Then trace backward through the bind expression.
         if deps.remove(var) {
             deps.extend(expr.variables());
         }
     }
+    // Reverse so indices match the forward (execution) order of post_binds.
+    required_bind_vars.reverse();
 
-    // HAVING: its expression variables are dependencies.
+    // Record what HAVING's output must contain (before tracing HAVING backward).
+    let required_having_vars: Vec<VarId> = deps.iter().copied().collect();
+
+    // HAVING expression variables: needed in HAVING's input but not
+    // necessarily in its output (HAVING evaluates before trimming).
     if let Some(ref having_expr) = options.having {
         deps.extend(having_expr.variables());
     }
 
-    // Aggregates: for each aggregate whose output is a dependency, replace the
-    // output with the input variable (the aggregate consumes grouped input).
+    // Record what Aggregate's output must contain (before tracing aggregates backward).
+    let required_aggregate_vars: Vec<VarId> = deps.iter().copied().collect();
+
+    // Aggregates: replace output vars with input vars.
     for spec in &options.aggregates {
         if deps.remove(&spec.output_var) {
             if let Some(input_var) = spec.input_var {
@@ -51,10 +87,23 @@ pub fn compute_where_deps(query: &ParsedQuery, options: &QueryOptions) -> Option
         }
     }
 
-    // GROUP BY: all group key variables must survive WHERE.
+    // Record what GROUP BY's output must contain (before tracing GROUP BY backward).
+    let required_groupby_vars: Vec<VarId> = deps.iter().copied().collect();
+
+    // GROUP BY keys must survive.
     deps.extend(options.group_by.iter().copied());
 
-    Some(deps)
+    // deps now contains the full set of WHERE-produced variables needed downstream.
+    let required_where_vars: Vec<VarId> = deps.iter().copied().collect();
+
+    Some(VariableDeps {
+        required_where_vars,
+        required_groupby_vars,
+        required_aggregate_vars,
+        required_having_vars,
+        required_bind_vars,
+        required_sort_vars,
+    })
 }
 
 #[cfg(test)]
@@ -96,30 +145,48 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_returns_none() {
+    fn none_for_wildcard() {
         let query = make_query(vec![], vec![], SelectMode::Wildcard);
-        let result = compute_where_deps(&query, &QueryOptions::default());
-        assert!(result.is_none());
+        assert!(compute_variable_deps(&query, &QueryOptions::default()).is_none());
     }
 
     #[test]
-    fn simple_select_returns_select_vars() {
+    fn none_for_boolean() {
+        let query = make_query(vec![], vec![], SelectMode::Boolean);
+        assert!(compute_variable_deps(&query, &QueryOptions::default()).is_none());
+    }
+
+    #[test]
+    fn none_for_construct_without_template() {
+        let query = make_query(vec![], vec![], SelectMode::Construct);
+        assert!(compute_variable_deps(&query, &QueryOptions::default()).is_none());
+    }
+
+    #[test]
+    fn none_for_empty_select() {
+        let query = make_query(vec![], vec![], SelectMode::Many);
+        assert!(compute_variable_deps(&query, &QueryOptions::default()).is_none());
+    }
+
+    #[test]
+    fn simple_select_where_vars() {
         let query = make_query(vec![VarId(1), VarId(2)], vec![], SelectMode::Many);
-        let deps = compute_where_deps(&query, &QueryOptions::default()).unwrap();
-        assert_eq!(deps, HashSet::from([VarId(1), VarId(2)]));
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        let where_set: HashSet<VarId> = deps.required_where_vars.into_iter().collect();
+        assert_eq!(where_set, HashSet::from([VarId(1), VarId(2)]));
     }
 
     #[test]
-    fn order_by_adds_vars() {
+    fn order_by_adds_where_vars() {
         let query = make_query(vec![VarId(1)], vec![], SelectMode::Many);
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(3))]);
-        let deps = compute_where_deps(&query, &options).unwrap();
-        assert!(deps.contains(&VarId(1)));
-        assert!(deps.contains(&VarId(3)));
+        let deps = compute_variable_deps(&query, &options).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert!(deps.required_where_vars.contains(&VarId(3)));
     }
 
     #[test]
-    fn aggregate_replaces_output_with_input() {
+    fn aggregate_replaces_output_with_input_in_where_vars() {
         // SELECT ?city (AVG(?age) AS ?avg) ... GROUP BY ?city
         let query = make_query(vec![VarId(2), VarId(3)], vec![], SelectMode::Many);
         let options = QueryOptions::new()
@@ -130,16 +197,16 @@ mod tests {
                 output_var: VarId(3),
             }]);
 
-        let deps = compute_where_deps(&query, &options).unwrap();
-        // ?city (group key) and ?age (aggregate input) are dependencies
-        assert!(deps.contains(&VarId(2)));
-        assert!(deps.contains(&VarId(1)));
-        // ?avg (aggregate output) is NOT a dependency at WHERE level
-        assert!(!deps.contains(&VarId(3)));
+        let deps = compute_variable_deps(&query, &options).unwrap();
+        // ?city (group key) and ?age (aggregate input) are WHERE dependencies
+        assert!(deps.required_where_vars.contains(&VarId(2)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        // ?avg (aggregate output) is NOT a WHERE dependency
+        assert!(!deps.required_where_vars.contains(&VarId(3)));
     }
 
     #[test]
-    fn post_bind_traces_dependencies() {
+    fn post_bind_traces_where_vars() {
         // SELECT ?x (CEIL(?avg) AS ?ceil)
         // post_bind: ?ceil = CEIL(?avg)
         let query = make_query(vec![VarId(0), VarId(2)], vec![], SelectMode::Many);
@@ -154,15 +221,15 @@ mod tests {
             ..Default::default()
         };
 
-        let deps = compute_where_deps(&query, &options).unwrap();
-        assert!(deps.contains(&VarId(0)));
-        // ?avg (input to post-bind) is a dependency, ?ceil is not (it's computed)
-        assert!(deps.contains(&VarId(1)));
-        assert!(!deps.contains(&VarId(2)));
+        let deps = compute_variable_deps(&query, &options).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        // ?avg (input to post-bind) is a WHERE dependency, ?ceil is not (it's computed)
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert!(!deps.required_where_vars.contains(&VarId(2)));
     }
 
     #[test]
-    fn having_adds_vars() {
+    fn having_adds_where_vars() {
         let query = make_query(vec![VarId(0)], vec![], SelectMode::Many);
         let options = QueryOptions::new()
             .with_group_by(vec![VarId(0)])
@@ -171,9 +238,9 @@ mod tests {
                 Expression::Const(FilterValue::Long(10)),
             ));
 
-        let deps = compute_where_deps(&query, &options).unwrap();
-        assert!(deps.contains(&VarId(0)));
-        assert!(deps.contains(&VarId(1)));
+        let deps = compute_variable_deps(&query, &options).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
     }
 
     #[test]
@@ -191,8 +258,130 @@ mod tests {
             graph_select: None,
         };
 
-        let deps = compute_where_deps(&query, &QueryOptions::default()).unwrap();
-        assert!(deps.contains(&VarId(0)));
-        assert!(deps.contains(&VarId(1)));
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+    }
+
+    // ---- per-operator pipeline deps tests ----
+
+    #[test]
+    fn variable_deps_with_order_by() {
+        // SELECT ?name WHERE { ... } ORDER BY ?age
+        let query = make_query(vec![VarId(0)], vec![], SelectMode::Many);
+        let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(1))]);
+
+        let deps = compute_variable_deps(&query, &options).unwrap();
+        // required_sort_vars needs both ?name and ?age
+        assert!(deps.required_sort_vars.contains(&VarId(0)));
+        assert!(deps.required_sort_vars.contains(&VarId(1)));
+        // required_where_vars same as sort (no post-WHERE ops between sort and WHERE)
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+    }
+
+    #[test]
+    fn variable_deps_with_group_by_and_aggregate() {
+        // SELECT ?city (AVG(?age) AS ?avg) WHERE { ... } GROUP BY ?city
+        let query = make_query(vec![VarId(0), VarId(2)], vec![], SelectMode::Many);
+        let options = QueryOptions::new()
+            .with_group_by(vec![VarId(0)])
+            .with_aggregates(vec![AggregateSpec {
+                function: AggregateFn::Avg,
+                input_var: Some(VarId(1)),
+                output_var: VarId(2),
+            }]);
+
+        let deps = compute_variable_deps(&query, &options).unwrap();
+
+        // required_aggregate_vars = what Aggregate's OUTPUT must contain = SELECT vars
+        assert!(deps.required_aggregate_vars.contains(&VarId(0)));
+        assert!(deps.required_aggregate_vars.contains(&VarId(2)));
+
+        // required_groupby_vars = what GROUP BY's OUTPUT must contain
+        // = after tracing aggregates backward: ?avg→?age, so {?city, ?age}
+        assert!(deps.required_groupby_vars.contains(&VarId(0)));
+        assert!(deps.required_groupby_vars.contains(&VarId(1)));
+        assert!(!deps.required_groupby_vars.contains(&VarId(2)));
+
+        // required_where_vars = groupby deps + GROUP BY keys = {?city, ?age}
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert!(!deps.required_where_vars.contains(&VarId(2)));
+    }
+
+    #[test]
+    fn variable_deps_with_post_bind() {
+        // SELECT ?x ?ceil WHERE { ... } BIND(CEIL(?avg) AS ?ceil) ORDER BY ?ceil
+        let query = make_query(vec![VarId(0), VarId(2)], vec![], SelectMode::Many);
+        let options = QueryOptions {
+            post_binds: vec![(
+                VarId(2),
+                Expression::Call {
+                    func: crate::ir::Function::Ceil,
+                    args: vec![Expression::Var(VarId(1))],
+                },
+            )],
+            order_by: vec![SortSpec::asc(VarId(2))],
+            ..Default::default()
+        };
+
+        let deps = compute_variable_deps(&query, &options).unwrap();
+
+        // required_sort_vars needs ?x and ?ceil
+        assert!(deps.required_sort_vars.contains(&VarId(0)));
+        assert!(deps.required_sort_vars.contains(&VarId(2)));
+
+        // required_bind_vars[0] represents what bind 0's OUTPUT must contain.
+        // That's the same as required_sort_vars since bind 0 is the only bind.
+        assert_eq!(deps.required_bind_vars.len(), 1);
+        assert!(deps.required_bind_vars[0].contains(&VarId(0)));
+        assert!(deps.required_bind_vars[0].contains(&VarId(2)));
+
+        // required_where_vars: bind traces ?ceil→?avg, so {?x, ?avg}
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert!(!deps.required_where_vars.contains(&VarId(2)));
+    }
+
+    #[test]
+    fn variable_deps_with_having() {
+        // SELECT ?city (COUNT(?p) AS ?cnt) WHERE { ... }
+        // GROUP BY ?city HAVING (?cnt > 5)
+        let query = make_query(vec![VarId(0), VarId(2)], vec![], SelectMode::Many);
+        let options = QueryOptions::new()
+            .with_group_by(vec![VarId(0)])
+            .with_aggregates(vec![AggregateSpec {
+                function: AggregateFn::Count,
+                input_var: Some(VarId(1)),
+                output_var: VarId(2),
+            }])
+            .with_having(Expression::gt(
+                Expression::Var(VarId(2)),
+                Expression::Const(FilterValue::Long(5)),
+            ));
+
+        let deps = compute_variable_deps(&query, &options).unwrap();
+
+        // required_having_vars = what HAVING's OUTPUT must contain = SELECT vars
+        // HAVING expression vars are NOT needed in output (only in input)
+        assert!(deps.required_having_vars.contains(&VarId(0)));
+        assert!(deps.required_having_vars.contains(&VarId(2)));
+
+        // required_aggregate_vars = what Aggregate's OUTPUT must contain
+        // = required_having_vars ∪ HAVING expr vars (HAVING needs them from its child)
+        assert!(deps.required_aggregate_vars.contains(&VarId(0)));
+        assert!(deps.required_aggregate_vars.contains(&VarId(2)));
+
+        // required_groupby_vars = what GROUP BY's OUTPUT must contain
+        // = after tracing aggregates backward: ?cnt→?p, so {?city, ?p}
+        assert!(deps.required_groupby_vars.contains(&VarId(0)));
+        assert!(deps.required_groupby_vars.contains(&VarId(1)));
+        assert!(!deps.required_groupby_vars.contains(&VarId(2)));
+
+        // required_where_vars = groupby deps + GROUP BY keys = {?city, ?p}
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert!(!deps.required_where_vars.contains(&VarId(2)));
     }
 }

@@ -47,6 +47,8 @@ pub struct BindOperator {
     is_new_var: bool,
     /// Operator state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl BindOperator {
@@ -70,7 +72,7 @@ impl BindOperator {
         // Check if var already exists in child schema
         let existing_pos = child_schema.iter().position(|&v| v == var);
 
-        let (schema, var_position, is_new_var) = match existing_pos {
+        let (schema, var_position, is_new_var): (Arc<[VarId]>, usize, bool) = match existing_pos {
             Some(pos) => {
                 // Variable exists - schema stays the same
                 (
@@ -97,14 +99,27 @@ impl BindOperator {
             var_position,
             is_new_var,
             state: OperatorState::Created,
+            required_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
     }
 }
 
 #[async_trait]
 impl Operator for BindOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -227,7 +242,11 @@ impl Operator for BindOperator {
                 continue;
             }
 
-            return Ok(Some(Batch::new(self.schema.clone(), output_columns)?));
+            let batch = Batch::new(self.schema.clone(), output_columns)?;
+            return match &self.required_vars {
+                Some(vars) => Ok(batch.retain(vars)),
+                None => Ok(Some(batch)),
+            };
         }
     }
 

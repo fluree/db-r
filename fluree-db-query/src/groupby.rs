@@ -55,6 +55,8 @@ pub struct GroupByOperator {
     emit_iter: Option<std::vec::IntoIter<GroupEntry>>,
     /// Indices of group key columns in the schema
     group_key_indices: Vec<usize>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl GroupByOperator {
@@ -89,7 +91,20 @@ impl GroupByOperator {
             groups: HashMap::new(),
             emit_iter: None,
             group_key_indices,
+            required_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
     }
 
     /// Extract group key from a row
@@ -144,7 +159,7 @@ impl GroupByOperator {
 #[async_trait]
 impl Operator for GroupByOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -278,7 +293,11 @@ impl Operator for GroupByOperator {
             return Ok(None);
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let batch = Batch::new(self.schema.clone(), output_columns)?;
+        match &self.required_vars {
+            Some(vars) => Ok(batch.retain(vars)),
+            None => Ok(Some(batch)),
+        }
     }
 
     fn close(&mut self) {

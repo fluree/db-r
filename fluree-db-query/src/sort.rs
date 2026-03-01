@@ -292,6 +292,8 @@ pub struct SortOperator {
     emit_idx: usize,
     /// Column indices for sort keys (resolved from schema)
     sort_col_indices: Vec<usize>,
+    /// Variables required by downstream operators; if set, emitted output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl SortOperator {
@@ -323,7 +325,20 @@ impl SortOperator {
             buffer: None,
             emit_idx: 0,
             sort_col_indices,
+            required_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
     }
 
     /// Get the sort specifications
@@ -350,7 +365,7 @@ impl SortOperator {
 #[async_trait]
 impl Operator for SortOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -488,7 +503,11 @@ impl Operator for SortOperator {
 
         self.emit_idx = end_idx;
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.schema.clone(), columns)?;
+        match &self.required_vars {
+            Some(vars) => Ok(batch.retain(vars)),
+            None => Ok(Some(batch)),
+        }
     }
 
     fn close(&mut self) {

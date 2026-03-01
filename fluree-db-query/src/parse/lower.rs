@@ -148,14 +148,21 @@ impl QueryOutput {
         matches!(self, Self::Construct(_))
     }
 
-    /// Variables the output depends on; `None` for Wildcard (all vars needed).
-    pub fn output_vars(&self) -> Option<HashSet<VarId>> {
+    /// Variables the output depends on.
+    ///
+    /// Returns `None` when dependency trimming is not applicable:
+    /// - `Wildcard`: all WHERE vars are needed
+    /// - `Boolean`: all WHERE vars needed for solvability checking
+    /// - Empty `Select`/`SelectOne`: no explicit projection
+    /// - `Construct` with no template patterns
+    pub fn variables(&self) -> Option<HashSet<VarId>> {
         match self {
-            QueryOutput::Wildcard => None,
-            QueryOutput::Boolean => Some(HashSet::new()),
+            QueryOutput::Wildcard | QueryOutput::Boolean => None,
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) if vars.is_empty() => None,
             QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => {
                 Some(vars.iter().copied().collect())
             }
+            QueryOutput::Construct(t) if t.patterns.is_empty() => None,
             QueryOutput::Construct(t) => Some(t.variables()),
         }
     }

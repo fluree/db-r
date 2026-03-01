@@ -468,6 +468,8 @@ pub struct GroupAggregateOperator {
     emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
     graph_view: Option<BinaryGraphView>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl GroupAggregateOperator {
@@ -504,7 +506,7 @@ impl GroupAggregateOperator {
             output_vars.push(spec.output_var);
         }
 
-        let schema = Arc::from(output_vars.into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(output_vars.into_boxed_slice());
 
         Self {
             child,
@@ -515,7 +517,20 @@ impl GroupAggregateOperator {
             groups: HashMap::new(),
             emit_iter: None,
             graph_view,
+            required_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
     }
 
     /// Check if all aggregates are streamable (for planner optimization decisions)
@@ -559,7 +574,7 @@ impl GroupAggregateOperator {
 #[async_trait]
 impl Operator for GroupAggregateOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -706,7 +721,11 @@ impl Operator for GroupAggregateOperator {
             return Ok(None);
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let batch = Batch::new(self.schema.clone(), output_columns)?;
+        match &self.required_vars {
+            Some(vars) => Ok(batch.retain(vars)),
+            None => Ok(Some(batch)),
+        }
     }
 
     fn close(&mut self) {

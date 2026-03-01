@@ -25,6 +25,7 @@ use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
 
+use super::dependency::compute_variable_deps;
 use super::where_plan::build_where_operators;
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -275,6 +276,9 @@ pub fn build_operator_tree(
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
 
+    // Compute per-operator downstream dependency sets for trimming.
+    let variable_deps = compute_variable_deps(query, options);
+
     // GROUP BY + Aggregates
     // We use streaming GroupAggregateOperator when all aggregates are streamable
     // (COUNT, SUM, AVG, MIN, MAX). This is O(groups) memory instead of O(rows).
@@ -370,35 +374,66 @@ pub fn build_operator_tree(
                 agg_count = streaming_specs.len(),
                 "using streaming GroupAggregateOperator"
             );
-            operator = Box::new(GroupAggregateOperator::new(
-                operator,
-                options.group_by.clone(),
-                streaming_specs,
-                None, // graph_view - will be set from context if needed
-            ));
+            // GroupAggregateOperator replaces both GroupBy and Aggregate,
+            // so use required_aggregate_vars (what the combined output must contain).
+            operator = Box::new(
+                GroupAggregateOperator::new(
+                    operator,
+                    options.group_by.clone(),
+                    streaming_specs,
+                    None, // graph_view - will be set from context if needed
+                )
+                .with_required_vars(
+                    variable_deps
+                        .as_ref()
+                        .map(|d| d.required_aggregate_vars.as_slice()),
+                ),
+            );
         } else {
             // Traditional path: GroupByOperator + AggregateOperator
-            operator = Box::new(GroupByOperator::new(operator, options.group_by.clone()));
+            operator = Box::new(
+                GroupByOperator::new(operator, options.group_by.clone()).with_required_vars(
+                    variable_deps
+                        .as_ref()
+                        .map(|d| d.required_groupby_vars.as_slice()),
+                ),
+            );
             if !options.aggregates.is_empty() {
-                operator = Box::new(AggregateOperator::new(operator, options.aggregates.clone()));
+                operator = Box::new(
+                    AggregateOperator::new(operator, options.aggregates.clone())
+                        .with_required_vars(
+                            variable_deps
+                                .as_ref()
+                                .map(|d| d.required_aggregate_vars.as_slice()),
+                        ),
+                );
             }
         }
     }
 
     // HAVING (filter on aggregated results)
     if let Some(ref having_expr) = options.having {
-        operator = Box::new(HavingOperator::new(operator, having_expr.clone()));
+        operator = Box::new(
+            HavingOperator::new(operator, having_expr.clone()).with_required_vars(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_having_vars.as_slice()),
+            ),
+        );
     }
 
     // Post-aggregation BINDs (e.g., SELECT (CEIL(?avg) AS ?ceil))
     if !options.post_binds.is_empty() {
-        for (var, expr) in &options.post_binds {
-            operator = Box::new(crate::bind::BindOperator::new(
-                operator,
-                *var,
-                expr.clone(),
-                vec![],
-            ));
+        for (i, (var, expr)) in options.post_binds.iter().enumerate() {
+            operator = Box::new(
+                crate::bind::BindOperator::new(operator, *var, expr.clone(), vec![])
+                    .with_required_vars(
+                        variable_deps
+                            .as_ref()
+                            .and_then(|d| d.required_bind_vars.get(i))
+                            .map(|v| v.as_slice()),
+                    ),
+            );
         }
     }
 
@@ -438,7 +473,13 @@ pub fn build_operator_tree(
                 }
             }
         }
-        operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        operator = Box::new(
+            SortOperator::new(operator, options.order_by.clone()).with_required_vars(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_sort_vars.as_slice()),
+            ),
+        );
     }
 
     // PROJECT (select specific columns)
