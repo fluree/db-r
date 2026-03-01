@@ -56,7 +56,7 @@ impl std::fmt::Debug for QueryResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryResult")
             .field("t", &self.t)
-            .field("select_mode", &self.output.select_mode())
+            .field("output", &self.output)
             .field("select_len", &self.output.select_vars_or_empty().len())
             .field("batches_len", &self.batches.len())
             .field("has_binary_graph", &self.binary_graph.is_some())

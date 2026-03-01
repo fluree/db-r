@@ -24,7 +24,6 @@ use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
-use fluree_db_query::SelectMode;
 use fluree_db_query::VarRegistry;
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -34,12 +33,10 @@ pub fn format(
     compactor: &IriCompactor,
     _config: &FormatterConfig,
 ) -> Result<JsonValue> {
-    let select_mode = result.output.select_mode();
-
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
-    let head_vars: Vec<fluree_db_query::VarId> = match select_mode {
-        SelectMode::Wildcard => result
+    let head_vars: Vec<fluree_db_query::VarId> = if result.output.is_wildcard() {
+        result
             .batches
             .first()
             .map(|b| {
@@ -50,8 +47,9 @@ pub fn format(
                     .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
                     .collect()
             })
-            .unwrap_or_default(),
-        _ => result.output.select_vars_or_empty().to_vec(),
+            .unwrap_or_default()
+    } else {
+        result.output.select_vars_or_empty().to_vec()
     };
 
     // Clojure parity: order head vars lexicographically by variable name (without '?').
@@ -65,6 +63,7 @@ pub fn format(
     let vars: Vec<String> = head_pairs.iter().map(|(name, _)| name.clone()).collect();
     let head_vars: Vec<fluree_db_query::VarId> = head_pairs.into_iter().map(|(_, id)| id).collect();
 
+    let select_one = result.output.is_select_one();
     let mut bindings = Vec::new();
 
     for batch in &result.batches {
@@ -80,7 +79,7 @@ pub fn format(
 
             // Disaggregate grouped bindings (cartesian product)
             let disaggregated = disaggregate_row(result, &row_bindings, &result.vars, compactor)?;
-            if select_mode == SelectMode::One {
+            if select_one {
                 // SelectOne: only return a single formatted row (after disaggregation)
                 if let Some(first) = disaggregated.into_iter().next() {
                     bindings.push(first);
@@ -89,13 +88,8 @@ pub fn format(
             } else {
                 bindings.extend(disaggregated);
             }
-
-            // For SelectOne, stop after first row
-            if select_mode == SelectMode::One && !bindings.is_empty() {
-                break;
-            }
         }
-        if select_mode == SelectMode::One && !bindings.is_empty() {
+        if select_one && !bindings.is_empty() {
             break;
         }
     }

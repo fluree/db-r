@@ -56,7 +56,6 @@ pub use iri::IriCompactor;
 use crate::QueryResult;
 use fluree_db_core::LedgerSnapshot;
 use fluree_db_core::{FuelExceededError, GraphDbRef, Tracker};
-use fluree_db_query::SelectMode;
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Value as JsonValue};
 
@@ -186,7 +185,7 @@ pub fn format_results_string(
 /// If this is an ASK/Boolean query, produce the result directly.
 /// Returns `None` for non-Boolean queries (caller continues to normal dispatch).
 fn format_boolean(result: &QueryResult, config: &FormatterConfig) -> Option<Result<JsonValue>> {
-    if result.output.select_mode() != SelectMode::Boolean {
+    if !result.output.is_boolean() {
         return None;
     }
     let has_solution = result.batches.iter().any(|b| !b.is_empty());
@@ -277,12 +276,13 @@ pub async fn format_results_async(
             .await?;
         // Graph crawl formatter returns an array of rows; honor selectOne by
         // returning the first row (or null if empty).
-        return match result.output.select_mode() {
-            SelectMode::One => match v {
+        return if result.output.is_select_one() {
+            match v {
                 JsonValue::Array(mut rows) => Ok(rows.drain(..).next().unwrap_or(JsonValue::Null)),
                 other => Ok(other),
-            },
-            _ => Ok(v),
+            }
+        } else {
+            Ok(v)
         };
     }
 
