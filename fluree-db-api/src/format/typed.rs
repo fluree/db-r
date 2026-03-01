@@ -15,25 +15,27 @@
 //! - Language-tagged strings use `{"@value": ..., "@language": "..."}`
 //! - IRIs are compacted using @context
 
-use super::config::{FormatterConfig, SelectMode};
+use super::config::FormatterConfig;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
+use fluree_db_query::SelectMode;
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Format query results in TypedJson format
 pub fn format(
     result: &QueryResult,
     compactor: &IriCompactor,
-    config: &FormatterConfig,
+    _config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let select_mode = result.output.select_mode();
     let mut rows = Vec::new();
 
     for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            let row = match config.select_mode {
+            let row = match select_mode {
                 SelectMode::Wildcard => {
                     // Wildcard: use batch schema, return all bound vars as object
                     format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
@@ -50,17 +52,17 @@ pub fn format(
             rows.push(row);
 
             // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One {
+            if select_mode == SelectMode::One {
                 break;
             }
         }
-        if config.select_mode == SelectMode::One && !rows.is_empty() {
+        if select_mode == SelectMode::One && !rows.is_empty() {
             break;
         }
     }
 
     // Return based on select mode
-    match config.select_mode {
+    match select_mode {
         SelectMode::One => Ok(rows.into_iter().next().unwrap_or(JsonValue::Null)),
         _ => Ok(JsonValue::Array(rows)),
     }

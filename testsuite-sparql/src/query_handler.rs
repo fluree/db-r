@@ -146,7 +146,7 @@ pub async fn run_eval_test(
     } else {
         // SELECT/ASK path: format as SPARQL JSON
         let empty_context = ParsedContext::new();
-        let config = FormatterConfig::sparql_json().with_select_mode(query_result.output.select_mode());
+        let config = FormatterConfig::sparql_json();
         let actual_json =
             format::format_results(&query_result, &empty_context, &ledger.snapshot, &config)
                 .map_err(|e| anyhow::anyhow!("Formatting SPARQL JSON: {e}"))?;

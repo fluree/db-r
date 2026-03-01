@@ -17,13 +17,14 @@
 //! - Omit datatype for inferable types (xsd:string, xsd:integer, xsd:double, xsd:boolean)
 //! - Disaggregation: `Binding::Grouped` explodes into multiple rows (cartesian product)
 
-use super::config::{FormatterConfig, SelectMode};
+use super::config::FormatterConfig;
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
+use fluree_db_query::SelectMode;
 use fluree_db_query::VarRegistry;
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -31,11 +32,13 @@ use serde_json::{json, Map, Value as JsonValue};
 pub fn format(
     result: &QueryResult,
     compactor: &IriCompactor,
-    config: &FormatterConfig,
+    _config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let select_mode = result.output.select_mode();
+
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
-    let head_vars: Vec<fluree_db_query::VarId> = match config.select_mode {
+    let head_vars: Vec<fluree_db_query::VarId> = match select_mode {
         SelectMode::Wildcard => result
             .batches
             .first()
@@ -77,7 +80,7 @@ pub fn format(
 
             // Disaggregate grouped bindings (cartesian product)
             let disaggregated = disaggregate_row(result, &row_bindings, &result.vars, compactor)?;
-            if config.select_mode == SelectMode::One {
+            if select_mode == SelectMode::One {
                 // SelectOne: only return a single formatted row (after disaggregation)
                 if let Some(first) = disaggregated.into_iter().next() {
                     bindings.push(first);
@@ -88,11 +91,11 @@ pub fn format(
             }
 
             // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One && !bindings.is_empty() {
+            if select_mode == SelectMode::One && !bindings.is_empty() {
                 break;
             }
         }
-        if config.select_mode == SelectMode::One && !bindings.is_empty() {
+        if select_mode == SelectMode::One && !bindings.is_empty() {
             break;
         }
     }

@@ -266,13 +266,12 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
-        let config = format_config.with_select_mode(result.output.select_mode());
         match self.view.policy() {
             Some(policy) => Ok(result
-                .format_async_with_policy(self.view.as_graph_db_ref(), &config, policy)
+                .format_async_with_policy(self.view.as_graph_db_ref(), &format_config, policy)
                 .await?),
             None => Ok(result
-                .format_async(self.view.as_graph_db_ref(), &config)
+                .format_async(self.view.as_graph_db_ref(), &format_config)
                 .await?),
         }
     }
@@ -295,12 +294,11 @@ where
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
-        let config = format_config.with_select_mode(result.output.select_mode());
         crate::format::format_results_string_async(
             &result,
             &result.context,
             self.view.as_graph_db_ref(),
-            &config,
+            &format_config,
             self.view.policy(),
         )
         .await
@@ -453,13 +451,12 @@ where
 
         // Use primary view's db for formatting
         if let Some(primary) = self.dataset.primary() {
-            let config = format_config.with_select_mode(result.output.select_mode());
             match primary.policy() {
                 Some(policy) => Ok(result
-                    .format_async_with_policy(primary.as_graph_db_ref(), &config, policy)
+                    .format_async_with_policy(primary.as_graph_db_ref(), &format_config, policy)
                     .await?),
                 None => Ok(result
-                    .format_async(primary.as_graph_db_ref(), &config)
+                    .format_async(primary.as_graph_db_ref(), &format_config)
                     .await?),
             }
         } else {
@@ -487,12 +484,11 @@ where
         let result = self.fluree.query_dataset_view(self.dataset, input).await?;
 
         if let Some(primary) = self.dataset.primary() {
-            let config = format_config.with_select_mode(result.output.select_mode());
             crate::format::format_results_string_async(
                 &result,
                 &result.context,
                 primary.as_graph_db_ref(),
-                &config,
+                &format_config,
                 primary.policy(),
             )
             .await
@@ -686,8 +682,9 @@ where
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.output.select_mode());
-                    Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
+                    Ok(result
+                        .format_async(view.as_graph_db_ref(), &format_config)
+                        .await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
                 }
@@ -705,8 +702,9 @@ where
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.output.select_mode());
-                    Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
+                    Ok(result
+                        .format_async(view.as_graph_db_ref(), &format_config)
+                        .await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
                 }
@@ -744,12 +742,11 @@ where
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.output.select_mode());
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,
                         view.as_graph_db_ref(),
-                        &config,
+                        &format_config,
                         None,
                     )
                     .await
@@ -771,12 +768,11 @@ where
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
-                    let config = format_config.with_select_mode(result.output.select_mode());
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,
                         view.as_graph_db_ref(),
-                        &config,
+                        &format_config,
                         None,
                     )
                     .await
