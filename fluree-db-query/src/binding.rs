@@ -1024,11 +1024,6 @@ impl Batch {
     /// to) the current schema.  Returns `None` if any variable in `vars`
     /// is not present in the current schema.
     pub fn retain(self, vars: &[VarId]) -> Option<Self> {
-        // Fast path: nothing to trim.
-        if vars.len() == self.schema.len() && vars.iter().all(|v| self.schema.contains(v)) {
-            return Some(self);
-        }
-
         // Verify all requested vars exist in the schema.
         if !vars.iter().all(|v| self.schema.contains(v)) {
             tracing::debug!(
@@ -1037,6 +1032,11 @@ impl Batch {
                 "Batch::retain: requested variables not present in schema"
             );
             return None;
+        }
+
+        // Fast path: nothing to trim.
+        if vars.len() == self.schema.len() {
+            return Some(self);
         }
 
         // Walk the current schema in order, keeping only columns whose
