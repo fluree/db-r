@@ -505,19 +505,10 @@ fn build_sequential_join_block(
     let mut pending_binds = pending_binds;
     let mut pending_filters = pending_filters;
 
-    // Precompute sets for live variable analysis when projection pushdown is active.
-    let live_var_context = required_where_vars.map(|rwv| {
-        let base: HashSet<VarId> = rwv.iter().copied().collect();
-        let all_filter_vars: HashSet<VarId> = pending_filters
-            .iter()
-            .flat_map(|f| f.expr.variables())
-            .collect();
-        let all_bind_expr_vars: HashSet<VarId> = pending_binds
-            .iter()
-            .flat_map(|b| b.expr.variables())
-            .collect();
-        (base, all_filter_vars, all_bind_expr_vars)
-    });
+    // Base required vars from the post-WHERE pipeline (SELECT, ORDER BY, etc.).
+    // Computed once; filter/bind vars are added per-step using only remaining items.
+    let base_vars: Option<HashSet<VarId>> =
+        required_where_vars.map(|rwv| rwv.iter().copied().collect());
 
     for (k, tp) in triples.iter().enumerate() {
         let mut vars_after: HashSet<VarId> = bound.clone();
@@ -537,18 +528,16 @@ fn build_sequential_join_block(
         pending_binds = remaining_binds;
         pending_filters = remaining_filters;
 
-        // Compute live vars for this join step: vars needed by downstream joins,
-        // filters, binds, and the post-WHERE pipeline.
-        let live_vars =
-            live_var_context
-                .as_ref()
-                .map(|(base, all_filter_vars, all_bind_expr_vars)| {
-                    let mut live: HashSet<VarId> = base.clone();
-                    live.extend(triples[k + 1..].iter().flat_map(|t| t.variables()));
-                    live.extend(all_filter_vars);
-                    live.extend(all_bind_expr_vars);
-                    live.into_iter().collect::<Vec<VarId>>()
-                });
+        // Compute live vars using only REMAINING filters and binds (after inline
+        // consumption). Inline-consumed and previously deferred/fused items no
+        // longer contribute to liveness.
+        let live_vars = base_vars.as_ref().map(|base| {
+            let mut live: HashSet<VarId> = base.clone();
+            live.extend(triples[k + 1..].iter().flat_map(|t| t.variables()));
+            live.extend(pending_filters.iter().flat_map(|f| f.expr.variables()));
+            live.extend(pending_binds.iter().flat_map(|b| b.expr.variables()));
+            live.into_iter().collect::<Vec<VarId>>()
+        });
 
         let op = build_scan_or_join(
             operator,
