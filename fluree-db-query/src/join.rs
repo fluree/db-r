@@ -9,7 +9,9 @@ use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
-use crate::operator::{Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, Operator, OperatorState,
+};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -343,22 +345,8 @@ impl NestedLoopJoinOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.combined_schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.combined_schema, required_vars);
         self
-    }
-
-    /// Apply output trimming to a batch if required_vars is set.
-    fn trim_output(&self, batch: Batch) -> Option<Batch> {
-        match &self.required_vars {
-            Some(vars) => batch.retain(vars),
-            None => Some(batch),
-        }
     }
 
     /// Check if any binding used in bind instructions is Poisoned
@@ -567,9 +555,7 @@ impl NestedLoopJoinOperator {
 #[async_trait]
 impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars
-            .as_deref()
-            .unwrap_or(&self.combined_schema)
+        effective_schema(&self.required_vars, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -616,13 +602,13 @@ impl Operator for NestedLoopJoinOperator {
         loop {
             // 1. Pre-built output from batched flush
             if let Some(batch) = self.batched_output.pop_front() {
-                return Ok(self.trim_output(batch));
+                return Ok(trim_batch(&self.required_vars, batch));
             }
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
                 if let Some(batch) = self.build_output_batch(ctx).await? {
-                    return Ok(self.trim_output(batch));
+                    return Ok(trim_batch(&self.required_vars, batch));
                 }
                 // All pending rows were filtered out — continue to process more left rows
                 continue;

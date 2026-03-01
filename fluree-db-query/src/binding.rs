@@ -1031,6 +1031,11 @@ impl Batch {
 
         // Verify all requested vars exist in the schema.
         if !vars.iter().all(|v| self.schema.contains(v)) {
+            tracing::debug!(
+                requested = ?vars,
+                schema = ?self.schema.as_ref(),
+                "Batch::retain: requested variables not present in schema"
+            );
             return None;
         }
 

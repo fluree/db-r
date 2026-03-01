@@ -36,7 +36,14 @@ pub struct VariableDeps {
 /// - `Wildcard` / `Boolean` select mode (all WHERE vars are needed)
 /// - Empty select list (no explicit projection)
 /// - `Construct` without a template
+/// - Graph crawl select (needs all bindings for nested expansion)
 pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Option<VariableDeps> {
+    // Graph crawl expansion may reference any bound variable during nested
+    // object construction, so trimming is unsafe.
+    if query.graph_select.is_some() {
+        return None;
+    }
+
     // ---- backward walk ----
 
     // Seed deps from the query output requirements.

@@ -16,7 +16,9 @@ use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{GeoSearchCenter, GeoSearchPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -102,27 +104,13 @@ impl GeoSearchOperator {
 
     /// Get the output schema
     pub fn schema(&self) -> &[VarId] {
-        self.required_vars.as_deref().unwrap_or(&self.schema)
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
         self
-    }
-
-    /// Apply output trimming to a batch if required_vars is set.
-    fn trim_output(&self, batch: Batch) -> Option<Batch> {
-        match &self.required_vars {
-            Some(vars) => batch.retain(vars),
-            None => Some(batch),
-        }
     }
 
     /// Resolve center point coordinates from pattern (constant or variable binding).
@@ -457,7 +445,7 @@ impl Operator for GeoSearchOperator {
         }
 
         let batch = Batch::new(self.schema.clone(), columns)?;
-        Ok(self.trim_output(batch))
+        Ok(trim_batch(&self.required_vars, batch))
     }
 
     fn close(&mut self) {

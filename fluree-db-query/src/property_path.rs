@@ -31,7 +31,9 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -132,22 +134,8 @@ impl PropertyPathOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
         self
-    }
-
-    /// Apply output trimming to a batch if required_vars is set.
-    fn trim_output(&self, batch: Batch) -> Option<Batch> {
-        match &self.required_vars {
-            Some(vars) => batch.retain(vars),
-            None => Some(batch),
-        }
     }
 
     /// Traverse forward from a starting node (subject bound)
@@ -585,7 +573,7 @@ impl PropertyPathOperator {
 #[async_trait]
 impl Operator for PropertyPathOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars.as_deref().unwrap_or(&self.schema)
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -657,7 +645,7 @@ impl Operator for PropertyPathOperator {
             }
 
             let batch = Batch::new(self.schema.clone(), columns)?;
-            return Ok(self.trim_output(batch));
+            return Ok(trim_batch(&self.required_vars, batch));
         }
 
         // Correlated mode: process child rows
@@ -716,7 +704,7 @@ impl Operator for PropertyPathOperator {
                 }
 
                 let batch = Batch::new(self.schema.clone(), columns)?;
-                return Ok(self.trim_output(batch));
+                return Ok(trim_batch(&self.required_vars, batch));
             }
 
             // No rows from this batch, try next

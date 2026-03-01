@@ -18,7 +18,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid};
@@ -173,13 +175,7 @@ impl AggregateOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
         self
     }
 }
@@ -187,7 +183,7 @@ impl AggregateOperator {
 #[async_trait]
 impl Operator for AggregateOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars.as_deref().unwrap_or(&self.schema)
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -299,10 +295,7 @@ impl Operator for AggregateOperator {
 
             let out = Batch::new(self.schema.clone(), output_columns)?;
             span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-            match &self.required_vars {
-                Some(vars) => Ok(out.retain(vars)),
-                None => Ok(Some(out)),
-            }
+            Ok(trim_batch(&self.required_vars, out))
         }
         .instrument(span)
         .await

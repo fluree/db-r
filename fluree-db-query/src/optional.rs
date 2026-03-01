@@ -29,7 +29,9 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Pattern;
 use crate::join::{BindInstruction, PatternPosition, UnifyInstruction};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::seed::SeedOperator;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -549,22 +551,8 @@ impl OptionalOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.combined_schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.combined_schema, required_vars);
         self
-    }
-
-    /// Apply output trimming to a batch if required_vars is set.
-    fn trim_output(&self, batch: Batch) -> Option<Batch> {
-        match &self.required_vars {
-            Some(vars) => batch.retain(vars),
-            None => Some(batch),
-        }
     }
 
     /// Create a new left-join operator for a single triple pattern
@@ -674,9 +662,7 @@ impl OptionalOperator {
 #[async_trait]
 impl Operator for OptionalOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars
-            .as_deref()
-            .unwrap_or(&self.combined_schema)
+        effective_schema(&self.required_vars, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -902,7 +888,7 @@ impl Operator for OptionalOperator {
         }
 
         let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(self.trim_output(batch))
+        Ok(trim_batch(&self.required_vars, batch))
     }
 
     fn close(&mut self) {

@@ -50,21 +50,37 @@ pub struct FilterPushdown {
     pub consumed_indices: Vec<usize>,
 }
 
-/// Augment required_where_vars with variables from suffix patterns.
+/// Augment required_where_vars with a precomputed suffix variable set.
 ///
 /// When projection pushdown is active, each operator must keep variables
 /// that are either required by the post-WHERE pipeline (`required_where_vars`)
 /// or referenced by subsequent patterns (suffix). This union ensures that
 /// operators don't trim variables that later patterns need for correlation.
-fn augment_required_vars(
+fn augment_with_suffix(
     required_where_vars: Option<&[VarId]>,
-    suffix_patterns: &[Pattern],
+    suffix_vars: &HashSet<VarId>,
 ) -> Option<Vec<VarId>> {
     required_where_vars.map(|rwv| {
         let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
-        combined.extend(suffix_patterns.iter().flat_map(|p| p.variables()));
+        combined.extend(suffix_vars);
         combined.into_iter().collect()
     })
+}
+
+/// Precompute cumulative suffix variable sets for each pattern position.
+///
+/// `suffix_vars[j]` = union of all variables from `patterns[j..]`.
+/// `suffix_vars[patterns.len()]` = empty (no suffix).
+///
+/// Only computed when `required_where_vars` is `Some` (projection pushdown active).
+fn precompute_suffix_vars(patterns: &[Pattern]) -> Vec<HashSet<VarId>> {
+    let n = patterns.len();
+    let mut sets = vec![HashSet::new(); n + 1];
+    for j in (0..n).rev() {
+        sets[j] = sets[j + 1].clone();
+        sets[j].extend(patterns[j].variables());
+    }
+    sets
 }
 
 /// A single VALUES pattern: its bound variables and constant rows.
@@ -720,6 +736,19 @@ pub fn build_where_operators_seeded(
         None
     };
 
+    // Precompute suffix variable sets for O(1) augmentation at each pattern.
+    let empty_suffix = HashSet::new();
+    let suffix_vars_storage;
+    let suffix_vars: &[HashSet<VarId>] = if required_where_vars.is_some() {
+        suffix_vars_storage = precompute_suffix_vars(patterns);
+        &suffix_vars_storage
+    } else {
+        suffix_vars_storage = Vec::new();
+        &suffix_vars_storage
+    };
+    // Helper: look up precomputed suffix vars for position j (empty if trimming is off).
+    let suffix_at = |j: usize| -> &HashSet<VarId> { suffix_vars.get(j).unwrap_or(&empty_suffix) };
+
     let mut i = 0;
     while i < patterns.len() {
         match &patterns[i] {
@@ -738,7 +767,7 @@ pub fn build_where_operators_seeded(
                 }
                 i = end;
 
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[end..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(end));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Hot path: triples only (no BIND/FILTER).
@@ -819,7 +848,7 @@ pub fn build_where_operators_seeded(
                 // 2. General path: multi-pattern uses PlanTreeOptionalBuilder (full operator tree)
                 let child = require_child(operator, "OPTIONAL pattern")?;
 
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 if let Pattern::Optional(inner_patterns) = &patterns[i] {
@@ -863,7 +892,7 @@ pub fn build_where_operators_seeded(
                     ));
                 }
 
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Correlated UNION: execute each branch per input row (seeded from child).
@@ -901,7 +930,7 @@ pub fn build_where_operators_seeded(
             Pattern::PropertyPath(pp) => {
                 // Property path - transitive graph traversal
                 // Pass existing operator as child for correlation
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -914,7 +943,7 @@ pub fn build_where_operators_seeded(
             Pattern::Subquery(sq) => {
                 // Subquery - execute nested query and merge results
                 let child = require_child(operator, "SUBQUERY pattern")?;
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -928,7 +957,7 @@ pub fn build_where_operators_seeded(
                 // BM25 full-text search against a graph source
                 // If no child operator, use EmptyOperator as seed (allows IndexSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -941,7 +970,7 @@ pub fn build_where_operators_seeded(
                 // Vector similarity search against a vector graph source
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -964,7 +993,7 @@ pub fn build_where_operators_seeded(
             Pattern::GeoSearch(gsp) => {
                 // Geographic proximity search against binary index
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -977,7 +1006,7 @@ pub fn build_where_operators_seeded(
             Pattern::S2Search(s2p) => {
                 // S2 spatial search against spatial index sidecar
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_required_vars(required_where_vars, &patterns[i + 1..]);
+                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(

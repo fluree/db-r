@@ -13,7 +13,7 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::execute::build_where_operators_seeded;
 use crate::ir::Pattern;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{compute_trimmed_vars, BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -90,13 +90,7 @@ impl UnionOperator {
     /// avoiding unnecessary Unbound padding in `normalize_batch` and carrying
     /// fewer columns through the rest of the pipeline.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        if let Some(dv) = required_vars {
-            let trimmed: Vec<VarId> = self
-                .unified_schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect();
+        if let Some(trimmed) = compute_trimmed_vars(&self.unified_schema, required_vars) {
             self.effective_schema = Arc::from(trimmed.into_boxed_slice());
         }
         self

@@ -23,7 +23,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::filter::filter_batch;
 use crate::ir::Expression;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -65,13 +67,7 @@ impl HavingOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
         self
     }
 }
@@ -79,7 +75,7 @@ impl HavingOperator {
 #[async_trait]
 impl Operator for HavingOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars.as_deref().unwrap_or(&self.schema)
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -107,10 +103,7 @@ impl Operator for HavingOperator {
             }
 
             if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
-                return match &self.required_vars {
-                    Some(vars) => Ok(filtered.retain(vars)),
-                    None => Ok(Some(filtered)),
-                };
+                return Ok(trim_batch(&self.required_vars, filtered));
             }
         }
     }

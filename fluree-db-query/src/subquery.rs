@@ -31,7 +31,9 @@ use crate::having::HavingOperator;
 use crate::ir::SubqueryPattern;
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::project::ProjectOperator;
 use crate::seed::{EmptyOperator, SeedOperator};
 use crate::sort::SortOperator;
@@ -130,29 +132,15 @@ impl SubqueryOperator {
 
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = required_vars.map(|dv| {
-            self.schema
-                .iter()
-                .filter(|v| dv.contains(v))
-                .copied()
-                .collect()
-        });
+        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
         self
-    }
-
-    /// Apply output trimming to a batch if required_vars is set.
-    fn trim_output(&self, batch: Batch) -> Option<Batch> {
-        match &self.required_vars {
-            Some(vars) => batch.retain(vars),
-            None => Some(batch),
-        }
     }
 }
 
 #[async_trait]
 impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
-        self.required_vars.as_deref().unwrap_or(&self.schema)
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -279,7 +267,7 @@ impl SubqueryOperator {
             Ok(None)
         } else {
             let batch = Batch::new(self.schema.clone(), columns)?;
-            Ok(self.trim_output(batch))
+            Ok(trim_batch(&self.required_vars, batch))
         }
     }
 

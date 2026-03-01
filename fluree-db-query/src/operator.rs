@@ -92,3 +92,41 @@ impl OperatorState {
         matches!(self, OperatorState::Closed)
     }
 }
+
+// ============================================================================
+// Projection trimming helpers
+// ============================================================================
+//
+// These free functions implement the `with_required_vars` / `trim_output`
+// pattern used by operators that support projection pushdown.  Each operator
+// stores an `Option<Vec<VarId>>` computed at construction time and uses
+// these helpers to trim its output schema and batches.
+
+/// Intersect a full schema with downstream requirements, preserving order.
+///
+/// Returns `None` when `downstream` is `None` (no trimming requested).
+pub fn compute_trimmed_vars(
+    full_schema: &[VarId],
+    downstream: Option<&[VarId]>,
+) -> Option<Vec<VarId>> {
+    downstream.map(|dv| {
+        full_schema
+            .iter()
+            .filter(|v| dv.contains(v))
+            .copied()
+            .collect()
+    })
+}
+
+/// Return the trimmed schema if set, otherwise the full schema.
+pub fn effective_schema<'a>(trimmed: &'a Option<Vec<VarId>>, full: &'a [VarId]) -> &'a [VarId] {
+    trimmed.as_deref().unwrap_or(full)
+}
+
+/// Trim a batch to only the required variables, or pass through unchanged.
+pub fn trim_batch(required_vars: &Option<Vec<VarId>>, batch: Batch) -> Option<Batch> {
+    match required_vars {
+        Some(vars) => batch.retain(vars),
+        None => Some(batch),
+    }
+}
