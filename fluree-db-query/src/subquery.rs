@@ -63,6 +63,8 @@ pub struct SubqueryOperator {
     buffer_pos: usize,
     /// Optional stats for selectivity-based pattern reordering in subquery
     stats: Option<Arc<StatsView>>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl SubqueryOperator {
@@ -122,6 +124,27 @@ impl SubqueryOperator {
             result_buffer: Vec::new(),
             buffer_pos: 0,
             stats,
+            required_vars: None,
+        }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
+    }
+
+    /// Apply output trimming to a batch if required_vars is set.
+    fn trim_output(&self, batch: Batch) -> Option<Batch> {
+        match &self.required_vars {
+            Some(vars) => batch.retain(vars),
+            None => Some(batch),
         }
     }
 }
@@ -129,7 +152,7 @@ impl SubqueryOperator {
 #[async_trait]
 impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        self.required_vars.as_deref().unwrap_or(&self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -255,7 +278,8 @@ impl SubqueryOperator {
         if columns.is_empty() || columns[0].is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Batch::new(self.schema.clone(), columns)?))
+            let batch = Batch::new(self.schema.clone(), columns)?;
+            Ok(self.trim_output(batch))
         }
     }
 

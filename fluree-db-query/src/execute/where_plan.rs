@@ -829,17 +829,28 @@ pub fn build_where_operators_seeded(
                 // 2. General path: multi-pattern uses PlanTreeOptionalBuilder (full operator tree)
                 let child = require_child(operator, "OPTIONAL pattern")?;
 
+                // Augment required_where_vars with suffix pattern vars
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
                 if let Pattern::Optional(inner_patterns) = &patterns[i] {
                     let required_schema = Arc::from(child.schema().to_vec().into_boxed_slice());
 
                     // Fast path: single triple pattern
                     if inner_patterns.len() == 1 {
                         if let Some(inner_triple) = inner_patterns[0].as_triple().cloned() {
-                            operator = Some(Box::new(OptionalOperator::new(
-                                child,
-                                required_schema,
-                                inner_triple,
-                            )));
+                            operator = Some(Box::new(
+                                OptionalOperator::new(child, required_schema, inner_triple)
+                                    .with_required_vars(augmented_ref),
+                            ));
                             i += 1;
                             continue;
                         }
@@ -852,11 +863,10 @@ pub fn build_where_operators_seeded(
                         inner_patterns.clone(),
                         stats.clone(),
                     );
-                    operator = Some(Box::new(OptionalOperator::with_builder(
-                        child,
-                        required_schema,
-                        Box::new(builder),
-                    )));
+                    operator = Some(Box::new(
+                        OptionalOperator::with_builder(child, required_schema, Box::new(builder))
+                            .with_required_vars(augmented_ref),
+                    ));
                     i += 1;
                     continue;
                 }
@@ -919,22 +929,42 @@ pub fn build_where_operators_seeded(
             Pattern::PropertyPath(pp) => {
                 // Property path - transitive graph traversal
                 // Pass existing operator as child for correlation
-                operator = Some(Box::new(PropertyPathOperator::new(
-                    operator,
-                    pp.clone(),
-                    DEFAULT_MAX_VISITED,
-                )));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    PropertyPathOperator::new(operator, pp.clone(), DEFAULT_MAX_VISITED)
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
             Pattern::Subquery(sq) => {
                 // Subquery - execute nested query and merge results
                 let child = require_child(operator, "SUBQUERY pattern")?;
-                operator = Some(Box::new(SubqueryOperator::new(
-                    child,
-                    sq.clone(),
-                    stats.clone(),
-                )));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    SubqueryOperator::new(child, sq.clone(), stats.clone())
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
@@ -942,7 +972,20 @@ pub fn build_where_operators_seeded(
                 // BM25 full-text search against a graph source
                 // If no child operator, use EmptyOperator as seed (allows IndexSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                operator = Some(Box::new(Bm25SearchOperator::new(child, isp.clone())));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    Bm25SearchOperator::new(child, isp.clone()).with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
@@ -950,10 +993,21 @@ pub fn build_where_operators_seeded(
                 // Vector similarity search against a vector graph source
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                operator = Some(Box::new(crate::vector::VectorSearchOperator::new(
-                    child,
-                    vsp.clone(),
-                )));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    crate::vector::VectorSearchOperator::new(child, vsp.clone())
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
@@ -970,20 +1024,42 @@ pub fn build_where_operators_seeded(
             Pattern::GeoSearch(gsp) => {
                 // Geographic proximity search against binary index
                 let child = get_or_empty_seed(operator.take());
-                operator = Some(Box::new(crate::geo_search::GeoSearchOperator::new(
-                    child,
-                    gsp.clone(),
-                )));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    crate::geo_search::GeoSearchOperator::new(child, gsp.clone())
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
             Pattern::S2Search(s2p) => {
                 // S2 spatial search against spatial index sidecar
                 let child = get_or_empty_seed(operator.take());
-                operator = Some(Box::new(crate::s2_search::S2SearchOperator::new(
-                    child,
-                    s2p.clone(),
-                )));
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
+                operator = Some(Box::new(
+                    crate::s2_search::S2SearchOperator::new(child, s2p.clone())
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
