@@ -93,7 +93,7 @@ pub struct AggregateOperator {
     /// Number of columns from child schema (before extra additions)
     child_col_count: usize,
     /// Variables required by downstream operators; if set, output is trimmed.
-    required_vars: Option<Vec<VarId>>,
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl AggregateOperator {
@@ -169,13 +169,13 @@ impl AggregateOperator {
             extra_specs,
             group_size_col,
             child_col_count,
-            required_vars: None,
+            downstream_vars: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
         self
     }
 }
@@ -183,7 +183,7 @@ impl AggregateOperator {
 #[async_trait]
 impl Operator for AggregateOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.required_vars, &self.schema)
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -295,7 +295,7 @@ impl Operator for AggregateOperator {
 
             let out = Batch::new(self.schema.clone(), output_columns)?;
             span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-            Ok(trim_batch(&self.required_vars, out))
+            Ok(trim_batch(&self.downstream_vars, out))
         }
         .instrument(span)
         .await

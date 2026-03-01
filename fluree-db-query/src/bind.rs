@@ -50,7 +50,7 @@ pub struct BindOperator {
     /// Operator state
     state: OperatorState,
     /// Variables required by downstream operators; if set, output is trimmed.
-    required_vars: Option<Vec<VarId>>,
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl BindOperator {
@@ -101,13 +101,13 @@ impl BindOperator {
             var_position,
             is_new_var,
             state: OperatorState::Created,
-            required_vars: None,
+            downstream_vars: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
         self
     }
 }
@@ -115,7 +115,7 @@ impl BindOperator {
 #[async_trait]
 impl Operator for BindOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.required_vars, &self.schema)
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -239,7 +239,7 @@ impl Operator for BindOperator {
             }
 
             let batch = Batch::new(self.schema.clone(), output_columns)?;
-            return Ok(trim_batch(&self.required_vars, batch));
+            return Ok(trim_batch(&self.downstream_vars, batch));
         }
     }
 

@@ -859,7 +859,7 @@ pub fn build_where_operators_seeded(
                         if let Some(inner_triple) = inner_patterns[0].as_triple().cloned() {
                             operator = Some(Box::new(
                                 OptionalOperator::new(child, required_schema, inner_triple)
-                                    .with_required_vars(augmented_ref),
+                                    .with_downstream_vars(augmented_ref),
                             ));
                             i += 1;
                             continue;
@@ -875,7 +875,7 @@ pub fn build_where_operators_seeded(
                     );
                     operator = Some(Box::new(
                         OptionalOperator::with_builder(child, required_schema, Box::new(builder))
-                            .with_required_vars(augmented_ref),
+                            .with_downstream_vars(augmented_ref),
                     ));
                     i += 1;
                     continue;
@@ -898,7 +898,7 @@ pub fn build_where_operators_seeded(
                 // Correlated UNION: execute each branch per input row (seeded from child).
                 operator = Some(Box::new(
                     UnionOperator::new(child, branches.clone(), stats.clone())
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -935,7 +935,7 @@ pub fn build_where_operators_seeded(
 
                 operator = Some(Box::new(
                     PropertyPathOperator::new(operator, pp.clone(), DEFAULT_MAX_VISITED)
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -948,7 +948,7 @@ pub fn build_where_operators_seeded(
 
                 operator = Some(Box::new(
                     SubqueryOperator::new(child, sq.clone(), stats.clone())
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -961,7 +961,7 @@ pub fn build_where_operators_seeded(
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
-                    Bm25SearchOperator::new(child, isp.clone()).with_required_vars(augmented_ref),
+                    Bm25SearchOperator::new(child, isp.clone()).with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -975,7 +975,7 @@ pub fn build_where_operators_seeded(
 
                 operator = Some(Box::new(
                     crate::vector::VectorSearchOperator::new(child, vsp.clone())
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -998,7 +998,7 @@ pub fn build_where_operators_seeded(
 
                 operator = Some(Box::new(
                     crate::geo_search::GeoSearchOperator::new(child, gsp.clone())
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -1011,7 +1011,7 @@ pub fn build_where_operators_seeded(
 
                 operator = Some(Box::new(
                     crate::s2_search::S2SearchOperator::new(child, s2p.clone())
-                        .with_required_vars(augmented_ref),
+                        .with_downstream_vars(augmented_ref),
                 ));
                 i += 1;
             }
@@ -1079,7 +1079,7 @@ pub fn build_scan_or_join(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     inline_ops: Vec<InlineOperator>,
-    required_vars: Option<&[VarId]>,
+    downstream_vars: Option<&[VarId]>,
 ) -> BoxedOperator {
     match left {
         None => make_first_scan(tp, object_bounds, inline_ops),
@@ -1092,7 +1092,7 @@ pub fn build_scan_or_join(
 
             Box::new(
                 NestedLoopJoinOperator::new(left, left_schema, tp.clone(), bounds, inline_ops)
-                    .with_required_vars(required_vars),
+                    .with_downstream_vars(downstream_vars),
             )
         }
     }

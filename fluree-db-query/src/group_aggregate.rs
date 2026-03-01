@@ -471,7 +471,7 @@ pub struct GroupAggregateOperator {
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
     graph_view: Option<BinaryGraphView>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    required_vars: Option<Vec<VarId>>,
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl GroupAggregateOperator {
@@ -519,13 +519,13 @@ impl GroupAggregateOperator {
             groups: HashMap::new(),
             emit_iter: None,
             graph_view,
-            required_vars: None,
+            downstream_vars: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
         self
     }
 
@@ -570,7 +570,7 @@ impl GroupAggregateOperator {
 #[async_trait]
 impl Operator for GroupAggregateOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.required_vars, &self.schema)
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -718,7 +718,7 @@ impl Operator for GroupAggregateOperator {
         }
 
         let batch = Batch::new(self.schema.clone(), output_columns)?;
-        Ok(trim_batch(&self.required_vars, batch))
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {

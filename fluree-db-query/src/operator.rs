@@ -97,7 +97,7 @@ impl OperatorState {
 // Projection trimming helpers
 // ============================================================================
 //
-// These free functions implement the `with_required_vars` / `trim_output`
+// These free functions implement the `with_downstream_vars` / `trim_output`
 // pattern used by operators that support projection pushdown.  Each operator
 // stores an `Option<Vec<VarId>>` computed at construction time and uses
 // these helpers to trim its output schema and batches.
@@ -124,8 +124,8 @@ pub fn effective_schema<'a>(trimmed: &'a Option<Vec<VarId>>, full: &'a [VarId]) 
 }
 
 /// Trim a batch to only the required variables, or pass through unchanged.
-pub fn trim_batch(required_vars: &Option<Vec<VarId>>, batch: Batch) -> Option<Batch> {
-    match required_vars {
+pub fn trim_batch(downstream_vars: &Option<Vec<VarId>>, batch: Batch) -> Option<Batch> {
+    match downstream_vars {
         Some(vars) => batch.retain(vars),
         None => Some(batch),
     }

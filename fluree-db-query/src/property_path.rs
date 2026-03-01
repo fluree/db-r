@@ -74,7 +74,7 @@ pub struct PropertyPathOperator {
     /// Current row index in child batch
     current_child_row: usize,
     /// Variables required by downstream operators; if set, output is trimmed.
-    required_vars: Option<Vec<VarId>>,
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl PropertyPathOperator {
@@ -123,7 +123,7 @@ impl PropertyPathOperator {
             results_idx: 0,
             current_child_batch: None,
             current_child_row: 0,
-            required_vars: None,
+            downstream_vars: None,
         }
     }
 
@@ -133,8 +133,8 @@ impl PropertyPathOperator {
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
-        self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
         self
     }
 
@@ -573,7 +573,7 @@ impl PropertyPathOperator {
 #[async_trait]
 impl Operator for PropertyPathOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.required_vars, &self.schema)
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -645,7 +645,7 @@ impl Operator for PropertyPathOperator {
             }
 
             let batch = Batch::new(self.schema.clone(), columns)?;
-            return Ok(trim_batch(&self.required_vars, batch));
+            return Ok(trim_batch(&self.downstream_vars, batch));
         }
 
         // Correlated mode: process child rows
@@ -704,7 +704,7 @@ impl Operator for PropertyPathOperator {
                 }
 
                 let batch = Batch::new(self.schema.clone(), columns)?;
-                return Ok(trim_batch(&self.required_vars, batch));
+                return Ok(trim_batch(&self.downstream_vars, batch));
             }
 
             // No rows from this batch, try next
