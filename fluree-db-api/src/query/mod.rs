@@ -12,7 +12,7 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     format, Batch, FormatterConfig, FuelExceededError, OverlayProvider, PolicyContext, PolicyStats,
-    SelectMode, Tracker, TrackingTally, VarRegistry,
+    Tracker, TrackingTally, VarRegistry,
 };
 
 use fluree_db_binary_index::BinaryGraphView;
@@ -159,7 +159,7 @@ impl QueryResult {
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.
     pub fn to_jsonld(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -167,7 +167,7 @@ impl QueryResult {
     ///
     /// Rows are maps keyed by variable name (e.g., `{"?s": "ex:alice", ...}`).
     pub fn to_jsonld_objects(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld_objects();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -175,7 +175,7 @@ impl QueryResult {
     ///
     /// Returns W3C standard format with `{"head": {"vars": [...]}, "results": {"bindings": [...]}}`.
     pub fn to_sparql_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::sparql_json().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::sparql_json();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -183,7 +183,7 @@ impl QueryResult {
     ///
     /// Every value includes `@type` annotation, even for inferable types.
     pub fn to_typed_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::typed_json().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::typed_json();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -201,7 +201,7 @@ impl QueryResult {
                 "to_construct() only valid for CONSTRUCT queries".to_string(),
             ));
         }
-        let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Construct);
+        let config = FormatterConfig::jsonld();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -317,7 +317,7 @@ impl QueryResult {
     /// let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
     /// ```
     pub async fn to_jsonld_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 
@@ -325,7 +325,7 @@ impl QueryResult {
     ///
     /// Async version of `to_jsonld_objects()`. Required for graph crawl queries.
     pub async fn to_jsonld_objects_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld_objects();
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 
@@ -362,7 +362,7 @@ impl QueryResult {
         db: GraphDbRef<'_>,
         policy: &PolicyContext,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, Some(policy), None).await
     }
 
@@ -384,7 +384,7 @@ impl QueryResult {
         db: GraphDbRef<'_>,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, None, Some(tracker)).await
     }
 
@@ -395,7 +395,7 @@ impl QueryResult {
         policy: &PolicyContext,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.output.select_mode());
+        let config = FormatterConfig::jsonld();
         format::format_results_async(
             self,
             &self.context,

@@ -1,11 +1,12 @@
 use crate::detect::QueryFormat;
 use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
-use fluree_db_api::format::{IriCompactor, SelectMode};
+use fluree_db_api::format::IriCompactor;
 use fluree_db_api::QueryResult;
 use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, LedgerSnapshot};
 use fluree_db_query::binding::Binding;
+use fluree_db_query::SelectMode;
 
 /// Output format for query results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,13 +4,14 @@
 //! - **Array** (default, Clojure parity): `[["ex:alice", "Alice", 30], ...]`
 //! - **Object** (API-friendly): `[{"?s": "ex:alice", "?name": "Alice"}, ...]`
 
-use super::config::{FormatterConfig, JsonLdRowShape, SelectMode};
+use super::config::{FormatterConfig, JsonLdRowShape};
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
+use fluree_db_query::SelectMode;
 use fluree_vocab::rdf;
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -20,11 +21,12 @@ pub fn format(
     compactor: &IriCompactor,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let select_mode = result.output.select_mode();
     let mut rows = Vec::new();
 
     for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            let row = match config.select_mode {
+            let row = match select_mode {
                 SelectMode::Wildcard => {
                     // Wildcard: use batch schema, return all bound vars as object
                     format_row_wildcard(result, batch, row_idx, &result.vars, compactor)?
@@ -53,11 +55,11 @@ pub fn format(
             rows.push(row);
 
             // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One {
+            if select_mode == SelectMode::One {
                 break;
             }
         }
-        if config.select_mode == SelectMode::One && !rows.is_empty() {
+        if select_mode == SelectMode::One && !rows.is_empty() {
             break;
         }
     }
@@ -65,7 +67,7 @@ pub fn format(
     // Clojure parity: for a 1-column SELECT in array-row mode, return a flat array of values
     // (not `[ [v1], [v2] ]`).
     if config.jsonld_row_shape == JsonLdRowShape::Array
-        && config.select_mode != SelectMode::Wildcard
+        && select_mode != SelectMode::Wildcard
         && result.output.select_vars_or_empty().len() == 1
     {
         rows = rows
@@ -78,7 +80,7 @@ pub fn format(
     }
 
     // Return based on select mode
-    match config.select_mode {
+    match select_mode {
         SelectMode::One => Ok(rows.into_iter().next().unwrap_or(JsonValue::Null)),
         _ => Ok(JsonValue::Array(rows)),
     }
