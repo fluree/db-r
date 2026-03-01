@@ -871,12 +871,24 @@ pub fn build_where_operators_seeded(
                         "UNION requires at least one branch".to_string(),
                     ));
                 }
+
+                // Augment required_where_vars with suffix pattern vars
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> = patterns[i + 1..]
+                        .iter()
+                        .flat_map(|p| p.variables())
+                        .collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
                 // Correlated UNION: execute each branch per input row (seeded from child).
-                operator = Some(Box::new(UnionOperator::new(
-                    child,
-                    branches.clone(),
-                    stats.clone(),
-                )));
+                operator = Some(Box::new(
+                    UnionOperator::new(child, branches.clone(), stats.clone())
+                        .with_required_vars(augmented_ref),
+                ));
                 i += 1;
             }
 
