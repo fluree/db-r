@@ -738,16 +738,16 @@ pub fn build_where_operators_seeded(
 
     // Precompute suffix variable sets for O(1) augmentation at each pattern.
     let empty_suffix = HashSet::new();
-    let suffix_vars_storage;
-    let suffix_vars: &[HashSet<VarId>] = if required_where_vars.is_some() {
-        suffix_vars_storage = precompute_suffix_vars(patterns);
-        &suffix_vars_storage
-    } else {
-        suffix_vars_storage = Vec::new();
-        &suffix_vars_storage
+    let suffix_vars = required_where_vars
+        .map(|_| precompute_suffix_vars(patterns))
+        .unwrap_or_default();
+    // Helper: compute augmented required vars for position j.
+    let augmented_at = |pos: usize| -> Option<Vec<VarId>> {
+        augment_with_suffix(
+            required_where_vars,
+            suffix_vars.get(pos).unwrap_or(&empty_suffix),
+        )
     };
-    // Helper: look up precomputed suffix vars for position j (empty if trimming is off).
-    let suffix_at = |j: usize| -> &HashSet<VarId> { suffix_vars.get(j).unwrap_or(&empty_suffix) };
 
     let mut i = 0;
     while i < patterns.len() {
@@ -767,7 +767,7 @@ pub fn build_where_operators_seeded(
                 }
                 i = end;
 
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(end));
+                let augmented_rwv = augmented_at(end);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Hot path: triples only (no BIND/FILTER).
@@ -848,7 +848,7 @@ pub fn build_where_operators_seeded(
                 // 2. General path: multi-pattern uses PlanTreeOptionalBuilder (full operator tree)
                 let child = require_child(operator, "OPTIONAL pattern")?;
 
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 if let Pattern::Optional(inner_patterns) = &patterns[i] {
@@ -892,7 +892,7 @@ pub fn build_where_operators_seeded(
                     ));
                 }
 
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 // Correlated UNION: execute each branch per input row (seeded from child).
@@ -930,7 +930,7 @@ pub fn build_where_operators_seeded(
             Pattern::PropertyPath(pp) => {
                 // Property path - transitive graph traversal
                 // Pass existing operator as child for correlation
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -943,7 +943,7 @@ pub fn build_where_operators_seeded(
             Pattern::Subquery(sq) => {
                 // Subquery - execute nested query and merge results
                 let child = require_child(operator, "SUBQUERY pattern")?;
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -957,7 +957,7 @@ pub fn build_where_operators_seeded(
                 // BM25 full-text search against a graph source
                 // If no child operator, use EmptyOperator as seed (allows IndexSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -970,7 +970,7 @@ pub fn build_where_operators_seeded(
                 // Vector similarity search against a vector graph source
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -993,7 +993,7 @@ pub fn build_where_operators_seeded(
             Pattern::GeoSearch(gsp) => {
                 // Geographic proximity search against binary index
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
@@ -1006,7 +1006,7 @@ pub fn build_where_operators_seeded(
             Pattern::S2Search(s2p) => {
                 // S2 spatial search against spatial index sidecar
                 let child = get_or_empty_seed(operator.take());
-                let augmented_rwv = augment_with_suffix(required_where_vars, suffix_at(i + 1));
+                let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
 
                 operator = Some(Box::new(
