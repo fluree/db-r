@@ -162,6 +162,7 @@ impl Operator for UnionOperator {
                     Some(Box::new(seed)),
                     branch_patterns,
                     self.stats.clone(),
+                    None,
                 )?;
 
                 branch_op.open(ctx).await?;

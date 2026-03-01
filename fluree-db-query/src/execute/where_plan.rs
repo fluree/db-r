@@ -39,6 +39,17 @@ use super::pushdown::extract_bounds_from_filters;
 // Inner join block types
 // ============================================================================
 
+/// Results of filter bounds pushdown: object bounds extracted from filters and
+/// the indices of filters consumed by the pushdown.
+///
+/// Computed by [`extract_bounds_from_filters`] and threaded into block builders
+/// so that consumed filters are not re-applied and object bounds are pushed
+/// down into scan operators.
+pub struct FilterPushdown {
+    pub object_bounds: HashMap<VarId, ObjectBounds>,
+    pub consumed_indices: Vec<usize>,
+}
+
 /// A single VALUES pattern: its bound variables and constant rows.
 #[derive(Debug, Clone)]
 pub struct ValuesPattern {
@@ -320,6 +331,7 @@ fn build_single_pattern(
             tp,
             &HashMap::new(),
             Vec::new(),
+            None,
         )),
         _ => operator,
     }
@@ -335,10 +347,14 @@ fn build_property_join_block(
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
-    object_bounds: &HashMap<VarId, ObjectBounds>,
-    filter_idxs_consumed: &[usize],
+    pushdown: &FilterPushdown,
 ) -> Result<Option<BoxedOperator>> {
-    let mut operator = Some(build_triple_operators(operator, triples, object_bounds)?);
+    let mut operator = Some(build_triple_operators(
+        operator,
+        triples,
+        &pushdown.object_bounds,
+        None,
+    )?);
 
     if !block_values.is_empty() {
         operator = apply_values(operator, block_values);
@@ -351,7 +367,7 @@ fn build_property_join_block(
             &mut bound,
             pending_binds,
             pending_filters,
-            filter_idxs_consumed,
+            &pushdown.consumed_indices,
         );
         operator = Some(child);
     }
@@ -459,8 +475,8 @@ fn build_sequential_join_block(
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
-    object_bounds: &HashMap<VarId, ObjectBounds>,
-    filter_idxs_consumed: &[usize],
+    pushdown: &FilterPushdown,
+    required_where_vars: Option<&[VarId]>,
 ) -> Result<Option<BoxedOperator>> {
     let mut operator = operator;
 
@@ -472,7 +488,21 @@ fn build_sequential_join_block(
     let mut pending_binds = pending_binds;
     let mut pending_filters = pending_filters;
 
-    for tp in triples {
+    // Precompute sets for live variable analysis when projection pushdown is active.
+    let live_var_context = required_where_vars.map(|rwv| {
+        let base: HashSet<VarId> = rwv.iter().copied().collect();
+        let all_filter_vars: HashSet<VarId> = pending_filters
+            .iter()
+            .flat_map(|f| f.expr.variables())
+            .collect();
+        let all_bind_expr_vars: HashSet<VarId> = pending_binds
+            .iter()
+            .flat_map(|b| b.expr.variables())
+            .collect();
+        (base, all_filter_vars, all_bind_expr_vars)
+    });
+
+    for (k, tp) in triples.iter().enumerate() {
         let mut vars_after: HashSet<VarId> = bound.clone();
         for v in tp.variables() {
             vars_after.insert(v);
@@ -485,12 +515,38 @@ fn build_sequential_join_block(
             pending_binds,
             pending_filters,
             &vars_after,
-            filter_idxs_consumed,
+            &pushdown.consumed_indices,
         );
         pending_binds = remaining_binds;
         pending_filters = remaining_filters;
 
-        let op = build_scan_or_join(operator, tp, object_bounds, inline_ops);
+        // Compute live vars for this join step: vars needed by downstream joins,
+        // filters, binds, and the post-WHERE pipeline.
+        let live_vars =
+            live_var_context
+                .as_ref()
+                .map(|(base, all_filter_vars, all_bind_expr_vars)| {
+                    let suffix_vars: HashSet<VarId> = triples[k + 1..]
+                        .iter()
+                        .flat_map(|t| t.variables())
+                        .collect();
+                    base.iter()
+                        .chain(suffix_vars.iter())
+                        .chain(all_filter_vars.iter())
+                        .chain(all_bind_expr_vars.iter())
+                        .copied()
+                        .collect::<HashSet<VarId>>()
+                        .into_iter()
+                        .collect::<Vec<VarId>>()
+                });
+
+        let op = build_scan_or_join(
+            operator,
+            tp,
+            &pushdown.object_bounds,
+            inline_ops,
+            live_vars.as_deref(),
+        );
         bound.extend(op.schema().iter().copied());
         operator = Some(op);
 
@@ -500,7 +556,7 @@ fn build_sequential_join_block(
                 &mut bound,
                 pending_binds,
                 pending_filters,
-                filter_idxs_consumed,
+                &pushdown.consumed_indices,
             );
             pending_binds = new_binds;
             pending_filters = new_filters;
@@ -514,7 +570,7 @@ fn build_sequential_join_block(
             child,
             pending_binds,
             pending_filters,
-            filter_idxs_consumed,
+            &pushdown.consumed_indices,
         ));
     }
 
@@ -527,8 +583,9 @@ fn build_sequential_join_block(
 pub fn build_where_operators(
     patterns: &[Pattern],
     stats: Option<Arc<StatsView>>,
+    required_where_vars: Option<&[VarId]>,
 ) -> Result<BoxedOperator> {
-    build_where_operators_seeded(None, patterns, stats)
+    build_where_operators_seeded(None, patterns, stats, required_where_vars)
 }
 
 /// Collect an optimizable inner-join block consisting of:
@@ -623,6 +680,7 @@ pub fn build_where_operators_seeded(
     seed: Option<BoxedOperator>,
     patterns: &[Pattern],
     stats: Option<Arc<StatsView>>,
+    required_where_vars: Option<&[VarId]>,
 ) -> Result<BoxedOperator> {
     if patterns.is_empty() {
         // Empty patterns = one row with empty schema
@@ -681,6 +739,18 @@ pub fn build_where_operators_seeded(
                 }
                 i = end;
 
+                // Augment required_where_vars with variables from subsequent
+                // patterns (OPTIONAL, UNION, MINUS, etc.) that reference vars
+                // produced by this block.
+                let augmented_rwv = required_where_vars.map(|rwv| {
+                    let suffix_vars: HashSet<VarId> =
+                        patterns[end..].iter().flat_map(|p| p.variables()).collect();
+                    let mut combined: HashSet<VarId> = rwv.iter().copied().collect();
+                    combined.extend(suffix_vars);
+                    combined.into_iter().collect::<Vec<VarId>>()
+                });
+                let augmented_ref = augmented_rwv.as_deref();
+
                 // Hot path: triples only (no BIND/FILTER).
                 // Skip dependency bookkeeping entirely.
                 if block.binds.is_empty() && block.filters.is_empty() {
@@ -691,6 +761,7 @@ pub fn build_where_operators_seeded(
                         operator,
                         &block.triples,
                         &HashMap::new(),
+                        augmented_ref,
                     )?);
                     continue;
                 }
@@ -701,8 +772,12 @@ pub fn build_where_operators_seeded(
                 // Push down range-safe filters into object bounds (when possible).
                 let filters_for_pushdown: Vec<Expression> =
                     pending_filters.iter().map(|f| f.expr.clone()).collect();
-                let (object_bounds, filter_idxs_consumed) =
+                let (object_bounds, consumed_indices) =
                     extract_bounds_from_filters(&block.triples, &filters_for_pushdown);
+                let pushdown = FilterPushdown {
+                    object_bounds,
+                    consumed_indices,
+                };
 
                 // Ensure a concrete seed when only BIND/FILTER remain (no triples, no upstream).
                 if block.triples.is_empty() && operator.is_none() {
@@ -720,8 +795,7 @@ pub fn build_where_operators_seeded(
                         block.values,
                         pending_binds,
                         pending_filters,
-                        &object_bounds,
-                        &filter_idxs_consumed,
+                        &pushdown,
                     )?;
                 } else {
                     operator = build_sequential_join_block(
@@ -730,8 +804,8 @@ pub fn build_where_operators_seeded(
                         block.values,
                         pending_binds,
                         pending_filters,
-                        &object_bounds,
-                        &filter_idxs_consumed,
+                        &pushdown,
+                        augmented_ref,
                     )?;
                 }
             }
@@ -964,6 +1038,7 @@ pub fn build_scan_or_join(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     inline_ops: Vec<InlineOperator>,
+    required_vars: Option<&[VarId]>,
 ) -> BoxedOperator {
     match left {
         None => make_first_scan(tp, object_bounds, inline_ops),
@@ -974,13 +1049,10 @@ pub fn build_scan_or_join(
             // Extract object bounds if available for this pattern's object variable
             let bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
 
-            Box::new(NestedLoopJoinOperator::new(
-                left,
-                left_schema,
-                tp.clone(),
-                bounds,
-                inline_ops,
-            ))
+            Box::new(
+                NestedLoopJoinOperator::new(left, left_schema, tp.clone(), bounds, inline_ops)
+                    .with_required_vars(required_vars),
+            )
         }
     }
 }
@@ -994,6 +1066,7 @@ pub fn build_triple_operators(
     existing: Option<BoxedOperator>,
     triples: &[TriplePattern],
     object_bounds: &HashMap<VarId, ObjectBounds>,
+    required_where_vars: Option<&[VarId]>,
 ) -> Result<BoxedOperator> {
     if triples.is_empty() {
         return existing
@@ -1014,12 +1087,24 @@ pub fn build_triple_operators(
     }
 
     // Build chain of scan/join operators using the shared helper
-    for pattern in triples {
+    let rwv_set: Option<HashSet<VarId>> = required_where_vars.map(|v| v.iter().copied().collect());
+
+    for (k, pattern) in triples.iter().enumerate() {
+        // Compute live vars: required_where_vars ∪ vars from subsequent triples
+        let live_vars = rwv_set.as_ref().map(|base| {
+            let suffix_vars: HashSet<VarId> = triples[k + 1..]
+                .iter()
+                .flat_map(|t| t.variables())
+                .collect();
+            base.union(&suffix_vars).copied().collect::<Vec<VarId>>()
+        });
+
         operator = Some(build_scan_or_join(
             operator,
             pattern,
             object_bounds,
             Vec::new(),
+            live_vars.as_deref(),
         ));
     }
 
@@ -1045,7 +1130,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1062,7 +1147,7 @@ mod tests {
             )),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
     }
 
@@ -1097,7 +1182,7 @@ mod tests {
             )),
         ];
 
-        let op = build_where_operators(&patterns, None).unwrap();
+        let op = build_where_operators(&patterns, None, None).unwrap();
         let schema = op.schema();
         assert!(
             !schema.is_empty(),
@@ -1272,7 +1357,7 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         // Now succeeds - empty seed provides initial solution
         assert!(result.is_ok());
     }
@@ -1290,7 +1375,7 @@ mod tests {
                 Sid::new(2, "long"),
             )]],
         }];
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1305,7 +1390,7 @@ mod tests {
             var: VarId(0),
             expr: Expression::Const(FilterValue::Long(42)),
         }];
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1320,7 +1405,7 @@ mod tests {
             vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             vec![Pattern::Triple(make_pattern(VarId(0), "email", VarId(2)))],
         ])];
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1344,7 +1429,7 @@ mod tests {
             },
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1385,7 +1470,7 @@ mod tests {
             },
         );
 
-        let op = build_triple_operators(None, &triples, &bounds).unwrap();
+        let op = build_triple_operators(None, &triples, &bounds, None).unwrap();
 
         // PropertyJoinOperator schema is [subject, obj1, obj2] in declaration order.
         // If NestedLoopJoin were used instead, all three vars would still appear but
@@ -1413,7 +1498,7 @@ mod tests {
             )),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "should build successfully");
 
         let op = result.unwrap();
@@ -1429,7 +1514,7 @@ mod tests {
         let tp = make_pattern(VarId(0), "name", VarId(1));
         let bounds = HashMap::new();
 
-        let op: BoxedOperator = build_scan_or_join(None, &tp, &bounds, Vec::new());
+        let op: BoxedOperator = build_scan_or_join(None, &tp, &bounds, Vec::new(), None);
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
@@ -1440,8 +1525,8 @@ mod tests {
         let tp2 = make_pattern(VarId(0), "age", VarId(2));
         let bounds = HashMap::new();
 
-        let first: BoxedOperator = build_scan_or_join(None, &tp1, &bounds, Vec::new());
-        let second = build_scan_or_join(Some(first), &tp2, &bounds, Vec::new());
+        let first: BoxedOperator = build_scan_or_join(None, &tp1, &bounds, Vec::new(), None);
+        let second = build_scan_or_join(Some(first), &tp2, &bounds, Vec::new(), None);
 
         // Schema should include all vars from both patterns
         assert_eq!(second.schema().len(), 3);
@@ -1539,7 +1624,7 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(1), "age", VarId(0))),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(
             result.is_ok(),
             "Filter before its bound variable should be allowed: {:?}",
@@ -1570,7 +1655,7 @@ mod tests {
         assert_eq!(block.triples.len(), 2);
 
         // Verify the operator tree builds successfully
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(
             result.is_ok(),
             "Should build successfully: {:?}",
@@ -1593,7 +1678,7 @@ mod tests {
             ]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
 
         let op = result.unwrap();
@@ -1613,7 +1698,7 @@ mod tests {
             ))]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
 
         let op = result.unwrap();
@@ -1640,7 +1725,7 @@ mod tests {
             )),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
 
         let op = result.unwrap();
@@ -1663,7 +1748,7 @@ mod tests {
             ))]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
 
         let op = result.unwrap();
@@ -1685,7 +1770,7 @@ mod tests {
             ))]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
     }
 
@@ -1701,7 +1786,7 @@ mod tests {
             ))]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(result.is_ok(), "Should build: {:?}", result.err());
     }
 
@@ -1727,7 +1812,7 @@ mod tests {
             ))]),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(
             result.is_ok(),
             "Complex mix should build: {:?}",
@@ -1760,7 +1845,7 @@ mod tests {
             )),
         ];
 
-        let result = build_where_operators(&patterns, None);
+        let result = build_where_operators(&patterns, None, None);
         assert!(
             result.is_ok(),
             "BIND + post-BIND FILTER should build: {:?}",
@@ -1958,7 +2043,7 @@ mod tests {
             )),
         ];
 
-        let op = build_where_operators(&patterns, None).unwrap();
+        let op = build_where_operators(&patterns, None, None).unwrap();
 
         // The filter should be inlined into the join, not wrapped as a
         // separate FilterOperator. If it were a wrapper, the outermost
@@ -1994,7 +2079,7 @@ mod tests {
             },
         ];
 
-        let op = build_where_operators(&patterns, None).unwrap();
+        let op = build_where_operators(&patterns, None, None).unwrap();
 
         // ?y should appear in the schema — it was inlined into the join,
         // extending the join's output schema rather than requiring a
@@ -2027,7 +2112,7 @@ mod tests {
             },
         ];
 
-        let op = build_where_operators(&patterns, None).unwrap();
+        let op = build_where_operators(&patterns, None, None).unwrap();
 
         // If the bind were a separate BindOperator, the top-level operator
         // would be a BindOperator wrapping a ScanOperator. But since it's

@@ -412,7 +412,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result = where_plan::build_where_operators(&patterns, None);
+        let result = where_plan::build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -429,7 +429,7 @@ mod tests {
             )),
         ];
 
-        let result = where_plan::build_where_operators(&patterns, None);
+        let result = where_plan::build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
     }
 

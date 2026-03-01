@@ -496,8 +496,8 @@ mod tests {
         // Build operator with explicit seed
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
@@ -541,8 +541,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
@@ -581,8 +581,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
@@ -610,8 +610,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         // No vector_provider set
         let ctx = ExecutionContext::new(&snapshot, &vars);
@@ -641,8 +641,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);

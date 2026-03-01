@@ -288,8 +288,12 @@ impl SubqueryOperator {
         };
 
         // Build full operator tree for subquery patterns (supports filters, optionals, union, etc.)
-        let mut operator: BoxedOperator =
-            build_where_operators_seeded(Some(seed), &self.subquery.patterns, self.stats.clone())?;
+        let mut operator: BoxedOperator = build_where_operators_seeded(
+            Some(seed),
+            &self.subquery.patterns,
+            self.stats.clone(),
+            None,
+        )?;
 
         // Apply GROUP BY / aggregates / HAVING for subqueries that use them.
         let needs_grouping =

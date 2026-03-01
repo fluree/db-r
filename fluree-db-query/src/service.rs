@@ -170,7 +170,7 @@ impl ServiceOperator {
         // Build seed operator from parent row (like EXISTS/Subquery)
         let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
         let mut inner =
-            build_where_operators_seeded(Some(Box::new(seed)), &self.service.patterns, None)?;
+            build_where_operators_seeded(Some(Box::new(seed)), &self.service.patterns, None, None)?;
 
         // Create execution context for the target ledger
         // If graph_ref is Some, create a new context; otherwise use the current context (self-reference)

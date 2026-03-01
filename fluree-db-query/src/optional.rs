@@ -440,6 +440,7 @@ impl OptionalBuilder for PlanTreeOptionalBuilder {
             Some(Box::new(seed)),
             &self.inner_patterns,
             self.stats.clone(),
+            None,
         )?;
 
         Ok(Some(op))

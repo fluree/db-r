@@ -270,14 +270,18 @@ pub fn build_operator_tree(
         return Ok(operator);
     }
 
-    // Build WHERE clause operators
-    let mut operator = build_where_operators(&query.patterns, stats)?;
+    // Compute per-operator downstream dependency sets for trimming.
+    // Done before building WHERE operators so we can push projection into the WHERE clause.
+    let variable_deps = compute_variable_deps(query, options);
+
+    // Build WHERE clause operators with projection pushdown
+    let required_where_vars = variable_deps
+        .as_ref()
+        .map(|d| d.required_where_vars.as_slice());
+    let mut operator = build_where_operators(&query.patterns, stats, required_where_vars)?;
 
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
-
-    // Compute per-operator downstream dependency sets for trimming.
-    let variable_deps = compute_variable_deps(query, options);
 
     // GROUP BY + Aggregates
     // We use streaming GroupAggregateOperator when all aggregates are streamable

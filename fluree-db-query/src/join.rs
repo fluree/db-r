@@ -176,6 +176,8 @@ pub struct NestedLoopJoinOperator {
     /// schema, so they can be evaluated immediately on each combined row rather than
     /// requiring separate Operator wrappers.
     inline_ops: Vec<InlineOperator>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    required_vars: Option<Vec<VarId>>,
 }
 
 impl NestedLoopJoinOperator {
@@ -335,6 +337,27 @@ impl NestedLoopJoinOperator {
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
             inline_ops,
+            required_vars: None,
+        }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
+        self.required_vars = required_vars.map(|dv| {
+            self.combined_schema
+                .iter()
+                .filter(|v| dv.contains(v))
+                .copied()
+                .collect()
+        });
+        self
+    }
+
+    /// Apply output trimming to a batch if required_vars is set.
+    fn trim_output(&self, batch: Batch) -> Option<Batch> {
+        match &self.required_vars {
+            Some(vars) => batch.retain(vars),
+            None => Some(batch),
         }
     }
 
@@ -544,7 +567,9 @@ impl NestedLoopJoinOperator {
 #[async_trait]
 impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
-        &self.combined_schema
+        self.required_vars
+            .as_deref()
+            .unwrap_or(&self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -591,13 +616,13 @@ impl Operator for NestedLoopJoinOperator {
         loop {
             // 1. Pre-built output from batched flush
             if let Some(batch) = self.batched_output.pop_front() {
-                return Ok(Some(batch));
+                return Ok(self.trim_output(batch));
             }
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
                 if let Some(batch) = self.build_output_batch(ctx).await? {
-                    return Ok(Some(batch));
+                    return Ok(self.trim_output(batch));
                 }
                 // All pending rows were filtered out — continue to process more left rows
                 continue;

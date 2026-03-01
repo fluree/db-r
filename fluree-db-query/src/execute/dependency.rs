@@ -18,9 +18,6 @@ use std::collections::HashSet;
 /// trim dead columns from its output.
 #[derive(Debug)]
 pub struct VariableDeps {
-    // Kept for: WHERE operator trimming (not yet implemented).
-    // Use when: build_where_operators receives pipeline deps to trim its output.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub required_where_vars: Vec<VarId>,
     pub required_groupby_vars: Vec<VarId>,
     pub required_aggregate_vars: Vec<VarId>,
