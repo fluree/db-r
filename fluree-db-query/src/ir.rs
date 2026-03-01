@@ -182,6 +182,14 @@ impl GraphSelectSpec {
         }
     }
 
+    /// Returns the root variable, if the root is a variable (not an IRI constant).
+    pub fn root_var(&self) -> Option<VarId> {
+        match &self.root {
+            Root::Var(v) => Some(*v),
+            Root::Sid(_) => None,
+        }
+    }
+
     /// Generate a hash for cache keying purposes
     ///
     /// Used to differentiate the same Sid expanded under different specs.

@@ -36,18 +36,18 @@ pub struct VariableDeps {
 /// - `Wildcard` / `Boolean` select mode (all WHERE vars are needed)
 /// - Empty select list (no explicit projection)
 /// - `Construct` without a template
-/// - Graph crawl select (needs all bindings for nested expansion)
 pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Option<VariableDeps> {
-    // Graph crawl expansion may reference any bound variable during nested
-    // object construction, so trimming is unsafe.
-    if query.graph_select.is_some() {
-        return None;
-    }
-
     // ---- backward walk ----
 
     // Seed deps from the query output requirements.
+    // Wildcard/Boolean return None from `variables()`, disabling trimming.
     let mut deps: HashSet<VarId> = query.output.variables()?;
+
+    // Graph crawl formatter reads the root variable from result batches
+    // in addition to the SELECT variables (for mixed-select mode).
+    if let Some(root_var) = query.graph_select.as_ref().and_then(|gs| gs.root_var()) {
+        deps.insert(root_var);
+    }
 
     // ORDER BY vars must survive to the sort operator.
     for spec in &options.order_by {
@@ -265,6 +265,65 @@ mod tests {
         let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
         assert!(deps.required_where_vars.contains(&VarId(0)));
         assert!(deps.required_where_vars.contains(&VarId(1)));
+    }
+
+    // ---- graph_select tests ----
+
+    #[test]
+    fn graph_select_adds_root_var() {
+        // SELECT ?name WHERE { ... } with graph_select rooted at ?s
+        // The formatter needs both ?name (select var) and ?s (root var).
+        let mut query = make_query(vec![VarId(1)], vec![], SelectMode::Many);
+        query.graph_select = Some(crate::ir::GraphSelectSpec::new(
+            crate::ir::Root::Var(VarId(0)),
+            vec![],
+        ));
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(0))); // root var
+        assert!(deps.required_where_vars.contains(&VarId(1))); // select var
+    }
+
+    #[test]
+    fn graph_select_root_already_in_select() {
+        // SELECT ?s WHERE { ... } with graph_select rooted at ?s
+        // Root var is the same as the select var — no extra var needed.
+        let mut query = make_query(vec![VarId(0)], vec![], SelectMode::Many);
+        query.graph_select = Some(crate::ir::GraphSelectSpec::new(
+            crate::ir::Root::Var(VarId(0)),
+            vec![],
+        ));
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(0)));
+        assert_eq!(deps.required_where_vars.len(), 1);
+    }
+
+    #[test]
+    fn graph_select_sid_root_no_extra_vars() {
+        // SELECT ?name WHERE { ... } with graph_select rooted at an IRI constant
+        // Sid root doesn't reference a variable — only select vars needed.
+        let mut query = make_query(vec![VarId(1)], vec![], SelectMode::Many);
+        query.graph_select = Some(crate::ir::GraphSelectSpec::new(
+            crate::ir::Root::Sid(Sid::new(100, "alice")),
+            vec![],
+        ));
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(1)));
+        assert_eq!(deps.required_where_vars.len(), 1);
+    }
+
+    #[test]
+    fn graph_select_wildcard_output_disables_trimming() {
+        // SELECT * WHERE { ... } with graph_select — Wildcard disables trimming.
+        let mut query = make_query(vec![], vec![], SelectMode::Wildcard);
+        query.graph_select = Some(crate::ir::GraphSelectSpec::new(
+            crate::ir::Root::Var(VarId(0)),
+            vec![],
+        ));
+
+        assert!(compute_variable_deps(&query, &QueryOptions::default()).is_none());
     }
 
     // ---- per-operator pipeline deps tests ----
