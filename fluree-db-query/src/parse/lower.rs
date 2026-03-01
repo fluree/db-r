@@ -36,7 +36,7 @@ use std::sync::Arc;
 /// This is derived from the parsed query (select vs selectOne vs construct) and controls
 /// whether the formatter returns an array, single value, or JSON-LD graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SelectMode {
+pub(crate) enum SelectMode {
     /// Normal select: return array of rows
     #[default]
     Many,
@@ -107,17 +107,6 @@ pub enum QueryOutput {
 }
 
 impl QueryOutput {
-    /// Derive the legacy `SelectMode` for format code compatibility.
-    pub fn select_mode(&self) -> SelectMode {
-        match self {
-            QueryOutput::Select(_) => SelectMode::Many,
-            QueryOutput::SelectOne(_) => SelectMode::One,
-            QueryOutput::Wildcard => SelectMode::Wildcard,
-            QueryOutput::Construct(_) => SelectMode::Construct,
-            QueryOutput::Boolean => SelectMode::Boolean,
-        }
-    }
-
     /// Get select vars for Select/SelectOne, `None` otherwise.
     pub fn select_vars(&self) -> Option<&[VarId]> {
         match self {
@@ -137,6 +126,26 @@ impl QueryOutput {
             QueryOutput::Construct(t) => Some(t),
             _ => None,
         }
+    }
+
+    /// Returns `true` for `SelectOne` output.
+    pub fn is_select_one(&self) -> bool {
+        matches!(self, Self::SelectOne(_))
+    }
+
+    /// Returns `true` for `Wildcard` output.
+    pub fn is_wildcard(&self) -> bool {
+        matches!(self, Self::Wildcard)
+    }
+
+    /// Returns `true` for `Boolean` (ASK) output.
+    pub fn is_boolean(&self) -> bool {
+        matches!(self, Self::Boolean)
+    }
+
+    /// Returns `true` for `Construct` output.
+    pub fn is_construct(&self) -> bool {
+        matches!(self, Self::Construct(_))
     }
 
     /// Variables the output depends on; `None` for Wildcard (all vars needed).
@@ -250,7 +259,7 @@ impl ParsedQuery {
 /// # Returns
 ///
 /// A resolved `ParsedQuery` with Sids and VarIds
-pub fn lower_query<E: IriEncoder>(
+pub(crate) fn lower_query<E: IriEncoder>(
     ast: UnresolvedQuery,
     encoder: &E,
     vars: &mut VarRegistry,
@@ -1705,7 +1714,7 @@ mod tests {
         assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
         assert_eq!(vars.len(), 2);
-        assert_eq!(query.output.select_mode(), SelectMode::Many);
+        assert!(matches!(query.output, QueryOutput::Select(_)));
     }
 
     #[test]
