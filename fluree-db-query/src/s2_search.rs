@@ -80,11 +80,6 @@ impl S2SearchOperator {
         }
     }
 
-    /// Get the output schema
-    pub fn schema(&self) -> &[VarId] {
-        effective_schema(&self.required_vars, &self.schema)
-    }
-
     /// Trim output to only the specified downstream variables.
     pub fn with_required_vars(mut self, required_vars: Option<&[VarId]>) -> Self {
         self.required_vars = compute_trimmed_vars(&self.schema, required_vars);
@@ -213,7 +208,7 @@ impl QueryGeomResolved {
 #[async_trait]
 impl Operator for S2SearchOperator {
     fn schema(&self) -> &[VarId] {
-        self.schema()
+        effective_schema(&self.required_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
