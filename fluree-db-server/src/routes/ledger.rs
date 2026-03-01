@@ -383,6 +383,7 @@ pub async fn info(
                 || realtime_details,
             graph: graph_selector,
         };
+
         let mut info = match &state.fluree {
             crate::state::FlureeInstance::File(f) => {
                 fluree_db_api::ledger_info::build_ledger_info_with_options(

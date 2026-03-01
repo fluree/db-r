@@ -88,6 +88,8 @@ Alice
 Bob
 ```
 
+Note: `--format csv` (and `--format tsv`) are only supported for **local** ledgers. Tracked/remote ledgers support `json` and `table` output.
+
 ## Time Travel
 
 Query historical states with `--at`:
@@ -102,6 +104,10 @@ fluree query --at abc123def 'SELECT * WHERE { ?s ?p ?o }'
 # Query at ISO-8601 timestamp
 fluree query --at 2024-01-15T10:30:00Z 'SELECT * WHERE { ?s ?p ?o }'
 ```
+
+Tracked/remote ledgers also support `--at`. The CLI will translate `--at` into the appropriate dataset/time-travel form when forwarding the query to the remote server.
+
+SPARQL note (remote): if your SPARQL already includes `FROM` / `FROM NAMED`, the CLI will **not** rewrite it for `--at`. In that case, encode time travel directly in the `FROM` IRI (e.g., `FROM <myledger:main@t:5>`).
 
 ## Examples
 

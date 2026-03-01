@@ -86,6 +86,12 @@
   - [Commit receipts and tx-id](transactions/commit-receipts.md)
   - [Indexing side-effects](transactions/indexing-side-effects.md)
 
+- [Ledger configuration (config graph)](ledger-config/README.md)
+  - [Writing config data](ledger-config/writing-config.md)
+  - [Setting groups](ledger-config/setting-groups.md)
+  - [Override control](ledger-config/override-control.md)
+  - [Unique constraints](ledger-config/unique-constraints.md)
+
 - [Security and policy](security/README.md)
   - [Authentication](security/authentication.md)
   - [Storage encryption](security/encryption.md)

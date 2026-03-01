@@ -70,6 +70,22 @@ Important nuance:
 ### Named graphs within a ledger
 We support multiple named graphs inside a single ledger (shared commit chain, distinct graph identities/indexes).
 
+#### System graphs
+
+Every ledger reserves system named graphs for internal use:
+
+| Graph | IRI pattern | Purpose |
+|-------|-------------|---------|
+| Default graph | (implicit) | Application data |
+| Txn-meta | `urn:fluree:{ledger_id}#txn-meta` | Commit metadata |
+| Config graph | `urn:fluree:{ledger_id}#config` | Ledger configuration |
+
+User-defined named graphs (created via TriG) are identified by their IRI and allocated after the system graphs.
+
+The **config graph** stores ledger-level operational defaults (policy, SHACL, reasoning, uniqueness constraints) as RDF triples. See [Ledger configuration](../ledger-config/README.md) for details.
+
+#### Naming convention
+
 Recommended user-facing convention (alias-friendly, URL-friendly, avoids `/` as a delimiter inside the ledger namespace):
 
 ```

@@ -279,3 +279,180 @@ mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
     mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
     mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
     mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .
+
+mem:constraint-01kjcyjgszs18b9h4jg7h3xpfj a mem:Constraint ;
+    mem:content "Consensus/multisig gotcha for config graph: commit validity rules (validator set/threshold) used to validate a proposed commit at t must come from already-committed state (effectively config as-of t-1), not from config mutations inside the same commit; otherwise a commit could authorize itself by changing validator set/threshold in its own payload. Config can declare consensus parameters, but validation must treat them as lagging state." ;
+    mem:tag "commit-validation" ;
+    mem:tag "config-graph" ;
+    mem:tag "consensus" ;
+    mem:tag "gotcha" ;
+    mem:tag "multisig" ;
+    mem:tag "raft" ;
+    mem:tag "tendermint" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-02-26T12:25:27.104151+00:00"^^xsd:dateTime .
+
+
+mem:constraint-01kjd0p1bpj6n5nw00ssap82h0 a mem:Constraint ;
+    mem:content "Memory hygiene when recalling: if memory_recall returns multiple overlapping/near-duplicate memories about the same concept, consolidate them into a single canonical memory. Prefer creating the canonical version via memory_update so it supersedes an older entry (superseded entries are filtered from “current” results). For any remaining duplicates, either forget them if they add no unique value, or rewrite them into a short pointer that links to the canonical memory ID." ;
+    mem:tag "agent-rules" ;
+    mem:tag "dedup" ;
+    mem:tag "hygiene" ;
+    mem:tag "memory" ;
+    mem:tag "recall" ;
+    mem:tag "supersedes" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "should" ;
+    mem:artifactRef ".cursor/rules/fluree_rules.md" ;
+    mem:createdAt "2026-02-26T13:02:19.510395+00:00"^^xsd:dateTime .
+
+mem:artifact-01kjdzhtx6em3sg77t7faxyzpz a mem:Artifact ;
+    mem:content "The `config_iris` module in `fluree-vocab/src/lib.rs` (line 1673–1838) defines ~50 full-IRI string constants for the Fluree ledger config graph vocabulary. All IRIs live under `https://ns.flur.ee/db#`.\n\n**Organization by section:**\n- **Type classes** — `LEDGER_CONFIG`, `GRAPH_CONFIG`, `GRAPH_REF`, `TRUST_POLICY`\n- **Setting group predicates** — `POLICY_DEFAULTS`, `SHACL_DEFAULTS`, `REASONING_DEFAULTS`, `DATALOG_DEFAULTS`, `GRAPH_OVERRIDES`\n- **Policy fields** — `DEFAULT_ALLOW`, `POLICY_SOURCE`\n- **SHACL fields** — `SHACL_ENABLED`, `SHAPES_SOURCE`, `VALIDATION_MODE`, `VALIDATION_REJECT`, `VALIDATION_WARN`\n- **Reasoning fields** — `REASONING_MODES`, `SCHEMA_SOURCE`\n- **Datalog fields** — `DATALOG_ENABLED`, `RULES_SOURCE`, `ALLOW_QUERY_TIME_RULES`\n- **Override control** — `OVERRIDE_CONTROL`, `CONTROL_MODE`, `ALLOWED_IDENTITIES`, `OVERRIDE_NONE`, `OVERRIDE_ALL`, `IDENTITY_RESTRICTED`\n- **GraphConfig fields** — `TARGET_GRAPH`, `DEFAULT_GRAPH` (sentinel for g_id=0), `TXN_META_GRAPH` (sentinel for g_id=1)\n- **GraphRef / GraphSource fields** — `GRAPH_SOURCE`, `LEDGER_PRED`, `GRAPH_SELECTOR`\n- **TrustPolicy fields** — `TRUST_POLICY_PRED`, `TRUST_MODE`, `TRUSTED`, `SIGNED_INDEX`, `COMMIT_VERIFIED`\n- **Temporal** — `AT_T`\n- **Rollback guard** — `ROLLBACK_GUARD`, `MIN_T`\n- **Transact defaults** — `TRANSACT_DEFAULTS`, `UNIQUE_ENABLED`, `CONSTRAINTS_SOURCE`, `ENFORCE_UNIQUE`\n\n**Primary consumer:** `fluree-db-api/src/config_resolver.rs` — reads the config graph by encoding these IRIs into SIDs and querying the ledger snapshot. The config resolver uses these constants to hydrate `LedgerConfig`, `GraphConfig`, `PolicyDefaults`, `ShaclDefaults`, `ReasoningDefaults`, `DatalogDefaults`, trust policies, rollback guards, and override controls.\n\n**Sentinel IRIs:** `DEFAULT_GRAPH` and `TXN_META_GRAPH` are sentinel values used in `matches_graph_target()` to match graph overrides — `DEFAULT_GRAPH` matches `None` (g_id=0) and `TXN_META_GRAPH` matches any IRI ending with `#txn-meta`." ;
+    mem:tag "IRI-constants" ;
+    mem:tag "config-graph" ;
+    mem:tag "config-iris" ;
+    mem:tag "config-resolver" ;
+    mem:tag "ledger-config" ;
+    mem:tag "vocab" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-vocab/src/lib.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:01:47.686885+00:00"^^xsd:dateTime ;
+    mem:artifactKind "module" .
+
+mem:fact-01kje110tp07nwqae7av5amd5s a mem:Fact ;
+    mem:content "f:enforceUnique implementation: transaction-time property uniqueness enforcement. Annotations (f:enforceUnique true) are triples on property IRIs in source graphs. Config activation via f:transactDefaults with f:uniqueEnabled and f:constraintsSource. Uses POST index with datatype-aware (g, p, o, dt) matching. Stale removal in range_with_overlay handles last-op-wins. Enforcement runs after staging, reads config from pre-txn state (lagging). Independent of shacl feature flag. Files: fluree-vocab config_iris (4 constants), ledger_config.rs TransactDefaults, config_resolver.rs (MergeableGroup + reader + merge_transact_opts), tx.rs (enforce_unique_after_staging → resolve_per_graph_unique_sids → enforce_unique_constraints)." ;
+    mem:tag "config-graph" ;
+    mem:tag "enforce-unique" ;
+    mem:tag "transact-defaults" ;
+    mem:tag "tx-pipeline" ;
+    mem:tag "uniqueness" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-db-api/src/tx.rs" ;
+    mem:artifactRef "fluree-db-core/src/ledger_config.rs" ;
+    mem:artifactRef "fluree-db-transact/src/error.rs" ;
+    mem:artifactRef "fluree-vocab/src/lib.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:27:33.846975+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:decision-01kje2pt9maxrxjw49ydgejmpe a mem:Decision ;
+    mem:content "f:enforceUnique uses storage-layer value identity, NOT RDF strict equality. The uniqueness key is (graph, predicate, FlakeValue) — it ignores the RDF datatype IRI (flake.dt) and language tag (FlakeMeta.lang). This matches \"how humans think of the value\": if the bytes are the same, it's a duplicate regardless of what datatype or language annotation is attached. Callers cannot subvert uniqueness by asserting the same string with a different datatype IRI or lang tag. Different FlakeValue variants (e.g., FlakeValue::String(\"42\") vs FlakeValue::Long(42)) are naturally distinct at the storage layer and do NOT conflict. The RangeMatch query uses predicate_object(p, o) without .with_datatype(), which matches all datatypes for that (p, o) pair in the POST index." ;
+    mem:tag "FlakeValue" ;
+    mem:tag "POST-index" ;
+    mem:tag "RDF" ;
+    mem:tag "config-graph" ;
+    mem:tag "datatype" ;
+    mem:tag "enforceUnique" ;
+    mem:tag "transact" ;
+    mem:tag "uniqueness" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/tx.rs" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T22:56:56.628412+00:00"^^xsd:dateTime ;
+    mem:rationale "RDF strict equality treats \"hello\"^^xsd:string and \"hello\"^^ex:custom as different values because their datatype IRIs differ. For a uniqueness constraint this is surprising and easily subverted — users expect \"same text = same value.\" Storage-layer identity (FlakeValue enum variant + payload) is the right granularity: it's what the index actually stores and compares, it's deterministic, and it prevents accidental or intentional duplicate sneaking via datatype annotation." ;
+    mem:alternatives "RDF strict equality (datatype-aware key including dt Sid), datatype-family matching via dt_compatible()" .
+
+mem:fact-01kje30pfdnvpv5fx0ng4234jf a mem:Fact ;
+    mem:content "The `docs/` directory is the canonical documentation source of truth, containing 15 sections and ~124 markdown files. It is designed for future static-site generators (mdBook, Zola, Docusaurus) and renders natively on GitHub.\n\n**Navigation & discovery:**\n- `docs/SUMMARY.md` is the **table of contents** — a hierarchical list of every page. When adding a new doc, always add its entry here.\n- Each subdirectory has a `README.md` that acts as a **hub page** listing all docs in that section with brief descriptions. When adding a doc to a section, update that section's README too.\n- The top-level `docs/README.md` is a short meta-doc explaining authoring conventions (one topic per file, capability-based names, relative links).\n\n**Section layout:**\n| Section | Purpose |\n|---|---|\n| `cli/` | One file per CLI command (init, create, query, etc.) |\n| `getting-started/` | Quickstart guides (server, ledger, write, query, Rust API) |\n| `concepts/` | Core concepts (ledgers, IRIs, datatypes, datasets, time-travel, policy) |\n| `design/` | Deep-dive architecture docs (query execution, index format, storage traits, nameservice, commits) |\n| `api/` | HTTP API (endpoints, headers, signed requests, errors) |\n| `query/` | Query guides (JSON-LD, SPARQL, output formats, datasets, CONSTRUCT, explain) |\n| `transactions/` | Transaction guides (insert, upsert, update/delete, retractions, turtle, signing) |\n| `security/` | Auth, encryption, commit signing, policy model |\n| `indexing-and-search/` | Indexing, reindex, fulltext, BM25, vector, geospatial |\n| `graph-sources/` | External graph sources (Iceberg, R2RML, BM25) |\n| `operations/` | Config, storage backends, DynamoDB, telemetry, admin/health |\n| `troubleshooting/` | Common errors, debugging queries, performance tracing |\n| `reference/` | Glossary, vocabulary, crate-map, connection config, compatibility |\n| `contributing/` | Dev setup, tests, SPARQL compliance, tracing guide, design notes |\n\n**Where to put new content:**\n- **New CLI command** → `docs/cli/<command>.md` + entry in SUMMARY.md\n- **New concept or behavior explanation** → `docs/concepts/` or the most relevant existing section\n- **New internal architecture/design decision** → `docs/design/`\n- **New operational guide (config, deployment)** → `docs/operations/`\n- **New troubleshooting entry** → `docs/troubleshooting/`\n- **New reference material (glossary term, crate)** → `docs/reference/`\n- **Entirely new section** → create subdir with README.md hub, add to SUMMARY.md\n\n**Authoring conventions:**\n- One topic per file; use stable capability-based names (e.g., `sparql.md` not `sparql-v1.1.md`)\n- Use relative links within docs/ (e.g., `../concepts/time-travel.md`)\n- Structure: Title → Overview → Subtopics → Code examples → Related docs / See also\n- Include bash/JSON/SPARQL code blocks for examples\n- `docs/contributing/README.md` is the detailed contributor guide (372 lines) covering style, PR format, and workflow — it is NOT just a hub page like other section READMEs." ;
+    mem:tag "README" ;
+    mem:tag "SUMMARY.md" ;
+    mem:tag "authoring" ;
+    mem:tag "contributing" ;
+    mem:tag "docs" ;
+    mem:tag "documentation" ;
+    mem:tag "project-structure" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/README.md" ;
+    mem:artifactRef "docs/SUMMARY.md" ;
+    mem:artifactRef "docs/contributing/README.md" ;
+    mem:branch "feature/config-graph" ;
+    mem:createdAt "2026-02-26T23:02:20.397376+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjd0b982vvxq7kxvn9bs90s a mem:Fact ;
+    mem:content "Historical time-travel views must attach a BinaryRangeProvider when loading a BinaryIndexStore. `LedgerSnapshot::from_root_bytes()` produces a metadata-only snapshot with `range_provider=None`, so `Fluree::load_graph_db_at_t()` needs to set `LedgerSnapshot.range_provider = Some(BinaryRangeProvider::new(store, dict_novelty))` after loading the binary store; otherwise range-based operators can error with: \"binary-only db has no range_provider attached — load and attach BinaryIndexStore before queries\"." ;
+    mem:tag "binary-index" ;
+    mem:tag "binaryrangeprovider" ;
+    mem:tag "bugfix" ;
+    mem:tag "historical-view" ;
+    mem:tag "range-provider" ;
+    mem:tag "time-travel" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-core/src/db.rs" ;
+    mem:artifactRef "fluree-db-core/src/range.rs" ;
+    mem:createdAt "2026-02-28T15:13:52.424054+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k a mem:Fact ;
+    mem:content "HTTP server caches ledger-info responses in an LRU keyed by (ledger_id, commit_t, index_t, realtime_property_details, include_property_datatypes, graph selector string). This avoids repeated novelty->stats merges when ledger-info is polled frequently; cache naturally busts when commit_t or index_t changes." ;
+    mem:tag "cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "lru" ;
+    mem:tag "novelty" ;
+    mem:tag "performance" ;
+    mem:tag "server" ;
+    mem:tag "stats" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-server/src/routes/ledger.rs" ;
+    mem:artifactRef "fluree-db-server/src/state.rs" ;
+    mem:createdAt "2026-02-28T17:25:10.649801+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjmk1nva80w5cj3ey87asnj a mem:Fact ;
+    mem:content "Global LRU “leaflet cache” (single memory budget):\n- Implementation: `fluree-db-binary-index/src/read/leaflet_cache.rs` (`LeafletCache`) uses a single `moka::sync::Cache` (TinyLFU) shared across decoded entry types (R1/R2 leaflet regions + dict leaves + BM25 leaflets + vector shards). One pool = one cache budget.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB) sets the max bytes for the cache.\n- Wiring: enabled by default in `fluree-db-api/src/ledger_manager.rs` (`LedgerManagerConfig::default()` creates `LeafletCache::with_max_bytes(...)`), and used by `BinaryIndexStore` load paths when ledger caching is on.\n- Note: Region 3 (history journal) is intentionally never cached (cold path)." ;
+    mem:tag "binary-index" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet-cache" ;
+    mem:tag "lru" ;
+    mem:tag "moka" ;
+    mem:tag "performance" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-02-28T17:26:25.211748+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjn8bsqjesph3fya636nt4f a mem:Fact ;
+    mem:content "(Superseded) Ledger-info caching was initially prototyped at the HTTP server layer, but the intended caching lives in the API layer (fluree-db-api) for upstream app reuse. See newer memory entry about API-level ledger-info caching via the global LeafletCache budget." ;
+    mem:tag "api" ;
+    mem:tag "cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "performance" ;
+    mem:tag "superseded" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:supersedes mem:fact-01kjjmgrvsxbkfhe2yekx7zq0k ;
+    mem:createdAt "2026-02-28T17:38:03.703314+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kjjn8kspr3gnkcsmq9t1fsvf a mem:Fact ;
+    mem:content "API-level ledger-info caching (for upstream apps):\n- Location: `fluree-db-api/src/ledger_info.rs` (`LedgerInfoBuilder::execute`).\n- Cache backend: the global unified `LeafletCache` (TinyLFU) so ledger-info shares the single memory budget with other cached decode artifacts.\n- Budget control: `FLUREE_LEAFLET_CACHE_BYTES` (default 8 GiB).\n- Key: xxh3_128 hash of a canonical string including (ledger_id, commit_t=ledger.t(), index_t=ledger.snapshot.t, realtime_property_details, include_property_datatypes, graph selector, context JSON hash).\n- Value: serialized JSON bytes (`Arc<[u8]>`) stored in `fluree-db-binary-index/src/read/leaflet_cache.rs` under a new `LedgerInfo` entry type.\n- Behavior: cache hit returns parsed JSON without recomputing novelty-merged stats; cache naturally busts when commit_t or index_t changes." ;
+    mem:tag "api" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet-cache" ;
+    mem:tag "ledger-info" ;
+    mem:tag "moka" ;
+    mem:tag "performance" ;
+    mem:tag "tinylfu" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-02-28T17:38:11.894884+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

@@ -41,6 +41,7 @@ pub mod graph_registry;
 pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
+pub mod ledger_config;
 pub mod ledger_id;
 pub mod namespaces;
 pub mod ns_vec_bi_dict;
@@ -83,7 +84,10 @@ pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};
 pub use graph_db_ref::GraphDbRef;
-pub use graph_registry::{txn_meta_graph_iri, GraphRegistry};
+pub use graph_registry::{
+    config_graph_iri, txn_meta_graph_iri, GraphRegistry, CONFIG_GRAPH_ID, FIRST_USER_GRAPH_ID,
+    TXN_META_GRAPH_ID,
+};
 pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 pub use index_stats::{

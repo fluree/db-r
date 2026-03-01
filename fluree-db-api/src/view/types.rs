@@ -7,6 +7,7 @@ use std::sync::Arc;
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::ids::GraphId;
+use fluree_db_core::ledger_config::{LedgerConfig, ResolvedConfig};
 use fluree_db_core::{GraphDbRef, LedgerSnapshot, NoOverlay, OverlayProvider};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
@@ -141,6 +142,28 @@ pub struct GraphDb {
     /// Populated from turtle `@prefix` declarations captured during import.
     /// When a query has no `@context`, this is injected automatically.
     pub default_context: Option<serde_json::Value>,
+
+    // ========================================================================
+    // Ledger config (optional, from config graph g_id=2)
+    // ========================================================================
+    /// Full ledger config, shared across all views of the same ledger.
+    pub(crate) ledger_config: Option<Arc<LedgerConfig>>,
+
+    /// Effective config for this view's graph (ledger-wide merged with per-graph override).
+    ///
+    /// Carried on `GraphDb` so downstream callers can apply identity gating
+    /// at request time without re-reading the config graph.
+    pub(crate) resolved_config: Option<ResolvedConfig>,
+
+    // ========================================================================
+    // Datalog config (from config graph, applied at query boundary)
+    // ========================================================================
+    /// Whether datalog reasoning is enabled (from config). Default: `true`.
+    pub(crate) datalog_enabled: bool,
+    /// Whether query-time rule injection is allowed (from config). Default: `true`.
+    pub(crate) query_time_rules_allowed: bool,
+    /// Whether the query can override datalog config settings. Default: `true`.
+    pub(crate) datalog_override_allowed: bool,
 }
 
 impl std::fmt::Debug for GraphDb {
@@ -154,6 +177,7 @@ impl std::fmt::Debug for GraphDb {
             .field("has_policy", &self.policy.is_some())
             .field("has_reasoning", &self.reasoning.is_some())
             .field("reasoning_precedence", &self.reasoning_precedence)
+            .field("has_config", &self.ledger_config.is_some())
             .finish()
     }
 }
@@ -196,6 +220,11 @@ impl GraphDb {
             binary_store: None,
             dict_novelty: None,
             default_context: None,
+            ledger_config: None,
+            resolved_config: None,
+            datalog_enabled: true,
+            query_time_rules_allowed: true,
+            datalog_override_allowed: true,
         }
     }
 
@@ -408,6 +437,73 @@ impl GraphDb {
         self.binary_store
             .as_ref()
             .map(|store| BinaryGraphView::new(store.clone(), self.graph_id))
+    }
+}
+
+// ============================================================================
+// Ledger Config
+// ============================================================================
+
+impl GraphDb {
+    /// Attach a ledger config (shared across views of the same ledger).
+    pub(crate) fn with_ledger_config(mut self, config: Arc<LedgerConfig>) -> Self {
+        self.ledger_config = Some(config);
+        self
+    }
+
+    /// Attach a resolved config (effective for this view's graph).
+    pub(crate) fn with_resolved_config(mut self, config: ResolvedConfig) -> Self {
+        self.resolved_config = Some(config);
+        self
+    }
+
+    /// Get the full ledger config (if any).
+    pub fn ledger_config(&self) -> Option<&LedgerConfig> {
+        self.ledger_config.as_deref()
+    }
+
+    /// Get the resolved config for this view's graph (if any).
+    pub fn resolved_config(&self) -> Option<&ResolvedConfig> {
+        self.resolved_config.as_ref()
+    }
+}
+
+// ============================================================================
+// Datalog Config
+// ============================================================================
+
+impl GraphDb {
+    /// Set whether datalog reasoning is enabled for queries on this view.
+    pub fn with_datalog_enabled(mut self, enabled: bool) -> Self {
+        self.datalog_enabled = enabled;
+        self
+    }
+
+    /// Set whether query-time rule injection is allowed for this view.
+    pub fn with_query_time_rules_allowed(mut self, allowed: bool) -> Self {
+        self.query_time_rules_allowed = allowed;
+        self
+    }
+
+    /// Set whether queries can override datalog config settings.
+    pub fn with_datalog_override_allowed(mut self, allowed: bool) -> Self {
+        self.datalog_override_allowed = allowed;
+        self
+    }
+
+    /// Check if datalog reasoning is enabled (from config).
+    pub fn datalog_enabled(&self) -> bool {
+        self.datalog_enabled
+    }
+
+    /// Check if query-time rule injection is allowed (from config).
+    pub fn query_time_rules_allowed(&self) -> bool {
+        self.query_time_rules_allowed
+    }
+
+    /// Check if queries can override datalog config settings.
+    pub fn datalog_override_allowed(&self) -> bool {
+        self.datalog_override_allowed
     }
 }
 

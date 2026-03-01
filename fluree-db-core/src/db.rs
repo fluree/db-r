@@ -39,7 +39,8 @@ pub struct LedgerSnapshotMetadata {
     /// Max assigned string_id from the index root
     pub string_watermark: u32,
     /// Graph IRIs from index root in raw root format.
-    /// Index 0 = g_id 1 (txn-meta), index 1 = g_id 2 (first user graph), etc.
+    /// Index 0 = g_id 1 (txn-meta), index 1 = g_id 2 (config),
+    /// index 2 = g_id 3 (first user graph), etc.
     /// Matches `IndexRootV5.graph_iris` encoding.
     pub graph_iris: Vec<String>,
 }
