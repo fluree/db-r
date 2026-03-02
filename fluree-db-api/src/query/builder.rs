@@ -816,11 +816,7 @@ where
             QueryInput::JsonLd(json) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_jsonld_tracked_with_policy(
-                            json,
-                            policy,
-                            format_config,
-                        )
+                        .query_connection_jsonld_tracked_with_policy(json, policy, format_config)
                         .await
                 }
                 None => {
@@ -832,11 +828,7 @@ where
             QueryInput::Sparql(sparql) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_sparql_tracked_with_policy(
-                            sparql,
-                            policy,
-                            format_config,
-                        )
+                        .query_connection_sparql_tracked_with_policy(sparql, policy, format_config)
                         .await
                 }
                 None => {
