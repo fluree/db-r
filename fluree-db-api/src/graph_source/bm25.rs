@@ -8,7 +8,7 @@ use crate::graph_source::helpers::{expand_ids_in_results, extract_prefix_map};
 use crate::graph_source::result::{
     Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult, SnapshotSelection,
 };
-use crate::{QueryResult as ApiQueryResult, Result};
+use crate::Result;
 use fluree_db_core::{
     ledger_id::split_ledger_id, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
 };
@@ -16,7 +16,7 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
-use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, QueryOutput, VarRegistry};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -225,8 +225,7 @@ where
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing
         let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.select_mode = SelectMode::Wildcard;
-        parsed_for_exec.select.clear();
+        parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
@@ -235,19 +234,14 @@ where
         let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
-        let result = ApiQueryResult {
+        let result = crate::query::helpers::build_query_result(
             vars,
-            t: ledger.t(),
-            novelty: Some(ledger.novelty.clone()),
-            context: parsed.context,
-            orig_context: parsed.orig_context,
-            select: parsed.select,
-            select_mode: parsed.select_mode,
+            parsed,
             batches,
-            construct_template: parsed.construct_template,
-            graph_select: parsed.graph_select,
-            binary_graph: None,
-        };
+            ledger.t(),
+            Some(ledger.novelty.clone()),
+            None,
+        );
 
         let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
         match json {
@@ -271,8 +265,7 @@ where
 
         // Execute with a wildcard select
         let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.select_mode = SelectMode::Wildcard;
-        parsed_for_exec.select.clear();
+        parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
@@ -281,21 +274,17 @@ where
         let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
-        let result = ApiQueryResult {
+        let novelty = view
+            .overlay()
+            .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>);
+        let result = crate::query::helpers::build_query_result(
             vars,
-            t: view.to_t(),
-            novelty: view
-                .overlay()
-                .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
-            context: parsed.context,
-            orig_context: parsed.orig_context,
-            select: parsed.select,
-            select_mode: parsed.select_mode,
+            parsed,
             batches,
-            construct_template: parsed.construct_template,
-            graph_select: parsed.graph_select,
-            binary_graph: None,
-        };
+            view.to_t(),
+            novelty,
+            None,
+        );
 
         let json = result.to_jsonld_async(view.as_graph_db_ref(0)).await?;
         match json {

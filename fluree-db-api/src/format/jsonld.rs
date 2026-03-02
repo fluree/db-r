@@ -4,7 +4,7 @@
 //! - **Array** (default, Clojure parity): `[["ex:alice", "Alice", 30], ...]`
 //! - **Object** (API-friendly): `[{"?s": "ex:alice", "?name": "Alice"}, ...]`
 
-use super::config::{FormatterConfig, JsonLdRowShape, SelectMode};
+use super::config::{FormatterConfig, JsonLdRowShape};
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
@@ -20,40 +20,41 @@ pub fn format(
     compactor: &IriCompactor,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let select_one = result.output.is_select_one();
     let mut rows = Vec::new();
 
     for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            let row = match config.select_mode {
-                SelectMode::Wildcard => {
-                    // Wildcard: use batch schema, return all bound vars as object
-                    format_row_wildcard(result, batch, row_idx, &result.vars, compactor)?
-                }
-                _ => {
-                    // Normal select: use select list
-                    match config.jsonld_row_shape {
-                        JsonLdRowShape::Array => {
-                            format_row_array(result, batch, row_idx, &result.select, compactor)?
-                        }
-                        JsonLdRowShape::Object => format_row_object(
-                            result,
-                            batch,
-                            row_idx,
-                            &result.select,
-                            &result.vars,
-                            compactor,
-                        )?,
-                    }
+            let row = if result.output.is_wildcard() {
+                // Wildcard: use batch schema, return all bound vars as object
+                format_row_wildcard(result, batch, row_idx, &result.vars, compactor)?
+            } else {
+                // Normal select: use select list
+                match config.jsonld_row_shape {
+                    JsonLdRowShape::Array => format_row_array(
+                        result,
+                        batch,
+                        row_idx,
+                        result.output.select_vars_or_empty(),
+                        compactor,
+                    )?,
+                    JsonLdRowShape::Object => format_row_object(
+                        result,
+                        batch,
+                        row_idx,
+                        result.output.select_vars_or_empty(),
+                        &result.vars,
+                        compactor,
+                    )?,
                 }
             };
             rows.push(row);
 
-            // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One {
+            if select_one {
                 break;
             }
         }
-        if config.select_mode == SelectMode::One && !rows.is_empty() {
+        if select_one && !rows.is_empty() {
             break;
         }
     }
@@ -61,8 +62,8 @@ pub fn format(
     // Clojure parity: for a 1-column SELECT in array-row mode, return a flat array of values
     // (not `[ [v1], [v2] ]`).
     if config.jsonld_row_shape == JsonLdRowShape::Array
-        && config.select_mode != SelectMode::Wildcard
-        && result.select.len() == 1
+        && !result.output.is_wildcard()
+        && result.output.select_vars_or_empty().len() == 1
     {
         rows = rows
             .into_iter()
@@ -73,10 +74,10 @@ pub fn format(
             .collect();
     }
 
-    // Return based on select mode
-    match config.select_mode {
-        SelectMode::One => Ok(rows.into_iter().next().unwrap_or(JsonValue::Null)),
-        _ => Ok(JsonValue::Array(rows)),
+    if select_one {
+        Ok(rows.into_iter().next().unwrap_or(JsonValue::Null))
+    } else {
+        Ok(JsonValue::Array(rows))
     }
 }
 

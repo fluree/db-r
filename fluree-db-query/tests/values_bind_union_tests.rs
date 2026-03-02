@@ -12,7 +12,7 @@ use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
-use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::seed::EmptyOperator;
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::values::ValuesOperator;
@@ -33,14 +33,17 @@ fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePatter
 }
 
 fn make_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
+    let output = if select.is_empty() {
+        QueryOutput::Wildcard
+    } else {
+        QueryOutput::Select(select)
+    };
     ParsedQuery {
         context: ParsedContext::default(),
         orig_context: None,
-        select,
+        output,
         patterns,
         options: QueryOptions::default(),
-        select_mode: SelectMode::default(),
-        construct_template: None,
         graph_select: None,
     }
 }

@@ -4,8 +4,8 @@
 //! are formatted. Supports JSON-based formats (JSON-LD, SPARQL JSON, TypedJson)
 //! and high-performance delimited-text formats (TSV, CSV).
 
-// Re-export SelectMode from fluree-db-query (canonical source)
-pub use fluree_db_query::SelectMode;
+// Re-export QueryOutput from fluree-db-query (canonical source)
+pub use fluree_db_query::parse::QueryOutput;
 
 /// Output format selection
 ///
@@ -98,11 +98,6 @@ pub struct FormatterConfig {
     /// Only used when `format == OutputFormat::JsonLd`.
     pub jsonld_row_shape: JsonLdRowShape,
 
-    /// Select mode (from parsed query)
-    ///
-    /// Controls whether result is an array or single value.
-    pub select_mode: SelectMode,
-
     /// Pretty-print JSON output
     ///
     /// When true, uses indentation and newlines for human readability.
@@ -155,12 +150,6 @@ impl FormatterConfig {
         }
     }
 
-    /// Set the select mode
-    pub fn with_select_mode(mut self, mode: SelectMode) -> Self {
-        self.select_mode = mode;
-        self
-    }
-
     /// Enable pretty printing
     pub fn with_pretty(mut self) -> Self {
         self.pretty = true;
@@ -183,7 +172,6 @@ mod tests {
         let config = FormatterConfig::default();
         assert_eq!(config.format, OutputFormat::JsonLd);
         assert_eq!(config.jsonld_row_shape, JsonLdRowShape::Array);
-        assert_eq!(config.select_mode, SelectMode::Many);
         assert!(!config.pretty);
     }
 
@@ -221,11 +209,9 @@ mod tests {
     #[test]
     fn test_builder_methods() {
         let config = FormatterConfig::jsonld()
-            .with_select_mode(SelectMode::One)
             .with_pretty()
             .with_row_shape(JsonLdRowShape::Object);
 
-        assert_eq!(config.select_mode, SelectMode::One);
         assert!(config.pretty);
         assert_eq!(config.jsonld_row_shape, JsonLdRowShape::Object);
     }
