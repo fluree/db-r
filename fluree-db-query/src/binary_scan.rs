@@ -1215,7 +1215,7 @@ impl Operator for BinaryScanOperator {
 
         let scan_ms = scan_start.elapsed().as_secs_f64() * 1000.0;
         if produced > 0 {
-            tracing::info!(
+            tracing::trace!(
                 leaves_scanned,
                 rows = produced,
                 scan_ms = format!("{:.2}", scan_ms),

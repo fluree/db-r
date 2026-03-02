@@ -3,6 +3,7 @@
 //! Contains arity checks, regex caching, datetime parsing, and other utilities.
 
 use crate::binding::{Binding, RowAccess};
+use crate::context::ExecutionContext;
 use crate::context::WellKnownDatatypes;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -129,16 +130,27 @@ pub fn check_min_arity(args: &[Expression], min: usize, fn_name: &str) -> Result
 /// Parse a datetime from a binding, respecting datatype
 ///
 /// Returns None if not a datetime type or parse fails.
-/// Only parses when binding has XSD datetime/date/time datatype.
-pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOffset>> {
+/// Handles xsd:dateTime, xsd:date, xsd:time, and calendar fragment types
+/// (xsd:gYear, xsd:gYearMonth, xsd:gMonth, xsd:gDay, xsd:gMonthDay).
+/// Fragment types are promoted to full DateTime with sensible defaults
+/// for missing components (e.g., gYear -> Jan 1 at 00:00:00).
+pub fn parse_datetime_from_binding(
+    binding: &Binding,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Option<DateTime<FixedOffset>> {
     let datatypes = &*WELL_KNOWN_DATATYPES;
+    let utc = FixedOffset::east_opt(0).unwrap();
 
     match binding {
         Binding::Lit { val, dt, .. } => {
-            // Check datatype is datetime/date/time using known Sids (no IRI decoding)
             let is_datetime_type = *dt == datatypes.xsd_datetime
                 || *dt == datatypes.xsd_date
-                || *dt == datatypes.xsd_time;
+                || *dt == datatypes.xsd_time
+                || *dt == datatypes.xsd_g_year
+                || *dt == datatypes.xsd_g_year_month
+                || *dt == datatypes.xsd_g_month
+                || *dt == datatypes.xsd_g_day
+                || *dt == datatypes.xsd_g_month_day;
 
             if !is_datetime_type {
                 return None;
@@ -146,15 +158,11 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
 
             match val {
                 FlakeValue::DateTime(dt) => {
-                    let offset = dt
-                        .tz_offset()
-                        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+                    let offset = dt.tz_offset().unwrap_or(utc);
                     Some(dt.instant().with_timezone(&offset))
                 }
                 FlakeValue::Date(d) => {
-                    let offset = d
-                        .tz_offset()
-                        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+                    let offset = d.tz_offset().unwrap_or(utc);
                     let naive = d.date().and_hms_opt(0, 0, 0)?;
                     Some(
                         offset
@@ -164,11 +172,62 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
                     )
                 }
                 FlakeValue::Time(t) => {
-                    let offset = t
-                        .tz_offset()
-                        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+                    let offset = t.tz_offset().unwrap_or(utc);
                     let date = NaiveDate::from_ymd_opt(1970, 1, 1)?;
                     let naive = NaiveDateTime::new(date, t.time());
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GYear(gy) => {
+                    let offset = gy.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(gy.year(), 1, 1)?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GYearMonth(gym) => {
+                    let offset = gym.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(gym.year(), gym.month(), 1)?
+                        .and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GMonth(gm) => {
+                    let offset = gm.tz_offset().unwrap_or(utc);
+                    let naive =
+                        NaiveDate::from_ymd_opt(1970, gm.month(), 1)?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GDay(gd) => {
+                    let offset = gd.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(1970, 1, gd.day())?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GMonthDay(gmd) => {
+                    let offset = gmd.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(1970, gmd.month(), gmd.day())?
+                        .and_hms_opt(0, 0, 0)?;
                     Some(
                         offset
                             .from_local_datetime(&naive)
@@ -181,6 +240,130 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
                     let with_time = format!("{}T00:00:00+00:00", s);
                     DateTime::parse_from_rfc3339(&with_time).ok()
                 }),
+                _ => None,
+            }
+        }
+        Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            dt_id,
+            ..
+        } => {
+            let ctx = ctx?;
+            let store = ctx.binary_store.as_deref()?;
+            let dt_sid = store.dt_sids().get(*dt_id as usize)?.clone();
+
+            let is_datetime_type = dt_sid == datatypes.xsd_datetime
+                || dt_sid == datatypes.xsd_date
+                || dt_sid == datatypes.xsd_time
+                || dt_sid == datatypes.xsd_g_year
+                || dt_sid == datatypes.xsd_g_year_month
+                || dt_sid == datatypes.xsd_g_month
+                || dt_sid == datatypes.xsd_g_day
+                || dt_sid == datatypes.xsd_g_month_day;
+            if !is_datetime_type {
+                return None;
+            }
+
+            let gv = ctx.graph_view()?;
+            let val = gv.decode_value(*o_kind, *o_key, *p_id).ok()?;
+
+            // Mirror the Binding::Lit path. When decode yields a primitive
+            // numeric (possible for some fragment encodings), fall back to
+            // sensible defaults based on the datatype SID.
+            match val {
+                FlakeValue::DateTime(dt) => {
+                    let offset = dt.tz_offset().unwrap_or(utc);
+                    Some(dt.instant().with_timezone(&offset))
+                }
+                FlakeValue::Date(d) => {
+                    let offset = d.tz_offset().unwrap_or(utc);
+                    let naive = d.date().and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::Time(t) => {
+                    let offset = t.tz_offset().unwrap_or(utc);
+                    let date = NaiveDate::from_ymd_opt(1970, 1, 1)?;
+                    let naive = NaiveDateTime::new(date, t.time());
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GYear(gy) => {
+                    let offset = gy.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(gy.year(), 1, 1)?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GYearMonth(gym) => {
+                    let offset = gym.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(gym.year(), gym.month(), 1)?
+                        .and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GMonth(gm) => {
+                    let offset = gm.tz_offset().unwrap_or(utc);
+                    let naive =
+                        NaiveDate::from_ymd_opt(1970, gm.month(), 1)?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GDay(gd) => {
+                    let offset = gd.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(1970, 1, gd.day())?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::GMonthDay(gmd) => {
+                    let offset = gmd.tz_offset().unwrap_or(utc);
+                    let naive = NaiveDate::from_ymd_opt(1970, gmd.month(), gmd.day())?
+                        .and_hms_opt(0, 0, 0)?;
+                    Some(
+                        offset
+                            .from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| offset.from_utc_datetime(&naive)),
+                    )
+                }
+                FlakeValue::String(s) => DateTime::parse_from_rfc3339(&s).ok().or_else(|| {
+                    let with_time = format!("{}T00:00:00+00:00", s);
+                    DateTime::parse_from_rfc3339(&with_time).ok()
+                }),
+                FlakeValue::Long(y) if dt_sid == datatypes.xsd_g_year => {
+                    let year = i32::try_from(y).ok()?;
+                    let naive = NaiveDate::from_ymd_opt(year, 1, 1)?.and_hms_opt(0, 0, 0)?;
+                    Some(
+                        utc.from_local_datetime(&naive)
+                            .single()
+                            .unwrap_or_else(|| utc.from_utc_datetime(&naive)),
+                    )
+                }
                 _ => None,
             }
         }

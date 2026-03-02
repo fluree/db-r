@@ -3,6 +3,7 @@
 //! Implements SPARQL datetime functions: NOW, YEAR, MONTH, DAY, HOURS, MINUTES, SECONDS, TZ
 
 use crate::binding::RowAccess;
+use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
@@ -21,35 +22,63 @@ pub fn eval_now(args: &[Expression]) -> Result<Option<ComparableValue>> {
     Ok(Some(ComparableValue::DateTime(parsed)))
 }
 
-pub fn eval_year<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64)
+pub fn eval_year<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "YEAR", |dt| dt.year() as i64)
 }
 
-pub fn eval_month<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64)
+pub fn eval_month<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "MONTH", |dt| dt.month() as i64)
 }
 
-pub fn eval_day<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64)
+pub fn eval_day<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "DAY", |dt| dt.day() as i64)
 }
 
-pub fn eval_hours<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64)
+pub fn eval_hours<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "HOURS", |dt| dt.hour() as i64)
 }
 
-pub fn eval_minutes<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64)
+pub fn eval_minutes<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "MINUTES", |dt| dt.minute() as i64)
 }
 
-pub fn eval_seconds<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64)
+pub fn eval_seconds<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "SECONDS", |dt| dt.second() as i64)
 }
 
-pub fn eval_tz<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
+pub fn eval_tz<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "TZ")?;
     if let Expression::Var(var_id) = &args[0] {
         match row.get(*var_id) {
-            Some(binding) => match parse_datetime_from_binding(binding) {
+            Some(binding) => match parse_datetime_from_binding(binding, ctx) {
                 Some(dt) => {
                     let offset = dt.offset();
                     let total_secs = offset.local_minus_utc();
@@ -76,6 +105,7 @@ pub fn eval_tz<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<Comp
 fn eval_datetime_component<R: RowAccess, F>(
     args: &[Expression],
     row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     extract: F,
 ) -> Result<Option<ComparableValue>>
@@ -85,7 +115,7 @@ where
     check_arity(args, 1, fn_name)?;
     if let Expression::Var(var) = &args[0] {
         match row.get(*var) {
-            Some(binding) => match parse_datetime_from_binding(binding) {
+            Some(binding) => match parse_datetime_from_binding(binding, ctx) {
                 Some(dt) => Ok(Some(ComparableValue::Long(extract(&dt)))),
                 None => Err(QueryError::InvalidFilter(format!(
                     "{} requires a datetime argument",
