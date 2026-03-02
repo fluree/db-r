@@ -52,8 +52,7 @@ async fn subquery_basic_correlated_join() {
         "orderBy": "?name"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -89,8 +88,7 @@ async fn subquery_unrelated_vars_cartesian_expand() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -164,8 +162,7 @@ async fn subquery_limit_applies_inside_subquery() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -211,8 +208,7 @@ async fn subquery_distinct_applies_to_subquery_select() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -269,8 +265,7 @@ async fn multiple_subqueries_parallel() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -343,8 +338,7 @@ async fn nested_subqueries_distinct() {
         "orderBy": ["?name","?email","?age"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -390,8 +384,7 @@ async fn subquery_inside_union() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -421,8 +414,7 @@ async fn subquery_union_branch_query_alone_has_results() {
         "groupBy": ["?person"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q_alice)
+    let rows = support::query_jsonld(&fluree, &ledger, &q_alice)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -454,8 +446,7 @@ async fn subquery_with_values_filters_results() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

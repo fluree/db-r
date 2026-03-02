@@ -168,7 +168,7 @@ Traces are named via `otel.name` for easy identification in Jaeger's trace list:
 | Upsert | `upsert:fql`, `upsert:turtle` |
 | Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
 
-The `operation` tag on each span retains the handler-specific name (e.g. `query` vs `query_ledger`) for filtering.
+The `operation` tag on each span retains the handler-specific name for filtering.
 
 ### Transaction traces
 

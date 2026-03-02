@@ -41,8 +41,7 @@ async fn owl2ql_equivalent_property_expands_across_properties() {
         "where": {"@id":"ex:s","ex:p2":"?v"},
         "reasoning": "owl2ql"
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -77,8 +76,7 @@ async fn owl_ql_alias_string_is_accepted() {
         "where": {"@id":"ex:s","ex:p2":"?v"},
         "reasoning": "owl-ql"
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

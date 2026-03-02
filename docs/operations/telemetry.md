@@ -242,7 +242,7 @@ Each HTTP request span is named dynamically via the `otel.name` field so that tr
 | Upsert | `upsert:fql`, `upsert:turtle`, `upsert:trig` |
 | Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
 
-The `operation` span attribute retains the handler-specific name (e.g. `query` vs `query_ledger`) for precise filtering when needed.
+The `operation` span attribute retains the handler-specific name for precise filtering when needed.
 
 ### Span Hierarchy
 

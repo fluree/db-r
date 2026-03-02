@@ -30,7 +30,7 @@ flowchart TD
 ## Where this exists in code
 
 - **API entrypoints**
-  - `fluree-db-api/src/view/query.rs`: single-ledger `GraphDb` queries (`query_view`)
+  - `fluree-db-api/src/view/query.rs`: single-ledger `GraphDb` queries (`query`)
   - `fluree-db-api/src/view/dataset_query.rs`: dataset queries (`DataSetDb`)
 
 - **Unified query runner**

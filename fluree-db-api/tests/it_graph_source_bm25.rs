@@ -498,7 +498,9 @@ async fn bm25_federated_query_via_provider() {
             "select": ["?author"]
         });
 
-        let result = fluree.query(&ledger, &doc_query).await.unwrap();
+        let result = support::query_jsonld(&fluree, &ledger, &doc_query)
+            .await
+            .unwrap();
 
         // Should have exactly one result (one author per doc)
         assert_eq!(result.batches.len(), 1, "expected one batch for doc query");
@@ -596,7 +598,9 @@ async fn bm25_file_backed_storage() {
         "where": [{ "@id": doc_key.subject_iri.as_ref(), "ex:title":"?title" }],
         "select": ["?title"]
     });
-    let query_result = fluree.query(&ledger, &doc_query).await.expect("doc query");
+    let query_result = support::query_jsonld(&fluree, &ledger, &doc_query)
+        .await
+        .expect("doc query");
     assert!(
         !query_result.batches.is_empty() && !query_result.batches[0].is_empty(),
         "should be able to query ledger for BM25 result doc"
@@ -786,7 +790,9 @@ async fn bm25_federated_query_with_aggregation() {
             "select": ["?year"]
         });
 
-        let result = fluree.query(&ledger, &year_query).await.unwrap();
+        let result = support::query_jsonld(&fluree, &ledger, &year_query)
+            .await
+            .unwrap();
         if !result.batches.is_empty() && !result.batches[0].is_empty() {
             // Extract year from result
             let batch = &result.batches[0];

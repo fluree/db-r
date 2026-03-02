@@ -165,7 +165,9 @@ async fn jsonld_basic_wildcard_single_subject_query() {
         "select": { "wiki:Qmovie": ["*"] }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -192,7 +194,9 @@ async fn jsonld_basic_single_subject_query_explicit_fields() {
         "select": { "wiki:Qmovie": ["@id", "schema:name"] }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -218,7 +222,9 @@ async fn jsonld_basic_single_subject_query_select_one() {
         "selectOne": { "wiki:Qmovie": ["@id", "schema:name"] }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -241,7 +247,9 @@ async fn jsonld_basic_single_subject_query_graph_crawl() {
         "selectOne": { "wiki:Qmovie": ["*", {"schema:isBasedOn": ["*"]}] }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -277,7 +285,9 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth() {
         "depth": 3
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -317,7 +327,9 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth_and_subselection() {
         "depth": 3
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -372,7 +384,9 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
         "where": {"id":"?f","ex:name":"?n"}
     });
 
-    let r1 = fluree.query(&loaded, &q1).await.expect("query select");
+    let r1 = support::query_jsonld(&fluree, &loaded, &q1)
+        .await
+        .expect("query select");
     let mut rows = r1.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
     arr.sort_by_key(|a| a.to_string());
@@ -383,7 +397,9 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
         "@context": ctx(),
         "select": {"foo": ["*"]}
     });
-    let r2 = fluree.query(&loaded, &q2).await.expect("query crawl");
+    let r2 = support::query_jsonld(&fluree, &loaded, &q2)
+        .await
+        .expect("query crawl");
     let json2 = r2
         .to_jsonld_async(loaded.as_graph_db_ref(0))
         .await
@@ -407,8 +423,7 @@ async fn jsonld_expanding_literal_nodes_wildcard() {
         }
     });
 
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .expect("query expanding literal");
     let json_result = result
@@ -446,7 +461,9 @@ async fn jsonld_rdf_type_query_analytical() {
         }
     });
 
-    let result = fluree.query(&ledger, &q).await.expect("query rdf type");
+    let result = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .expect("query rdf type");
     let json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -501,8 +518,7 @@ async fn jsonld_list_order_preservation_context_container() {
         "selectOne": { "list-test": ["*"] }
     });
 
-    let result = fluree
-        .query(&committed.ledger, &query)
+    let result = support::query_jsonld(&fluree, &committed.ledger, &query)
         .await
         .expect("query list container");
     let json_result = result
@@ -540,8 +556,7 @@ async fn jsonld_list_order_preservation_explicit_list() {
         "selectOne": { "list-test2": ["*"] }
     });
 
-    let result = fluree
-        .query(&committed.ledger, &query)
+    let result = support::query_jsonld(&fluree, &committed.ledger, &query)
         .await
         .expect("query list");
     let json_result = result
@@ -563,7 +578,9 @@ async fn jsonld_simple_subject_crawl_direct_id() {
         "select": { "ex:brian": ["*"] }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -594,7 +611,9 @@ async fn jsonld_simple_subject_crawl_where_type() {
         "where": { "@id": "?s", "@type": "ex:User" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -659,7 +678,9 @@ async fn jsonld_simple_subject_crawl_tuple_name() {
         "where": { "@id": "?s", "schema:name": "Alice" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -691,7 +712,9 @@ async fn jsonld_simple_subject_crawl_tuple_fav_color() {
         "where": { "@id": "?s", "ex:favColor": "?color" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -748,7 +771,9 @@ async fn jsonld_simple_subject_crawl_limit_two() {
         "limit": 2
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -792,7 +817,9 @@ async fn jsonld_simple_subject_crawl_age_and_fav_color() {
         "where": { "@id": "?s", "schema:age": 42, "ex:favColor": "Green" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -824,7 +851,9 @@ async fn jsonld_simple_subject_crawl_age_only() {
         "where": { "@id": "?s", "schema:age": 42 }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -858,8 +887,7 @@ async fn jsonld_expanding_literal_nodes_specific_properties() {
         }
     });
 
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .expect("query expanding literal specific");
     let json_result = result
@@ -895,7 +923,9 @@ async fn jsonld_bare_id_variable_returns_all_subjects() {
         "where": { "@id": "?s" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let mut json_result = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await

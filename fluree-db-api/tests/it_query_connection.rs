@@ -537,14 +537,30 @@ WHERE {
         .await
         .expect("query_connection_sparql_tracked should succeed");
 
-    // Tracked response returns formatted result directly
-    assert_eq!(
-        normalize_flat_results(&tracked.result),
-        normalize_flat_results(&json!(["Alice", "Bob"]))
-    );
-
-    // Verify response status is successful
+    // SPARQL tracked queries now return W3C SPARQL JSON format
     assert_eq!(tracked.status, 200);
+    let head = tracked.result.get("head").expect("head");
+    let vars = head
+        .get("vars")
+        .expect("vars")
+        .as_array()
+        .expect("vars array");
+    assert_eq!(vars, &[json!("name")]);
+
+    let bindings = tracked
+        .result
+        .get("results")
+        .expect("results")
+        .get("bindings")
+        .expect("bindings")
+        .as_array()
+        .expect("bindings array");
+    let mut names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["Alice", "Bob"]);
 
     // Verify fuel tracking returns an integer value
     assert!(

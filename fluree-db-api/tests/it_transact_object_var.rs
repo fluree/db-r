@@ -39,7 +39,9 @@ async fn insert_does_not_parse_bare_var_by_default() {
         "select": ["?val"],
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["?age"]));
 }
@@ -77,8 +79,7 @@ async fn object_var_parsing_update_opt() {
         "select": ["?val"],
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
-    let jsonld = fluree
-        .query(&ledger1, &query)
+    let jsonld = support::query_jsonld(&fluree, &ledger1, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -99,8 +100,7 @@ async fn object_var_parsing_update_opt() {
         .await
         .unwrap()
         .ledger;
-    let jsonld2 = fluree
-        .query(&ledger2, &query)
+    let jsonld2 = support::query_jsonld(&fluree, &ledger2, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -140,8 +140,7 @@ async fn update_with_object_var_parsing_false_treats_bare_var_as_literal() {
         "select": ["?val"],
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
-    let jsonld = fluree
-        .query(&ledger1, &query)
+    let jsonld = support::query_jsonld(&fluree, &ledger1, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -191,8 +190,7 @@ async fn update_explicit_variable_map_parses_when_flag_false_and_bound() {
             "schema:foo": {"@value": "?val"}
         }]
     });
-    let jsonld = fluree
-        .query(&ledger2, &query)
+    let jsonld = support::query_jsonld(&fluree, &ledger2, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -236,8 +234,7 @@ async fn update_id_var_still_parses_when_flag_false() {
         "select": {"ex:s": ["*"]},
         "where": [{"@id": "ex:s"}]
     });
-    let jsonld = fluree
-        .query(&ledger2, &query)
+    let jsonld = support::query_jsonld(&fluree, &ledger2, &query)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -285,8 +282,7 @@ async fn update_predicate_var_still_parses_when_flag_false() {
         "select": ["?p"],
         "where": [{"@id":"ex:s","?p":"?o"}]
     });
-    let jsonld = fluree
-        .query(&ledger2, &query)
+    let jsonld = support::query_jsonld(&fluree, &ledger2, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -325,7 +321,9 @@ async fn insert_literal_qmark_string_has_xsd_string_type() {
         }]
     });
 
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
 
     // Should return the literal string "?not-a-var" with xsd:string type
@@ -370,7 +368,9 @@ async fn upsert_literal_qmark_string_has_xsd_string_type() {
         }]
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -401,7 +401,9 @@ async fn query_literal_qmark_string_with_flag_false_requires_literal_match() {
         "where": [{"@id": "?s", "ex:prop": "?not-a-var"}]
     });
 
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["ex:s"]));
 }
@@ -427,7 +429,9 @@ async fn query_explicit_variable_in_where_still_parses_when_flag_false() {
         "where": [{"@id": "ex:s", "ex:prop": {"@variable": "?v"}}]
     });
 
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
     assert_eq!(jsonld, json!(["?not-a-var"]));
 }
@@ -472,7 +476,9 @@ async fn update_literal_qmark_string_where_binds_and_updates() {
         "select": {"ex:s": ["*"]},
         "where": [{"@id": "ex:s"}]
     });
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await

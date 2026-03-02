@@ -1303,7 +1303,8 @@ pub async fn explain(
         } else {
             // Shared storage mode: use load_ledger_for_query with freshness checking
             let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
-            match state.fluree.as_file().explain(&ledger, &query_json).await {
+            let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+            match state.fluree.as_file().explain(&db, &query_json).await {
                 Ok(result) => {
                     tracing::info!(status = "success", "explain completed");
                     result

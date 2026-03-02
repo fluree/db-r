@@ -36,7 +36,7 @@ use crate::format::FormatterConfig;
 use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::query::builder::QueryCore;
 use crate::view::QueryInput;
-use crate::{ApiError, Fluree, GraphSourcePublisher, NameService, Result, Storage};
+use crate::{ApiError, Fluree, GraphDb, GraphSourcePublisher, NameService, Result, Storage};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::json;
@@ -283,39 +283,41 @@ where
             .map_err(|e| ApiError::internal(format!("Failed to insert NS records: {}", e)))?;
 
         // 8. Execute query based on input type
+        let db = GraphDb::from_ledger_state(&result.ledger);
         match input {
             QueryInput::JsonLd(query_json) => {
                 if let Some(config) = format_config {
                     // Use formatted query path
                     let query_result = temp_fluree
-                        .query(&result.ledger, query_json)
+                        .query(&db, query_json)
                         .await
                         .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
                     let config = config.with_select_mode(query_result.select_mode);
                     Ok(query_result
-                        .format_async(result.ledger.as_graph_db_ref(0), &config)
+                        .format_async(db.as_graph_db_ref(), &config)
                         .await?)
                 } else {
                     // Use default JSON-LD formatting
-                    temp_fluree
-                        .query_jsonld(&result.ledger, query_json)
+                    let query_result = temp_fluree
+                        .query(&db, query_json)
+                        .await
+                        .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
+                    query_result
+                        .to_jsonld_async(db.as_graph_db_ref())
                         .await
                         .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))
                 }
             }
             QueryInput::Sparql(sparql) => {
-                let query_result = temp_fluree
-                    .query_sparql(&result.ledger, sparql)
-                    .await
-                    .map_err(|e| {
-                        ApiError::query(format!("Nameservice SPARQL query failed: {}", e))
-                    })?;
+                let query_result = temp_fluree.query(&db, sparql).await.map_err(|e| {
+                    ApiError::query(format!("Nameservice SPARQL query failed: {}", e))
+                })?;
 
                 let config = format_config
                     .unwrap_or_else(FormatterConfig::sparql_json)
                     .with_select_mode(query_result.select_mode);
                 Ok(query_result
-                    .format_async(result.ledger.as_graph_db_ref(0), &config)
+                    .format_async(db.as_graph_db_ref(), &config)
                     .await?)
             }
         }

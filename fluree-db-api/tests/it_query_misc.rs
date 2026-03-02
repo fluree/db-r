@@ -45,8 +45,7 @@ async fn simple_where_select_limit_without_context_returns_full_iri() {
         "limit":  1
     });
 
-    let rows = fluree
-        .query(&ledger, &query)
+    let rows = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -70,8 +69,7 @@ async fn simple_where_select_limit_with_context_returns_compacted_iri() {
         "limit":  1
     });
 
-    let rows = fluree
-        .query(&ledger, &query)
+    let rows = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -102,8 +100,7 @@ async fn class_queries_type_and_all_types() {
         "select": ["?class"],
         "where": {"@id":"ex:jane","@type":"?class"}
     });
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -115,8 +112,7 @@ async fn class_queries_type_and_all_types() {
         "select": ["?s","?class"],
         "where": {"@id":"?s","@type":"?class"}
     });
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -157,8 +153,7 @@ async fn result_formatting_graph_crawl_variants() {
         "select": ["?v"],
         "where": {"@id":"ex:dan","ex:x":"?v"}
     });
-    let sanity_rows = fluree
-        .query(&ledger, &sanity)
+    let sanity_rows = support::query_jsonld(&fluree, &ledger, &sanity)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -170,8 +165,7 @@ async fn result_formatting_graph_crawl_variants() {
         "@context": {"id":"@id","ex":"http://example.org/ns/"},
         "select": {"ex:dan": ["*"]}
     });
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -186,8 +180,7 @@ async fn result_formatting_graph_crawl_variants() {
         ],
         "select": {"foo:dan": ["*"]}
     });
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -202,8 +195,7 @@ async fn result_formatting_graph_crawl_variants() {
         ],
         "select": {"foo:dan": ["*"]}
     });
-    let r3 = fluree
-        .query(&ledger, &q3)
+    let r3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -218,8 +210,7 @@ async fn result_formatting_graph_crawl_variants() {
         ],
         "select": {"foo:dan": ["*"]}
     });
-    let r4 = fluree
-        .query(&ledger, &q4)
+    let r4 = support::query_jsonld(&fluree, &ledger, &q4)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -230,8 +221,7 @@ async fn result_formatting_graph_crawl_variants() {
     let q5 = json!({
         "select": {"http://example.org/ns/dan": ["*"]}
     });
-    let r5 = fluree
-        .query(&ledger, &q5)
+    let r5 = support::query_jsonld(&fluree, &ledger, &q5)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -243,8 +233,7 @@ async fn result_formatting_graph_crawl_variants() {
         "@context": {},
         "select": {"http://example.org/ns/dan": ["*"]}
     });
-    let r6 = fluree
-        .query(&ledger, &q6)
+    let r6 = support::query_jsonld(&fluree, &ledger, &q6)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -256,8 +245,7 @@ async fn result_formatting_graph_crawl_variants() {
         "@context": [],
         "select": {"http://example.org/ns/dan": ["*"]}
     });
-    let r7 = fluree
-        .query(&ledger, &q7)
+    let r7 = support::query_jsonld(&fluree, &ledger, &q7)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -334,8 +322,7 @@ async fn s_p_o_full_db_queries_parity() {
         "select": ["?s","?p","?o"],
         "where": {"@id":"?s","?p":"?o"}
     });
-    let r_all = fluree
-        .query(&ledger, &q_all)
+    let r_all = support::query_jsonld(&fluree, &ledger, &q_all)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -362,8 +349,7 @@ async fn s_p_o_full_db_queries_parity() {
         "select": {"?s":["*"]},
         "where": {"@id":"?s","?p":"?o"}
     });
-    let r_graph = fluree
-        .query(&ledger, &q_graph)
+    let r_graph = support::query_jsonld(&fluree, &ledger, &q_graph)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -448,8 +434,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         "select": ["?c","?alias"],
         "where": {"@id": "?c", "f:alias": "?alias"}
     });
-    let r_commit = fluree
-        .query(&ledger2, &q_commit)
+    let r_commit = support::query_jsonld(&fluree, &ledger2, &q_commit)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -477,8 +462,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         "select": ["?c","?t"],
         "where": {"@id": "?c", "f:t": "?t"}
     });
-    let r_db = fluree
-        .query(&ledger2, &q_db)
+    let r_db = support::query_jsonld(&fluree, &ledger2, &q_db)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -529,7 +513,9 @@ async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
         "select": ["?s","?p"],
         "where": {"@id":"?s","?p": 25}
     });
-    let err_num = fluree.query(&ledger, &q_num).await.unwrap_err();
+    let err_num = support::query_jsonld(&fluree, &ledger, &q_num)
+        .await
+        .unwrap_err();
     assert!(
         err_num
             .to_string()
@@ -543,7 +529,9 @@ async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
         "select": ["?s","?p"],
         "where": {"@id":"?s","?p": "Bob"}
     });
-    let err_str = fluree.query(&ledger, &q_str).await.unwrap_err();
+    let err_str = support::query_jsonld(&fluree, &ledger, &q_str)
+        .await
+        .unwrap_err();
     assert!(
         err_str
             .to_string()
@@ -589,8 +577,7 @@ async fn type_handling_parity() {
         "select": {"?s":["*"]},
         "where": {"id":"?s","type":"ex:Heart"}
     });
-    let r_type = fluree
-        .query(&db1, &q_type)
+    let r_type = support::query_jsonld(&fluree, &db1, &q_type)
         .await
         .unwrap()
         .to_jsonld_async(db1.as_graph_db_ref(0))
@@ -633,8 +620,7 @@ async fn type_handling_parity() {
         "select": {"?s":["*"]},
         "where": {"id":"?s","rdf:type":"ex:Heart"}
     });
-    let r_rdf = fluree
-        .query(&db1, &q_rdf_type)
+    let r_rdf = support::query_jsonld(&fluree, &db1, &q_rdf_type)
         .await
         .unwrap()
         .to_jsonld_async(db1.as_graph_db_ref(0))
@@ -713,8 +699,7 @@ async fn type_handling_parity() {
         "select": {"?s":["*"]},
         "where": {"id":"?s","type":"ex:Diamond"}
     });
-    let r_alias = fluree
-        .query(&db2, &q_alias)
+    let r_alias = support::query_jsonld(&fluree, &db2, &q_alias)
         .await
         .unwrap()
         .to_jsonld_async(db2.as_graph_db_ref(0))
@@ -786,8 +771,7 @@ async fn repeated_transaction_results_parity() {
         "@context": ctx,
         "select": {"ex:1": ["*"]}
     });
-    let result = fluree
-        .query(&ledger2, &q)
+    let result = support::query_jsonld(&fluree, &ledger2, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -820,8 +804,7 @@ async fn base_context_parity() {
         "where": [{"@id": "freddy", "?p": "?o"}],
         "select": ["?p", "?o"]
     });
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -852,8 +835,7 @@ async fn base_context_parity() {
         "@context": {"@base": "https://flur.ee/"},
         "select": {"freddy": ["*"]}
     });
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -893,8 +875,7 @@ async fn untyped_value_matching_parity() {
         "select": "?c",
         "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
     });
-    let r_typed = fluree
-        .query(&ledger2, &q_typed)
+    let r_typed = support::query_jsonld(&fluree, &ledger2, &q_typed)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -915,8 +896,7 @@ async fn untyped_value_matching_parity() {
         "select": "?c",
         "where": [{"@id": "?c", "f:t": commit_t}]
     });
-    let r_untyped = fluree
-        .query(&ledger2, &q_untyped)
+    let r_untyped = support::query_jsonld(&fluree, &ledger2, &q_untyped)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -1201,7 +1181,9 @@ async fn union_basic_combine_emails() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([
@@ -1231,7 +1213,9 @@ async fn union_different_variables() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([
@@ -1261,7 +1245,9 @@ async fn union_passthrough_variables() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     let expected = json!([

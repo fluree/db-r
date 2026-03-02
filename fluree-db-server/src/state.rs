@@ -283,11 +283,13 @@ impl FlureeInstance {
         match self {
             FlureeInstance::File(f) => {
                 let ledger = f.ledger(ledger_id).await?;
-                f.explain(&ledger, query_json).await
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                f.explain(&db, query_json).await
             }
             FlureeInstance::Proxy(p) => {
                 let ledger = p.ledger(ledger_id).await?;
-                p.explain(&ledger, query_json).await
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                p.explain(&db, query_json).await
             }
         }
     }

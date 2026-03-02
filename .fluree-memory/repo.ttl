@@ -456,3 +456,63 @@ mem:fact-01kjjn8kspr3gnkcsmq9t1fsvf a mem:Fact ;
     mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
     mem:createdAt "2026-02-28T17:38:11.894884+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kjjswkfg62ratezvpdchg30h a mem:Fact ;
+    mem:content "Leaflet region decode behavior (read-side): `BinaryCursor` decodes Region 1 first and only decodes Region 2 (dt/t/lang/i) when (a) the caller requested metadata via `need_region2` AND there is at least one Region-1 match in that leaflet, OR (b) overlay merge is active, OR (c) time-travel replay is active. Region 1 and Region 2 are cached independently in the unified `LeafletCache` (TinyLFU) so caching R1 does not imply caching R2. Region 3 (history journal) is decoded only for time-travel and is intentionally never cached; however leaf files are currently fetched/mmap’d as whole objects, so Region 3 bytes still contribute to leaf download size for non-history queries." ;
+    mem:tag "binary-index" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet" ;
+    mem:tag "overlay" ;
+    mem:tag "performance" ;
+    mem:tag "region1" ;
+    mem:tag "region2" ;
+    mem:tag "region3" ;
+    mem:tag "time-travel" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/leaflet.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_cursor.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-02-28T18:59:01.232091+00:00"^^xsd:dateTime .
+
+mem:fact-01kjn63vy23w6kehy3gbs30ncv a mem:Fact ;
+    mem:content "Query API layering in fluree-db-api:\n- `Fluree::query_connection(...)` is the request-boundary entrypoint (Clojure parity: query-connection). It parses dataset spec/options from the query itself, chooses the execution model, and applies per-source/global policy and config-graph defaults. It uses GraphDb for single-ledger (including time travel via spec) and DataSetDb for multi-ledger union.\n- `Fluree::query(&GraphDb, ...)` is the stable single-ledger “db is a value” API. You load a `GraphDb` once via `db() / db_at_t() / db_at()` (supports `#txn-meta` / named graph selection) and then run many queries with uniform wrapper behavior (policy/reasoning/config).\n- `Fluree::query_ledger(&LedgerState, ...)` is the ledger-state API for callers that already manage a loaded `LedgerState` (CLI/scripts/tests, or internal server/cache paths). It currently executes against graph_id=0 (default graph) via `ledger.as_graph_db_ref(0)`; for named-graph selection use GraphDb / dataset paths.\n- `DataSetDb` supports a Fluree history/changes mode via `history_range: Option<(from_t,to_t)>`; dataset execution threads `history_mode`, `from_t`, and `to_t` into the query engine (`ContextConfig`) enabling time-range / @op semantics.\n" ;
+    mem:tag "api-layering" ;
+    mem:tag "dataset" ;
+    mem:tag "fluree-db-api" ;
+    mem:tag "graphdb" ;
+    mem:tag "history" ;
+    mem:tag "query" ;
+    mem:tag "query-connection" ;
+    mem:tag "query-ledger" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/query/connection.rs" ;
+    mem:artifactRef "fluree-db-api/src/query/ledger.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset_query.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:createdAt "2026-03-01T17:11:11.042771+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+
+mem:fact-01kjp8g2s9pfh64sbx1crx42d8 a mem:Fact ;
+    mem:content "Query API layering in fluree-db-api:\n- `Fluree::query_connection(...)` is the request-boundary entrypoint. It parses dataset spec/options from the query itself, chooses the execution model, and applies per-source/global policy and config-graph defaults. It uses GraphDb for single-ledger (including time travel via spec) and DataSetDb for multi-ledger union.\n- `Fluree::query(&GraphDb, ...)` is the stable single-ledger “db is a value” API. You load a `GraphDb` once via `db() / db_at_t() / db_at()` (supports `#txn-meta` / named graph selection) and then run many queries with uniform wrapper behavior (policy/reasoning/config).\n- `DataSetDb` supports a Fluree history/changes mode via `history_range: Option<(from_t,to_t)>`; dataset execution threads `history_mode`, `from_t`, and `to_t` into the query engine (`ContextConfig`) enabling time-range / @op semantics." ;
+    mem:tag "api-layering" ;
+    mem:tag "dataset" ;
+    mem:tag "fluree-db-api" ;
+    mem:tag "graphdb" ;
+    mem:tag "history" ;
+    mem:tag "query" ;
+    mem:tag "query-connection" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/query/connection.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset_query.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:supersedes mem:fact-01kjn63vy23w6kehy3gbs30ncv ;
+    mem:createdAt "2026-03-02T03:12:02.857222+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .

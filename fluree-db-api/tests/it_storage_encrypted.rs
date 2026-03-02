@@ -3,6 +3,8 @@
 //! Tests that FlureeBuilder::build_memory_encrypted() works correctly
 //! with the full Fluree API.
 
+mod support;
+
 use fluree_db_api::FlureeBuilder;
 use fluree_db_core::prelude::*; // For storage traits
 use serde_json::json;
@@ -46,8 +48,7 @@ async fn test_encrypted_memory_create_and_query() {
         "select": {"ex:alice": ["*"]}
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("Query should succeed");
 

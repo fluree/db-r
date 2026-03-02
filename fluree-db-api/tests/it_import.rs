@@ -101,8 +101,7 @@ ex:cam a ex:User ;
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query)
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query after import");
     let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -187,8 +186,7 @@ async fn import_pre_split_chunks_then_query() {
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query_names)
+    let qr = support::query_jsonld(&fluree, &ledger, &query_names)
         .await
         .expect("query names");
     let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -208,8 +206,7 @@ async fn import_pre_split_chunks_then_query() {
         ]
     });
 
-    let qr2 = fluree
-        .query(&ledger, &query_friends)
+    let qr2 = support::query_jsonld(&fluree, &ledger, &query_friends)
         .await
         .expect("query friends");
     let json2 = qr2.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -313,7 +310,9 @@ ex:bob a ex:User ;
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree.query(&ledger, &query).await.expect("query");
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = qr.to_jsonld(&ledger.snapshot).expect("jsonld");
     let names = extract_sorted_strings(&json);
     assert_eq!(names, vec!["Alice", "Bob"]);
@@ -382,8 +381,7 @@ ex:bob a ex:User ;
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query_names)
+    let qr = support::query_jsonld(&fluree, &ledger, &query_names)
         .await
         .expect("query names");
     let json = qr.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -403,8 +401,7 @@ ex:bob a ex:User ;
         ]
     });
 
-    let qr2 = fluree
-        .query(&ledger, &query_age_filter)
+    let qr2 = support::query_jsonld(&fluree, &ledger, &query_age_filter)
         .await
         .expect("query age filter");
     let json2 = qr2.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -424,8 +421,7 @@ ex:bob a ex:User ;
         ]
     });
 
-    let qr3 = fluree
-        .query(&ledger, &query_active)
+    let qr3 = support::query_jsonld(&fluree, &ledger, &query_active)
         .await
         .expect("query active");
     let json3 = qr3.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -445,8 +441,7 @@ ex:bob a ex:User ;
         ]
     });
 
-    let qr4 = fluree
-        .query(&ledger, &query_score)
+    let qr4 = support::query_jsonld(&fluree, &ledger, &query_score)
         .await
         .expect("query score");
     let json4 = qr4.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -509,10 +504,7 @@ ex:bob a ex:User ;
 
     // Query all triples in the txn-meta graph
     let sparql = "SELECT ?s ?p ?o WHERE { ?s ?p ?o }";
-    let qr = fluree
-        .query_view(&view, sparql)
-        .await
-        .expect("query txn-meta");
+    let qr = fluree.query(&view, sparql).await.expect("query txn-meta");
 
     assert!(
         qr.row_count() > 0,
@@ -585,8 +577,7 @@ async fn import_directory_without_chunk_prefix() {
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query)
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query after import");
     let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -654,8 +645,7 @@ async fn import_jsonld_directory_then_query() {
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query)
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query after JSON-LD import");
     let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -711,8 +701,7 @@ async fn import_single_jsonld_file_then_query() {
         "where": { "schema:name": "?name" }
     });
 
-    let qr = fluree
-        .query(&ledger, &query)
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query after single JSON-LD import");
     let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
@@ -755,7 +744,9 @@ async fn import_serial_turtle_then_query() {
         "select": ["?name"],
         "where": { "schema:name": "?name" }
     });
-    let qr = fluree.query(&ledger, &query).await.expect("query");
+    let qr = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_result = qr.to_jsonld(&ledger.snapshot).expect("format");
     let names = extract_sorted_strings(&json_result);
     assert_eq!(names, vec!["Alice"]);
@@ -844,8 +835,7 @@ async fn import_then_insert_custom_ns_predicate_matches_sparql() {
         <http://example.org/assoc1> <https://taxo.cbcrc.ca/ns/packageType> ?o
     }"#;
 
-    let qr = fluree
-        .query_sparql(&ledger, sparql)
+    let qr = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("SPARQL query with custom namespace predicate");
 

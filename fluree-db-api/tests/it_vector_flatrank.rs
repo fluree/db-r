@@ -59,7 +59,9 @@ async fn vector_search_test() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -139,7 +141,9 @@ async fn vector_search_with_filter() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -194,7 +198,9 @@ async fn vector_search_score_filter() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -250,7 +256,9 @@ async fn vector_search_multi_cardinality() {
         "orderBy": "?score"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -315,7 +323,9 @@ async fn vector_search_cosine_similarity() {
         "orderBy": "?score"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -370,7 +380,9 @@ async fn vector_search_euclidean_distance() {
         "orderBy": "?score"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -429,7 +441,9 @@ async fn vector_search_mixed_datatypes() {
         "orderBy": "?score"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -560,7 +574,7 @@ async fn vector_search_post_indexing() {
                 ]
             });
 
-            let qr = fluree.query(&loaded, &query).await.expect("query");
+            let qr = support::query_jsonld(&fluree, &loaded, &query).await.expect("query");
             let rows = qr.to_jsonld(&loaded.snapshot).expect("jsonld");
             let arr = rows.as_array().expect("array");
 
@@ -682,7 +696,7 @@ async fn vector_search_novelty_plus_indexed() {
                 ]
             });
 
-            let qr = fluree.query(&r2.ledger, &query).await.expect("query");
+            let qr = support::query_jsonld(&fluree, &r2.ledger, &query).await.expect("query");
             let rows = qr.to_jsonld(&r2.ledger.snapshot).expect("jsonld");
             let arr = rows.as_array().expect("array");
 
@@ -745,7 +759,9 @@ async fn vector_at_type_shorthand() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -863,15 +879,13 @@ async fn vector_cosine_normalized_optimization() {
                 ]
             });
 
-            let cos_result = fluree
-                .query(&loaded, &cosine_query)
+            let cos_result = support::query_jsonld(&fluree, &loaded, &cosine_query)
                 .await
                 .expect("cosine query");
             let cos_rows = cos_result.to_jsonld(&loaded.snapshot).expect("jsonld");
             let cos_arr = cos_rows.as_array().expect("array");
 
-            let dot_result = fluree
-                .query(&loaded, &dot_query)
+            let dot_result = support::query_jsonld(&fluree, &loaded, &dot_query)
                 .await
                 .expect("dot query");
             let dot_rows = dot_result.to_jsonld(&loaded.snapshot).expect("jsonld");
@@ -970,7 +984,9 @@ async fn vector_search_with_date_filter_property_join() {
         "orderBy": [["desc", "?score"]]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 

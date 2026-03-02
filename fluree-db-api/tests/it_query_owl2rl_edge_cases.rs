@@ -78,8 +78,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -100,8 +99,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -180,8 +178,7 @@ async fn owl2rl_multi_same_property_restrictions() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -257,8 +254,7 @@ async fn owl2rl_union_3_plus_branches() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -341,8 +337,7 @@ async fn owl2rl_nested_unions() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -426,8 +421,7 @@ async fn owl2rl_union_with_intersection() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -496,8 +490,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -518,8 +511,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -573,8 +565,7 @@ async fn owl2rl_double_inverse_normalization() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -595,8 +586,7 @@ async fn owl2rl_double_inverse_normalization() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -677,8 +667,7 @@ async fn owl2rl_partial_conditions_no_inference() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -751,8 +740,7 @@ async fn owl2rl_hasvalue_class_to_property_entailment() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

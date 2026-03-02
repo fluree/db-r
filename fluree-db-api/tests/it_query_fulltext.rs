@@ -69,7 +69,7 @@ async fn query_fulltext(
         "orderBy": [["desc", "?score"]]
     });
 
-    let result = fluree.query(ledger, &query).await;
+    let result = support::query_jsonld(fluree, ledger, &query).await;
     match result {
         Ok(r) => {
             let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -505,7 +505,9 @@ async fn fulltext_multiple_predicates_independent_arenas() {
                     ["filter", "(> ?score 0)"]
                 ]
             });
-            let result = fluree.query(&loaded, &query).await.expect("query summary");
+            let result = support::query_jsonld(&fluree, &loaded, &query)
+                .await
+                .expect("query summary");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld");
             let results_summary: Vec<(String, f64)> = json_rows
                 .as_array()

@@ -128,7 +128,7 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
                 ORDER BY ?o
             "#;
             let result = fluree
-                .query_view(&view, QueryInput::Sparql(with_type))
+                .query(&view, QueryInput::Sparql(with_type))
                 .await
                 .expect("query with type");
             let jsonld = result
@@ -152,7 +152,7 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
                 ORDER BY ?o
             "#;
             let result = fluree
-                .query_view(&view, QueryInput::Sparql(without_type))
+                .query(&view, QueryInput::Sparql(without_type))
                 .await
                 .expect("query without type");
             let jsonld = result
@@ -177,7 +177,7 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
                 ORDER BY ?s
             "#;
             let result = fluree
-                .query_view(&view, QueryInput::Sparql(std_pred))
+                .query(&view, QueryInput::Sparql(std_pred))
                 .await
                 .expect("query std predicate");
             let jsonld = result
@@ -249,7 +249,7 @@ async fn indexed_sparql_union_partial_select_var() {
             "#;
 
             let result = fluree
-                .query_view(&view, QueryInput::Sparql(query))
+                .query(&view, QueryInput::Sparql(query))
                 .await
                 .expect("UNION with partially-bound SELECT var should not error (indexed)");
 
@@ -354,7 +354,7 @@ async fn indexed_then_insert_novelty_custom_pred_returns_results() {
                 WHERE { ?s cust:anchor ?o . }
             "#;
             let result = fluree
-                .query_view(&view, QueryInput::Sparql(query))
+                .query(&view, QueryInput::Sparql(query))
                 .await
                 .expect("query novelty-only custom pred");
             let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
@@ -456,7 +456,7 @@ async fn indexed_then_insert_graph_crawl_custom_type_returns_properties() {
                 "select": {"?s": ["*"]},
                 "values": ["?s", [{"@id": "cbc:assoc/coverage-001"}]]
             });
-            let result: QueryResult = fluree.query_view(&view, &query).await.expect("graph crawl");
+            let result: QueryResult = fluree.query(&view, &query).await.expect("graph crawl");
             let jsonld = result
                 .to_jsonld_async(view.as_graph_db_ref())
                 .await

@@ -335,12 +335,11 @@ fn bench_fulltext_scan_all(c: &mut Criterion) {
     for &n in DATASET_SIZES {
         eprintln!("  [setup] Inserting {} @fulltext docs...", n);
         let (fluree, ledger, query, _, _) = rt.block_on(setup_dataset(n));
+        let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                rt.block_on(async { black_box(fluree.query(&ledger, &query).await.unwrap()) })
-            })
+            b.iter(|| rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) }))
         });
     }
 
@@ -367,9 +366,7 @@ fn bench_fulltext_scan_all_indexed(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                rt.block_on(async {
-                    black_box(_fluree.query_view(&snapshot, &query).await.unwrap())
-                })
+                rt.block_on(async { black_box(_fluree.query(&snapshot, &query).await.unwrap()) })
             })
         });
     }
@@ -390,6 +387,7 @@ fn bench_fulltext_scan_filtered(c: &mut Criterion) {
     for &n in DATASET_SIZES {
         eprintln!("  [setup] Inserting {} @fulltext docs...", n);
         let (fluree, ledger, _, query, n_science) = rt.block_on(setup_dataset(n));
+        let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
         eprintln!(
             "  {} of {} docs pass category filter (~{:.0}%)",
             n_science,
@@ -403,7 +401,7 @@ fn bench_fulltext_scan_filtered(c: &mut Criterion) {
             &n,
             |b, _| {
                 b.iter(|| {
-                    rt.block_on(async { black_box(fluree.query(&ledger, &query).await.unwrap()) })
+                    rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) })
                 })
             },
         );
@@ -442,7 +440,7 @@ fn bench_fulltext_scan_filtered_indexed(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async {
-                        black_box(_fluree.query_view(&snapshot, &query).await.unwrap())
+                        black_box(_fluree.query(&snapshot, &query).await.unwrap())
                     })
                 })
             },

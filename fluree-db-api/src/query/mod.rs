@@ -5,7 +5,6 @@ mod connection;
 mod credential;
 mod graph_source;
 pub(crate) mod helpers;
-mod ledger;
 pub mod nameservice_builder;
 
 use serde_json::Value as JsonValue;
@@ -357,9 +356,11 @@ impl QueryResult {
     /// # Example
     ///
     /// ```ignore
-    /// let result = fluree.query_with_policy(&ledger, &query, &policy_ctx).await?;
+    /// // Compose a policy-wrapped view, then query it.
+    /// let db = fluree_db_api::GraphDb::from_ledger_state(&ledger).with_policy(Arc::new(policy_ctx.clone()));
+    /// let result = fluree.query(&db, &query).await?;
     /// // Graph crawl formatting also applies policy
-    /// let json = result.to_jsonld_async_with_policy(ledger.as_graph_db_ref(0), &policy_ctx).await?;
+    /// let json = result.to_jsonld_async_with_policy(db.as_graph_db_ref(), &policy_ctx).await?;
     /// ```
     pub async fn to_jsonld_async_with_policy(
         &self,
@@ -409,5 +410,27 @@ impl QueryResult {
             Some(tracker),
         )
         .await
+    }
+
+    /// Tracked async formatting with custom config (graph crawl counts fuel).
+    pub async fn format_async_tracked(
+        &self,
+        db: GraphDbRef<'_>,
+        config: &FormatterConfig,
+        tracker: &Tracker,
+    ) -> format::Result<JsonValue> {
+        format::format_results_async(self, &self.context, db, config, None, Some(tracker)).await
+    }
+
+    /// Tracked async formatting with custom config and policy.
+    pub async fn format_async_with_policy_tracked(
+        &self,
+        db: GraphDbRef<'_>,
+        config: &FormatterConfig,
+        policy: &PolicyContext,
+        tracker: &Tracker,
+    ) -> format::Result<JsonValue> {
+        format::format_results_async(self, &self.context, db, config, Some(policy), Some(tracker))
+            .await
     }
 }

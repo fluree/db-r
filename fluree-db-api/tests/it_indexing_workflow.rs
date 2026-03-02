@@ -159,7 +159,9 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 "select": ["?s"],
                 "where": { "@id": "?s", "@type": "ex:Person" }
             });
-            let result = fluree.query(&loaded, &query).await.expect("query");
+            let result = support::query_jsonld(&fluree, &loaded, &query)
+                .await
+                .expect("query");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld");
             assert_eq!(json_rows.as_array().map(|a| a.len()), Some(10));
         })
@@ -264,7 +266,9 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
                 "where": { "@id": "?s", "@type": "ex:Person", "ex:name": "?name" }
             });
 
-            let result = fluree.query(&ledger_loaded, &query).await.expect("query");
+            let result = support::query_jsonld(&fluree, &ledger_loaded, &query)
+                .await
+                .expect("query");
             let json_rows = result.to_jsonld(&ledger_loaded.snapshot).expect("jsonld");
 
             assert_eq!(
@@ -341,7 +345,9 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
                 "select": ["?s"],
                 "where": { "@id":"?s", "@type":"ex:Person" }
             });
-            let result = fluree2.query(&loaded, &query).await.expect("query");
+            let result = support::query_jsonld(&fluree2, &loaded, &query)
+                .await
+                .expect("query");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld");
             assert_eq!(json_rows.as_array().map(|a| a.len()), Some(20));
         })
@@ -592,7 +598,9 @@ async fn reindex_rebuilds_and_publishes_index_at_current_commit_t() {
         "select": ["?name"],
         "where": {"@id":"?s","ex:name":"?name"}
     });
-    let result = fluree.query(&loaded, &q).await.expect("query");
+    let result = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query");
     let jsonld = result.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(jsonld.as_array().expect("array").len(), 4);
 }
@@ -704,7 +712,9 @@ async fn reindex_populates_statistics() {
         "select": ["?name"],
         "where": {"@id": "?s", "@type": "ex:Person", "ex:name": "?name"}
     });
-    let result = fluree.query(&loaded, &q).await.expect("query");
+    let result = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query");
     let jsonld = result.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(
         jsonld.as_array().expect("array").len(),
@@ -783,7 +793,9 @@ async fn reindex_with_existing_index_completes_successfully() {
                 "select": ["?name"],
                 "where": {"@id": "?s", "ex:name": "?name"}
             });
-            let result = fluree.query(&loaded, &q).await.expect("query");
+            let result = support::query_jsonld(&fluree, &loaded, &q)
+                .await
+                .expect("query");
             let jsonld = result.to_jsonld(&loaded.snapshot).expect("to_jsonld");
             assert_eq!(jsonld.as_array().expect("array").len(), 3);
 
@@ -857,7 +869,9 @@ async fn reindex_preserves_filter_queries() {
         "select": ["?name"],
         "where": {"@id": "?emp", "@type": "ex:Employee", "ex:name": "?name"}
     });
-    let result1 = fluree.query(&loaded, &q1).await.expect("query");
+    let result1 = support::query_jsonld(&fluree, &loaded, &q1)
+        .await
+        .expect("query");
     let jsonld1 = result1.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(
         jsonld1.as_array().expect("array").len(),
@@ -875,7 +889,9 @@ async fn reindex_preserves_filter_queries() {
             ["filter", "(> ?salary 70000)"]
         ]
     });
-    let result2 = fluree.query(&loaded, &q2).await.expect("filter query");
+    let result2 = support::query_jsonld(&fluree, &loaded, &q2)
+        .await
+        .expect("filter query");
     let jsonld2 = result2.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(
         jsonld2.as_array().expect("array").len(),
@@ -947,7 +963,9 @@ async fn reindex_uses_provided_indexer_config() {
         "select": ["?val"],
         "where": {"@id": "?s", "@type": "ex:Thing", "ex:val": "?val"}
     });
-    let result = fluree.query(&loaded, &q).await.expect("query");
+    let result = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query");
     let jsonld = result.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(
         jsonld.as_array().expect("array").len(),
@@ -1008,7 +1026,9 @@ async fn reindex_default_from_t_includes_all_data() {
         "select": ["?label"],
         "where": {"@id": "?item", "@type": "ex:Item", "ex:label": "?label"}
     });
-    let result = fluree.query(&loaded, &q).await.expect("query");
+    let result = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query");
     let jsonld = result.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     assert_eq!(
         jsonld.as_array().expect("array").len(),
@@ -1094,7 +1114,9 @@ async fn graph_crawl_select_works_after_indexing() {
                 "select": {"?s": ["*"]},
                 "where": { "@id": "?s", "@type": "ex:Person" }
             });
-            let result = fluree.query(&loaded, &query).await.expect("query");
+            let result = support::query_jsonld(&fluree, &loaded, &query)
+                .await
+                .expect("query");
             let json_rows = result
                 .to_jsonld_async(loaded.as_graph_db_ref(0))
                 .await
@@ -1119,7 +1141,9 @@ async fn graph_crawl_select_works_after_indexing() {
                 "select": {"?s": ["@id", "ex:name"]},
                 "where": { "@id": "?s", "@type": "ex:Person" }
             });
-            let result2 = fluree.query(&loaded, &query2).await.expect("query2");
+            let result2 = support::query_jsonld(&fluree, &loaded, &query2)
+                .await
+                .expect("query2");
             let json_rows2 = result2
                 .to_jsonld_async(loaded.as_graph_db_ref(0))
                 .await
@@ -1213,7 +1237,9 @@ async fn construct_works_after_indexing() {
                 "construct": [{ "@id": "?s", "ex:name": "?name" }]
             });
 
-            let result = fluree.query(&loaded, &query).await.expect("query");
+            let result = support::query_jsonld(&fluree, &loaded, &query)
+                .await
+                .expect("query");
             let constructed = result.to_construct(&loaded.snapshot).expect("to_construct");
 
             let graph = constructed
@@ -1370,8 +1396,7 @@ async fn new_namespace_after_indexing_is_queryable() {
                 "select": ["?s"],
                 "where": { "@id": "?s", "@type": "ex:Person" }
             });
-            let result = fluree
-                .query(&loaded, &query)
+            let result = support::query_jsonld(&fluree, &loaded, &query)
                 .await
                 .expect("query with new ns");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld format");

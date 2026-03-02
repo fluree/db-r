@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     // Query normally after import (loads the published V2 root from CAS).
     let view = fluree.view("dblp:main").await?;
     let qr = fluree
-        .query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10")
+        .query(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10")
         .await?;
     println!("rows={}", qr.batches.iter().map(|b| b.len()).sum::<usize>());
 

@@ -93,7 +93,9 @@ async fn construct_basic() {
         "construct": [{"@id":"?s","label":"?fullName"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -121,7 +123,9 @@ async fn construct_no_prefix_context_full_iris() {
         "construct": [{"@id":"?s","http://example.org/label":"?fullName"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -161,7 +165,9 @@ async fn construct_multiple_clauses() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -197,7 +203,9 @@ async fn construct_multiple_clauses_different_subjects() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -222,7 +230,9 @@ async fn construct_at_type_values_are_unwrapped() {
         "construct": [{"@id":"?s","@type":"?o"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     // Only the 4 ex:Person nodes have @type
@@ -250,7 +260,9 @@ async fn construct_class_patterns_in_template() {
         "construct": [{"@id":"?s","@type":"ex:Human"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -277,7 +289,9 @@ async fn construct_id_only_patterns_produce_no_triples() {
         "construct": [{"@id":"?s"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -303,7 +317,9 @@ async fn construct_unbound_vars_are_not_included() {
         "construct": [{"@id":"?s","name":"?name","@type":"?type"}]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     let expected = normalize_construct(json!({
@@ -340,7 +356,9 @@ async fn construct_value_metadata_displays() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
     // Note: Clojure shows a native date object; Rust formats as a typed string.

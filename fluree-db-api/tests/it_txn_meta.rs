@@ -828,7 +828,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
             );
 
             let result = fluree
-                .query_dataset_view(&dataset, &sparql)
+                .query_dataset(&dataset, &sparql)
                 .await
                 .expect("SPARQL GRAPH query should succeed");
 
@@ -931,7 +931,7 @@ async fn test_txn_meta_time_travel_filtering() {
             });
 
             let results_t1 = fluree
-                .query_view(&view_t1, &query_t1)
+                .query(&view_t1, &query_t1)
                 .await
                 .expect("query at t=1");
             let results_t1 = results_t1.to_jsonld(&view_t1.snapshot).expect("to_jsonld");
@@ -971,7 +971,7 @@ async fn test_txn_meta_time_travel_filtering() {
             });
 
             let results_t2 = fluree
-                .query_view(&view_t2, &query_t2)
+                .query(&view_t2, &query_t2)
                 .await
                 .expect("query at t=2");
             let results_t2 = results_t2.to_jsonld(&view_t2.snapshot).expect("to_jsonld");

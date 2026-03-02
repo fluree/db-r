@@ -58,7 +58,9 @@ async fn values_top_level_no_where_multiple_vars() {
                    [["foo1","bar1"],["foo2","bar2"],["foo3","bar3"]]]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
@@ -81,7 +83,9 @@ async fn values_top_level_no_where_single_var() {
         "values": ["?foo", ["foo1","foo2","foo3"]]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
@@ -113,7 +117,9 @@ async fn values_top_level_iri_values_constrain_where() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
@@ -159,20 +165,17 @@ async fn values_equivalent_iri_forms_var_in_id_map() {
         "select": ["?s"]
     });
 
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
         .unwrap();
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
         .unwrap();
-    let r3 = fluree
-        .query(&ledger, &q3)
+    let r3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -217,7 +220,9 @@ async fn values_where_clause_keyword_single_var() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
@@ -255,7 +260,9 @@ async fn values_nested_under_optional_clause() {
         "orderBy": "?s"
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Only nikola matches the OPTIONAL (VALUES constrains to nikola, and nikola has ex:cool)
@@ -293,7 +300,9 @@ async fn values_match_meta_language_tag() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(json_rows, json!(["ex:nikola"]));
 }
@@ -319,7 +328,9 @@ async fn values_with_empty_solution_seed() {
         "select": ["?s","?name"]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
