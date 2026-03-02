@@ -85,8 +85,8 @@ pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};
 pub use graph_db_ref::GraphDbRef;
 pub use graph_registry::{
-    config_graph_iri, txn_meta_graph_iri, GraphRegistry, CONFIG_GRAPH_ID, FIRST_USER_GRAPH_ID,
-    TXN_META_GRAPH_ID,
+    config_graph_iri, txn_meta_graph_iri, GraphRegistry, CONFIG_GRAPH_ID, DEFAULT_GRAPH_ID,
+    FIRST_USER_GRAPH_ID, TXN_META_GRAPH_ID,
 };
 pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};

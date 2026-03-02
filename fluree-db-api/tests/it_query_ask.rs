@@ -44,7 +44,9 @@ async fn ask_true_when_match_exists() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -64,7 +66,9 @@ async fn ask_false_when_no_match() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -86,7 +90,9 @@ async fn ask_with_filter() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -103,7 +109,9 @@ async fn ask_with_filter() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query_no_match).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query_no_match)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -123,7 +131,9 @@ async fn ask_with_type_pattern() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -139,7 +149,9 @@ async fn ask_with_type_pattern() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query_no_match).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query_no_match)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -161,7 +173,9 @@ async fn ask_with_optional() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -180,7 +194,9 @@ async fn ask_object_shorthand() {
         "ask": { "@id": "?person", "ex:name": "Alice" }
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
@@ -195,23 +211,23 @@ async fn ask_rejects_non_pattern_values() {
     let ledger = genesis_ledger(&fluree, "it/ask:bad-values");
 
     // "ask": true — old syntax, no longer valid
-    let result = fluree.query(&ledger, &json!({"ask": true})).await;
+    let result = support::query_jsonld(&fluree, &ledger, &json!({"ask": true})).await;
     assert!(result.is_err(), "ask: true should be rejected");
 
     // "ask": 1
-    let result = fluree.query(&ledger, &json!({"ask": 1})).await;
+    let result = support::query_jsonld(&fluree, &ledger, &json!({"ask": 1})).await;
     assert!(result.is_err(), "ask: 1 should be rejected");
 
     // "ask": "yes"
-    let result = fluree.query(&ledger, &json!({"ask": "yes"})).await;
+    let result = support::query_jsonld(&fluree, &ledger, &json!({"ask": "yes"})).await;
     assert!(result.is_err(), "ask: \"yes\" should be rejected");
 
     // "ask": false
-    let result = fluree.query(&ledger, &json!({"ask": false})).await;
+    let result = support::query_jsonld(&fluree, &ledger, &json!({"ask": false})).await;
     assert!(result.is_err(), "ask: false should be rejected");
 
     // "ask": null
-    let result = fluree.query(&ledger, &json!({"ask": null})).await;
+    let result = support::query_jsonld(&fluree, &ledger, &json!({"ask": null})).await;
     assert!(result.is_err(), "ask: null should be rejected");
 }
 
@@ -227,20 +243,22 @@ async fn ask_sparql_parity() {
         ]
     });
 
-    let fql_result = fluree.query(&ledger, &fql_query).await.expect("fql query");
+    let fql_result = support::query_jsonld(&fluree, &ledger, &fql_query)
+        .await
+        .expect("fql query");
     let fql_json = fql_result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("fql format");
 
     // SPARQL ASK
-    let sparql_result = fluree
-        .query_sparql(
-            &ledger,
-            "PREFIX ex: <http://example.org/ns/> ASK { ?person ex:name \"Alice\" }",
-        )
-        .await
-        .expect("sparql query");
+    let sparql_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        "PREFIX ex: <http://example.org/ns/> ASK { ?person ex:name \"Alice\" }",
+    )
+    .await
+    .expect("sparql query");
 
     // SPARQL ASK returns W3C envelope via to_sparql_json
     let sparql_json = sparql_result

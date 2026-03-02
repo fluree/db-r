@@ -67,8 +67,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         "select": ["?u","?name"],
         "where": [{"@id":"?u","schema:name":"Halie"},{"@id":"?u","schema:name":"?name"}]
     });
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -80,8 +79,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         "select": ["?u"],
         "where": {"@id":"?u","schema:name":"a"}
     });
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -93,8 +91,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         "select": ["?u","?name"],
         "where": [{"@id":"?u","schema:name":3},{"@id":"?u","schema:name":"?name"}]
     });
-    let r3 = fluree
-        .query(&ledger, &q3)
+    let r3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -116,8 +113,7 @@ async fn datatype_query_explicit_typed_value_object_matches() {
         "where": {"ex:name":"?name","ex:age":{"@value":36,"@type":"xsd:integer"}}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -147,8 +143,7 @@ async fn datatype_bind_datatype_function_includes_dt_in_results() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -183,8 +178,7 @@ async fn datatype_filter_with_datatype_function() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -206,7 +200,9 @@ async fn datatype_query_incompatible_type_returns_no_matches() {
         "where": {"ex:name":"?name","ex:age":{"@value":36,"@type":"xsd:string"}}
     });
 
-    let err = fluree.query(&ledger, &q).await.unwrap_err();
+    let err = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("TypeCoercion") || msg.contains("coerce"),
@@ -227,8 +223,7 @@ async fn datatype_filter_value_object_by_type_constant() {
         "where": {"ex:name":"?name","ex:age":{"@value":"?age","@type":"xsd:string"}}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -261,8 +256,7 @@ async fn language_binding_lang_function() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -313,8 +307,7 @@ async fn language_binding_value_object_language_variable() {
         "where": [{"@id":"?id","ex:hello":{"@value":"?val","@language":"?lang"}}]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -380,8 +373,7 @@ async fn json_datatype_insert_query_and_filter() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -433,8 +425,7 @@ async fn json_datatype_insert_query_and_filter() {
             ["filter", "(= \"@json\" ?dt)"]
         ]
     });
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -460,8 +451,7 @@ async fn value_type_binding_variable_in_value_object() {
         "where": [{"ex:name":"?name","ex:age":{"@value":"?age","@type":"?ageType"}}]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -532,8 +522,7 @@ async fn transaction_binding_at_t_variable() {
         "orderBy": "?name"
     });
 
-    let rows = fluree
-        .query(&ledger2, &q)
+    let rows = support::query_jsonld(&fluree, &ledger2, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -616,8 +605,7 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
         "orderBy": "?id"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -690,8 +678,7 @@ async fn decimal_json_number_input_becomes_double() {
         "orderBy": "?id"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -753,8 +740,7 @@ async fn decimal_sort_order_with_mixed_numeric_types() {
         "orderBy": "?score"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -825,8 +811,7 @@ async fn decimal_equality_across_types() {
         "where": {"@id": "?id", "ex:value": 3}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -898,8 +883,7 @@ async fn decimal_filter_comparison_across_types() {
         "orderBy": "?amount"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -941,7 +925,7 @@ async fn decimal_invalid_string_should_error() {
         "where": {"@id": "?id", "ex:value": {"@value": "not-a-number", "@type": "xsd:decimal"}}
     });
 
-    let result = fluree.query(&ledger, &q).await;
+    let result = support::query_jsonld(&fluree, &ledger, &q).await;
     assert!(result.is_err(), "Should error on invalid decimal string");
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -976,7 +960,7 @@ async fn decimal_non_integral_to_integer_should_error() {
         "where": {"@id": "?id", "ex:value": {"@value": 3.13, "@type": "xsd:integer"}}
     });
 
-    let result = fluree.query(&ledger, &q).await;
+    let result = support::query_jsonld(&fluree, &ledger, &q).await;
     assert!(
         result.is_err(),
         "Should error on non-integral double to integer"
@@ -1016,7 +1000,7 @@ async fn decimal_number_to_boolean_should_error() {
         "where": {"@id": "?id", "ex:flag": {"@value": 1, "@type": "xsd:boolean"}}
     });
 
-    let result = fluree.query(&ledger, &q).await;
+    let result = support::query_jsonld(&fluree, &ledger, &q).await;
     assert!(result.is_err(), "Should error on number to boolean");
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -1059,7 +1043,7 @@ async fn values_typed_literal_string_to_integer_coercion() {
         ]
     });
 
-    let result = fluree.query(&ledger, &q).await;
+    let result = support::query_jsonld(&fluree, &ledger, &q).await;
     let rows = result.unwrap().to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -1108,7 +1092,9 @@ async fn values_incompatible_type_returns_no_matches() {
         ]
     });
 
-    let err = fluree.query(&ledger, &q).await.unwrap_err();
+    let err = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("TypeCoercion") || msg.contains("coerce"),
@@ -1145,8 +1131,7 @@ async fn values_decimal_string_becomes_bigdecimal() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

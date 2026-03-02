@@ -193,7 +193,8 @@ let info = fluree.ledger_info(ledger_id).execute().await?;
 println!("Index rebuilt to t={}", info["index"]["t"]);
 
 // Run a sample query to verify correctness
-let query_result = fluree.query(&ledger, &sample_query).await?;
+let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+let query_result = fluree.query(&db, &sample_query).await?;
 ```
 
 ### 4. Concurrent Operations

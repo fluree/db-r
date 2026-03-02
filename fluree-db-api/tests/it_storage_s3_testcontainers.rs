@@ -178,8 +178,7 @@ async fn s3_testcontainers_basic_test() {
         "select": ["?s", "?name"],
         "where": {"@id": "?s", "@type": "ex:Person", "ex:name": "?name"}
     });
-    let results = fluree
-        .query(&ledger1, &q)
+    let results = support::query_jsonld(&fluree, &ledger1, &q)
         .await
         .expect("query")
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -192,8 +191,7 @@ async fn s3_testcontainers_basic_test() {
     // Reload from a "fresh connection" (new cache) and re-query
     let fluree2 = build_fluree(storage.clone(), nameservice.clone());
     let reloaded = fluree2.ledger(ledger_id).await.expect("ledger reload");
-    let reload_results = fluree2
-        .query(&reloaded, &q)
+    let reload_results = support::query_jsonld(&fluree2, &reloaded, &q)
         .await
         .expect("query reload")
         .to_jsonld_async(reloaded.as_graph_db_ref(0))

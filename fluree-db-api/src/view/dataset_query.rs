@@ -1,6 +1,6 @@
 //! Query execution against DataSetDb
 //!
-//! Provides `query_dataset_view` for multi-ledger queries.
+//! Provides `query_dataset` for multi-ledger queries.
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
@@ -26,7 +26,7 @@ where
 {
     /// Execute a query against a dataset view (multi-ledger).
     ///
-    /// For single-ledger datasets, this delegates to `query_view`.
+    /// For single-ledger datasets, this delegates to `query`.
     /// For multi-ledger datasets, this executes against the merged default graphs.
     ///
     /// # Example
@@ -39,9 +39,9 @@ where
     ///     .with_default(view1)
     ///     .with_default(view2);
     ///
-    /// let result = fluree.query_dataset_view(&dataset, &query).await?;
+    /// let result = fluree.query_dataset(&dataset, &query).await?;
     /// ```
-    pub async fn query_dataset_view(
+    pub async fn query_dataset(
         &self,
         dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
@@ -52,7 +52,7 @@ where
         if dataset.is_single_ledger() {
             if let Some(view) = dataset.primary() {
                 match &input {
-                    QueryInput::JsonLd(_) => return self.query_view(view, input).await,
+                    QueryInput::JsonLd(_) => return self.query(view, input).await,
                     QueryInput::Sparql(sparql) => {
                         let ast = parse_and_validate_sparql(sparql)?;
                         let has_dataset = match &ast.body {
@@ -63,7 +63,7 @@ where
                             fluree_db_sparql::ast::QueryBody::Update(_) => false,
                         };
                         if !has_dataset {
-                            return self.query_view(view, input).await;
+                            return self.query(view, input).await;
                         }
                     }
                 }
@@ -124,10 +124,14 @@ where
     }
 
     /// Execute a dataset query with tracking.
-    pub(crate) async fn query_dataset_view_tracked(
+    ///
+    /// When `format_config` is `None`, defaults to JSON-LD for FlureeQL
+    /// queries and SPARQL JSON for SPARQL queries.
+    pub(crate) async fn query_dataset_tracked(
         &self,
         dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
+        format_config: Option<crate::format::FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let input = q.into();
@@ -137,6 +141,13 @@ where
             QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
             QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
         };
+
+        // Determine output format: caller override > input-type default
+        let default_format = match &input {
+            QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
+            _ => crate::format::FormatterConfig::jsonld(),
+        };
+        let format_config = format_config.unwrap_or(default_format);
 
         // Require primary
         let primary = dataset.primary().ok_or_else(|| {
@@ -186,15 +197,21 @@ where
         );
 
         // Format with tracking
+        let config = format_config.with_select_mode(query_result.select_mode);
         let result_json = match primary.policy() {
             Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(primary.as_graph_db_ref(), policy, &tracker)
+                .format_async_with_policy_tracked(
+                    primary.as_graph_db_ref(),
+                    &config,
+                    policy,
+                    &tracker,
+                )
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .to_jsonld_async_tracked(primary.as_graph_db_ref(), &tracker)
+                .format_async_tracked(primary.as_graph_db_ref(), &config, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -373,7 +390,7 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_query_dataset_view_single_ledger() {
+    async fn test_query_dataset_single_ledger() {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create ledger with data
@@ -395,12 +412,12 @@ mod tests {
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
         });
 
-        let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+        let result = fluree.query_dataset(&dataset, &query).await.unwrap();
         assert!(!result.batches.is_empty());
     }
 
     #[tokio::test]
-    async fn test_query_dataset_view_formatted() {
+    async fn test_query_dataset_formatted() {
         let fluree = FlureeBuilder::memory().build_memory();
 
         let ledger = fluree.create_ledger("testdb").await.unwrap();
@@ -430,7 +447,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_dataset_view_multi_ledger_union() {
+    async fn test_query_dataset_multi_ledger_union() {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Two independent ledgers with distinct subjects
@@ -466,7 +483,7 @@ mod tests {
             }
         });
 
-        let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+        let result = fluree.query_dataset(&dataset, &query).await.unwrap();
         let total_solutions: usize = result.batches.iter().map(|b| b.len()).sum();
         assert_eq!(total_solutions, 2);
     }
@@ -479,7 +496,7 @@ mod tests {
         let dataset: DataSetDb = DataSetDb::new();
         let query = json!({ "select": ["?s"], "where": {"@id": "?s"} });
 
-        let result = fluree.query_dataset_view(&dataset, &query).await;
+        let result = fluree.query_dataset(&dataset, &query).await;
         assert!(result.is_err());
     }
 }

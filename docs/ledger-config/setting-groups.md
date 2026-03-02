@@ -4,6 +4,21 @@ Each setting group configures a different subsystem. Groups are resolved indepen
 
 All setting groups can appear on both `f:LedgerConfig` (ledger-wide defaults) and `f:GraphConfig` (per-graph overrides), except where noted.
 
+## System defaults
+
+When no config graph is present (or a setting group is absent), the system defaults apply:
+
+| Setting group | System default |
+|---------------|----------------|
+| Policy | `f:defaultAllow true` — all queries and transactions are permitted |
+| SHACL | Disabled — no shape validation |
+| Reasoning | Disabled — no OWL/RDFS inference |
+| Datalog | Disabled — no rule evaluation |
+| Transact constraints | Disabled — no uniqueness enforcement |
+| Override control | `f:OverrideAll` — any request can override any setting |
+
+In other words, an unconfigured ledger is **fully open**: no policy, no validation, no reasoning. This matches the behavior of a fresh ledger and ensures backward compatibility.
+
 ---
 
 ## Policy defaults
@@ -12,12 +27,12 @@ All setting groups can appear on both `f:LedgerConfig` (ledger-wide defaults) an
 
 Controls default policy enforcement behavior.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `f:defaultAllow` | boolean | Allow (`true`) or deny (`false`) when no policy rule matches |
-| `f:policySource` | `f:GraphRef` | Graph containing policy rules (`f:Allow`, `f:Modify`, etc.) |
-| `f:policyClass` | IRI or list | Default policy classes to apply |
-| `f:overrideControl` | IRI or object | Override gating (see [Override control](override-control.md)) |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:defaultAllow` | boolean | `true` | Allow (`true`) or deny (`false`) when no policy rule matches |
+| `f:policySource` | `f:GraphRef` | (none) | Graph containing policy rules (`f:Allow`, `f:Modify`, etc.) |
+| `f:policyClass` | IRI or list | (none) | Default policy classes to apply |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating (see [Override control](override-control.md)) |
 
 `f:policySource` is non-overridable — it can only be changed by writing to the config graph, not at query time. `f:defaultAllow` and `f:policyClass` are overridable (subject to override control).
 
@@ -47,12 +62,12 @@ GRAPH <urn:fluree:mydb:main#config> {
 
 Controls SHACL shape validation at transaction time. Requires the `shacl` feature flag at compile time.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `f:shaclEnabled` | boolean | Enable or disable SHACL validation |
-| `f:shapesSource` | `f:GraphRef` | Graph containing SHACL shapes |
-| `f:validationMode` | IRI | `f:ValidationReject` (reject invalid data) or `f:ValidationWarn` (log warning, allow) |
-| `f:overrideControl` | IRI or object | Override gating |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:shaclEnabled` | boolean | `false` | Enable or disable SHACL validation |
+| `f:shapesSource` | `f:GraphRef` | (none) | Graph containing SHACL shapes |
+| `f:validationMode` | IRI | `f:ValidationReject` | `f:ValidationReject` (reject invalid data) or `f:ValidationWarn` (log warning, allow) |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating |
 
 `f:shapesSource` is non-overridable. `f:shaclEnabled` and `f:validationMode` are overridable.
 
@@ -83,11 +98,11 @@ GRAPH <urn:fluree:mydb:main#config> {
 
 Controls OWL/RDFS reasoning applied at query time.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `f:reasoningModes` | IRI or list | Reasoning modes: `f:RDFS`, `f:OWL2QL`, `f:OWL2RL`, `f:Datalog` |
-| `f:schemaSource` | `f:GraphRef` | Graph containing schema triples (`rdfs:subClassOf`, etc.) |
-| `f:overrideControl` | IRI or object | Override gating |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:reasoningModes` | IRI or list | (none) | Reasoning modes: `f:RDFS`, `f:OWL2QL`, `f:OWL2RL`, `f:Datalog` |
+| `f:schemaSource` | `f:GraphRef` | (none) | Graph containing schema triples (`rdfs:subClassOf`, etc.) |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating |
 
 `f:schemaSource` is non-overridable. `f:reasoningModes` is overridable.
 
@@ -117,12 +132,12 @@ GRAPH <urn:fluree:mydb:main#config> {
 
 Controls Fluree's stored datalog rules (`f:rule`).
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `f:datalogEnabled` | boolean | Enable or disable datalog rule evaluation |
-| `f:rulesSource` | `f:GraphRef` | Graph containing `f:rule` definitions |
-| `f:allowQueryTimeRules` | boolean | Allow queries to supply ad-hoc rules |
-| `f:overrideControl` | IRI or object | Override gating |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:datalogEnabled` | boolean | `false` | Enable or disable datalog rule evaluation |
+| `f:rulesSource` | `f:GraphRef` | (none) | Graph containing `f:rule` definitions |
+| `f:allowQueryTimeRules` | boolean | `true` | Allow queries to supply ad-hoc rules |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating |
 
 `f:rulesSource` is non-overridable. `f:datalogEnabled` and `f:allowQueryTimeRules` are overridable.
 
@@ -153,11 +168,11 @@ GRAPH <urn:fluree:mydb:main#config> {
 
 Controls transaction-time constraint enforcement, such as property value uniqueness.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `f:uniqueEnabled` | boolean | Enable unique constraint enforcement |
-| `f:constraintsSource` | `f:GraphRef` or list | Graph(s) containing constraint annotations (e.g., `f:enforceUnique`) |
-| `f:overrideControl` | IRI or object | Override gating |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:uniqueEnabled` | boolean | `false` | Enable unique constraint enforcement |
+| `f:constraintsSource` | `f:GraphRef` or list | default graph | Graph(s) containing constraint annotations (e.g., `f:enforceUnique`) |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating |
 
 When `f:uniqueEnabled` is `true` and `f:constraintsSource` is omitted, the default graph is used as the constraint source.
 
@@ -201,13 +216,11 @@ See [Unique constraints](unique-constraints.md) for full details on `f:enforceUn
 
 ## Ledger-scoped settings
 
-Some settings are structurally tied to the ledger as a whole and are **not meaningful per-graph**. They live exclusively on `f:LedgerConfig` and are ignored if present on `f:GraphConfig`:
-
-| Field | Description |
-|-------|-------------|
-| `f:authzSource` | Identity/relationship graph used by policy evaluation |
+Some settings are structurally tied to the ledger as a whole and are **not meaningful per-graph**. They live exclusively on `f:LedgerConfig` and are ignored if present on `f:GraphConfig`.
 
 Override control does not apply to ledger-scoped settings — they are changed only by writing to the config graph.
+
+> **Note:** `f:authzSource` (an identity/relationship graph used by policy evaluation) is planned as a ledger-scoped setting but is not yet implemented. When available, it will let the config graph specify which graph contains identity data (e.g., DID→role mappings) for policy resolution.
 
 ---
 

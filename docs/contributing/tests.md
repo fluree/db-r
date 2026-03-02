@@ -491,9 +491,9 @@ fn test_invalid_query_returns_error() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_missing_ledger_returns_ledger_not_found() {
-    let result = query_ledger("nonexistent:main");
+#[tokio::test]
+async fn test_missing_ledger_returns_ledger_not_found() {
+    let result = fluree.ledger("nonexistent:main").await;
     assert!(matches!(result.unwrap_err(), Error::LedgerNotFound(_)));
 }
 ```

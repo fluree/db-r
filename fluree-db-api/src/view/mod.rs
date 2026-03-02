@@ -28,8 +28,8 @@
 //!     .with_reasoning(ReasoningModes::owl2ql());
 //!
 //! // Query the composed view (JSON-LD or SPARQL)
-//! let result = fluree.query_view(&view, &query_json).await?;
-//! let result = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o }").await?;
+//! let result = fluree.query(&view, &query_json).await?;
+//! let result = fluree.query(&view, "SELECT * WHERE { ?s ?p ?o }").await?;
 //! ```
 //!
 //! # Wrapper Semantics

@@ -156,8 +156,7 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         "@context": ctx_ct(ns_prefix),
         "select": {"ct:open": ["*"]}
     });
-    let open = fluree
-        .query(&ledger1, &open_q)
+    let open = support::query_jsonld(&fluree, &ledger1, &open_q)
         .await
         .expect("query open")
         .to_jsonld_async(ledger1.as_graph_db_ref(0))

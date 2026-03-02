@@ -334,7 +334,9 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
                 "select": ["?name"],
                 "where": { "@id": "ex:person060", "ex:name": "?name" }
             });
-            let out = fluree.query(&ledger, &q).await.expect("query");
+            let out = support::query_jsonld(&fluree, &ledger, &q)
+                .await
+                .expect("query");
             let rows = out.to_jsonld(&ledger.snapshot).expect("jsonld");
             assert!(
                 rows.as_array().is_some_and(|a| !a.is_empty()),

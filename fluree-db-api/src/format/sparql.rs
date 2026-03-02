@@ -250,11 +250,11 @@ fn format_binding(
                     })))
                 }
                 FlakeValue::Json(json_str) => {
-                    // @json datatype: return the JSON string as-is in SPARQL format
+                    // SPARQL JSON uses the full RDF datatype IRI (not the JSON-LD "@json" keyword)
                     Ok(Some(json!({
                         "type": "literal",
                         "value": json_str,
-                        "datatype": "@json"
+                        "datatype": dt_iri
                     })))
                 }
                 FlakeValue::Null => Ok(None),

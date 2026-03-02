@@ -74,7 +74,8 @@ async fn shacl_cardinality_constraints() {
         "select": ["?name"],
         "where": {"@id": "ex:john", "schema:name": "?name"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
@@ -155,7 +156,8 @@ async fn shacl_datatype_constraints() {
         "select": ["?name"],
         "where": {"@id": "ex:john", "schema:name": "?name"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
@@ -315,7 +317,8 @@ async fn shacl_pattern_constraints() {
         "select": ["?greeting"],
         "where": {"@id": "ex:alice", "ex:greeting": "?greeting"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["hello big world"]));
 
@@ -378,7 +381,8 @@ async fn shacl_has_value_constraint() {
         "select": ["?role"],
         "where": {"@id": "ex:alice", "schema:role": "?role"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["admin"]));
 
@@ -441,7 +445,8 @@ async fn shacl_node_kind_constraint() {
         "select": ["?home"],
         "where": {"@id": "ex:alice", "schema:homepage": "?home"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["ex:homepage"]));
 
@@ -515,7 +520,8 @@ async fn shacl_closed_constraint() {
         "select": ["?name"],
         "where": {"@id": "ex:alice", "schema:name": "?name"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["Alice"]));
 
@@ -625,7 +631,8 @@ async fn shacl_pattern_with_flags() {
         "select": ["?text"],
         "where": {"@id": "ex:msg1", "ex:text": "?text"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["HELLO WORLD"]));
 
@@ -693,7 +700,8 @@ async fn shacl_in_constraint() {
         "select": ["?status"],
         "where": {"@id": "ex:task1", "ex:status": "?status"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["active"]));
 
@@ -759,7 +767,8 @@ async fn shacl_equals_constraint() {
         "select": ["?date"],
         "where": {"@id": "ex:event1", "ex:startDate": "?date"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["2024-01-15"]));
 
@@ -833,7 +842,8 @@ async fn shacl_not_constraint() {
         "select": ["?status"],
         "where": {"@id": "ex:alice", "ex:status": "?status"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["active"]));
 
@@ -916,7 +926,8 @@ async fn shacl_and_constraint() {
         "select": ["?name"],
         "where": {"@id": "ex:alice", "schema:name": "?name"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["Alice"]));
 
@@ -998,7 +1009,8 @@ async fn shacl_or_constraint() {
         "select": ["?email"],
         "where": {"@id": "ex:alice", "schema:email": "?email"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["alice@example.org"]));
 
@@ -1080,7 +1092,8 @@ async fn shacl_xone_constraint() {
         "select": ["?id"],
         "where": {"@id": "ex:acct1", "ex:personalId": "?id"}
     });
-    let result = fluree.query(&ledger_ok, &query).await.unwrap();
+    let db = crate::GraphDb::from_ledger_state(&ledger_ok);
+    let result = fluree.query(&db, &query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger_ok.snapshot).unwrap();
     assert_eq!(jsonld, json!(["P12345"]));
 

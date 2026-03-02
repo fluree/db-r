@@ -110,10 +110,17 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             None => (None, AggregateFn::CountAll),
         };
 
+        // COUNT(DISTINCT) is represented as a dedicated AggregateFn::CountDistinct
+        // variant (with its own streaming HashSet state), so clear the distinct flag
+        // to avoid a redundant double-dedup in AggregateOperator. All other functions
+        // (SUM, AVG, MIN, MAX, etc.) use the flag for dedup at execution time.
+        let distinct = distinct && !matches!(agg_fn, AggregateFn::CountDistinct);
+
         Ok(AggregateSpec {
             function: agg_fn,
             input_var,
             output_var,
+            distinct,
         })
     }
 

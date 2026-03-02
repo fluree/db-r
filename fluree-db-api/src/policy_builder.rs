@@ -892,7 +892,7 @@ fn parse_inline_policy(
 /// Resolve an IRI string to a SID using the database's encoding.
 fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
     snapshot
-        .encode_iri(iri)
+        .encode_iri_strict(iri)
         .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{}'", iri)))
 }
 
