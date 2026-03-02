@@ -47,10 +47,6 @@ pub enum LowerError {
     #[error("Expression-based ORDER BY is not yet supported; use a variable")]
     UnsupportedOrderByExpression { span: SourceSpan },
 
-    /// Unsupported GROUP BY expression (MVP only supports variables)
-    #[error("Expression-based GROUP BY is not yet supported; use a variable")]
-    UnsupportedGroupByExpression { span: SourceSpan },
-
     /// Aggregate without alias (SELECT COUNT(?x) without AS ?var)
     #[error("Aggregate expressions must have an alias (AS ?var)")]
     AggregateWithoutAlias { span: SourceSpan },
@@ -140,11 +136,6 @@ impl LowerError {
         Self::UnsupportedOrderByExpression { span }
     }
 
-    /// Create an unsupported GROUP BY expression error.
-    pub fn unsupported_group_by_expr(span: SourceSpan) -> Self {
-        Self::UnsupportedGroupByExpression { span }
-    }
-
     /// Create an aggregate without alias error.
     pub fn aggregate_without_alias(span: SourceSpan) -> Self {
         Self::AggregateWithoutAlias { span }
@@ -189,7 +180,6 @@ impl LowerError {
             Self::InvalidDecimal { span, .. } => *span,
             Self::InvalidInteger { span, .. } => *span,
             Self::UnsupportedOrderByExpression { span } => *span,
-            Self::UnsupportedGroupByExpression { span } => *span,
             Self::AggregateWithoutAlias { span } => *span,
             Self::UnsupportedCountStar { span } => *span,
             Self::InvalidPropertyPath { span, .. } => *span,

@@ -77,7 +77,9 @@ async fn upsert_parsing() {
         "select": {"ex:alice": ["*"]}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -129,7 +131,9 @@ async fn upsert_data() {
         "where": {"@id": "?id", "schema:name": "?name"}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -192,7 +196,9 @@ async fn upsert_no_changes() {
         "select": {"?id": ["*"]},
         "where": {"@id": "?id", "schema:name": "?name"}
     });
-    let result1 = fluree.query(&ledger1, &query).await.unwrap();
+    let result1 = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld1 = result1
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
@@ -203,7 +209,9 @@ async fn upsert_no_changes() {
         .await
         .unwrap()
         .ledger;
-    let result2 = fluree.query(&ledger2, &query).await.unwrap();
+    let result2 = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld2 = result2
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -214,7 +222,9 @@ async fn upsert_no_changes() {
         .await
         .unwrap()
         .ledger;
-    let result3 = fluree.query(&ledger3, &query).await.unwrap();
+    let result3 = support::query_jsonld(&fluree, &ledger3, &query)
+        .await
+        .unwrap();
     let jsonld3 = result3
         .to_jsonld_async(ledger3.as_graph_db_ref(0))
         .await
@@ -260,7 +270,9 @@ async fn upsert_multicardinal_data() {
         "select": {"?s": ["*"]}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -384,7 +396,9 @@ async fn upsert_and_commit() {
         "select": {"?id": ["*"]},
         "where": {"@id": "?id", "schema:name": "?name"}
     });
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await

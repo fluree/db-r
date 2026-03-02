@@ -90,6 +90,28 @@ pub enum TransactError {
     #[cfg(feature = "shacl")]
     #[error("{0}")]
     ShaclViolation(String),
+
+    /// Unique constraint violation (`f:enforceUnique`).
+    ///
+    /// A property annotated with `f:enforceUnique true` has duplicate values
+    /// within a single named graph.
+    #[error(
+        "Unique constraint violation: property <{property}> value \"{value}\" \
+             already exists for subject <{existing_subject}> in graph {graph} \
+             (conflicting subject: <{new_subject}>)"
+    )]
+    UniqueConstraintViolation {
+        /// The property IRI that requires uniqueness.
+        property: String,
+        /// The duplicate value (display representation).
+        value: String,
+        /// The graph where the violation occurred (IRI or "default").
+        graph: String,
+        /// The subject that already holds this value.
+        existing_subject: String,
+        /// The new subject trying to assert this value.
+        new_subject: String,
+    },
 }
 
 /// Result type for transaction operations

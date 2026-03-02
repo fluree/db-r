@@ -135,8 +135,7 @@ async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("sparql query should succeed");
 
@@ -179,7 +178,9 @@ async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
 
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
@@ -226,7 +227,9 @@ async fn sparql_count_star_counts_solutions() {
         WHERE { ?p a ex:Person . }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     // Single-variable queries return flat array
     assert_eq!(jsonld, json!([4]));
@@ -254,7 +257,9 @@ async fn sparql_count_distinct_with_group_by_and_order_by() {
         LIMIT 10
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Expected: jbob has 7 distinct favNums, jdoe has 4, bbob has 1
@@ -296,7 +301,9 @@ async fn sparql_delete_data_removes_specified_triples() {
         ORDER BY ?favNum
     "#;
 
-    let result = fluree.query_sparql(&ledger2, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger2, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger2.snapshot).expect("to_jsonld");
     // Single-variable queries return flat array
     assert_eq!(jsonld, json!([42, 99]));
@@ -319,7 +326,9 @@ async fn sparql_select_star_returns_object_rows() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -359,7 +368,9 @@ async fn sparql_lang_filter_limits_language_tagged_literals() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!([{"@value": "Heyyyy", "@language": "en"}]));
 }
@@ -382,7 +393,9 @@ async fn sparql_union_combines_unioned_patterns() {
         ORDER BY ?name
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!(["Alice", "Bob"]));
 }
@@ -404,7 +417,9 @@ async fn sparql_optional_includes_unbound_values_as_null() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -449,7 +464,9 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -492,7 +509,9 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -526,7 +545,9 @@ async fn sparql_omitted_subjects_match_expanded_subject_bindings() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -555,7 +576,9 @@ async fn sparql_scalar_sha512_function_binds_values() {
         WHERE { ?person person:handle ?handle . }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
@@ -584,7 +607,9 @@ async fn sparql_aggregate_avg_over_values() {
         WHERE { ?person person:favNums ?favNums . }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let avg = jsonld
@@ -610,7 +635,9 @@ async fn sparql_group_by_having_filters_groups() {
         HAVING (AVG(?favNums) > 10)
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let mut values: Vec<f64> = jsonld
@@ -643,7 +670,9 @@ async fn sparql_having_with_multiple_string_constraints() {
         HAVING (STRLEN(?handle) < 5 && (STRSTARTS(?handle, "foo") || STRSTARTS(?handle, "bar")))
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!([]));
@@ -665,7 +694,9 @@ async fn sparql_having_aggregate_without_select_alias() {
         HAVING (COUNT(?favNums) > 4)
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["ex:jbob"]));
@@ -684,7 +715,9 @@ async fn sparql_multiple_select_expressions_with_aggregate_alias() {
         WHERE { ?person person:favNums ?favNums . }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let rows = normalize_rows_array(&jsonld);
@@ -709,7 +742,9 @@ async fn sparql_group_concat_aggregate_per_group() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -734,7 +769,9 @@ async fn sparql_concat_function_formats_strings() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -766,7 +803,9 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
         GROUP BY ?person ?handle
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let mut rows: Vec<(String, String, Vec<i64>, f64, i64)> = normalize_rows_array(&jsonld)
@@ -835,7 +874,9 @@ async fn sparql_count_aggregate_per_group() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -858,7 +899,9 @@ async fn sparql_count_star_per_group() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -881,7 +924,9 @@ async fn sparql_sample_aggregate_returns_one_value() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let rows = normalize_rows_array(&jsonld);
@@ -905,7 +950,9 @@ async fn sparql_sum_aggregate_per_group() {
         GROUP BY ?person
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -928,7 +975,9 @@ async fn sparql_order_by_ascending_sorts_results() {
         ORDER BY ?handle
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["bbob", "dankeshön", "jbob", "jdoe"]));
@@ -948,7 +997,9 @@ async fn sparql_order_by_descending_sorts_results() {
         ORDER BY DESC(?handle)
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(jsonld, json!(["jdoe", "jbob", "dankeshön", "bbob"]));
@@ -970,7 +1021,9 @@ async fn sparql_values_filters_bindings() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -999,7 +1052,9 @@ async fn sparql_construct_query_outputs_jsonld_graph() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_construct(&ledger.snapshot).expect("to_construct");
 
     let expected = json!({
@@ -1055,7 +1110,9 @@ async fn sparql_construct_where_outputs_graph() {
         CONSTRUCT WHERE { ?x foaf:firstname ?fname }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_construct(&ledger.snapshot).expect("to_construct");
 
     let mut json_graph = jsonld
@@ -1110,7 +1167,9 @@ async fn sparql_base_iri_compacts_relative_ids() {
         ORDER BY ?book
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -1136,7 +1195,9 @@ async fn sparql_prefix_declarations_compact_ids() {
         ORDER BY ?book
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -1161,7 +1222,9 @@ async fn sparql_sparql_json_language_tags() {
         WHERE { ex:carol ex:catchphrase ?catchphrase }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let sparql_json = result
         .to_sparql_json(&ledger.snapshot)
         .expect("to_sparql_json");
@@ -1199,7 +1262,9 @@ async fn sparql_concat_with_langtag_argument() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, query).await.unwrap();
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
@@ -1243,8 +1308,7 @@ async fn sparql_property_path_inverse_object_var() {
         PREFIX ex: <http://example.org/>
         SELECT ?who WHERE { ex:b ^ex:knows ?who }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse path query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1261,8 +1325,7 @@ async fn sparql_property_path_inverse_subject_var() {
         PREFIX ex: <http://example.org/>
         SELECT ?who WHERE { ?who ^ex:knows ex:a }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse path subject var query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1287,8 +1350,7 @@ async fn sparql_property_path_alternative_object_var() {
         PREFIX ex: <http://example.org/>
         SELECT ?o WHERE { ex:a ex:knows|ex:likes ?o }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("alternative path query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1308,8 +1370,7 @@ async fn sparql_property_path_alternative_with_inverse() {
         PREFIX ex: <http://example.org/>
         SELECT ?who WHERE { ex:b ex:knows|^ex:knows ?who }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("alternative with inverse query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1338,8 +1399,7 @@ async fn sparql_property_path_alternative_three_way() {
         PREFIX ex: <http://example.org/>
         SELECT ?o WHERE { ex:a ex:knows|ex:likes|ex:trusts ?o }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("three-way alternative query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1368,8 +1428,7 @@ async fn sparql_property_path_alternative_duplicate_semantics() {
         PREFIX ex: <http://example.org/>
         SELECT ?o WHERE { ex:a ex:knows|ex:likes ?o }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("duplicate semantics query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1390,7 +1449,7 @@ async fn sparql_property_path_nested_alternative_under_transitive_errors() {
         PREFIX ex: <http://example.org/>
         SELECT ?o WHERE { ex:a (ex:knows|ex:likes)+ ?o }";
 
-    let result = fluree.query_sparql(&ledger, query).await;
+    let result = support::query_sparql(&fluree, &ledger, query).await;
     assert!(
         result.is_err(),
         "Nested alternative under transitive should error"
@@ -1451,8 +1510,7 @@ async fn sparql_property_path_sequence_two_step() {
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice ex:friend/ex:name ?name }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("two-step sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1469,8 +1527,7 @@ async fn sparql_property_path_sequence_three_step() {
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice ex:friend/ex:friend/ex:name ?name }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("three-step sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1487,8 +1544,7 @@ async fn sparql_property_path_sequence_with_inverse() {
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:bob ^ex:friend/ex:name ?name }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("sequence with inverse query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1505,8 +1561,7 @@ async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
         PREFIX ex: <http://example.org/>
         SELECT * WHERE { ex:alice ex:friend/ex:name ?name }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("wildcard sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1536,7 +1591,7 @@ async fn sparql_property_path_sequence_transitive_step_errors() {
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice ex:friend+/ex:name ?name }";
 
-    let result = fluree.query_sparql(&ledger, query).await;
+    let result = support::query_sparql(&fluree, &ledger, query).await;
     assert!(
         result.is_err(),
         "Transitive step inside sequence should error"
@@ -1563,8 +1618,7 @@ async fn sparql_property_path_inverse_one_or_more() {
         PREFIX ex: <http://example.org/>
         SELECT ?x WHERE { ex:c ^ex:knows+ ?x }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse one-or-more query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1585,8 +1639,7 @@ async fn sparql_property_path_inverse_zero_or_more() {
         PREFIX ex: <http://example.org/>
         SELECT ?x WHERE { ex:b ^ex:knows* ?x }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse zero-or-more query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1631,8 +1684,7 @@ async fn sparql_property_path_alternative_of_sequences() {
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice (ex:friend/ex:name)|(ex:colleague/ex:name) ?name }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("alternative-of-sequences query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1659,8 +1711,7 @@ async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
         PREFIX ex: <http://example.org/>
         SELECT ?val WHERE { ex:alice ex:name|(ex:friend/ex:name) ?val }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("mixed simple+sequence alternative query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1705,8 +1756,7 @@ async fn sparql_property_path_sequence_with_alternative_step() {
         PREFIX ex: <http://example.org/>
         SELECT ?val WHERE { ex:alice ex:friend/(ex:name|ex:nick) ?val }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("alternative-in-sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1747,8 +1797,7 @@ async fn sparql_property_path_sequence_with_middle_alternative() {
         PREFIX ex: <http://example.org/>
         SELECT ?val WHERE { ex:alice ex:knows/ex:friend/(ex:name|ex:nick) ?val }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("three-step alternative-in-sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1770,8 +1819,7 @@ async fn sparql_property_path_inverse_of_sequence() {
         PREFIX ex: <http://example.org/>
         SELECT ?who WHERE { ex:carol ^(ex:friend/ex:friend) ?who }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse-of-sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1793,8 +1841,7 @@ async fn sparql_property_path_inverse_of_alternative() {
         PREFIX ex: <http://example.org/>
         SELECT DISTINCT ?who WHERE { ex:bob ^(ex:friend|ex:parent) ?who }";
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("inverse-of-alternative query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1857,8 +1904,7 @@ async fn sparql_str_expands_custom_namespace_predicate() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("STR() query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1907,8 +1953,7 @@ async fn sparql_full_iri_predicate_matches_custom_namespace() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("full-IRI predicate query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -1951,8 +1996,7 @@ async fn sparql_prefix_shorthand_matches_custom_namespace() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, query)
+    let result = support::query_sparql(&fluree, &ledger, query)
         .await
         .expect("PREFIX shorthand query should succeed");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -2039,8 +2083,7 @@ async fn sparql_exact_repro_custom_pred_without_type() {
         SELECT ?s ?o
         WHERE { ?s a cust:CoveragePackage ; cust:anchor ?o . }
     "#;
-    let result = fluree
-        .query_sparql(&ledger, with_type)
+    let result = support::query_sparql(&fluree, &ledger, with_type)
         .await
         .expect("query with type");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -2059,8 +2102,7 @@ async fn sparql_exact_repro_custom_pred_without_type() {
         SELECT ?s ?o
         WHERE { ?s cust:anchor ?o . }
     "#;
-    let result = fluree
-        .query_sparql(&ledger, without_type)
+    let result = support::query_sparql(&fluree, &ledger, without_type)
         .await
         .expect("query without type");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -2090,8 +2132,7 @@ async fn jsonld_exact_repro_graph_crawl_custom_type() {
         "values": ["?s", [{"@id": "cbc:assoc/coverage-001"}]]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("graph crawl should not error");
     let jsonld = result
@@ -2141,8 +2182,7 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
             OPTIONAL { ex:thing1 ex:label ?label }
         }
     "#;
-    let result = fluree
-        .query_sparql(&ledger, control)
+    let result = support::query_sparql(&fluree, &ledger, control)
         .await
         .expect("control query");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
@@ -2160,8 +2200,7 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
             OPTIONAL { ?s ex:label ?label }
         }
     "#;
-    let result = fluree
-        .query_sparql(&ledger, bind_query)
+    let result = support::query_sparql(&fluree, &ledger, bind_query)
         .await
         .expect("bind query");
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");

@@ -481,7 +481,7 @@ impl MemoryToolService {
                 let has_more = next_score.is_some();
                 info!(query = %req.query, shown = page.len(), offset = offset, has_more = has_more, "Memory recall complete");
                 let context =
-                    format_context_paged(&page, offset, limit, all.len(), has_more, next_score);
+                    format_context_paged(&page, offset, req.limit, all.len(), has_more, next_score);
                 Ok(CallToolResult::success(vec![Content::text(context)]))
             }
             Err(e) => {

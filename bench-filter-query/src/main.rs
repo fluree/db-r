@@ -105,6 +105,7 @@ async fn run_query_bench<F>(
 where
     F: Fn() -> JsonValue,
 {
+    let db = fluree_db_api::GraphDb::from_ledger_state(ledger);
     let mut times: Vec<f64> = Vec::with_capacity(ITERATIONS);
     let mut last_result_count = 0;
 
@@ -113,7 +114,7 @@ where
 
         let start = Instant::now();
         for _ in 0..QUERIES_PER_ITERATION {
-            let result = fluree.query(ledger, &query).await.unwrap();
+            let result = fluree.query(&db, &query).await.unwrap();
             last_result_count = result.row_count();
             black_box(&result);
         }
@@ -378,11 +379,13 @@ async fn main() {
     let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
     println!("Data loaded.\n");
 
+    let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+
     // Warmup
     println!("Warming up...");
     for _ in 0..3 {
-        let _ = fluree.query(&ledger, &query_no_filter()).await;
-        let _ = fluree.query(&ledger, &query_range_filter_gt()).await;
+        let _ = fluree.query(&db, &query_no_filter()).await;
+        let _ = fluree.query(&db, &query_range_filter_gt()).await;
     }
     println!("Warmup complete.\n");
 

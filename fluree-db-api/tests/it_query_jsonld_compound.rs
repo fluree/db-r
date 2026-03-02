@@ -26,8 +26,7 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
         }
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -50,8 +49,7 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -75,8 +73,7 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -98,8 +95,7 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -122,8 +118,7 @@ async fn compound_passthrough_variables_and_select_one() {
             "ex:friend": {"schema:name":"?name","schema:age":"?age","schema:email":"?email"}
         }
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -144,8 +139,7 @@ async fn compound_passthrough_variables_and_select_one() {
             "ex:friend": {"schema:name":"?name","schema:age":"?age","schema:email":"?email"}
         }
     });
-    let one = fluree
-        .query(&ledger, &q_one)
+    let one = support::query_jsonld(&fluree, &ledger, &q_one)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -168,8 +162,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         "select": ["?name","?favNums"],
         "where": {"schema:name":"?name","ex:favNums":"?favNums"}
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -192,8 +185,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": "?favNums"
     });
-    let asc = fluree
-        .query(&ledger, &q_asc)
+    let asc = support::query_jsonld(&fluree, &ledger, &q_asc)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -216,8 +208,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": "(desc ?favNums)"
     });
-    let desc = fluree
-        .query(&ledger, &q_desc)
+    let desc = support::query_jsonld(&fluree, &ledger, &q_desc)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -240,8 +231,7 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": ["?name", "(desc ?favNums)"]
     });
-    let multi = fluree
-        .query(&ledger, &q_multi)
+    let multi = support::query_jsonld(&fluree, &ledger, &q_multi)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -273,8 +263,7 @@ async fn compound_group_by_multicard_without_aggregate() {
         "orderBy": "?name"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -296,8 +285,7 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         "select": ["?s","?p","?o"],
         "where": {"@id":"?s","schema:age":34,"?p":"?o"}
     });
-    let spo = fluree
-        .query(&ledger, &q_spo)
+    let spo = support::query_jsonld(&fluree, &ledger, &q_spo)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -326,8 +314,7 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         "select": {"?s": ["*", {"ex:friend": ["*"]}]},
         "where": {"@id":"?s","ex:friend":{"schema:name":"Alice"}}
     });
-    let joined = fluree
-        .query(&ledger, &q_join)
+    let joined = support::query_jsonld(&fluree, &ledger, &q_join)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))

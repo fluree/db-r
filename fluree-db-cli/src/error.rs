@@ -3,9 +3,6 @@ use std::fmt;
 use std::process;
 
 /// Exit codes for the CLI.
-// Kept for: future use in commands that need to explicitly exit with success.
-// Use when: adding commands that need `process::exit(EXIT_SUCCESS)`.
-#[expect(dead_code)]
 pub const EXIT_SUCCESS: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_USAGE: i32 = 2;

@@ -12,7 +12,7 @@
 //! ## Quick Start
 //!
 //! ```ignore
-//! use fluree_db_api::FlureeBuilder;
+//! use fluree_db_api::{FlureeBuilder, GraphDb};
 //!
 //! // Create a file-backed Fluree instance
 //! let fluree = FlureeBuilder::file("/data/fluree").build()?;
@@ -25,16 +25,19 @@
 //! let ledger = result.ledger;
 //!
 //! // Query
-//! let results = fluree.query(&ledger, &query).await?;
+//! let db = GraphDb::from_ledger_state(&ledger);
+//! let results = fluree.query(&db, &query).await?;
 //!
 //! // Load an existing ledger
 //! let ledger = fluree.ledger("mydb:main").await?;
+//! let db = GraphDb::from_ledger_state(&ledger);
 //! ```
 
 pub mod admin;
 pub mod block_fetch;
 pub mod bm25_worker;
 pub mod commit_transfer;
+pub mod config_resolver;
 #[cfg(feature = "credential")]
 pub mod credential;
 pub mod dataset;
@@ -2279,7 +2282,7 @@ where
     ///
     /// // Query normally after import
     /// let view = fluree.db("mydb").await?;
-    /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
+    /// let qr = fluree.query(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
     /// ```
     pub fn create(&self, ledger_id: &str) -> import::CreateBuilder<'_, S, N> {
         import::CreateBuilder::new(self, ledger_id.to_string())

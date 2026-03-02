@@ -10,6 +10,10 @@ repository.workspace = true
 name = "fluree"
 path = "src/main.rs"
 
+[lib]
+name = "fluree_db_cli"
+path = "src/lib.rs"
+
 [features]
 default = ["server"]
 server = ["dep:fluree-db-server"]

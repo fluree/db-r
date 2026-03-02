@@ -246,7 +246,7 @@ where
         }
 
         let input = self.core.input.unwrap(); // safe: validated
-        self.fluree.query_view(self.view, input).await
+        self.fluree.query(self.view, input).await
     }
 
     /// Execute and return formatted JSON output.
@@ -265,7 +265,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.fluree.query_view(self.view, input).await?;
+        let result = self.fluree.query(self.view, input).await?;
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &format_config, policy)
@@ -293,7 +293,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.fluree.query_view(self.view, input).await?;
+        let result = self.fluree.query(self.view, input).await?;
         crate::format::format_results_string_async(
             &result,
             &result.context,
@@ -307,13 +307,16 @@ where
 
     /// Execute with tracking (fuel, time, policy stats).
     ///
+    /// Respects `.format()` config if set, otherwise defaults based on input type
+    /// (JSON-LD for `.jsonld()`, SPARQL JSON for `.sparql()`).
+    ///
     /// **Note**: Custom `.tracking()` options are not yet wired through this
     /// path. Fuel limits are extracted from the JSON-LD query body (if present);
     /// SPARQL queries use default tracking. This will be addressed in a future
     /// iteration when the tracked execution internals are refactored to accept
     /// external tracker configuration.
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -321,8 +324,11 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
-        self.fluree.query_view_tracked(self.view, input).await
+        self.fluree
+            .query_tracked(self.view, input, format_config)
+            .await
     }
 }
 
@@ -429,7 +435,7 @@ where
         }
 
         let input = self.core.input.unwrap();
-        self.fluree.query_dataset_view(self.dataset, input).await
+        self.fluree.query_dataset(self.dataset, input).await
     }
 
     /// Execute and return formatted JSON output.
@@ -447,7 +453,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.fluree.query_dataset_view(self.dataset, input).await?;
+        let result = self.fluree.query_dataset(self.dataset, input).await?;
 
         // Use primary view's db for formatting
         if let Some(primary) = self.dataset.primary() {
@@ -481,7 +487,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.fluree.query_dataset_view(self.dataset, input).await?;
+        let result = self.fluree.query_dataset(self.dataset, input).await?;
 
         if let Some(primary) = self.dataset.primary() {
             crate::format::format_results_string_async(
@@ -500,10 +506,12 @@ where
 
     /// Execute with tracking (fuel, time, policy stats).
     ///
+    /// Respects `.format()` config if set, otherwise defaults based on input type.
+    ///
     /// **Note**: Custom `.tracking()` options are not yet wired through this
     /// path. See [`ViewQueryBuilder::execute_tracked()`] for details.
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -511,9 +519,10 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
         self.fluree
-            .query_dataset_view_tracked(self.dataset, input)
+            .query_dataset_tracked(self.dataset, input, format_config)
             .await
     }
 }
@@ -789,7 +798,7 @@ where
     /// **Note**: Custom `.tracking()` options are not yet wired through this
     /// path. See [`ViewQueryBuilder::execute_tracked()`] for details.
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -797,23 +806,32 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_jsonld_tracked_with_policy(json, policy)
+                        .query_connection_jsonld_tracked_with_policy(json, policy, format_config)
                         .await
                 }
-                None => self.fluree.query_connection_jsonld_tracked(json).await,
+                None => {
+                    self.fluree
+                        .query_connection_jsonld_tracked(json, format_config)
+                        .await
+                }
             },
             QueryInput::Sparql(sparql) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_sparql_tracked_with_policy(sparql, policy)
+                        .query_connection_sparql_tracked_with_policy(sparql, policy, format_config)
                         .await
                 }
-                None => self.fluree.query_connection_sparql_tracked(sparql).await,
+                None => {
+                    self.fluree
+                        .query_connection_sparql_tracked(sparql, format_config)
+                        .await
+                }
             },
         }
     }
@@ -1043,14 +1061,15 @@ mod tests {
             "where": [{"@id": "?s", "ex:name": "?name"}]
         });
 
-        // Via convenience method
-        let result_convenience = fluree.query(&ledger, &query).await.unwrap();
+        // Via direct GraphDb query (preferred single-ledger API)
+        let db = crate::GraphDb::from_ledger_state(&ledger);
+        let result_direct = fluree.query(&db, &query).await.unwrap();
 
         // Via builder
         let view = fluree.db("testdb:main").await.unwrap();
         let result_builder = view.query(&fluree).jsonld(&query).execute().await.unwrap();
 
         // Both should produce results at the same t
-        assert_eq!(result_convenience.t, result_builder.t);
+        assert_eq!(result_direct.t, result_builder.t);
     }
 }
