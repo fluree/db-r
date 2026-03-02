@@ -97,6 +97,7 @@ async fn test_group_by_with_count() {
             function: AggregateFn::Count,
             input_var: Some(VarId(1)), // COUNT(?person)
             output_var: VarId(1),      // AS ?count (replaces ?person col)
+            distinct: false,
         }]);
 
     let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
@@ -170,6 +171,7 @@ async fn test_group_by_with_sum() {
             function: AggregateFn::Sum,
             input_var: Some(VarId(1)),
             output_var: VarId(1),
+            distinct: false,
         }]);
 
     let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
@@ -249,6 +251,7 @@ async fn test_group_by_with_having() {
             function: AggregateFn::Count,
             input_var: Some(VarId(1)),
             output_var: VarId(1),
+            distinct: false,
         }])
         .with_having(Expression::gt(
             Expression::Var(VarId(1)),
@@ -300,6 +303,7 @@ async fn test_aggregates_without_group_by() {
             function: AggregateFn::Sum,
             input_var: Some(VarId(0)),
             output_var: VarId(0),
+            distinct: false,
         }]);
 
     let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
@@ -441,6 +445,7 @@ async fn test_aggregate_avg() {
             function: AggregateFn::Avg,
             input_var: Some(VarId(1)),
             output_var: VarId(1),
+            distinct: false,
         }]);
 
     let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
@@ -493,11 +498,13 @@ async fn test_aggregate_min_max() {
                 function: AggregateFn::Min,
                 input_var: Some(VarId(1)),
                 output_var: VarId(1),
+                distinct: false,
             },
             AggregateSpec {
                 function: AggregateFn::Max,
                 input_var: Some(VarId(2)),
                 output_var: VarId(2),
+                distinct: false,
             },
         ]);
 
@@ -593,6 +600,7 @@ async fn test_aggregate_on_group_by_key_errors() {
             function: AggregateFn::Count,
             input_var: Some(VarId(0)), // key var
             output_var: VarId(0),
+            distinct: false,
         }]);
 
     let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);

@@ -172,6 +172,7 @@ impl PropertyJoinCountAllOperator {
             function: crate::aggregate::AggregateFn::CountAll,
             input_col: None,
             output_var: self.count_var,
+            distinct: false,
         }];
         let mut op: BoxedOperator = Box::new(crate::group_aggregate::GroupAggregateOperator::new(
             Box::new(pj),
@@ -749,6 +750,7 @@ mod tests {
             function: AggregateFn::CountAll,
             input_var: None,
             output_var: count,
+            distinct: false,
         }]);
 
         let op = build_operator_tree(&query, &options, None).unwrap();
