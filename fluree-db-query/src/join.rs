@@ -9,7 +9,9 @@ use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
-use crate::operator::{Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, Operator, OperatorState,
+};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -176,6 +178,8 @@ pub struct NestedLoopJoinOperator {
     /// schema, so they can be evaluated immediately on each combined row rather than
     /// requiring separate Operator wrappers.
     inline_ops: Vec<InlineOperator>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl NestedLoopJoinOperator {
@@ -335,7 +339,14 @@ impl NestedLoopJoinOperator {
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
             inline_ops,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.combined_schema, downstream_vars);
+        self
     }
 
     /// Check if any binding used in bind instructions is Poisoned
@@ -544,7 +555,7 @@ impl NestedLoopJoinOperator {
 #[async_trait]
 impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
-        &self.combined_schema
+        effective_schema(&self.downstream_vars, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -591,13 +602,13 @@ impl Operator for NestedLoopJoinOperator {
         loop {
             // 1. Pre-built output from batched flush
             if let Some(batch) = self.batched_output.pop_front() {
-                return Ok(Some(batch));
+                return Ok(trim_batch(&self.downstream_vars, batch));
             }
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
                 if let Some(batch) = self.build_output_batch(ctx).await? {
-                    return Ok(Some(batch));
+                    return Ok(trim_batch(&self.downstream_vars, batch));
                 }
                 // All pending rows were filtered out — continue to process more left rows
                 continue;

@@ -31,7 +31,9 @@ use crate::having::HavingOperator;
 use crate::ir::SubqueryPattern;
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::project::ProjectOperator;
 use crate::seed::{EmptyOperator, SeedOperator};
 use crate::sort::SortOperator;
@@ -63,6 +65,8 @@ pub struct SubqueryOperator {
     buffer_pos: usize,
     /// Optional stats for selectivity-based pattern reordering in subquery
     stats: Option<Arc<StatsView>>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl SubqueryOperator {
@@ -122,14 +126,21 @@ impl SubqueryOperator {
             result_buffer: Vec::new(),
             buffer_pos: 0,
             stats,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -255,7 +266,8 @@ impl SubqueryOperator {
         if columns.is_empty() || columns[0].is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Batch::new(self.schema.clone(), columns)?))
+            let batch = Batch::new(self.schema.clone(), columns)?;
+            Ok(trim_batch(&self.downstream_vars, batch))
         }
     }
 
@@ -288,8 +300,12 @@ impl SubqueryOperator {
         };
 
         // Build full operator tree for subquery patterns (supports filters, optionals, union, etc.)
-        let mut operator: BoxedOperator =
-            build_where_operators_seeded(Some(seed), &self.subquery.patterns, self.stats.clone())?;
+        let mut operator: BoxedOperator = build_where_operators_seeded(
+            Some(seed),
+            &self.subquery.patterns,
+            self.stats.clone(),
+            None,
+        )?;
 
         // Apply GROUP BY / aggregates / HAVING for subqueries that use them.
         let needs_grouping =

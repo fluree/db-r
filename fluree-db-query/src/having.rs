@@ -23,7 +23,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::filter::filter_batch;
 use crate::ir::Expression;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -41,6 +43,8 @@ pub struct HavingOperator {
     schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl HavingOperator {
@@ -51,20 +55,27 @@ impl HavingOperator {
     /// * `child` - Child operator (typically GroupByOperator or AggregateOperator)
     /// * `expr` - Filter expression to evaluate
     pub fn new(child: BoxedOperator, expr: Expression) -> Self {
-        let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
             expr,
             schema,
             state: OperatorState::Created,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for HavingOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -92,7 +103,7 @@ impl Operator for HavingOperator {
             }
 
             if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
-                return Ok(Some(filtered));
+                return Ok(trim_batch(&self.downstream_vars, filtered));
             }
         }
     }

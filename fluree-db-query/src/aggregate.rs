@@ -18,7 +18,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid};
@@ -90,6 +92,8 @@ pub struct AggregateOperator {
     group_size_col: Option<usize>,
     /// Number of columns from child schema (before extra additions)
     child_col_count: usize,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl AggregateOperator {
@@ -154,7 +158,7 @@ impl AggregateOperator {
             group_size_col = Some(0);
         }
 
-        let schema = Arc::from(output_vars.into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(output_vars.into_boxed_slice());
 
         Self {
             child,
@@ -165,14 +169,21 @@ impl AggregateOperator {
             extra_specs,
             group_size_col,
             child_col_count,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for AggregateOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -284,7 +295,7 @@ impl Operator for AggregateOperator {
 
             let out = Batch::new(self.schema.clone(), output_columns)?;
             span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-            Ok(Some(out))
+            Ok(trim_batch(&self.downstream_vars, out))
         }
         .instrument(span)
         .await

@@ -29,7 +29,9 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Pattern;
 use crate::join::{BindInstruction, PatternPosition, UnifyInstruction};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::seed::SeedOperator;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -440,6 +442,7 @@ impl OptionalBuilder for PlanTreeOptionalBuilder {
             Some(Box::new(seed)),
             &self.inner_patterns,
             self.stats.clone(),
+            None,
         )?;
 
         Ok(Some(op))
@@ -496,6 +499,8 @@ pub struct OptionalOperator {
     /// Empty vec means no matches for that required row.
     /// The batch_idx and row_idx track progress for resuming when batch_size limit is hit.
     pending_output: VecDeque<PendingOptionalMatch>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 /// Tracks a required row's optional matches with progress cursor
@@ -540,7 +545,14 @@ impl OptionalOperator {
             current_required_batch: None,
             current_required_row: 0,
             pending_output: VecDeque::new(),
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.combined_schema, downstream_vars);
+        self
     }
 
     /// Create a new left-join operator for a single triple pattern
@@ -650,7 +662,7 @@ impl OptionalOperator {
 #[async_trait]
 impl Operator for OptionalOperator {
     fn schema(&self) -> &[VarId] {
-        &self.combined_schema
+        effective_schema(&self.downstream_vars, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -876,7 +888,7 @@ impl Operator for OptionalOperator {
         }
 
         let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(Some(batch))
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {

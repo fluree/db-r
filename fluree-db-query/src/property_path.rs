@@ -31,7 +31,9 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -71,6 +73,8 @@ pub struct PropertyPathOperator {
     current_child_batch: Option<Batch>,
     /// Current row index in child batch
     current_child_row: usize,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl PropertyPathOperator {
@@ -119,12 +123,19 @@ impl PropertyPathOperator {
             results_idx: 0,
             current_child_batch: None,
             current_child_row: 0,
+            downstream_vars: None,
         }
     }
 
     /// Create with default max_visited
     pub fn with_defaults(child: Option<BoxedOperator>, pattern: PropertyPathPattern) -> Self {
         Self::new(child, pattern, DEFAULT_MAX_VISITED)
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 
     /// Traverse forward from a starting node (subject bound)
@@ -562,7 +573,7 @@ impl PropertyPathOperator {
 #[async_trait]
 impl Operator for PropertyPathOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -633,7 +644,8 @@ impl Operator for PropertyPathOperator {
                 }
             }
 
-            return Ok(Some(Batch::new(self.schema.clone(), columns)?));
+            let batch = Batch::new(self.schema.clone(), columns)?;
+            return Ok(trim_batch(&self.downstream_vars, batch));
         }
 
         // Correlated mode: process child rows
@@ -691,7 +703,8 @@ impl Operator for PropertyPathOperator {
                     }
                 }
 
-                return Ok(Some(Batch::new(self.schema.clone(), columns)?));
+                let batch = Batch::new(self.schema.clone(), columns)?;
+                return Ok(trim_batch(&self.downstream_vars, batch));
             }
 
             // No rows from this batch, try next

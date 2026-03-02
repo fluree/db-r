@@ -187,11 +187,12 @@ impl<'a> QueryPolicyExecutor<'a> {
         };
 
         // Build the where clause operators (VALUES is now part of parsed patterns)
-        let mut operator = build_where_operators_seeded(None, &patterns, None).map_err(|e| {
-            fluree_db_policy::PolicyError::QueryExecution {
-                message: e.to_string(),
-            }
-        })?;
+        let mut operator =
+            build_where_operators_seeded(None, &patterns, None, None).map_err(|e| {
+                fluree_db_policy::PolicyError::QueryExecution {
+                    message: e.to_string(),
+                }
+            })?;
 
         // Execute with limit 1 (we only need to know if there are any results)
         operator

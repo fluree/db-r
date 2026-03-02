@@ -16,7 +16,9 @@ use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{GeoSearchCenter, GeoSearchPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -58,6 +60,8 @@ pub struct GeoSearchOperator {
     dict_overlay: Option<crate::dict_overlay::DictOverlay>,
     /// Operator lifecycle state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl GeoSearchOperator {
@@ -94,12 +98,14 @@ impl GeoSearchOperator {
             overlay_epoch: 0,
             dict_overlay: None,
             state: OperatorState::Created,
+            downstream_vars: None,
         }
     }
 
-    /// Get the output schema
-    pub fn schema(&self) -> &[VarId] {
-        &self.schema
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 
     /// Resolve center point coordinates from pattern (constant or variable binding).
@@ -305,7 +311,7 @@ impl GeoSearchOperator {
 #[async_trait]
 impl Operator for GeoSearchOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -433,7 +439,8 @@ impl Operator for GeoSearchOperator {
             }
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.schema.clone(), columns)?;
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {

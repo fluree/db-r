@@ -25,7 +25,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -55,6 +57,8 @@ pub struct GroupByOperator {
     emit_iter: Option<std::vec::IntoIter<GroupEntry>>,
     /// Indices of group key columns in the schema
     group_key_indices: Vec<usize>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl GroupByOperator {
@@ -89,7 +93,14 @@ impl GroupByOperator {
             groups: HashMap::new(),
             emit_iter: None,
             group_key_indices,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 
     /// Extract group key from a row
@@ -144,7 +155,7 @@ impl GroupByOperator {
 #[async_trait]
 impl Operator for GroupByOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -278,7 +289,8 @@ impl Operator for GroupByOperator {
             return Ok(None);
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let batch = Batch::new(self.schema.clone(), output_columns)?;
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {

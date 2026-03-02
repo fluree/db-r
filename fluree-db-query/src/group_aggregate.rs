@@ -41,7 +41,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 // Note: JoinKey and Materializer would be used for multi-ledger/dataset mode
 // but for now we use GroupKeyOwned for single-ledger simplicity
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
@@ -468,6 +470,8 @@ pub struct GroupAggregateOperator {
     emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
     graph_view: Option<BinaryGraphView>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl GroupAggregateOperator {
@@ -504,7 +508,7 @@ impl GroupAggregateOperator {
             output_vars.push(spec.output_var);
         }
 
-        let schema = Arc::from(output_vars.into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(output_vars.into_boxed_slice());
 
         Self {
             child,
@@ -515,7 +519,14 @@ impl GroupAggregateOperator {
             groups: HashMap::new(),
             emit_iter: None,
             graph_view,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 
     /// Check if all aggregates are streamable (for planner optimization decisions)
@@ -559,7 +570,7 @@ impl GroupAggregateOperator {
 #[async_trait]
 impl Operator for GroupAggregateOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -706,7 +717,8 @@ impl Operator for GroupAggregateOperator {
             return Ok(None);
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let batch = Batch::new(self.schema.clone(), output_columns)?;
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {

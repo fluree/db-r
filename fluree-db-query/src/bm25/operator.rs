@@ -28,7 +28,9 @@ use crate::bm25::{Analyzer, Bm25Index, Bm25Scorer};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{IndexSearchPattern, IndexSearchTarget};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::FlakeValue;
@@ -171,6 +173,8 @@ pub struct Bm25SearchOperator {
     datatypes: WellKnownDatatypes,
     /// State
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl Bm25SearchOperator {
@@ -211,11 +215,14 @@ impl Bm25SearchOperator {
             analyzer: Analyzer::english_default(),
             datatypes: WellKnownDatatypes::new(),
             state: OperatorState::Created,
+            downstream_vars: None,
         }
     }
 
-    fn schema(&self) -> &[VarId] {
-        &self.schema
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 
     fn resolve_target_from_row(
@@ -304,7 +311,7 @@ impl Bm25SearchOperator {
 #[async_trait]
 impl Operator for Bm25SearchOperator {
     fn schema(&self) -> &[VarId] {
-        self.schema()
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -594,7 +601,8 @@ impl Operator for Bm25SearchOperator {
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.schema.clone(), columns)?;
+        Ok(trim_batch(&self.downstream_vars, batch))
     }
 
     fn close(&mut self) {
@@ -690,8 +698,8 @@ mod tests {
         // Build operator with explicit seed (EmptyOperator) to mimic runner behavior.
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
@@ -731,8 +739,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);

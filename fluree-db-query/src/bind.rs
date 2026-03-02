@@ -17,7 +17,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::expression::passes_filters;
 use crate::ir::Expression;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -47,6 +49,8 @@ pub struct BindOperator {
     is_new_var: bool,
     /// Operator state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    downstream_vars: Option<Vec<VarId>>,
 }
 
 impl BindOperator {
@@ -70,7 +74,7 @@ impl BindOperator {
         // Check if var already exists in child schema
         let existing_pos = child_schema.iter().position(|&v| v == var);
 
-        let (schema, var_position, is_new_var) = match existing_pos {
+        let (schema, var_position, is_new_var): (Arc<[VarId]>, usize, bool) = match existing_pos {
             Some(pos) => {
                 // Variable exists - schema stays the same
                 (
@@ -97,14 +101,21 @@ impl BindOperator {
             var_position,
             is_new_var,
             state: OperatorState::Created,
+            downstream_vars: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for BindOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.downstream_vars, &self.schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -227,7 +238,8 @@ impl Operator for BindOperator {
                 continue;
             }
 
-            return Ok(Some(Batch::new(self.schema.clone(), output_columns)?));
+            let batch = Batch::new(self.schema.clone(), output_columns)?;
+            return Ok(trim_batch(&self.downstream_vars, batch));
         }
     }
 

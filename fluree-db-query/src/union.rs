@@ -13,7 +13,7 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::execute::build_where_operators_seeded;
 use crate::ir::Pattern;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{compute_trimmed_vars, BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -29,7 +29,9 @@ pub struct UnionOperator {
     /// Branch patterns (each branch is its own pattern list)
     branches: Vec<Vec<Pattern>>,
     /// Unified schema across child + all branch patterns
-    schema: Arc<[VarId]>,
+    unified_schema: Arc<[VarId]>,
+    /// Effective output schema (trimmed if `downstream_vars` is set, otherwise same as `schema`)
+    effective_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Buffered output batches produced from processing input rows
@@ -66,10 +68,14 @@ impl UnionOperator {
             extend_schema_from_patterns(&mut unified_vars, &mut seen, branch);
         }
 
+        let unified_schema: Arc<[VarId]> = Arc::from(unified_vars.into_boxed_slice());
+        let effective_schema = unified_schema.clone();
+
         Self {
             child,
             branches,
-            schema: Arc::from(unified_vars.into_boxed_slice()),
+            unified_schema,
+            effective_schema,
             state: OperatorState::Created,
             output_buffer: VecDeque::new(),
             current_input_batch: None,
@@ -78,15 +84,27 @@ impl UnionOperator {
         }
     }
 
-    /// Normalize a batch to the unified schema (pad missing vars with Unbound).
+    /// Trim the output schema to only the required downstream variables.
+    ///
+    /// Variables not in `downstream_vars` are excluded from the output schema,
+    /// avoiding unnecessary Unbound padding in `normalize_batch` and carrying
+    /// fewer columns through the rest of the pipeline.
+    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        if let Some(trimmed) = compute_trimmed_vars(&self.unified_schema, downstream_vars) {
+            self.effective_schema = Arc::from(trimmed.into_boxed_slice());
+        }
+        self
+    }
+
+    /// Normalize a batch to the effective schema (pad missing vars with Unbound).
     fn normalize_batch(&self, batch: Batch) -> Result<Batch> {
         if batch.is_empty() {
-            return Ok(Batch::empty(self.schema.clone())?);
+            return Ok(Batch::empty(self.effective_schema.clone())?);
         }
 
-        // Map each output var to its source column (if present) or Unbound padding
+        // Map each effective output var to its source column (if present) or Unbound padding
         let columns: Vec<Vec<Binding>> = self
-            .schema
+            .effective_schema
             .iter()
             .map(|&var| {
                 batch
@@ -99,14 +117,14 @@ impl UnionOperator {
             })
             .collect();
 
-        Ok(Batch::new(self.schema.clone(), columns)?)
+        Ok(Batch::new(self.effective_schema.clone(), columns)?)
     }
 }
 
 #[async_trait]
 impl Operator for UnionOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        &self.effective_schema
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -156,12 +174,21 @@ impl Operator for UnionOperator {
             let row_idx = self.current_input_row;
             self.current_input_row += 1;
 
+            // Pass effective schema as required vars so branches trim internally
+            let branch_downstream_vars: Option<&[VarId]> =
+                if self.effective_schema.len() < self.unified_schema.len() {
+                    Some(&self.effective_schema)
+                } else {
+                    None
+                };
+
             for branch_patterns in &self.branches {
                 let seed = SeedOperator::from_batch_row(&input_batch, row_idx);
                 let mut branch_op = build_where_operators_seeded(
                     Some(Box::new(seed)),
                     branch_patterns,
                     self.stats.clone(),
+                    branch_downstream_vars,
                 )?;
 
                 branch_op.open(ctx).await?;
@@ -345,6 +372,53 @@ mod tests {
         let branches = vec![vec![], vec![]];
         let op = UnionOperator::new(child, branches, None);
         assert_eq!(op.schema().len(), 0);
+    }
+
+    #[test]
+    fn test_union_with_downstream_vars_trims_schema() {
+        // Unified schema: [?s(0), ?n(1), ?e(2)]
+        // Required vars: [?s(0), ?e(2)]
+        // Expected effective schema: [?s(0), ?e(2)] (preserves unified order)
+        let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
+
+        let branches = vec![
+            vec![Pattern::Triple(crate::triple::TriplePattern::new(
+                crate::triple::Ref::Var(VarId(0)),
+                crate::triple::Ref::Sid(Sid::new(100, "name")),
+                crate::triple::Term::Var(VarId(1)),
+            ))],
+            vec![Pattern::Triple(crate::triple::TriplePattern::new(
+                crate::triple::Ref::Var(VarId(0)),
+                crate::triple::Ref::Sid(Sid::new(100, "email")),
+                crate::triple::Term::Var(VarId(2)),
+            ))],
+        ];
+
+        let op = UnionOperator::new(child, branches, None)
+            .with_downstream_vars(Some(&[VarId(0), VarId(2)]));
+
+        assert_eq!(op.schema(), &[VarId(0), VarId(2)]);
+    }
+
+    #[test]
+    fn test_union_with_downstream_vars_none_preserves_full_schema() {
+        let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
+
+        let branches = vec![vec![Pattern::Triple(crate::triple::TriplePattern::new(
+            crate::triple::Ref::Var(VarId(0)),
+            crate::triple::Ref::Sid(Sid::new(100, "name")),
+            crate::triple::Term::Var(VarId(1)),
+        ))]];
+
+        let op = UnionOperator::new(child, branches, None).with_downstream_vars(None);
+
+        assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
 
     // Helper struct for testing
