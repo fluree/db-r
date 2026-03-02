@@ -349,26 +349,16 @@ fn compute_aggregate(func: &AggregateFn, values: &[Binding]) -> Binding {
     }
 }
 
-/// XSD datatype SIDs for aggregate results.
-///
-/// Used by both `AggregateOperator` (collect path) and `GroupAggregateOperator`
-/// (streaming path). Cached via `LazyLock` to avoid per-call `Arc<str>` allocation.
-pub(crate) fn xsd_integer() -> Sid {
-    use std::sync::LazyLock;
-    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "integer"));
-    SID.clone()
+fn xsd_integer() -> Sid {
+    Sid::xsd_integer()
 }
 
-pub(crate) fn xsd_double() -> Sid {
-    use std::sync::LazyLock;
-    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "double"));
-    SID.clone()
+fn xsd_double() -> Sid {
+    Sid::xsd_double()
 }
 
-pub(crate) fn xsd_string() -> Sid {
-    use std::sync::LazyLock;
-    static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(2, "string"));
-    SID.clone()
+fn xsd_string() -> Sid {
+    Sid::xsd_string()
 }
 
 /// COUNT - count non-Unbound values

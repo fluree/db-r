@@ -262,25 +262,25 @@ impl AggState {
     /// Finalize the aggregate state into a result binding
     fn finalize(self, func: &AggregateFn) -> Binding {
         match self {
-            AggState::Count { n } => Binding::lit(FlakeValue::Long(n as i64), xsd_integer()),
+            AggState::Count { n } => Binding::lit(FlakeValue::Long(n as i64), Sid::xsd_integer()),
             AggState::CountDistinct { seen } => {
-                Binding::lit(FlakeValue::Long(seen.len() as i64), xsd_integer())
+                Binding::lit(FlakeValue::Long(seen.len() as i64), Sid::xsd_integer())
             }
             AggState::Sum {
                 total,
                 has_int_only,
             } => {
                 if has_int_only && total.fract() == 0.0 {
-                    Binding::lit(FlakeValue::Long(total as i64), xsd_integer())
+                    Binding::lit(FlakeValue::Long(total as i64), Sid::xsd_integer())
                 } else {
-                    Binding::lit(FlakeValue::Double(total), xsd_double())
+                    Binding::lit(FlakeValue::Double(total), Sid::xsd_double())
                 }
             }
             AggState::Avg { sum, count } => {
                 if count == 0 {
                     Binding::Unbound
                 } else {
-                    Binding::lit(FlakeValue::Double(sum / count as f64), xsd_double())
+                    Binding::lit(FlakeValue::Double(sum / count as f64), Sid::xsd_double())
                 }
             }
             AggState::Min { min } => min.unwrap_or(Binding::Unbound),
@@ -739,9 +739,6 @@ impl Operator for GroupAggregateOperator {
     }
 }
 
-// XSD datatype SIDs — reuse cached versions from aggregate module
-use crate::aggregate::{xsd_double, xsd_integer};
-
 /// Extract numeric value from binding
 fn extract_number(binding: &Binding) -> Option<f64> {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -936,11 +933,11 @@ mod tests {
             ],
             // ?value
             vec![
-                Binding::lit(FlakeValue::Long(10), xsd_integer()),
-                Binding::lit(FlakeValue::Long(20), xsd_integer()),
-                Binding::lit(FlakeValue::Long(30), xsd_integer()),
-                Binding::lit(FlakeValue::Long(5), xsd_integer()),
-                Binding::lit(FlakeValue::Long(15), xsd_integer()),
+                Binding::lit(FlakeValue::Long(10), Sid::xsd_integer()),
+                Binding::lit(FlakeValue::Long(20), Sid::xsd_integer()),
+                Binding::lit(FlakeValue::Long(30), Sid::xsd_integer()),
+                Binding::lit(FlakeValue::Long(5), Sid::xsd_integer()),
+                Binding::lit(FlakeValue::Long(15), Sid::xsd_integer()),
             ],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
