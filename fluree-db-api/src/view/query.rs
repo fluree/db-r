@@ -201,7 +201,12 @@ where
         // Format with tracking
         let result_json = match db.policy() {
             Some(policy) => query_result
-                .format_async_with_policy_tracked(db.as_graph_db_ref(), &format_config, policy, &tracker)
+                .format_async_with_policy_tracked(
+                    db.as_graph_db_ref(),
+                    &format_config,
+                    policy,
+                    &tracker,
+                )
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
