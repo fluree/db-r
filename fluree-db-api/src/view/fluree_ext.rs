@@ -8,7 +8,8 @@ use chrono::DateTime;
 
 use crate::view::{GraphDb, ReasoningModePrecedence};
 use crate::{
-    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
+    config_resolver, time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
+    Storage, TimeSpec,
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;
@@ -94,6 +95,48 @@ where
         }
 
         Ok(view.with_graph_id(g_id))
+    }
+
+    /// Read the config graph (g_id=2) and attach effective config to the view.
+    ///
+    /// This is called after graph selection so the resolved config reflects
+    /// the correct per-graph overrides. Returns the view unchanged if the
+    /// config graph is empty.
+    ///
+    /// Note: Reasoning defaults are NOT applied here — they are applied at
+    /// the request boundary via `config_resolver::merge_reasoning()` which
+    /// respects override control and server-verified identity.
+    pub(crate) async fn resolve_and_attach_config(&self, view: GraphDb) -> Result<GraphDb> {
+        // Config reads are best-effort. If the config graph is unqueryable
+        // (e.g., historical snapshot without a range_provider for g_id=2),
+        // treat it as "no config" and apply system defaults.
+        let config =
+            match config_resolver::resolve_ledger_config(&view.snapshot, &*view.overlay, view.t)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::debug!(error = %e, "Config graph read failed — using system defaults");
+                    return Ok(view);
+                }
+            };
+
+        let config = match config {
+            Some(c) => Arc::new(c),
+            None => return Ok(view),
+        };
+
+        // Resolve effective config for this view's graph
+        let graph_iri = if view.graph_id == 0 {
+            None
+        } else {
+            view.snapshot.graph_registry.iri_for_graph_id(view.graph_id)
+        };
+        let resolved = config_resolver::resolve_effective_config(&config, graph_iri);
+
+        Ok(view
+            .with_ledger_config(config)
+            .with_resolved_config(resolved))
     }
 
     /// Load the current view (immutable snapshot) from a ledger.
@@ -185,6 +228,22 @@ where
         ledger_id: &str,
         target_t: i64,
     ) -> Result<GraphDb> {
+        // Fast path: time travel to the current head is equivalent to no time travel.
+        //
+        // Avoid the historical loader (which may fetch index roots / binary stores)
+        // when the requested t is already the latest ledger version.
+        let handle = self.ledger_cached(ledger_id).await?;
+        let snap = handle.snapshot().await;
+        if target_t == snap.t {
+            let binary_store = snap.binary_store.clone();
+            let ledger = snap.to_ledger_state();
+            let view = GraphDb::from_ledger_state(&ledger);
+            return Ok(match binary_store {
+                Some(store) => view.with_binary_store(store),
+                None => view,
+            });
+        }
+
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = GraphDb::from_historical(&historical);
 
@@ -232,6 +291,24 @@ where
                     store.augment_namespace_codes(&view.snapshot.namespace_codes);
 
                     view.binary_store = Some(Arc::new(store));
+
+                    // Historical views loaded from an index root are metadata-only by default
+                    // (`LedgerSnapshot::from_root_bytes` sets `range_provider = None`).
+                    // If we loaded a BinaryIndexStore, attach a BinaryRangeProvider so
+                    // range-based operators (joins, index lookups) work correctly.
+                    if view.snapshot.range_provider.is_none() {
+                        let (Some(store), Some(dict_novelty)) =
+                            (view.binary_store.as_ref(), view.dict_novelty.as_ref())
+                        else {
+                            return Ok(view);
+                        };
+                        let store = Arc::clone(store);
+                        let dict_novelty = Arc::clone(dict_novelty);
+                        let provider = BinaryRangeProvider::new(store, dict_novelty);
+                        let mut db = (*view.snapshot).clone();
+                        db.range_provider = Some(Arc::new(provider));
+                        view.snapshot = Arc::new(db);
+                    }
                 }
             }
         }
@@ -303,21 +380,24 @@ where
     pub async fn db(&self, ledger_id: &str) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_graph_db(ledger_id).await?;
-        Self::select_graph(view, graph_ref)
+        let view = Self::select_graph(view, graph_ref)?;
+        self.resolve_and_attach_config(view).await
     }
 
     /// Load a historical snapshot at a specific transaction time.
     pub async fn db_at_t(&self, ledger_id: &str, target_t: i64) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_graph_db_at_t(ledger_id, target_t).await?;
-        Self::select_graph(view, graph_ref)
+        let view = Self::select_graph(view, graph_ref)?;
+        self.resolve_and_attach_config(view).await
     }
 
     /// Load a snapshot at a flexible time specification.
     pub async fn db_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_graph_db_at(ledger_id, spec).await?;
-        Self::select_graph(view, graph_ref)
+        let view = Self::select_graph(view, graph_ref)?;
+        self.resolve_and_attach_config(view).await
     }
 
     /// Apply a graph selector from a dataset GraphSource to a view.
@@ -351,11 +431,11 @@ where
 {
     /// Build policy from options and wrap a view.
     ///
-    /// This is the primary way to add policy enforcement to a view.
-    /// The policy context is built from `QueryConnectionOptions` which supports:
-    /// - Identity-based policy (`identity` field)
-    /// - Class-based policy (`policy_class` field)
-    /// - Inline policy JSON-LD (`policy` field)
+    /// If the view has a `ResolvedConfig`, config defaults are merged with query
+    /// opts and override control is checked against `server_identity`.
+    ///
+    /// `server_identity` is the auth-layer-verified identity — NOT `opts.identity`
+    /// which is the user-settable policy evaluation context.
     ///
     /// # Example
     ///
@@ -365,19 +445,25 @@ where
     ///     identity: Some("did:example:user".into()),
     ///     ..Default::default()
     /// };
-    /// let view = fluree.wrap_policy(view, &opts).await?;
+    /// let view = fluree.wrap_policy(view, &opts, None).await?;
     /// ```
     pub async fn wrap_policy(
         &self,
         view: GraphDb,
         opts: &QueryConnectionOptions,
+        server_identity: Option<&str>,
     ) -> Result<GraphDb> {
+        let effective_opts = if let Some(ref resolved) = view.resolved_config {
+            config_resolver::merge_policy_opts(resolved, opts, server_identity)
+        } else {
+            opts.clone()
+        };
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.snapshot,
             view.overlay.as_ref(),
             view.novelty_for_stats(),
             view.t,
-            opts,
+            &effective_opts,
         )
         .await?;
         Ok(view.with_policy(Arc::new(policy_ctx)))
@@ -385,17 +471,20 @@ where
 
     /// Load a view at head with policy applied.
     ///
-    /// Convenience method that combines `view()` + `wrap_policy()`.
+    /// Convenience method that combines `db()` + `wrap_policy()`.
+    /// Passes `None` for server identity (no auth layer plumbing yet).
     pub async fn db_with_policy(
         &self,
         ledger_id: &str,
         opts: &QueryConnectionOptions,
     ) -> Result<GraphDb> {
         let view = self.db(ledger_id).await?;
-        self.wrap_policy(view, opts).await
+        self.wrap_policy(view, opts, None).await
     }
 
     /// Load a db at a specific time with policy applied.
+    ///
+    /// Passes `None` for server identity (no auth layer plumbing yet).
     pub async fn db_at_t_with_policy(
         &self,
         ledger_id: &str,
@@ -403,7 +492,7 @@ where
         opts: &QueryConnectionOptions,
     ) -> Result<GraphDb> {
         let view = self.db_at_t(ledger_id, target_t).await?;
-        self.wrap_policy(view, opts).await
+        self.wrap_policy(view, opts, None).await
     }
 }
 
@@ -432,6 +521,54 @@ where
         precedence: ReasoningModePrecedence,
     ) -> GraphDb {
         view.with_reasoning_precedence(modes, precedence)
+    }
+
+    /// Apply config-graph reasoning defaults to a view.
+    ///
+    /// Reads `ResolvedConfig.reasoning` and converts to reasoning wrapper
+    /// with the appropriate precedence based on override control.
+    ///
+    /// `server_identity` is the auth-layer-verified identity (NOT opts.identity).
+    /// Pass `None` when no auth layer is present (Phase 1).
+    pub fn apply_config_reasoning(&self, view: GraphDb, server_identity: Option<&str>) -> GraphDb {
+        let resolved = match &view.resolved_config {
+            Some(r) => r,
+            None => return view,
+        };
+
+        match config_resolver::merge_reasoning(resolved, server_identity) {
+            Some((mode_strings, precedence)) => {
+                let modes = ReasoningModes::from_mode_strings(&mode_strings);
+                // Always wrap if modes has enabled flags or explicit_none=true
+                // (config can force-disable reasoning via "none").
+                // Only skip if from_mode_strings produced a truly empty default.
+                if modes.has_any_enabled() || modes.is_disabled() {
+                    view.with_reasoning_precedence(modes, precedence)
+                } else {
+                    view
+                }
+            }
+            None => view,
+        }
+    }
+
+    /// Apply config-graph datalog defaults to a view.
+    ///
+    /// Stores resolved datalog config on the view. Enforcement happens
+    /// at query execution time, not here.
+    pub fn apply_config_datalog(&self, view: GraphDb, server_identity: Option<&str>) -> GraphDb {
+        let resolved = match &view.resolved_config {
+            Some(r) => r,
+            None => return view,
+        };
+
+        match config_resolver::merge_datalog_opts(resolved, server_identity) {
+            Some(config) => view
+                .with_datalog_enabled(config.enabled)
+                .with_query_time_rules_allowed(config.allow_query_time_rules)
+                .with_datalog_override_allowed(config.override_allowed),
+            None => view,
+        }
     }
 }
 

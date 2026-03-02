@@ -44,6 +44,10 @@ where
                 .apply_source_or_global_policy(view, source, &qc_opts)
                 .await?;
 
+            // Apply config-graph reasoning defaults
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
+
             return self.query_view(&view, query_json).await;
         }
 
@@ -60,6 +64,10 @@ where
             let view = self
                 .apply_source_or_global_policy(view, source, &qc_opts)
                 .await?;
+
+            // Apply config-graph reasoning defaults
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
 
             return self.query_view(&view, query_json).await;
         }
@@ -115,6 +123,10 @@ where
                 .await
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
+            // Apply config-graph reasoning defaults
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
+
             return self.query_view_tracked(&view, query_json).await;
         }
 
@@ -139,6 +151,10 @@ where
                 .apply_source_or_global_policy(view, source, &qc_opts)
                 .await
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
+
+            // Apply config-graph reasoning defaults
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
 
             return self.query_view_tracked(&view, query_json).await;
         }
@@ -185,6 +201,8 @@ where
         // Try single-ledger path (including with time spec)
         if let Some(view) = self.try_single_view_from_spec(&spec).await? {
             let view = view.with_policy(Arc::new(policy.clone()));
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             return self.query_view(&view, query_json).await;
         }
 
@@ -222,6 +240,8 @@ where
 
         if let Some(view) = single_view {
             let view = view.with_policy(Arc::new(policy.clone()));
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             return self.query_view_tracked(&view, query_json).await;
         }
 
@@ -350,12 +370,12 @@ where
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
                 let opts = policy_override.to_query_connection_options();
-                return self.wrap_policy(view, &opts).await;
+                return self.wrap_policy(view, &opts, None).await;
             }
         }
         // Fall back to global policy if present
         if global_opts.has_any_policy_inputs() {
-            self.wrap_policy(view, global_opts).await
+            self.wrap_policy(view, global_opts, None).await
         } else {
             Ok(view)
         }

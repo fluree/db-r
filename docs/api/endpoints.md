@@ -786,6 +786,76 @@ curl -X POST http://localhost:8090/query \
   }'
 ```
 
+### POST /query/{ledger}
+
+Execute a query against a specific ledger (ledger-scoped).
+
+This endpoint is designed for **single-ledger** queries, but supports selecting **named graphs inside the ledger**.
+
+**URL:**
+```
+POST /query/{ledger}
+```
+
+**Default graph semantics:**
+- If the request does not specify a graph selector, the query runs against the ledger's **default graph**.
+- The built-in **txn-meta** graph can be selected as either:
+  - JSON-LD: `"from": "txn-meta"`, or
+  - SPARQL: `FROM <txn-meta>`
+
+**Named graph selection (within the same ledger):**
+
+- **JSON-LD**: you can use `"from"` to pick a graph in this ledger:
+  - `"from": "default"` → default graph
+  - `"from": "txn-meta"` → txn-meta graph
+  - `"from": "<graph IRI>"` → a user-defined named graph IRI within this ledger
+  - Structured form: `"from": { "@id": "<ledger>", "graph": "<graph selector>" }`
+
+- **SPARQL**: if the query includes `FROM` / `FROM NAMED`, the server interprets those IRIs as **graphs within this ledger** (not other ledgers):
+  - `FROM <default>` / `FROM <txn-meta>` / `FROM <graph IRI>` selects the default graph for triple patterns outside `GRAPH {}`.
+  - `FROM NAMED <graph IRI>` makes that named graph available via `GRAPH <graph IRI> { ... }`.
+
+**Ledger mismatch protection:**
+
+If the body includes a ledger reference that targets a different ledger than `{ledger}`, the server returns `400 Bad Request` with a "Ledger mismatch" error.
+
+**Examples:**
+
+JSON-LD (query txn-meta):
+
+```bash
+curl -X POST "http://localhost:8090/query/mydb:main" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "txn-meta",
+    "select": ["?commit", "?t"],
+    "where": [{ "@id": "?commit", "https://ns.flur.ee/db#t": "?t" }]
+  }'
+```
+
+JSON-LD (query a user-defined named graph by IRI):
+
+```bash
+curl -X POST "http://localhost:8090/query/mydb:main" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "http://example.org/graphs/products",
+    "select": ["?name"],
+    "where": [{ "@id": "?p", "http://example.org/ns/name": "?name" }]
+  }'
+```
+
+SPARQL (select txn-meta as default graph):
+
+```bash
+curl -X POST "http://localhost:8090/query/mydb:main" \
+  -H "Content-Type: application/sparql-query" \
+  -d 'PREFIX f: <https://ns.flur.ee/db#>
+SELECT ?commit ?t
+FROM <txn-meta>
+WHERE { ?commit f:t ?t }'
+```
+
 ### History Queries via POST /query
 
 Query the history of entities using the standard `/query` endpoint with `from` and `to` keys specifying the time range.

@@ -55,6 +55,36 @@ fn format_count(n: usize) -> String {
     result
 }
 
+fn time_spec_to_suffix(spec: &fluree_db_api::TimeSpec) -> String {
+    match spec {
+        fluree_db_api::TimeSpec::Latest => "@t:latest".to_string(),
+        fluree_db_api::TimeSpec::AtT(t) => format!("@t:{t}"),
+        fluree_db_api::TimeSpec::AtTime(iso) => format!("@iso:{iso}"),
+        fluree_db_api::TimeSpec::AtCommit(prefix) => format!("@commit:{prefix}"),
+    }
+}
+
+fn attach_time_suffix_preserving_fragment(ledger: &str, suffix: &str) -> String {
+    match ledger.split_once('#') {
+        Some((base, frag)) => format!("{base}{suffix}#{frag}"),
+        None => format!("{ledger}{suffix}"),
+    }
+}
+
+fn inject_sparql_from_before_where(sparql: &str, from_iri: &str) -> Option<String> {
+    // Minimal injection strategy for CLI ergonomics:
+    // - Works for the common `SELECT ... WHERE { ... }` shape.
+    // - If the query already contains FROM/FROM NAMED, caller should not inject.
+    let lower = sparql.to_ascii_lowercase();
+    let where_idx = lower.find(" where ")?; // require standard spacing
+    let insert = format!(" FROM <{}>", from_iri);
+    let mut out = String::with_capacity(sparql.len() + insert.len());
+    out.push_str(&sparql[..where_idx]);
+    out.push_str(&insert);
+    out.push_str(&sparql[where_idx..]);
+    Some(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
@@ -119,11 +149,6 @@ pub async fn run(
             remote_name,
             ..
         } => {
-            if at.is_some() {
-                return Err(CliError::Usage(
-                    "time-travel (--at) is not supported for tracked ledgers".to_string(),
-                ));
-            }
             if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
                 return Err(CliError::Usage(
                     "--format tsv/csv is not supported for tracked (remote) ledgers; \
@@ -134,9 +159,59 @@ pub async fn run(
 
             // Execute query via remote HTTP
             let timer = Instant::now();
-            let result = match query_format {
-                detect::QueryFormat::Sparql => client.query_sparql(&remote_alias, &content).await?,
-                detect::QueryFormat::JsonLd => {
+            let result = match (query_format, at) {
+                (detect::QueryFormat::Sparql, Some(at_str)) => {
+                    // Remote time travel uses connection-scoped SPARQL:
+                    // server requires FROM clause to identify the ledger/time.
+                    //
+                    // We inject a single FROM before WHERE for the common SELECT shape.
+                    // If the query already has FROM/FROM NAMED, require the user to encode
+                    // time travel there (avoid ambiguous semantics).
+                    if fluree_db_api::sparql_dataset_ledger_ids(&content)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        return Err(CliError::Usage(
+                            "SPARQL query already contains FROM/FROM NAMED; \
+                             for remote time travel, encode time travel in the FROM IRI \
+                             (e.g., FROM <ledger@t:1>) instead of using --at"
+                                .to_string(),
+                        ));
+                    }
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_iri = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let injected = inject_sparql_from_before_where(&content, &from_iri).ok_or_else(
+                        || {
+                            CliError::Usage(
+                                "unable to inject SPARQL FROM clause for remote time travel; \
+                                 please write the query as `SELECT ... WHERE { ... }` or include an explicit FROM"
+                                    .to_string(),
+                            )
+                        },
+                    )?;
+                    client.query_connection_sparql(&injected).await?
+                }
+                (detect::QueryFormat::JsonLd, Some(at_str)) => {
+                    // Remote time travel uses connection-scoped JSON-LD:
+                    // inject `"from": "<ledger>@t:..."` and POST to /query.
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_id = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let mut json_query: serde_json::Value = serde_json::from_str(&content)?;
+                    if let Some(obj) = json_query.as_object_mut() {
+                        obj.insert("from".to_string(), serde_json::Value::String(from_id));
+                    } else {
+                        return Err(CliError::Input(
+                            "JSON-LD query must be a JSON object".to_string(),
+                        ));
+                    }
+                    client.query_connection_jsonld(&json_query).await?
+                }
+                (detect::QueryFormat::Sparql, None) => {
+                    client.query_sparql(&remote_alias, &content).await?
+                }
+                (detect::QueryFormat::JsonLd, None) => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
                     client.query_jsonld(&remote_alias, &json_query).await?
                 }
@@ -317,5 +392,29 @@ fn print_footer(total_rows: usize, limit: Option<usize>, elapsed: std::time::Dur
         _ => {
             eprintln!("({} rows, {})", format_count(total_rows), time_str);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{attach_time_suffix_preserving_fragment, inject_sparql_from_before_where};
+
+    #[test]
+    fn attach_time_suffix_preserves_fragment() {
+        assert_eq!(
+            attach_time_suffix_preserving_fragment("myledger:main#txn-meta", "@t:1"),
+            "myledger:main@t:1#txn-meta"
+        );
+        assert_eq!(
+            attach_time_suffix_preserving_fragment("myledger:main", "@t:1"),
+            "myledger:main@t:1"
+        );
+    }
+
+    #[test]
+    fn inject_sparql_from_before_where_inserts_once() {
+        let q = "SELECT * WHERE { ?s ?p ?o }";
+        let out = inject_sparql_from_before_where(q, "myledger:main@t:1").unwrap();
+        assert_eq!(out, "SELECT * FROM <myledger:main@t:1> WHERE { ?s ?p ?o }");
     }
 }

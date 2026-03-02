@@ -222,6 +222,10 @@ where
     }
 
     /// Build an ExecutableQuery with optional reasoning override from view wrapper.
+    ///
+    /// Also enforces config-graph datalog restrictions: if config disables
+    /// datalog and the query can't override, the datalog flag and/or
+    /// query-time rules are stripped.
     fn build_executable_for_view(
         &self,
         view: &GraphDb,
@@ -239,6 +243,17 @@ where
             // Apply precedence rules
             if let Some(effective) = view.effective_reasoning(query_has_reasoning, query_disabled) {
                 executable.options.reasoning = effective.clone();
+            }
+        }
+
+        // Enforce config-graph datalog restrictions
+        if !view.datalog_override_allowed() {
+            // Config override denied — force config settings
+            if !view.datalog_enabled() {
+                executable.options.reasoning.datalog = false;
+            }
+            if !view.query_time_rules_allowed() {
+                executable.options.reasoning.rules.clear();
             }
         }
 

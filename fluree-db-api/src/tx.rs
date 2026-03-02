@@ -3,24 +3,37 @@
 //! This module wires `fluree-db-transact` + nameservice publishing + optional
 //! indexing triggers into the high-level `fluree-db-api` surface.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::config_resolver;
+#[cfg(feature = "shacl")]
+use crate::config_resolver::EffectiveShaclConfig;
 use crate::{ApiError, Result};
 use crate::{TrackedErrorResponse, Tracker, TrackingOptions, TrackingTally};
-use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind, Storage};
+use fluree_db_core::ledger_config::LedgerConfig;
+#[cfg(feature = "shacl")]
+use fluree_db_core::ledger_config::ValidationMode;
+use fluree_db_core::{
+    range_with_overlay, ContentAddressedWrite, ContentId, ContentKind, FlakeValue, GraphId,
+    IndexType, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+};
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::TxnMetaEntry;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
-#[cfg(not(feature = "shacl"))]
 use fluree_db_transact::stage as stage_txn;
-#[cfg(feature = "shacl")]
-use fluree_db_transact::stage_with_shacl;
 use fluree_db_transact::{
     commit as commit_txn, parse_transaction, resolve_trig_meta, CommitOpts, CommitReceipt,
     NamedGraphBlock, NamespaceRegistry, RawTrigMeta, StageOptions, TemplateTerm, TripleTemplate,
     Txn, TxnOpts, TxnType,
 };
+#[cfg(feature = "shacl")]
+use fluree_db_transact::{stage_with_shacl, validate_view_with_shacl};
+use fluree_vocab::config_iris;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -110,6 +123,465 @@ fn is_empty_default_graph(json: &JsonValue) -> bool {
         }
         _ => false,
     }
+}
+
+// =============================================================================
+// Config-driven transaction helpers (shacl feature only)
+// =============================================================================
+
+/// Load config from the pre-transaction ledger state.
+///
+/// INVARIANT: Reads config as-of the input `LedgerState` only (head t
+/// before staging). Config mutations inside the staged transaction
+/// CANNOT relax constraints for that same transaction.
+///
+/// Returns `None` if config graph is empty or unreadable (best-effort).
+async fn load_transaction_config(ledger: &LedgerState) -> Option<Arc<LedgerConfig>> {
+    match config_resolver::resolve_ledger_config(&ledger.snapshot, &*ledger.novelty, ledger.t())
+        .await
+    {
+        Ok(Some(config)) => Some(Arc::new(config)),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::debug!(error = %e, "Config graph read failed during staging — using defaults");
+            None
+        }
+    }
+}
+
+/// Resolve SHACL config across all graphs affected by a transaction.
+///
+/// Starts from the ledger-wide baseline (`resolve_effective_config(config, None)`)
+/// and overlays per-graph config for each named graph in `graph_delta`.
+/// Returns the strictest combination:
+/// - `enabled`: true if ANY graph has SHACL enabled
+/// - `validation_mode`: `Reject` if ANY graph is `Reject`
+///
+/// The ledger-wide baseline is always included because SHACL shapes live in the
+/// default/schema graph (g_id=0) and target instances in any graph. Even if a
+/// transaction only touches named graphs, the ledger-wide SHACL posture applies.
+///
+/// Note: `graph_delta` for normal JSON-LD transactions (non-import) contains ALL
+/// named graphs referenced by the transaction, not just newly-created ones.
+/// The `GraphIdAssigner` is created fresh per transaction during JSON-LD parsing.
+#[cfg(feature = "shacl")]
+fn resolve_txn_shacl_config(
+    config: &LedgerConfig,
+    graph_delta: &FxHashMap<u16, String>,
+) -> Option<EffectiveShaclConfig> {
+    // Ledger-wide baseline: the default SHACL posture before per-graph overrides.
+    let default_resolved = config_resolver::resolve_effective_config(config, None);
+    let mut strictest = config_resolver::merge_shacl_opts(&default_resolved, None);
+
+    // Overlay per-graph config for each named graph in the transaction.
+    // Graphs without per-graph overrides inherit the ledger-wide baseline
+    // via three-tier resolution inside resolve_effective_config.
+    for graph_iri in graph_delta.values() {
+        let resolved = config_resolver::resolve_effective_config(config, Some(graph_iri));
+        if let Some(per_graph) = config_resolver::merge_shacl_opts(&resolved, None) {
+            strictest = Some(match strictest {
+                Some(s) => EffectiveShaclConfig {
+                    // any-enabled wins (strictest)
+                    enabled: s.enabled || per_graph.enabled,
+                    validation_mode: match (s.validation_mode, per_graph.validation_mode) {
+                        // reject wins over warn (strictest)
+                        (ValidationMode::Reject, _) | (_, ValidationMode::Reject) => {
+                            ValidationMode::Reject
+                        }
+                        _ => ValidationMode::Warn,
+                    },
+                },
+                None => per_graph,
+            });
+        }
+    }
+
+    strictest
+}
+
+/// Perform staging with config-aware SHACL validation.
+///
+/// Decision tree:
+/// 1. Load config from pre-transaction state
+/// 2. If config exists: resolve per-graph, apply strictest-wins
+/// 3. If no config: fall back to shapes-exist heuristic (backward compat)
+/// 4. If SHACL disabled: plain `stage()`
+/// 5. If SHACL enabled + Reject: `stage_with_shacl()` (existing path)
+/// 6. If SHACL enabled + Warn: `stage()` + `validate_view_with_shacl()`, log warnings
+#[cfg(feature = "shacl")]
+async fn stage_with_config_shacl(
+    ledger: LedgerState,
+    txn: Txn,
+    ns_registry: NamespaceRegistry,
+    options: StageOptions<'_>,
+) -> std::result::Result<(LedgerView, NamespaceRegistry), fluree_db_transact::TransactError> {
+    // 1. Load config from pre-transaction state
+    let config = load_transaction_config(&ledger).await;
+
+    // 2. Resolve SHACL settings (per-graph strictest-wins)
+    let shacl_config = config
+        .as_ref()
+        .and_then(|c| resolve_txn_shacl_config(c, &txn.graph_delta));
+
+    // 3. Determine enablement
+    //    - Config present → use config's enabled flag
+    //    - No config → shapes-exist heuristic (build engine, check if cache is empty)
+    let (shacl_enabled, validation_mode) = match &shacl_config {
+        Some(c) => (c.enabled, c.validation_mode),
+        None => {
+            // No config: fall back to shapes-exist heuristic.
+            // "true" means "try it" — empty cache → fast no-op below.
+            (true, ValidationMode::Reject)
+        }
+    };
+
+    if !shacl_enabled {
+        return stage_txn(ledger, txn, ns_registry, options).await;
+    }
+
+    // 4. Build SHACL engine
+    let engine = ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
+        .await
+        .map_err(fluree_db_transact::TransactError::from)?;
+    let shacl_cache = engine.cache();
+
+    // No config + no shapes → skip (backward compat: no shapes = no SHACL)
+    if shacl_config.is_none() && shacl_cache.is_empty() {
+        return stage_txn(ledger, txn, ns_registry, options).await;
+    }
+
+    // 5. Stage with appropriate validation mode
+    match validation_mode {
+        ValidationMode::Warn => {
+            // Clone graph_delta before stage_txn consumes the txn — needed to
+            // rebuild graph_sids for per-graph SHACL validation.
+            let graph_delta = txn.graph_delta.clone();
+            let (view, mut ns_registry) = stage_txn(ledger, txn, ns_registry, options).await?;
+            if !shacl_cache.is_empty() {
+                // Rebuild graph_sids from cloned graph_delta + ns_registry.
+                // Same pattern as stage_with_shacl() — IRIs were resolved during
+                // stage(), so sid_for_iri hits the trie cache (no new allocations).
+                let graph_sids: HashMap<GraphId, Sid> = graph_delta
+                    .iter()
+                    .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+                    .collect();
+                if let Err(fluree_db_transact::TransactError::ShaclViolation(report)) =
+                    validate_view_with_shacl(&view, shacl_cache, Some(&graph_sids)).await
+                {
+                    tracing::warn!(
+                        report = %report,
+                        "SHACL violations (config mode=Warn, continuing)"
+                    );
+                }
+            }
+            Ok((view, ns_registry))
+        }
+        ValidationMode::Reject => {
+            stage_with_shacl(ledger, txn, ns_registry, options, shacl_cache).await
+        }
+    }
+}
+
+// =============================================================================
+// Config-driven unique constraint enforcement
+// =============================================================================
+
+/// Run uniqueness enforcement after staging if configured.
+///
+/// Loads config from the pre-txn state (via `view.base()`) and checks
+/// staged flakes against `f:enforceUnique` annotations. Zero-cost when
+/// no `f:transactDefaults` / `f:uniqueEnabled` is configured.
+async fn enforce_unique_after_staging(
+    view: &LedgerView,
+    graph_delta: &FxHashMap<u16, String>,
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
+    let config = load_transaction_config(view.base()).await;
+    if let Some(cfg) = &config {
+        let per_graph_unique = resolve_per_graph_unique_sids(view, cfg, graph_delta).await?;
+        enforce_unique_constraints(view, &per_graph_unique, graph_delta).await?;
+    }
+    Ok(())
+}
+
+/// Resolve per-graph unique property SIDs from `f:enforceUnique` annotations.
+///
+/// For each graph affected by staged flakes, resolves the effective transact
+/// config, loads constraint annotations from the configured source graphs,
+/// and returns a map of graph_id → set of property SIDs that must be unique.
+///
+/// Returns an empty map when no uniqueness constraints are configured (fast path).
+async fn resolve_per_graph_unique_sids(
+    view: &LedgerView,
+    config: &LedgerConfig,
+    graph_delta: &FxHashMap<u16, String>,
+) -> std::result::Result<HashMap<GraphId, FxHashSet<Sid>>, fluree_db_transact::TransactError> {
+    let snapshot = view.db();
+
+    // Build reverse map: graph SID → g_id for flake graph resolution
+    let mut sid_to_gid: HashMap<Sid, GraphId> = HashMap::new();
+    for (&g_id, iri) in graph_delta {
+        if let Some(sid) = snapshot.encode_iri(iri) {
+            sid_to_gid.insert(sid, g_id);
+        }
+    }
+    // Also include pre-existing named graphs from the registry
+    for (g_id, iri) in snapshot.graph_registry.iter_entries() {
+        if let Some(sid) = snapshot.encode_iri(iri) {
+            sid_to_gid.entry(sid).or_insert(g_id);
+        }
+    }
+
+    // Derive affected graph IDs from staged flakes (not graph_delta)
+    let mut affected_g_ids: FxHashSet<GraphId> = FxHashSet::default();
+    for flake in view.staged_flakes() {
+        if !flake.op {
+            continue;
+        }
+        let g_id = match &flake.g {
+            None => 0u16,
+            Some(g_sid) => sid_to_gid.get(g_sid).copied().unwrap_or_else(|| {
+                tracing::debug!(
+                    ?g_sid,
+                    "Staged flake with unknown graph SID — treating as default"
+                );
+                0
+            }),
+        };
+        affected_g_ids.insert(g_id);
+    }
+
+    let mut per_graph: HashMap<GraphId, FxHashSet<Sid>> = HashMap::new();
+
+    for &g_id in &affected_g_ids {
+        // Resolve graph IRI for per-graph config lookup
+        let graph_iri = if g_id == 0 {
+            None
+        } else {
+            graph_delta
+                .get(&g_id)
+                .map(|s| s.as_str())
+                .or_else(|| snapshot.graph_registry.iri_for_graph_id(g_id))
+        };
+
+        let resolved = config_resolver::resolve_effective_config(config, graph_iri);
+        let transact_config = match config_resolver::merge_transact_opts(&resolved) {
+            Some(tc) => tc,
+            None => continue,
+        };
+
+        // Resolve constraint source graph IDs
+        let source_g_ids = if transact_config.constraints_sources.is_empty() {
+            // Default: annotations in the default graph (g_id=0)
+            vec![0u16]
+        } else {
+            resolve_constraint_source_g_ids(&transact_config.constraints_sources, snapshot)
+        };
+
+        // Load f:enforceUnique annotations from each source graph
+        let mut unique_sids = FxHashSet::default();
+        for source_g_id in source_g_ids {
+            let annotations = read_enforce_unique_from_graph(view, source_g_id).await?;
+            unique_sids.extend(annotations);
+        }
+
+        if !unique_sids.is_empty() {
+            per_graph.insert(g_id, unique_sids);
+        }
+    }
+
+    Ok(per_graph)
+}
+
+/// Resolve `GraphSourceRef` list to graph IDs.
+///
+/// Maps each `f:graphSelector` IRI to a concrete graph ID:
+/// - `f:defaultGraph` → 0
+/// - Named graph IRI → lookup in `GraphRegistry`
+fn resolve_constraint_source_g_ids(
+    sources: &[fluree_db_core::ledger_config::GraphSourceRef],
+    snapshot: &fluree_db_core::LedgerSnapshot,
+) -> Vec<GraphId> {
+    let mut g_ids = Vec::new();
+    for source in sources {
+        let g_id = match source.graph_selector.as_deref() {
+            Some(iri) if iri == config_iris::DEFAULT_GRAPH => Some(0u16),
+            Some(iri) => snapshot.graph_registry.graph_id_for_iri(iri),
+            None => Some(0u16), // no selector → default graph
+        };
+        if let Some(id) = g_id {
+            g_ids.push(id);
+        } else {
+            tracing::debug!(
+                selector = ?source.graph_selector,
+                "Constraint source graph not found in registry — skipping"
+            );
+        }
+    }
+    g_ids
+}
+
+/// Read `f:enforceUnique true` annotations from a single graph.
+///
+/// Queries the POST index at the pre-transaction state for all subjects
+/// where `?prop f:enforceUnique true`. Returns the set of property SIDs.
+async fn read_enforce_unique_from_graph(
+    view: &LedgerView,
+    source_g_id: GraphId,
+) -> std::result::Result<Vec<Sid>, fluree_db_transact::TransactError> {
+    let snapshot = view.db();
+
+    let enforce_unique_sid = match snapshot.encode_iri(config_iris::ENFORCE_UNIQUE) {
+        Some(sid) => sid,
+        None => return Ok(Vec::new()),
+    };
+
+    let xsd_boolean_sid = match snapshot.encode_iri("http://www.w3.org/2001/XMLSchema#boolean") {
+        Some(sid) => sid,
+        None => return Ok(Vec::new()),
+    };
+
+    // Query: all flakes where p=f:enforceUnique, o=true, dt=xsd:boolean
+    // Uses pre-txn state (base novelty) for lagging annotation semantics.
+    let base = view.base();
+    let match_val = RangeMatch::predicate_object(enforce_unique_sid, FlakeValue::Boolean(true))
+        .with_datatype(xsd_boolean_sid);
+
+    let flakes = range_with_overlay(
+        &base.snapshot,
+        source_g_id,
+        &*base.novelty,
+        IndexType::Post,
+        RangeTest::Eq,
+        match_val,
+        RangeOptions::new().with_to_t(base.t()),
+    )
+    .await
+    .map_err(fluree_db_transact::TransactError::from)?;
+
+    // Each matching flake's subject is a property IRI that has f:enforceUnique true
+    let props: Vec<Sid> = flakes.iter().map(|f| f.s.clone()).collect();
+    Ok(props)
+}
+
+/// Enforce unique constraints on staged flakes.
+///
+/// For each affected graph, checks that no two subjects hold the same value
+/// for any property marked `f:enforceUnique`. Uses the POST index with
+/// datatype-aware matching and stale-removal (last-op-wins).
+///
+/// Returns `Ok(())` if no violations, or a `UniqueConstraintViolation` error.
+async fn enforce_unique_constraints(
+    view: &LedgerView,
+    per_graph_unique: &HashMap<GraphId, FxHashSet<Sid>>,
+    graph_delta: &FxHashMap<u16, String>,
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
+    // Fast path: nothing configured
+    if per_graph_unique.is_empty() {
+        return Ok(());
+    }
+
+    let snapshot = view.db();
+
+    // Build reverse map for flake graph resolution
+    let mut sid_to_gid: HashMap<Sid, GraphId> = HashMap::new();
+    for (&g_id, iri) in graph_delta {
+        if let Some(sid) = snapshot.encode_iri(iri) {
+            sid_to_gid.insert(sid, g_id);
+        }
+    }
+    for (g_id, iri) in snapshot.graph_registry.iter_entries() {
+        if let Some(sid) = snapshot.encode_iri(iri) {
+            sid_to_gid.entry(sid).or_insert(g_id);
+        }
+    }
+
+    // Collect distinct (g_id, p, o) keys from staged asserts on unique properties.
+    // Uniqueness ignores datatype and language tag — the key is the storage-layer
+    // value identity (FlakeValue), not the RDF datatype IRI.
+    let mut keys_to_check: FxHashSet<(GraphId, Sid, FlakeValue)> = FxHashSet::default();
+    for flake in view.staged_flakes() {
+        if !flake.op {
+            continue;
+        }
+        let g_id = match &flake.g {
+            None => 0u16,
+            Some(g_sid) => sid_to_gid.get(g_sid).copied().unwrap_or(0),
+        };
+        if let Some(unique_set) = per_graph_unique.get(&g_id) {
+            if unique_set.contains(&flake.p) {
+                keys_to_check.insert((g_id, flake.p.clone(), flake.o.clone()));
+            }
+        }
+    }
+
+    // For each unique key, query POST index to check for multiple active subjects.
+    // No .with_datatype() — matches all datatypes for the same (p, o) value.
+    for (g_id, p, o) in &keys_to_check {
+        let match_val = RangeMatch::predicate_object(p.clone(), o.clone());
+
+        // Query with post-staging overlay: sees committed + staged data.
+        // Stale removal ensures only currently-active assertions are returned.
+        let flakes = range_with_overlay(
+            snapshot,
+            *g_id,
+            view,
+            IndexType::Post,
+            RangeTest::Eq,
+            match_val,
+            RangeOptions::new().with_to_t(view.staged_t()),
+        )
+        .await
+        .map_err(fluree_db_transact::TransactError::from)?;
+
+        // Count distinct subjects with active assertions
+        let mut seen_subjects: FxHashSet<&Sid> = FxHashSet::default();
+        for f in &flakes {
+            seen_subjects.insert(&f.s);
+        }
+
+        if seen_subjects.len() > 1 {
+            // Build a descriptive error with decoded IRIs
+            let property_iri = snapshot.decode_sid(p).unwrap_or_else(|| format!("{:?}", p));
+            let graph_label = if *g_id == 0 {
+                "default".to_string()
+            } else {
+                graph_delta
+                    .get(g_id)
+                    .cloned()
+                    .or_else(|| {
+                        snapshot
+                            .graph_registry
+                            .iri_for_graph_id(*g_id)
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_else(|| format!("g_id={}", g_id))
+            };
+            let value_str = format!("{:?}", o);
+
+            // Pick two subjects for the error message
+            let mut subj_iter = seen_subjects.iter();
+            let existing = subj_iter.next().unwrap();
+            let conflicting = subj_iter.next().unwrap();
+            let existing_iri = snapshot
+                .decode_sid(existing)
+                .unwrap_or_else(|| format!("{:?}", existing));
+            let new_iri = snapshot
+                .decode_sid(conflicting)
+                .unwrap_or_else(|| format!("{:?}", conflicting));
+
+            return Err(
+                fluree_db_transact::TransactError::UniqueConstraintViolation {
+                    property: property_iri,
+                    value: value_str,
+                    graph: graph_label,
+                    existing_subject: existing_iri,
+                    new_subject: new_iri,
+                },
+            );
+        }
+    }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -222,7 +694,7 @@ fn convert_named_graphs_to_templates(
     let mut templates = Vec::new();
     let mut graph_delta: rustc_hash::FxHashMap<u16, String> = rustc_hash::FxHashMap::default();
     let mut iri_to_id: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
-    let mut next_graph_id: u16 = 2; // 0=default, 1=txn-meta
+    let mut next_graph_id: u16 = 3; // 0=default, 1=txn-meta, 2=config
 
     // Helper to expand prefixed name to full IRI
     fn expand_prefixed_name(
@@ -446,34 +918,23 @@ where
         // Check for max-fuel in opts and create tracker if present (same pattern as queries)
         let tracker = tracker_for_limits(txn_json);
 
+        let mut options = match index_config {
+            Some(cfg) => StageOptions::new().with_index_config(cfg),
+            None => StageOptions::default(),
+        };
+        if tracker.is_enabled() {
+            options = options.with_tracker(&tracker);
+        }
+
         #[cfg(feature = "shacl")]
-        let (view, ns_registry) = {
-            // Use as_graph_db_ref to include novelty flakes (shapes committed but not yet indexed)
-            let engine =
-                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
-                    .await
-                    .map_err(fluree_db_transact::TransactError::from)?;
-            let shacl_cache = engine.cache().clone();
-            let mut options = match index_config {
-                Some(cfg) => StageOptions::new().with_index_config(cfg),
-                None => StageOptions::default(),
-            };
-            if tracker.is_enabled() {
-                options = options.with_tracker(&tracker);
-            }
-            stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache).await?
-        };
+        let (view, ns_registry) =
+            stage_with_config_shacl(ledger, txn, ns_registry, options).await?;
         #[cfg(not(feature = "shacl"))]
-        let (view, ns_registry) = {
-            let mut options = match index_config {
-                Some(cfg) => StageOptions::new().with_index_config(cfg),
-                None => StageOptions::default(),
-            };
-            if tracker.is_enabled() {
-                options = options.with_tracker(&tracker);
-            }
-            stage_txn(ledger, txn, ns_registry, options).await?
-        };
+        let (view, ns_registry) = stage_txn(ledger, txn, ns_registry, options).await?;
+
+        // Enforce uniqueness constraints (independent of shacl feature)
+        enforce_unique_after_staging(&view, &graph_delta).await?;
+
         Ok(StageResult {
             view,
             ns_registry,
@@ -498,27 +959,20 @@ where
         let txn_meta = txn.txn_meta.clone();
         let graph_delta = txn.graph_delta.clone();
 
+        let options = match index_config {
+            Some(cfg) => StageOptions::new().with_index_config(cfg),
+            None => StageOptions::default(),
+        };
+
         #[cfg(feature = "shacl")]
-        let (view, ns_registry) = {
-            let engine =
-                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
-                    .await
-                    .map_err(fluree_db_transact::TransactError::from)?;
-            let shacl_cache = engine.cache().clone();
-            let options = match index_config {
-                Some(cfg) => StageOptions::new().with_index_config(cfg),
-                None => StageOptions::default(),
-            };
-            stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache).await?
-        };
+        let (view, ns_registry) =
+            stage_with_config_shacl(ledger, txn, ns_registry, options).await?;
         #[cfg(not(feature = "shacl"))]
-        let (view, ns_registry) = {
-            let options = match index_config {
-                Some(cfg) => StageOptions::new().with_index_config(cfg),
-                None => StageOptions::default(),
-            };
-            stage_txn(ledger, txn, ns_registry, options).await?
-        };
+        let (view, ns_registry) = stage_txn(ledger, txn, ns_registry, options).await?;
+
+        // Enforce uniqueness constraints (independent of shacl feature)
+        enforce_unique_after_staging(&view, &graph_delta).await?;
+
         Ok(StageResult {
             view,
             ns_registry,
@@ -563,19 +1017,16 @@ where
         }
 
         #[cfg(feature = "shacl")]
-        let (view, ns_registry) = {
-            // Use as_graph_db_ref to include novelty flakes (shapes committed but not yet indexed)
-            let engine =
-                ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
-                    .await
-                    .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
-            let shacl_cache = engine.cache().clone();
-            stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache)
-                .await
-                .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?
-        };
+        let (view, ns_registry) = stage_with_config_shacl(ledger, txn, ns_registry, options)
+            .await
+            .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
         #[cfg(not(feature = "shacl"))]
         let (view, ns_registry) = stage_txn(ledger, txn, ns_registry, options)
+            .await
+            .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
+
+        // Enforce uniqueness constraints (independent of shacl feature)
+        enforce_unique_after_staging(&view, &graph_delta)
             .await
             .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
 

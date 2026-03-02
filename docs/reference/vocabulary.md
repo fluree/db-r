@@ -271,6 +271,92 @@ See [Policy model and inputs](../security/policy-model.md) for usage details.
 
 ---
 
+## Config graph vocabulary
+
+These predicates define ledger-level configuration stored in the config graph. See [Ledger configuration](../ledger-config/README.md) for full documentation.
+
+### Core types
+
+| Type | Full IRI | Description |
+|------|----------|-------------|
+| `f:LedgerConfig` | `https://ns.flur.ee/db#LedgerConfig` | Ledger-wide configuration resource |
+| `f:GraphConfig` | `https://ns.flur.ee/db#GraphConfig` | Per-graph configuration override |
+| `f:GraphRef` | `https://ns.flur.ee/db#GraphRef` | Reference to a graph source |
+
+### Setting group predicates
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:policyDefaults` | `https://ns.flur.ee/db#policyDefaults` | Policy enforcement defaults |
+| `f:shaclDefaults` | `https://ns.flur.ee/db#shaclDefaults` | SHACL validation defaults |
+| `f:reasoningDefaults` | `https://ns.flur.ee/db#reasoningDefaults` | OWL/RDFS reasoning defaults |
+| `f:datalogDefaults` | `https://ns.flur.ee/db#datalogDefaults` | Datalog rule defaults |
+| `f:transactDefaults` | `https://ns.flur.ee/db#transactDefaults` | Transaction constraint defaults |
+
+### Policy fields
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:defaultAllow` | `https://ns.flur.ee/db#defaultAllow` | Default allow/deny when no policy matches (boolean) |
+| `f:policySource` | `https://ns.flur.ee/db#policySource` | Graph containing policy rules (GraphRef) |
+| `f:policyClass` | `https://ns.flur.ee/db#policyClass` | Default policy classes to apply |
+
+### SHACL fields
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:shaclEnabled` | `https://ns.flur.ee/db#shaclEnabled` | Enable/disable SHACL validation (boolean) |
+| `f:shapesSource` | `https://ns.flur.ee/db#shapesSource` | Graph containing SHACL shapes (GraphRef) |
+| `f:validationMode` | `https://ns.flur.ee/db#validationMode` | `f:ValidationReject` or `f:ValidationWarn` |
+
+### Reasoning fields
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:reasoningModes` | `https://ns.flur.ee/db#reasoningModes` | Reasoning modes: `f:RDFS`, `f:OWL2QL`, `f:OWL2RL`, `f:Datalog` |
+| `f:schemaSource` | `https://ns.flur.ee/db#schemaSource` | Graph containing schema triples (GraphRef) |
+
+### Datalog fields
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:datalogEnabled` | `https://ns.flur.ee/db#datalogEnabled` | Enable/disable datalog rules (boolean) |
+| `f:rulesSource` | `https://ns.flur.ee/db#rulesSource` | Graph containing `f:rule` definitions (GraphRef) |
+| `f:allowQueryTimeRules` | `https://ns.flur.ee/db#allowQueryTimeRules` | Allow ad-hoc query-time rules (boolean) |
+
+### Transact / uniqueness fields
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:uniqueEnabled` | `https://ns.flur.ee/db#uniqueEnabled` | Enable unique constraint enforcement (boolean) |
+| `f:constraintsSource` | `https://ns.flur.ee/db#constraintsSource` | Graph(s) containing constraint annotations (GraphRef) |
+| `f:enforceUnique` | `https://ns.flur.ee/db#enforceUnique` | Annotation on property IRIs: enforce value uniqueness (boolean) |
+
+### Override control
+
+| Term | Full IRI | Description |
+|------|----------|-------------|
+| `f:overrideControl` | `https://ns.flur.ee/db#overrideControl` | Override gating on a setting group |
+| `f:OverrideNone` | `https://ns.flur.ee/db#OverrideNone` | No overrides permitted |
+| `f:OverrideAll` | `https://ns.flur.ee/db#OverrideAll` | Any request can override (default) |
+| `f:IdentityRestricted` | `https://ns.flur.ee/db#IdentityRestricted` | Only verified identities can override |
+| `f:controlMode` | `https://ns.flur.ee/db#controlMode` | Control mode (for identity-restricted objects) |
+| `f:allowedIdentities` | `https://ns.flur.ee/db#allowedIdentities` | List of DIDs authorized to override |
+
+### Graph targeting
+
+| Predicate | Full IRI | Description |
+|-----------|----------|-------------|
+| `f:graphOverrides` | `https://ns.flur.ee/db#graphOverrides` | List of `f:GraphConfig` per-graph overrides |
+| `f:targetGraph` | `https://ns.flur.ee/db#targetGraph` | Target graph IRI for a `f:GraphConfig` |
+| `f:graphSelector` | `https://ns.flur.ee/db#graphSelector` | Graph selector within a `f:GraphRef` |
+| `f:defaultGraph` | `https://ns.flur.ee/db#defaultGraph` | Sentinel IRI for the default graph |
+| `f:txnMetaGraph` | `https://ns.flur.ee/db#txnMetaGraph` | Sentinel IRI for the txn-meta graph |
+
+See [Ledger configuration](../ledger-config/README.md) for usage details.
+
+---
+
 ## RDF-Star annotation predicates
 
 Fluree supports RDF-Star annotations for transaction metadata. These predicates can appear in annotation triples:

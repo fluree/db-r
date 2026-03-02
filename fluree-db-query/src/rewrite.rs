@@ -322,6 +322,41 @@ impl ReasoningModes {
         self
     }
 
+    /// Build from a list of mode name strings (e.g., from config graph).
+    ///
+    /// Accepts the same names as `parse_single`: "rdfs", "owl2ql",
+    /// "owl2rl", "datalog", "owl-datalog", "none".
+    /// Unknown names are logged as warnings and skipped.
+    pub fn from_mode_strings(names: &[String]) -> Self {
+        let mut modes = Self::default();
+        for name in names {
+            // Config reader returns full IRIs (e.g., "https://ns.flur.ee/db#rdfs").
+            // Strip known namespace prefix before parsing.
+            let short = name.strip_prefix("https://ns.flur.ee/db#").unwrap_or(name);
+            match Self::parse_single(short) {
+                Ok(single) => {
+                    if single.explicit_none {
+                        // "none" force-disables reasoning; return immediately.
+                        // merge() deliberately does not propagate explicit_none,
+                        // so we must handle it here.
+                        if names.len() > 1 {
+                            tracing::warn!(
+                                "Config reasoning modes contain 'none' alongside other modes; \
+                                 'none' takes precedence"
+                            );
+                        }
+                        return Self::none();
+                    }
+                    modes = modes.merge(&single);
+                }
+                Err(e) => {
+                    tracing::warn!(mode = %name, "Unknown reasoning mode in config: {e}");
+                }
+            }
+        }
+        modes
+    }
+
     /// Check if query-time rules are provided
     pub fn has_rules(&self) -> bool {
         !self.rules.is_empty()

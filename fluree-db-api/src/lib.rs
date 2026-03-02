@@ -35,6 +35,7 @@ pub mod admin;
 pub mod block_fetch;
 pub mod bm25_worker;
 pub mod commit_transfer;
+pub mod config_resolver;
 #[cfg(feature = "credential")]
 pub mod credential;
 pub mod dataset;

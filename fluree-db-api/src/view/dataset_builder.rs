@@ -54,17 +54,21 @@ where
 
         let mut dataset = DataSetDb::new();
 
-        // Load default graphs, applying per-source policy if present
+        // Load default graphs, applying per-source policy and config reasoning
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs, applying per-source policy if present
+        // Load named graphs, applying per-source policy and config reasoning
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.maybe_apply_source_policy(view, source).await?;
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -101,23 +105,29 @@ where
             let to_t = resolve_history_endpoint_t(&ledger, &range.to, latest_t).await?;
 
             let view = GraphDb::from_ledger_state(&ledger);
-            let view = self.wrap_policy(view, opts).await?;
+            let view = self.wrap_policy(view, opts, None).await?;
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             return Ok(DataSetDb::single(view).with_history_range(from_t, to_t));
         }
 
         let mut dataset = DataSetDb::new();
 
-        // Load default graphs with policy (per-source overrides global)
+        // Load default graphs with policy and config reasoning (per-source overrides global)
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs with policy (per-source overrides global)
+        // Load named graphs with policy and config reasoning (per-source overrides global)
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.apply_policy_with_override(view, source, opts).await?;
+            let view = self.apply_config_reasoning(view, None);
+            let view = self.apply_config_datalog(view, None);
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -140,7 +150,7 @@ where
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
                 let opts = policy_override.to_query_connection_options();
-                return self.wrap_policy(view, &opts).await;
+                return self.wrap_policy(view, &opts, None).await;
             }
         }
         Ok(view)
@@ -160,11 +170,11 @@ where
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
                 let opts = policy_override.to_query_connection_options();
-                return self.wrap_policy(view, &opts).await;
+                return self.wrap_policy(view, &opts, None).await;
             }
         }
         // Fall back to global policy
-        self.wrap_policy(view, global_opts).await
+        self.wrap_policy(view, global_opts, None).await
     }
 
     /// Build a single `GraphDb` from a `GraphSource`.
@@ -194,8 +204,14 @@ where
         // Note: If the identifier contained a fragment like #txn-meta, that was
         // already applied by view()/view_at(). The parser rejects the ambiguous
         // case where both fragment and graph_selector are present.
+        //
+        // After re-selecting the graph, re-resolve config for the new graph
+        // target so per-graph overrides match the actual graph being queried.
         match &source.graph_selector {
-            Some(selector) => Self::apply_graph_selector(view, selector),
+            Some(selector) => {
+                let view = Self::apply_graph_selector(view, selector)?;
+                self.resolve_and_attach_config(view).await
+            }
             None => Ok(view),
         }
     }

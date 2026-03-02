@@ -40,6 +40,7 @@ use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use xxhash_rust::xxh3::xxh3_128;
 
 /// Which graph to scope the stats section to.
 #[derive(Debug, Clone, Default)]
@@ -1254,6 +1255,71 @@ where
     /// Execute the ledger info request.
     pub async fn execute(self) -> crate::Result<JsonValue> {
         let ledger = self.fluree.ledger(&self.ledger_id).await?;
+
+        // Optional API-level cache: when ledger caching is enabled, a global LeafletCache
+        // exists with a single memory budget (TinyLFU). We store ledger-info response
+        // blobs there keyed by (ledger_id, commit_t, index_t, opts, context-hash).
+        if let Some(cache) = self
+            .fluree
+            .ledger_manager()
+            .and_then(|mgr| mgr.leaflet_cache())
+        {
+            let commit_t = ledger.t();
+            let index_t = ledger.snapshot.t;
+
+            let ctx_hash: u64 = match self.context {
+                Some(ctx) => {
+                    // Stable key across calls: hash the canonical JSON bytes.
+                    // This is cheap relative to the novelty merge work we’re caching.
+                    let bytes = serde_json::to_vec(ctx).unwrap_or_default();
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    use std::hash::Hasher;
+                    h.write(&bytes);
+                    h.finish()
+                }
+                None => 0,
+            };
+
+            let graph_key = match &self.options.graph {
+                GraphSelector::Default => "default".to_string(),
+                GraphSelector::ById(id) => format!("gid:{id}"),
+                GraphSelector::ByIri(iri) => format!("iri:{iri}"),
+                GraphSelector::ByName(name) => format!("name:{name}"),
+            };
+
+            let key_str = format!(
+                "ledger-info:{}:{}:{}:{}:{}:{}:{}",
+                self.ledger_id,
+                commit_t,
+                index_t,
+                self.options.realtime_property_details as u8,
+                self.options.include_property_datatypes as u8,
+                graph_key,
+                ctx_hash
+            );
+            let cache_key = xxh3_128(key_str.as_bytes());
+
+            if let Some(bytes) = cache.get_ledger_info(cache_key) {
+                if let Ok(json) = serde_json::from_slice::<JsonValue>(&bytes) {
+                    return Ok(json);
+                }
+            }
+
+            let json = build_ledger_info_with_options(
+                &ledger,
+                self.fluree.storage(),
+                self.context,
+                self.options,
+            )
+            .await
+            .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
+
+            if let Ok(vec) = serde_json::to_vec(&json) {
+                cache.insert_ledger_info(cache_key, vec.into());
+            }
+
+            return Ok(json);
+        }
 
         build_ledger_info_with_options(&ledger, self.fluree.storage(), self.context, self.options)
             .await

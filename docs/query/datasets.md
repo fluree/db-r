@@ -78,6 +78,8 @@ In SPARQL, `FROM NAMED` identifies **named graphs in the dataset**. In Fluree, t
 - another ledger (federation / multi-ledger queries), or
 - a graph source (search, tabular mapping, etc.).
 
+Note: On the **ledger-scoped HTTP query endpoint** (`POST /query/{ledger}`), `FROM` / `FROM NAMED` is also supported, but is interpreted as selecting **named graphs inside that same ledger**. Use the connection-scoped endpoint (`POST /query`) when you want a dataset that spans multiple ledgers.
+
 Query across multiple named graph sources:
 
 **JSON-LD Query:**
@@ -168,6 +170,10 @@ WHERE {
 ### User-Defined Named Graphs
 
 Fluree supports user-defined named graphs ingested via TriG format. These graphs are queryable using the structured `from` object syntax with a `graph` field.
+
+For the ledger-scoped HTTP endpoint (`POST /query/{ledger}`), the server also accepts a convenient shorthand:
+- `"from": "txn-meta"` / `"from": "default"` / `"from": "<graph IRI>"`
+to select a graph **within** the ledger in the URL.
 
 **Ingesting data with named graphs (TriG):**
 

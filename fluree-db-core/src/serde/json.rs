@@ -6,7 +6,7 @@ use crate::sid::Sid;
 use crate::temporal::{Date, DateTime, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
-use fluree_vocab::namespaces::{JSON_LD, XSD};
+use fluree_vocab::namespaces::{JSON_LD, RDF, XSD};
 use fluree_vocab::xsd_names;
 use num_bigint::BigInt;
 use serde::Deserialize;
@@ -34,6 +34,11 @@ fn is_integer_family_dt(dt: &Sid) -> bool {
 
 fn is_decimal_dt(dt: &Sid) -> bool {
     dt.namespace_code == XSD && dt.name.as_ref() == xsd_names::DECIMAL
+}
+
+/// Check if datatype is rdf:JSON
+fn is_json_dt(dt: &Sid) -> bool {
+    dt.namespace_code == RDF && dt.name.as_ref() == "JSON"
 }
 
 // === Raw JSON structures for deserialization ===
@@ -179,6 +184,13 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
         }
     }
 
+    // rdf:JSON: the serialized JSON string must be restored as FlakeValue::Json
+    if is_json_dt(dt) {
+        if let serde_json::Value::String(s) = value {
+            return Ok(FlakeValue::Json(s.clone()));
+        }
+    }
+
     // Default deserialization based on JSON type
     match value {
         serde_json::Value::Null => Ok(FlakeValue::Null),
@@ -268,6 +280,49 @@ mod tests {
         assert_eq!(flake.t, 100);
         assert!(flake.op);
         assert!(flake.m.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_json_datatype_preserves_json_variant() {
+        // When a flake has rdf:JSON datatype, deserialize_object should return
+        // FlakeValue::Json, not FlakeValue::String. This matters because commit
+        // serialization stores @json values as plain JSON strings, and without
+        // the datatype check, serde's default path produces FlakeValue::String.
+        let rdf_json_dt = Sid::new(3, "JSON"); // RDF namespace = 3
+        let json_str = r#"[{"name":"Alice"}]"#;
+        let value = serde_json::json!(json_str);
+
+        let result = deserialize_object(&value, &rdf_json_dt).unwrap();
+        assert!(
+            matches!(&result, FlakeValue::Json(s) if s == json_str),
+            "rdf:JSON datatype should produce FlakeValue::Json, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_deserialize_json_datatype_full_flake_roundtrip() {
+        // Full flake round-trip: a @json flake serialized as commit JSON should
+        // deserialize back with FlakeValue::Json (not FlakeValue::String).
+        let json_str = r#"{"name":"John","age":30}"#;
+        let flake_json = serde_json::json!([
+            [1, "doc1"], // s
+            [2, "data"], // p
+            json_str,    // o — serialized JSON string
+            [3, "JSON"], // dt = rdf:JSON (namespace 3)
+            100,         // t
+            true,        // op
+            null         // m
+        ]);
+
+        let raw: RawFlake = serde_json::from_value(flake_json).unwrap();
+        let flake = raw.to_flake().unwrap();
+
+        assert!(
+            matches!(&flake.o, FlakeValue::Json(s) if s == json_str),
+            "Flake with rdf:JSON dt should have FlakeValue::Json, got: {:?}",
+            flake.o
+        );
     }
 
     #[test]

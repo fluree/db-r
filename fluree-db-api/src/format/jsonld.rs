@@ -104,11 +104,13 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
             // Compact datatype for presentation in JSON-LD Query format (Clojure parity)
             let dt_compact = compactor.compact_sid(dt)?;
 
-            // Special handling for @json datatype: deserialize the JSON string
+            // Special handling for @json datatype: deserialize the JSON string.
+            // Accept both FlakeValue::Json and FlakeValue::String because serde's
+            // untagged enum deserialization (used when loading commit JSON) cannot
+            // distinguish the two variants — String always wins in enum order.
             if dt_full == rdf::JSON || dt_compact == "@json" {
                 return match val {
-                    FlakeValue::Json(json_str) => {
-                        // Deserialize the JSON string back to a JSON value
+                    FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                         serde_json::from_str(json_str).map_err(|e| {
                             FormatError::InvalidBinding(format!(
                                 "Invalid JSON in @json value: {}",
@@ -456,5 +458,36 @@ mod tests {
         ]);
         let result = format_binding(&binding, &compactor).unwrap();
         assert_eq!(result, json!([1, 2]));
+    }
+
+    #[test]
+    fn test_format_binding_json_variant() {
+        // FlakeValue::Json with rdf:JSON datatype — the normal in-memory path.
+        let compactor = make_test_compactor();
+        let binding = Binding::lit(
+            FlakeValue::Json(r#"{"name":"Alice","age":30}"#.to_string()),
+            Sid::new(3, "JSON"), // rdf:JSON
+        );
+        let result = format_binding(&binding, &compactor).unwrap();
+        assert_eq!(result, json!({"name": "Alice", "age": 30}));
+    }
+
+    #[test]
+    fn test_format_binding_json_as_string_variant() {
+        // FlakeValue::String with rdf:JSON datatype — happens after commit
+        // deserialization when serde's untagged enum picks String over Json.
+        // Without the defense-in-depth fix, this fails with:
+        // "Invalid JSON in @json value" or "@json datatype must have FlakeValue::Json"
+        let compactor = make_test_compactor();
+        let binding = Binding::lit(
+            FlakeValue::String(r#"{"name":"Alice","age":30}"#.to_string()),
+            Sid::new(3, "JSON"), // rdf:JSON
+        );
+        let result = format_binding(&binding, &compactor).unwrap();
+        assert_eq!(
+            result,
+            json!({"name": "Alice", "age": 30}),
+            "rdf:JSON with FlakeValue::String should deserialize as JSON object"
+        );
     }
 }

@@ -1665,3 +1665,174 @@ pub mod policy_iris {
     /// `https://ns.flur.ee/db#exMessage` - exception/error message
     pub const EX_MESSAGE: &str = "https://ns.flur.ee/db#exMessage";
 }
+
+/// Full IRI constants for Fluree ledger config graph vocabulary
+///
+/// Used by the config resolver for reading/writing the config graph.
+/// All IRIs are under `https://ns.flur.ee/db#`.
+pub mod config_iris {
+    // ---- Type classes ----
+
+    /// `f:LedgerConfig` — ledger-wide configuration resource
+    pub const LEDGER_CONFIG: &str = "https://ns.flur.ee/db#LedgerConfig";
+
+    /// `f:GraphConfig` — per-graph configuration override
+    pub const GRAPH_CONFIG: &str = "https://ns.flur.ee/db#GraphConfig";
+
+    /// `f:GraphRef` — reference to a graph source (local or remote)
+    pub const GRAPH_REF: &str = "https://ns.flur.ee/db#GraphRef";
+
+    /// `f:TrustPolicy` — trust verification model for a GraphRef
+    pub const TRUST_POLICY: &str = "https://ns.flur.ee/db#TrustPolicy";
+
+    // ---- Setting group predicates ----
+
+    /// `f:policyDefaults` — policy defaults object on LedgerConfig/GraphConfig
+    pub const POLICY_DEFAULTS: &str = "https://ns.flur.ee/db#policyDefaults";
+
+    /// `f:shaclDefaults` — SHACL validation defaults object
+    pub const SHACL_DEFAULTS: &str = "https://ns.flur.ee/db#shaclDefaults";
+
+    /// `f:reasoningDefaults` — reasoning defaults object
+    pub const REASONING_DEFAULTS: &str = "https://ns.flur.ee/db#reasoningDefaults";
+
+    /// `f:datalogDefaults` — datalog rules defaults object
+    pub const DATALOG_DEFAULTS: &str = "https://ns.flur.ee/db#datalogDefaults";
+
+    /// `f:graphOverrides` — list of per-graph config overrides
+    pub const GRAPH_OVERRIDES: &str = "https://ns.flur.ee/db#graphOverrides";
+
+    // ---- Policy fields ----
+
+    /// `f:defaultAllow` — boolean, allow-all vs deny-all default
+    pub const DEFAULT_ALLOW: &str = "https://ns.flur.ee/db#defaultAllow";
+
+    /// `f:policySource` — GraphRef pointing to policy rules graph
+    pub const POLICY_SOURCE: &str = "https://ns.flur.ee/db#policySource";
+
+    // Note: f:policyClass is already defined in policy_iris::POLICY_CLASS
+
+    // ---- SHACL fields ----
+
+    /// `f:shaclEnabled` — boolean, enable/disable SHACL validation
+    pub const SHACL_ENABLED: &str = "https://ns.flur.ee/db#shaclEnabled";
+
+    /// `f:shapesSource` — GraphRef pointing to SHACL shapes graph
+    pub const SHAPES_SOURCE: &str = "https://ns.flur.ee/db#shapesSource";
+
+    /// `f:validationMode` — IRI: f:ValidationReject or f:ValidationWarn
+    pub const VALIDATION_MODE: &str = "https://ns.flur.ee/db#validationMode";
+
+    /// `f:ValidationReject` — reject transactions that fail SHACL validation
+    pub const VALIDATION_REJECT: &str = "https://ns.flur.ee/db#ValidationReject";
+
+    /// `f:ValidationWarn` — warn but allow transactions that fail SHACL validation
+    pub const VALIDATION_WARN: &str = "https://ns.flur.ee/db#ValidationWarn";
+
+    // ---- Reasoning fields ----
+
+    /// `f:reasoningModes` — string or array of reasoning mode identifiers
+    pub const REASONING_MODES: &str = "https://ns.flur.ee/db#reasoningModes";
+
+    /// `f:schemaSource` — GraphRef pointing to schema hierarchy graph
+    pub const SCHEMA_SOURCE: &str = "https://ns.flur.ee/db#schemaSource";
+
+    // ---- Datalog fields ----
+
+    /// `f:datalogEnabled` — boolean, enable/disable datalog rules
+    pub const DATALOG_ENABLED: &str = "https://ns.flur.ee/db#datalogEnabled";
+
+    /// `f:rulesSource` — GraphRef pointing to graph containing f:rule resources
+    pub const RULES_SOURCE: &str = "https://ns.flur.ee/db#rulesSource";
+
+    /// `f:allowQueryTimeRules` — boolean, allow query-time rule injection
+    pub const ALLOW_QUERY_TIME_RULES: &str = "https://ns.flur.ee/db#allowQueryTimeRules";
+
+    // ---- Override control ----
+
+    /// `f:overrideControl` — override control policy (string or object)
+    pub const OVERRIDE_CONTROL: &str = "https://ns.flur.ee/db#overrideControl";
+
+    /// `f:controlMode` — mode within an identityRestricted override control object
+    pub const CONTROL_MODE: &str = "https://ns.flur.ee/db#controlMode";
+
+    /// `f:allowedIdentities` — list of DIDs permitted to override
+    pub const ALLOWED_IDENTITIES: &str = "https://ns.flur.ee/db#allowedIdentities";
+
+    // ---- GraphConfig fields ----
+
+    /// `f:targetGraph` — IRI of the graph a GraphConfig applies to
+    pub const TARGET_GRAPH: &str = "https://ns.flur.ee/db#targetGraph";
+
+    /// `f:defaultGraph` — sentinel IRI representing the default graph (g_id=0)
+    pub const DEFAULT_GRAPH: &str = "https://ns.flur.ee/db#defaultGraph";
+
+    /// `f:txnMetaGraph` — sentinel IRI representing the txn-meta graph (g_id=1)
+    pub const TXN_META_GRAPH: &str = "https://ns.flur.ee/db#txnMetaGraph";
+
+    // ---- GraphRef / GraphSource fields ----
+
+    /// `f:graphSource` — nested object describing the graph source
+    pub const GRAPH_SOURCE: &str = "https://ns.flur.ee/db#graphSource";
+
+    /// `f:ledger` — ledger identifier within a graphSource
+    pub const LEDGER_PRED: &str = "https://ns.flur.ee/db#ledger";
+
+    /// `f:graphSelector` — graph selector IRI within a graphSource
+    pub const GRAPH_SELECTOR: &str = "https://ns.flur.ee/db#graphSelector";
+
+    // ---- TrustPolicy fields ----
+
+    /// `f:trustPolicy` — trust policy object on a GraphRef
+    pub const TRUST_POLICY_PRED: &str = "https://ns.flur.ee/db#trustPolicy";
+
+    /// `f:trustMode` — trust verification mode IRI
+    pub const TRUST_MODE: &str = "https://ns.flur.ee/db#trustMode";
+
+    /// `f:Trusted` — accept nameservice head without additional validation
+    pub const TRUSTED: &str = "https://ns.flur.ee/db#Trusted";
+
+    /// `f:SignedIndex` — verify signed index root
+    pub const SIGNED_INDEX: &str = "https://ns.flur.ee/db#SignedIndex";
+
+    /// `f:CommitVerified` — full commit chain verification
+    pub const COMMIT_VERIFIED: &str = "https://ns.flur.ee/db#CommitVerified";
+
+    // ---- Override control mode values ----
+
+    /// `f:OverrideNone` — no overrides permitted, regardless of identity.
+    pub const OVERRIDE_NONE: &str = "https://ns.flur.ee/db#OverrideNone";
+
+    /// `f:OverrideAll` — any request can override.
+    pub const OVERRIDE_ALL: &str = "https://ns.flur.ee/db#OverrideAll";
+
+    /// `f:IdentityRestricted` — only requests with verified matching identity can override.
+    pub const IDENTITY_RESTRICTED: &str = "https://ns.flur.ee/db#IdentityRestricted";
+
+    // ---- Temporal predicates ----
+
+    /// `f:atT` — pin a GraphRef to a specific commit number.
+    pub const AT_T: &str = "https://ns.flur.ee/db#atT";
+
+    // ---- Rollback guard ----
+
+    /// `f:rollbackGuard` — freshness constraints for a GraphRef.
+    pub const ROLLBACK_GUARD: &str = "https://ns.flur.ee/db#rollbackGuard";
+
+    /// `f:minT` — reject any resolved head where `head_t < minT`.
+    pub const MIN_T: &str = "https://ns.flur.ee/db#minT";
+
+    // ---- Transact defaults fields ----
+
+    /// `f:transactDefaults` — transact-time constraint defaults on LedgerConfig/GraphConfig.
+    pub const TRANSACT_DEFAULTS: &str = "https://ns.flur.ee/db#transactDefaults";
+
+    /// `f:uniqueEnabled` — boolean, enable unique constraint enforcement.
+    pub const UNIQUE_ENABLED: &str = "https://ns.flur.ee/db#uniqueEnabled";
+
+    /// `f:constraintsSource` — GraphRef(s) pointing to graphs containing constraint annotations.
+    pub const CONSTRAINTS_SOURCE: &str = "https://ns.flur.ee/db#constraintsSource";
+
+    /// `f:enforceUnique` — annotation on property IRIs requiring unique values per graph.
+    pub const ENFORCE_UNIQUE: &str = "https://ns.flur.ee/db#enforceUnique";
+}
