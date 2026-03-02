@@ -927,7 +927,13 @@ fn print_resolved_config(config: &ServerConfig, dirs: &FlureeDir) {
         eprintln!("    min_bytes:  {}", config.reindex_min_bytes);
         eprintln!("    max_bytes:  {}", config.reindex_max_bytes);
     }
-    eprintln!("  cache_max:    {}", config.cache_max_entries);
+    eprintln!(
+        "  cache_max_mb: {}",
+        config
+            .cache_max_mb
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "(default: 50% of RAM)".into())
+    );
     eprintln!("  server_role:  {:?}", config.server_role);
     eprintln!("  pid_file:     {}", pid_path(dirs.data_dir()).display());
     eprintln!("  log_file:     {}", log_path(dirs.data_dir()).display());

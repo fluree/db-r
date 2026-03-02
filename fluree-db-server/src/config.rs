@@ -406,9 +406,11 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MAX_BYTES)]
     pub reindex_max_bytes: usize,
 
-    /// Maximum cache entries per ledger
-    #[arg(long, env = "FLUREE_CACHE_MAX_ENTRIES", default_value_t = server_defaults::DEFAULT_CACHE_MAX_ENTRIES)]
-    pub cache_max_entries: usize,
+    /// Global cache budget in MB (default: 50% of system RAM)
+    ///
+    /// This controls the shared API-level cache budget used for decoded index artifacts.
+    #[arg(long, env = "FLUREE_CACHE_MAX_MB")]
+    pub cache_max_mb: Option<usize>,
 
     /// Request body size limit in bytes (default 50MB)
     #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
@@ -635,7 +637,7 @@ impl Default for ServerConfig {
             indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
             reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
-            cache_max_entries: server_defaults::DEFAULT_CACHE_MAX_ENTRIES,
+            cache_max_mb: None,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,
             log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,

@@ -759,7 +759,10 @@ where
             // ---- Phase F: Upload artifacts to CAS and write v4 root ----
 
             // F.1: Load store for max_t / base_t / namespace_codes
-            let store = BinaryIndexStore::load(&run_dir, &index_dir)
+            let cache = std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_bytes(
+                64 * 1024 * 1024,
+            ));
+            let store = BinaryIndexStore::load(&run_dir, &index_dir, cache)
                 .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
             // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).

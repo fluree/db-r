@@ -72,7 +72,7 @@ pub mod vocab;
 pub mod aws;
 
 // Re-export main types
-pub use cache::{default_cache_entries, default_cache_max_mb, memory_to_cache_size};
+pub use cache::default_cache_max_mb;
 pub use config::{CacheConfig, ConnectionConfig, StorageConfig, StorageType};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use connection::FileConnection;
@@ -82,10 +82,7 @@ pub use graph::ConfigGraph;
 
 // AWS re-exports
 #[cfg(feature = "aws")]
-pub use aws::{
-    connect_aws, AwsConfig, AwsConnectionHandle, AwsNameService, AwsNameServiceConfig,
-    DynamoDbConfig, S3Config,
-};
+pub use aws::{AwsConnectionHandle, AwsNameService};
 
 // Re-export core types commonly used with connections
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

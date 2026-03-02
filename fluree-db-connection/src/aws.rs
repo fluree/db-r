@@ -16,51 +16,9 @@
 //! authentication automatically. **Validate with real AWS integration tests
 //! before production use.**
 //!
-//! # Example with DynamoDB nameservice
-//!
-//! ```ignore
-//! use fluree_db_connection::aws::{connect_aws, AwsConfig, S3Config, AwsNameServiceConfig};
-//!
-//! let config = AwsConfig {
-//!     index_storage: S3Config {
-//!         bucket: "my-index-bucket".to_string(),
-//!         prefix: Some("ledgers".to_string()),
-//!         timeout_ms: Some(30000),
-//!     },
-//!     commit_storage: None,
-//!     nameservice: AwsNameServiceConfig::DynamoDb(DynamoDbConfig {
-//!         table_name: "fluree-nameservice".to_string(),
-//!         ..Default::default()
-//!     }),
-//!     cache_max_entries: 10000,
-//! };
-//!
-//! let conn = connect_aws(config).await?;
-//! let db = conn.load_ledger_snapshot("mydb:main").await?; // does NS lookup, then `load_ledger_snapshot`
-//! ```
-//!
-//! # Example with S3 storage-backed nameservice
-//!
-//! ```ignore
-//! use fluree_db_connection::aws::{connect_aws, AwsConfig, S3Config, AwsNameServiceConfig};
-//!
-//! let config = AwsConfig {
-//!     index_storage: S3Config {
-//!         bucket: "my-bucket".to_string(),
-//!         prefix: Some("ledgers".to_string()),
-//!         timeout_ms: Some(30000),
-//!     },
-//!     commit_storage: None,
-//!     nameservice: AwsNameServiceConfig::Storage {
-//!         // Uses same storage config as index_storage by default
-//!         prefix: Some("ns".to_string()),
-//!     },
-//!     cache_max_entries: 10000,
-//! };
-//!
-//! let conn = connect_aws(config).await?;
-//! let db = conn.load_ledger_snapshot("mydb:main").await?;
-//! ```
+//! This module is used by the JSON-LD connection path (`connect_async`) when a
+//! `ConnectionConfig` contains S3 storage. It intentionally does not expose a
+//! separate AWS-specific configuration surface.
 
 use crate::config::ConnectionConfig;
 use crate::error::{ConnectionError, Result};
@@ -72,9 +30,7 @@ use fluree_db_nameservice::{
     Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPublisher, StatusValue,
     StorageNameService,
 };
-use fluree_db_storage_aws::{
-    DynamoDbConfig as RawDynamoDbConfig, DynamoDbNameService, S3Config as RawS3Config, S3Storage,
-};
+use fluree_db_storage_aws::{DynamoDbNameService, S3Storage};
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 
@@ -83,110 +39,6 @@ use std::sync::Arc;
 /// Caches the SDK config to avoid repeated credential resolution
 /// in Lambda environments where cold start latency matters.
 static SDK_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::new();
-
-/// S3 storage configuration
-#[derive(Debug, Clone, Default)]
-pub struct S3Config {
-    /// S3 bucket name (supports both standard S3 and S3 Express directory buckets)
-    pub bucket: String,
-    /// Optional key prefix
-    pub prefix: Option<String>,
-    /// Operation timeout in milliseconds
-    pub timeout_ms: Option<u64>,
-}
-
-impl From<S3Config> for RawS3Config {
-    fn from(config: S3Config) -> Self {
-        RawS3Config {
-            bucket: config.bucket,
-            prefix: config.prefix,
-            endpoint: None,
-            timeout_ms: config.timeout_ms,
-            max_retries: None,
-            retry_base_delay_ms: None,
-            retry_max_delay_ms: None,
-        }
-    }
-}
-
-/// DynamoDB configuration for nameservice
-#[derive(Debug, Clone)]
-pub struct DynamoDbConfig {
-    /// DynamoDB table name
-    pub table_name: String,
-    /// AWS region (optional, uses SDK default)
-    pub region: Option<String>,
-    /// Optional endpoint override (e.g. LocalStack)
-    pub endpoint: Option<String>,
-    /// Timeout in milliseconds
-    pub timeout_ms: Option<u64>,
-}
-
-impl Default for DynamoDbConfig {
-    fn default() -> Self {
-        Self {
-            table_name: "fluree-nameservice".to_string(),
-            region: None,
-            endpoint: None,
-            timeout_ms: None,
-        }
-    }
-}
-
-impl From<DynamoDbConfig> for RawDynamoDbConfig {
-    fn from(config: DynamoDbConfig) -> Self {
-        RawDynamoDbConfig {
-            table_name: config.table_name,
-            region: config.region,
-            endpoint: config.endpoint,
-            timeout_ms: config.timeout_ms,
-        }
-    }
-}
-
-/// Nameservice configuration options for AWS connections
-#[derive(Debug, Clone)]
-pub enum AwsNameServiceConfig {
-    /// Use DynamoDB for nameservice (recommended for production)
-    DynamoDb(DynamoDbConfig),
-    /// Use S3 storage for nameservice (simpler setup, uses same bucket as data)
-    Storage {
-        /// Optional prefix for nameservice files within the storage bucket
-        /// If None, uses the same prefix as index_storage
-        prefix: Option<String>,
-    },
-}
-
-impl Default for AwsNameServiceConfig {
-    fn default() -> Self {
-        AwsNameServiceConfig::DynamoDb(DynamoDbConfig::default())
-    }
-}
-
-/// AWS connection configuration
-#[derive(Debug, Clone)]
-pub struct AwsConfig {
-    /// S3 storage for indexes (primary data structure for queries)
-    pub index_storage: S3Config,
-    /// Optional separate S3 storage for commits
-    /// If None, index_storage is used for both
-    pub commit_storage: Option<S3Config>,
-    /// Nameservice configuration (DynamoDB or S3 storage-backed)
-    pub nameservice: AwsNameServiceConfig,
-    /// Maximum cache entries
-    pub cache_max_entries: usize,
-}
-
-impl Default for AwsConfig {
-    fn default() -> Self {
-        Self {
-            index_storage: S3Config::default(),
-            commit_storage: None,
-            nameservice: AwsNameServiceConfig::default(),
-            cache_max_entries: 10000,
-        }
-    }
-}
 
 /// Runtime nameservice wrapper that can hold either DynamoDB or storage-backed nameservice
 ///
@@ -608,138 +460,6 @@ impl AwsConnectionHandle {
     }
 }
 
-/// Create an AWS connection handle
-///
-/// Loads or reuses the cached AWS SDK config and creates S3 storage
-/// and nameservice instances.
-///
-/// # Arguments
-///
-/// * `config` - AWS configuration specifying buckets and nameservice type
-///
-/// # Example with DynamoDB
-///
-/// ```ignore
-/// let config = AwsConfig {
-///     index_storage: S3Config {
-///         bucket: "my-bucket".to_string(),
-///         ..Default::default()
-///     },
-///     nameservice: AwsNameServiceConfig::DynamoDb(DynamoDbConfig {
-///         table_name: "fluree-ns".to_string(),
-///         ..Default::default()
-///     }),
-///     ..Default::default()
-/// };
-///
-/// let conn = connect_aws(config).await?;
-/// let db = conn.load_ledger_snapshot("mydb").await?; // does NS lookup, then `load_ledger_snapshot`
-/// ```
-///
-/// # Example with S3 storage-backed nameservice
-///
-/// ```ignore
-/// let config = AwsConfig {
-///     index_storage: S3Config {
-///         bucket: "my-bucket".to_string(),
-///         prefix: Some("ledgers".to_string()),
-///         ..Default::default()
-///     },
-///     nameservice: AwsNameServiceConfig::Storage { prefix: Some("ns".to_string()) },
-///     ..Default::default()
-/// };
-///
-/// let conn = connect_aws(config).await?;
-/// ```
-pub async fn connect_aws(config: AwsConfig) -> Result<AwsConnectionHandle> {
-    // Get or initialize SDK config
-    let sdk_config = get_or_init_sdk_config().await?;
-
-    // Create index storage
-    let index_storage = S3Storage::new(sdk_config, config.index_storage.clone().into())
-        .await
-        .map_err(|e| ConnectionError::storage(format!("Failed to create index storage: {}", e)))?;
-
-    // Create commit storage if separate bucket configured
-    let commit_storage = if let Some(commit_config) = config.commit_storage {
-        Some(
-            S3Storage::new(sdk_config, commit_config.into())
-                .await
-                .map_err(|e| {
-                    ConnectionError::storage(format!("Failed to create commit storage: {}", e))
-                })?,
-        )
-    } else {
-        None
-    };
-
-    // Create nameservice based on config type
-    let nameservice = match config.nameservice {
-        AwsNameServiceConfig::DynamoDb(dynamo_config) => {
-            let ns = DynamoDbNameService::new(sdk_config, dynamo_config.into())
-                .await
-                .map_err(|e| {
-                    ConnectionError::storage(format!(
-                        "Failed to create DynamoDB nameservice: {}",
-                        e
-                    ))
-                })?;
-            AwsNameService::DynamoDb(Arc::new(ns))
-        }
-        AwsNameServiceConfig::Storage { prefix } => {
-            // Create a separate S3 storage instance for nameservice
-            // Use the same bucket as index storage but potentially different prefix
-            //
-            // The prefix hierarchy is:
-            // - S3Storage handles bucket-level prefix (e.g., "ledgers/")
-            // - StorageNameService adds "ns@v2/{ledger}/{branch}.json"
-            //
-            // So if user specifies prefix="ns", final key is: ns/ns@v2/mydb/main.json
-            let ns_s3_prefix = prefix.or_else(|| config.index_storage.prefix.clone());
-
-            let ns_s3_config = RawS3Config {
-                bucket: config.index_storage.bucket.clone(),
-                prefix: ns_s3_prefix,
-                endpoint: None,
-                timeout_ms: config.index_storage.timeout_ms,
-                max_retries: None,
-                retry_base_delay_ms: None,
-                retry_max_delay_ms: None,
-            };
-
-            let ns_storage = S3Storage::new(sdk_config, ns_s3_config)
-                .await
-                .map_err(|e| {
-                    ConnectionError::storage(format!(
-                        "Failed to create S3 storage for nameservice: {}",
-                        e
-                    ))
-                })?;
-
-            // StorageNameService prefix is empty - S3Storage already has the bucket prefix
-            // StorageNameService will add "ns@v2/..." to keys
-            let ns = StorageNameService::new(ns_storage, "");
-            AwsNameService::Storage(Arc::new(ns))
-        }
-    };
-
-    // Build connection config (for compatibility)
-    let conn_config = ConnectionConfig {
-        cache: crate::config::CacheConfig {
-            max_entries: config.cache_max_entries,
-            max_mb: 100, // Default value
-        },
-        ..ConnectionConfig::default()
-    };
-
-    Ok(AwsConnectionHandle {
-        config: conn_config,
-        index_storage,
-        commit_storage,
-        nameservice,
-    })
-}
-
 /// Get or initialize the AWS SDK config
 ///
 /// Uses `OnceCell` to cache the config and avoid repeated credential
@@ -766,26 +486,4 @@ pub async fn get_or_init_sdk_config() -> Result<&'static aws_config::SdkConfig> 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_s3_config_default() {
-        let config = S3Config::default();
-        assert!(config.bucket.is_empty());
-        assert!(config.prefix.is_none());
-    }
-
-    #[test]
-    fn test_dynamodb_config_default() {
-        let config = DynamoDbConfig::default();
-        assert_eq!(config.table_name, "fluree-nameservice");
-    }
-
-    #[test]
-    fn test_aws_config_default() {
-        let config = AwsConfig::default();
-        assert_eq!(config.cache_max_entries, 10000);
-        assert!(config.commit_storage.is_none());
-    }
-}
+mod tests {}

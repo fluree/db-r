@@ -341,9 +341,9 @@ impl FlureeServerBuilder {
         self
     }
 
-    /// Set cache max entries
-    pub fn cache_max_entries(mut self, entries: usize) -> Self {
-        self.config.cache_max_entries = entries;
+    /// Set global cache budget in MB
+    pub fn cache_max_mb(mut self, max_mb: usize) -> Self {
+        self.config.cache_max_mb = Some(max_mb);
         self
     }
 

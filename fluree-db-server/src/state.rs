@@ -527,9 +527,11 @@ impl AppState {
         // Convert PathBuf to String for FlureeBuilder
         let path_str = path.to_string_lossy().to_string();
 
-        let mut builder = FlureeBuilder::file(&path_str)
-            .cache_max_entries(config.cache_max_entries)
-            .with_ledger_caching(); // Enable connection-level ledger caching
+        let mut builder = FlureeBuilder::file(&path_str).with_ledger_caching(); // Enable connection-level ledger caching
+
+        if let Some(max_mb) = config.cache_max_mb {
+            builder = builder.cache_max_mb(max_mb);
+        }
 
         // Wire background indexing if enabled
         if config.indexing_enabled {

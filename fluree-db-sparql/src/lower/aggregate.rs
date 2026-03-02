@@ -80,6 +80,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(aliases)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn aggregate_spec_from_expr(
         &mut self,
         function: &AggregateFunction,
