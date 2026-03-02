@@ -40,9 +40,10 @@ pub use ast::{
 };
 pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};
+pub(crate) use lower::{lower_query, SelectMode};
 pub use lower::{
-    lower_query, lower_unresolved_pattern, lower_unresolved_patterns, ConstructTemplate,
-    GraphSelectSpec, NestedSelectSpec, ParsedQuery, Root, SelectMode, SelectionSpec,
+    lower_unresolved_pattern, lower_unresolved_patterns, ConstructTemplate, GraphSelectSpec,
+    NestedSelectSpec, ParsedQuery, QueryOutput, Root, SelectionSpec,
 };
 pub use where_clause::parse_where_with_counters;
 
@@ -74,27 +75,9 @@ use node_map::is_variable;
 ///
 /// # Returns
 ///
-/// A tuple of `(UnresolvedQuery, SelectMode)`:
-/// - `SelectMode::Many` when using "select" key (returns array of rows)
-/// - `SelectMode::One` when using "selectOne" key (returns first row or null)
-/// - `SelectMode::Wildcard` when select value is "*" (returns all bound variables)
-/// - `SelectMode::Construct` when using "construct" key (returns JSON-LD graph)
-/// - `SelectMode::Boolean` when using "ask" key (value is the where clause; returns boolean)
-///
-/// # Example
-///
-/// ```
-/// use fluree_db_query::parse::parse_query_ast;
-/// use serde_json::json;
-///
-/// let json = json!({
-///     "@context": { "ex": "http://example.org/" },
-///     "select": ["?name"],
-///     "where": { "@type": "ex:Person", "ex:name": "?name" }
-/// });
-/// let (ast, select_mode) = parse_query_ast(&json).unwrap();
-/// ```
-pub fn parse_query_ast(json: &JsonValue) -> Result<(UnresolvedQuery, SelectMode)> {
+/// A tuple of `(UnresolvedQuery, SelectMode)` where the mode is derived from
+/// the query's select/selectOne/construct/ask key.
+pub(crate) fn parse_query_ast(json: &JsonValue) -> Result<(UnresolvedQuery, SelectMode)> {
     // Use shared counters so nested subqueries can generate unique implicit vars
     // across the full query tree (prevents collisions like ?__s0 between parent/subquery).
     let mut subject_counter: u32 = 0;
@@ -1410,7 +1393,7 @@ mod tests {
         let mut vars = VarRegistry::new();
         let query = parse_query(&json, &encoder, &mut vars).unwrap();
 
-        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
 
         // query.patterns now contains Pattern, not TriplePattern

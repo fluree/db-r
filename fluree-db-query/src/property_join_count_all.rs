@@ -412,7 +412,7 @@ mod tests {
     use crate::execute::{build_operator_tree, run_operator};
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
-    use crate::parse::{ParsedQuery, SelectMode};
+    use crate::parse::{ParsedQuery, QueryOutput};
     use crate::triple::{Ref, Term, TriplePattern};
     use crate::var_registry::VarRegistry;
     use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
@@ -734,15 +734,13 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![count],
+            output: QueryOutput::Select(vec![count]),
             patterns: vec![
                 Pattern::Triple(tp1),
                 Pattern::Triple(tp2),
                 Pattern::Triple(tp3),
             ],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
         let options = QueryOptions::default().with_aggregates(vec![AggregateSpec {

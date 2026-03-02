@@ -12,13 +12,13 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     format, Batch, FormatterConfig, FuelExceededError, OverlayProvider, PolicyContext, PolicyStats,
-    SelectMode, Tracker, TrackingTally, VarRegistry,
+    Tracker, TrackingTally, VarRegistry,
 };
 
 use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{GraphDbRef, LedgerSnapshot};
 
-use fluree_db_query::parse::{ConstructTemplate, GraphSelectSpec};
+use fluree_db_query::parse::{GraphSelectSpec, QueryOutput};
 
 /// Result of a query execution
 pub struct QueryResult {
@@ -35,10 +35,8 @@ pub struct QueryResult {
     pub context: crate::ParsedContext,
     /// Original JSON context from the query (for CONSTRUCT output)
     pub orig_context: Option<JsonValue>,
-    /// Selected variable IDs from the query
-    pub select: Vec<fluree_db_query::VarId>,
-    /// Select mode (select vs selectOne vs wildcard vs construct)
-    pub select_mode: SelectMode,
+    /// Query output specification (select vars, construct template, or boolean/wildcard mode)
+    pub output: QueryOutput,
     /// Result batches
     pub batches: Vec<Batch>,
     /// Graph-scoped binary index view for late materialization of encoded bindings.
@@ -48,8 +46,6 @@ pub struct QueryResult {
     /// VECTOR_ID) through the correct arenas.  When absent, all bindings must
     /// already be fully materialized.
     pub binary_graph: Option<BinaryGraphView>,
-    /// CONSTRUCT template (None for SELECT queries)
-    pub construct_template: Option<ConstructTemplate>,
     /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
     ///
     /// When present, controls nested JSON-LD object expansion during formatting.
@@ -60,8 +56,8 @@ impl std::fmt::Debug for QueryResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryResult")
             .field("t", &self.t)
-            .field("select_mode", &self.select_mode)
-            .field("select_len", &self.select.len())
+            .field("output", &self.output)
+            .field("select_len", &self.output.select_vars_or_empty().len())
             .field("batches_len", &self.batches.len())
             .field("has_binary_graph", &self.binary_graph.is_some())
             .field("has_novelty", &self.novelty.is_some())
@@ -163,7 +159,7 @@ impl QueryResult {
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.
     pub fn to_jsonld(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -171,7 +167,7 @@ impl QueryResult {
     ///
     /// Rows are maps keyed by variable name (e.g., `{"?s": "ex:alice", ...}`).
     pub fn to_jsonld_objects(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld_objects();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -179,7 +175,7 @@ impl QueryResult {
     ///
     /// Returns W3C standard format with `{"head": {"vars": [...]}, "results": {"bindings": [...]}}`.
     pub fn to_sparql_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::sparql_json().with_select_mode(self.select_mode);
+        let config = FormatterConfig::sparql_json();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -187,7 +183,7 @@ impl QueryResult {
     ///
     /// Every value includes `@type` annotation, even for inferable types.
     pub fn to_typed_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::typed_json().with_select_mode(self.select_mode);
+        let config = FormatterConfig::typed_json();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -200,12 +196,12 @@ impl QueryResult {
     ///
     /// Returns error if this is not a CONSTRUCT query result.
     pub fn to_construct(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        if self.select_mode != SelectMode::Construct {
+        if !matches!(self.output, QueryOutput::Construct(_)) {
             return Err(format::FormatError::InvalidBinding(
                 "to_construct() only valid for CONSTRUCT queries".to_string(),
             ));
         }
-        let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Construct);
+        let config = FormatterConfig::jsonld();
         format::format_results(self, &self.context, snapshot, &config)
     }
 
@@ -321,7 +317,7 @@ impl QueryResult {
     /// let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
     /// ```
     pub async fn to_jsonld_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 
@@ -329,7 +325,7 @@ impl QueryResult {
     ///
     /// Async version of `to_jsonld_objects()`. Required for graph crawl queries.
     pub async fn to_jsonld_objects_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld_objects();
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 
@@ -366,7 +362,7 @@ impl QueryResult {
         db: GraphDbRef<'_>,
         policy: &PolicyContext,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, Some(policy), None).await
     }
 
@@ -388,7 +384,7 @@ impl QueryResult {
         db: GraphDbRef<'_>,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld();
         format::format_results_async(self, &self.context, db, &config, None, Some(tracker)).await
     }
 
@@ -399,7 +395,7 @@ impl QueryResult {
         policy: &PolicyContext,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
+        let config = FormatterConfig::jsonld();
         format::format_results_async(
             self,
             &self.context,

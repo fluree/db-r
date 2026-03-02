@@ -1,7 +1,7 @@
 use crate::detect::QueryFormat;
 use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
-use fluree_db_api::format::{IriCompactor, SelectMode};
+use fluree_db_api::format::IriCompactor;
 use fluree_db_api::QueryResult;
 use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, LedgerSnapshot};
@@ -34,7 +34,7 @@ pub fn format_sparql_table_from_result(
     limit: Option<usize>,
 ) -> CliResult<Option<FormatOutput>> {
     // ASK queries: display boolean result directly instead of an empty table.
-    if result.select_mode == SelectMode::Boolean {
+    if result.output.is_boolean() {
         let has_solution = result.batches.iter().any(|b| !b.is_empty());
         return Ok(Some(FormatOutput {
             text: has_solution.to_string(),
@@ -47,8 +47,8 @@ pub fn format_sparql_table_from_result(
     let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
     let gv = result.binary_graph.as_ref();
 
-    let head_var_ids: Vec<fluree_db_query::VarId> = match result.select_mode {
-        SelectMode::Wildcard => result
+    let head_var_ids: Vec<fluree_db_query::VarId> = if result.output.is_wildcard() {
+        result
             .batches
             .first()
             .map(|b| {
@@ -59,8 +59,9 @@ pub fn format_sparql_table_from_result(
                     .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
                     .collect()
             })
-            .unwrap_or_default(),
-        _ => result.select.clone(),
+            .unwrap_or_default()
+    } else {
+        result.output.select_vars_or_empty().to_vec()
     };
 
     // Match SPARQL JSON head var behavior: strip '?' and sort lexicographically.
@@ -86,7 +87,7 @@ pub fn format_sparql_table_from_result(
     let max_rows = limit.unwrap_or(usize::MAX);
 
     // SelectOne should render only a single row (parity with SPARQL formatter).
-    let select_one = result.select_mode == SelectMode::One;
+    let select_one = result.output.is_select_one();
 
     for batch in &result.batches {
         for row in 0..batch.len() {

@@ -7,7 +7,7 @@ use crate::ast::query::AskQuery;
 
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::encode::IriEncoder;
-use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 
 use super::{LoweringContext, Result};
 
@@ -30,11 +30,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(ParsedQuery {
             context: ctx,
             orig_context: None,
-            select: Vec::new(), // ASK doesn't project variables
+            output: QueryOutput::Boolean,
             patterns,
             options,
-            select_mode: SelectMode::Boolean,
-            construct_template: None,
             graph_select: None,
         })
     }

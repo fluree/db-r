@@ -94,7 +94,7 @@ pub use dataset::{
     TimeSpec,
 };
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
-pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
+pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use graph::Graph;
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;

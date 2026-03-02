@@ -17,7 +17,7 @@
 //! - Omit datatype for inferable types (xsd:string, xsd:integer, xsd:double, xsd:boolean)
 //! - Disaggregation: `Binding::Grouped` explodes into multiple rows (cartesian product)
 
-use super::config::{FormatterConfig, SelectMode};
+use super::config::FormatterConfig;
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
@@ -31,12 +31,12 @@ use serde_json::{json, Map, Value as JsonValue};
 pub fn format(
     result: &QueryResult,
     compactor: &IriCompactor,
-    config: &FormatterConfig,
+    _config: &FormatterConfig,
 ) -> Result<JsonValue> {
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
-    let head_vars: Vec<fluree_db_query::VarId> = match config.select_mode {
-        SelectMode::Wildcard => result
+    let head_vars: Vec<fluree_db_query::VarId> = if result.output.is_wildcard() {
+        result
             .batches
             .first()
             .map(|b| {
@@ -47,8 +47,9 @@ pub fn format(
                     .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
                     .collect()
             })
-            .unwrap_or_default(),
-        _ => result.select.clone(),
+            .unwrap_or_default()
+    } else {
+        result.output.select_vars_or_empty().to_vec()
     };
 
     // Clojure parity: order head vars lexicographically by variable name (without '?').
@@ -62,6 +63,7 @@ pub fn format(
     let vars: Vec<String> = head_pairs.iter().map(|(name, _)| name.clone()).collect();
     let head_vars: Vec<fluree_db_query::VarId> = head_pairs.into_iter().map(|(_, id)| id).collect();
 
+    let select_one = result.output.is_select_one();
     let mut bindings = Vec::new();
 
     for batch in &result.batches {
@@ -77,7 +79,7 @@ pub fn format(
 
             // Disaggregate grouped bindings (cartesian product)
             let disaggregated = disaggregate_row(result, &row_bindings, &result.vars, compactor)?;
-            if config.select_mode == SelectMode::One {
+            if select_one {
                 // SelectOne: only return a single formatted row (after disaggregation)
                 if let Some(first) = disaggregated.into_iter().next() {
                     bindings.push(first);
@@ -86,13 +88,8 @@ pub fn format(
             } else {
                 bindings.extend(disaggregated);
             }
-
-            // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One && !bindings.is_empty() {
-                break;
-            }
         }
-        if config.select_mode == SelectMode::One && !bindings.is_empty() {
+        if select_one && !bindings.is_empty() {
             break;
         }
     }
@@ -456,11 +453,9 @@ mod tests {
             novelty: None,
             context: crate::ParsedContext::default(),
             orig_context: None,
-            select: vec![],
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(vec![]),
             batches: vec![],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

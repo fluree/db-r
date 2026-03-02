@@ -24,7 +24,7 @@ use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 use fluree_db_query::binding::Binding;
-use fluree_db_query::{SelectMode, VarId};
+use fluree_db_query::VarId;
 
 // ---------------------------------------------------------------------------
 // Delimiter
@@ -230,12 +230,12 @@ fn format_delimited_limited(
 /// Reject non-tabular results (CONSTRUCT, graph crawl).
 fn reject_non_tabular(result: &QueryResult, delimiter: Delimiter) -> Result<()> {
     let name = delimiter.name();
-    if result.select_mode == SelectMode::Construct {
+    if result.output.is_construct() {
         return Err(FormatError::InvalidBinding(format!(
             "{name} format not supported for CONSTRUCT queries (use JSON-LD instead)"
         )));
     }
-    if result.select_mode == SelectMode::Boolean {
+    if result.output.is_boolean() {
         return Err(FormatError::InvalidBinding(format!(
             "{name} format not supported for ASK queries (boolean result)"
         )));
@@ -250,32 +250,31 @@ fn reject_non_tabular(result: &QueryResult, delimiter: Delimiter) -> Result<()> 
 
 /// Resolve the select variable list, handling Wildcard mode.
 fn resolve_select_vars(result: &QueryResult) -> Vec<VarId> {
-    match result.select_mode {
-        SelectMode::Wildcard => {
-            let mut pairs: Vec<(String, VarId)> = result
-                .batches
-                .first()
-                .map(|b| {
-                    b.schema()
-                        .iter()
-                        .copied()
-                        .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
-                        .map(|vid| {
-                            let name = result
-                                .vars
-                                .name(vid)
-                                .strip_prefix('?')
-                                .unwrap_or(result.vars.name(vid))
-                                .to_string();
-                            (name, vid)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-            pairs.into_iter().map(|(_, vid)| vid).collect()
-        }
-        _ => result.select.clone(),
+    if result.output.is_wildcard() {
+        let mut pairs: Vec<(String, VarId)> = result
+            .batches
+            .first()
+            .map(|b| {
+                b.schema()
+                    .iter()
+                    .copied()
+                    .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
+                    .map(|vid| {
+                        let name = result
+                            .vars
+                            .name(vid)
+                            .strip_prefix('?')
+                            .unwrap_or(result.vars.name(vid))
+                            .to_string();
+                        (name, vid)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        pairs.into_iter().map(|(_, vid)| vid).collect()
+    } else {
+        result.output.select_vars_or_empty().to_vec()
     }
 }
 
@@ -305,7 +304,7 @@ fn write_data_rows(
 ) -> Result<()> {
     let max_rows = limit.unwrap_or(usize::MAX);
     let mut emitted = 0usize;
-    let select_one = result.select_mode == SelectMode::One;
+    let select_one = result.output.is_select_one();
 
     // Reusable cell buffer to avoid per-cell allocation
     let mut cell_buf = Vec::with_capacity(256);
@@ -625,11 +624,9 @@ mod tests {
             novelty: None,
             context,
             orig_context: None,
-            select: var_ids,
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(var_ids),
             batches: vec![batch],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

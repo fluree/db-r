@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext, SelectMode};
+use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext, QueryOutput};
 
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
@@ -134,7 +134,7 @@ pub async fn run_eval_test(
     //    Previous heuristic checked file extension (.ttl/.rdf), but many SPARQL
     //    1.0 SELECT tests use .ttl result files encoded in the DAWG Result Set
     //    vocabulary — not CONSTRUCT graphs. See issue #44.
-    let is_construct = query_result.select_mode == SelectMode::Construct;
+    let is_construct = matches!(query_result.output, QueryOutput::Construct(_));
 
     let actual = if is_construct {
         // CONSTRUCT path: format as JSON-LD graph
@@ -146,7 +146,7 @@ pub async fn run_eval_test(
     } else {
         // SELECT/ASK path: format as SPARQL JSON
         let empty_context = ParsedContext::new();
-        let config = FormatterConfig::sparql_json().with_select_mode(query_result.select_mode);
+        let config = FormatterConfig::sparql_json();
         let actual_json =
             format::format_results(&query_result, &empty_context, &ledger.snapshot, &config)
                 .map_err(|e| anyhow::anyhow!("Formatting SPARQL JSON: {e}"))?;
