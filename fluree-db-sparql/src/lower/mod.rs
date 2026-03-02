@@ -1448,7 +1448,10 @@ mod tests {
             .patterns
             .iter()
             .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == input_var));
-        assert!(has_bind, "expected a pre-aggregation BIND for the input expression");
+        assert!(
+            has_bind,
+            "expected a pre-aggregation BIND for the input expression"
+        );
     }
 
     #[test]

@@ -223,10 +223,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         };
 
         if matches!(agg_fn, AggregateFn::CountAll) && distinct {
-            return Err(LowerError::not_implemented(
-                "COUNT(DISTINCT *)",
-                span,
-            ));
+            return Err(LowerError::not_implemented("COUNT(DISTINCT *)", span));
         }
 
         // COUNT(DISTINCT) is represented as a dedicated AggregateFn::CountDistinct
@@ -377,7 +374,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 {
                     let output_var = self.register_var(alias);
                     let spec = self.aggregate_spec_from_expr(
-                        function, agg_expr, *distinct, separator, *span, output_var, &mut pre_binds,
+                        function,
+                        agg_expr,
+                        *distinct,
+                        separator,
+                        *span,
+                        output_var,
+                        &mut pre_binds,
                     )?;
                     aggregates.push(spec);
                 }
