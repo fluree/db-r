@@ -13,7 +13,7 @@ use crate::{
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;
-use fluree_db_core::{ContentStore, DictNovelty};
+use fluree_db_core::{ContentStore, DictNovelty, DEFAULT_GRAPH_ID, TXN_META_GRAPH_ID};
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 
@@ -69,8 +69,8 @@ where
     /// and binary scans use the same graph.
     fn select_graph(mut view: GraphDb, graph_ref: GraphRef) -> Result<GraphDb> {
         let g_id: GraphId = match graph_ref {
-            GraphRef::Default => 0,
-            GraphRef::TxnMeta => 1,
+            GraphRef::Default => DEFAULT_GRAPH_ID,
+            GraphRef::TxnMeta => TXN_META_GRAPH_ID,
             GraphRef::Named(iri) => view
                 .snapshot
                 .graph_registry
@@ -85,7 +85,7 @@ where
                 .ok_or_else(|| ApiError::query(format!("Unknown named graph '#{}'", iri)))?,
         };
 
-        if g_id != 0 && view.binary_store.is_some() && view.dict_novelty.is_some() {
+        if g_id != DEFAULT_GRAPH_ID && view.binary_store.is_some() && view.dict_novelty.is_some() {
             let store = view.binary_store.clone().unwrap();
             let dict_novelty = view.dict_novelty.clone().unwrap();
             let provider = BinaryRangeProvider::new(store, dict_novelty);
@@ -127,7 +127,7 @@ where
         };
 
         // Resolve effective config for this view's graph
-        let graph_iri = if view.graph_id == 0 {
+        let graph_iri = if view.graph_id == DEFAULT_GRAPH_ID {
             None
         } else {
             view.snapshot.graph_registry.iri_for_graph_id(view.graph_id)
@@ -550,6 +550,15 @@ where
             }
             None => view,
         }
+    }
+
+    /// Apply all config-graph defaults (reasoning + datalog) to a view.
+    ///
+    /// Convenience wrapper that calls both `apply_config_reasoning` and
+    /// `apply_config_datalog` in sequence.
+    pub fn apply_config_defaults(&self, view: GraphDb, server_identity: Option<&str>) -> GraphDb {
+        let view = self.apply_config_reasoning(view, server_identity);
+        self.apply_config_datalog(view, server_identity)
     }
 
     /// Apply config-graph datalog defaults to a view.

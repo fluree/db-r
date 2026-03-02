@@ -118,10 +118,11 @@ Use the structured `from` object with a `graph` field:
 }
 ```
 
-**Graph IDs:**
-- **g_id=0**: Default graph (user data without GRAPH blocks)
-- **g_id=1**: txn-meta graph (commit metadata)
-- **g_id=2+**: User-defined named graphs (assigned in order of first use)
+**System and user graphs:**
+- **Default graph** (implicit): User data without GRAPH blocks
+- **`urn:fluree:{ledger_id}#txn-meta`**: Commit metadata
+- **`urn:fluree:{ledger_id}#config`**: Ledger configuration (see [Ledger configuration](../ledger-config/README.md))
+- **User-defined named graphs**: Identified by their IRI, allocated in order of first use
 
 **Notes:**
 - Named graph IRIs are stored in the commit's `graph_delta` field for replay

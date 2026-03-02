@@ -28,6 +28,9 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
+/// Well-known GraphId for the default (implicit) graph.
+pub const DEFAULT_GRAPH_ID: GraphId = 0;
+
 /// Well-known GraphId for the txn-meta graph.
 pub const TXN_META_GRAPH_ID: GraphId = 1;
 

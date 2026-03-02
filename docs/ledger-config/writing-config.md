@@ -140,6 +140,76 @@ urn:fluree:{ledger_id}#config#ledger
 
 This avoids accidental multiple-config instances and makes debugging simpler.
 
+## Querying the config graph
+
+The config graph is a named graph like any other — you can query it with SPARQL or JSON-LD to inspect the current configuration.
+
+### SPARQL
+
+```sparql
+PREFIX f: <https://ns.flur.ee/db#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+SELECT ?setting ?pred ?val
+FROM <mydb:main#config>
+WHERE {
+  ?config rdf:type f:LedgerConfig ;
+          ?setting ?group .
+  ?group ?pred ?val .
+  FILTER(?setting IN (
+    f:policyDefaults, f:shaclDefaults, f:reasoningDefaults,
+    f:datalogDefaults, f:transactDefaults
+  ))
+}
+```
+
+### JSON-LD query
+
+```json
+{
+  "@context": { "f": "https://ns.flur.ee/db#" },
+  "from": {
+    "@id": "mydb:main",
+    "graph": "urn:fluree:mydb:main#config"
+  },
+  "select": ["?config", "?pred", "?val"],
+  "where": [
+    { "@id": "?config", "@type": "f:LedgerConfig", "?pred": "?val" }
+  ]
+}
+```
+
+### Ledger-scoped endpoint
+
+```bash
+curl -X POST "http://localhost:8090/query/mydb:main" \
+  -H "Content-Type: application/sparql-query" \
+  -d 'PREFIX f: <https://ns.flur.ee/db#>
+      SELECT ?s ?p ?o
+      FROM <urn:fluree:mydb:main#config>
+      WHERE { ?s ?p ?o }'
+```
+
+### Policy applies to reads
+
+User queries against the config graph go through normal **policy enforcement**. If `f:defaultAllow` is `false` and no policy grants read access to the config graph, user queries will return empty results. The *system* still reads config via a privileged path (bypassing policy), so config always takes effect regardless of policy.
+
+### Time-travel
+
+Config is part of the ledger's immutable commit chain. You can query config at any historical point:
+
+```sparql
+PREFIX f: <https://ns.flur.ee/db#>
+
+SELECT ?setting ?val
+FROM <mydb:main@t:5#config>
+WHERE {
+  ?config a f:LedgerConfig ;
+          f:policyDefaults ?policy .
+  ?policy ?setting ?val .
+}
+```
+
 ## Lagging semantics
 
 Config changes take effect on the **next** transaction. The transaction pipeline reads config from the pre-transaction state (`t - 1`). This prevents a transaction from changing the rules it is validated against.

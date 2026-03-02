@@ -288,7 +288,7 @@ mod tests {
         // FlakeValue::Json, not FlakeValue::String. This matters because commit
         // serialization stores @json values as plain JSON strings, and without
         // the datatype check, serde's default path produces FlakeValue::String.
-        let rdf_json_dt = Sid::new(3, "JSON"); // RDF namespace = 3
+        let rdf_json_dt = Sid::new(RDF, "JSON");
         let json_str = r#"[{"name":"Alice"}]"#;
         let value = serde_json::json!(json_str);
 

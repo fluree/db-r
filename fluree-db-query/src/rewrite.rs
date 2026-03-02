@@ -332,7 +332,7 @@ impl ReasoningModes {
         for name in names {
             // Config reader returns full IRIs (e.g., "https://ns.flur.ee/db#rdfs").
             // Strip known namespace prefix before parsing.
-            let short = name.strip_prefix("https://ns.flur.ee/db#").unwrap_or(name);
+            let short = name.strip_prefix(fluree_vocab::fluree::DB).unwrap_or(name);
             match Self::parse_single(short) {
                 Ok(single) => {
                     if single.explicit_none {

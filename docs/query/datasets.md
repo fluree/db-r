@@ -308,8 +308,8 @@ The `graph` field accepts three types of values:
 
 | Value | Meaning |
 |-------|---------|
-| `"default"` | Explicitly select the ledger's default graph (g_id=0) |
-| `"txn-meta"` | Select the built-in transaction metadata graph (g_id=1) |
+| `"default"` | Explicitly select the ledger's default graph |
+| `"txn-meta"` | Select the built-in transaction metadata graph (`urn:fluree:{ledger_id}#txn-meta`) |
 | `"<full-iri>"` | Select a user-defined named graph by its full IRI |
 
 **Note:** If using `#txn-meta` fragment syntax in `@id`, do not also specify `graph: "txn-meta"`. This is considered ambiguous and will return an error.
