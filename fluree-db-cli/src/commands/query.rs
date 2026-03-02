@@ -241,12 +241,10 @@ pub async fn run(
             let (result, elapsed) = if bench {
                 let timer = Instant::now();
                 let result = match query_format {
-                    detect::QueryFormat::Sparql => {
-                        fluree.query_view(&view, content.as_str()).await?
-                    }
+                    detect::QueryFormat::Sparql => fluree.query(&view, content.as_str()).await?,
                     detect::QueryFormat::JsonLd => {
                         let json_query: serde_json::Value = serde_json::from_str(&content)?;
-                        fluree.query_view(&view, &json_query).await?
+                        fluree.query(&view, &json_query).await?
                     }
                 };
                 (result, timer.elapsed())
@@ -254,12 +252,10 @@ pub async fn run(
                 // Default behavior: include view load + query + formatting in the reported time.
                 let timer = Instant::now();
                 let result = match query_format {
-                    detect::QueryFormat::Sparql => {
-                        fluree.query_view(&view, content.as_str()).await?
-                    }
+                    detect::QueryFormat::Sparql => fluree.query(&view, content.as_str()).await?,
                     detect::QueryFormat::JsonLd => {
                         let json_query: serde_json::Value = serde_json::from_str(&content)?;
-                        fluree.query_view(&view, &json_query).await?
+                        fluree.query(&view, &json_query).await?
                     }
                 };
                 (result, timer.elapsed())

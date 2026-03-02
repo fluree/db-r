@@ -5,7 +5,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::format::iri::IriCompactor;
-use crate::query::helpers::parse_sparql_to_ir;
+use crate::query::helpers::{parse_jsonld_query, parse_sparql_to_ir};
 use fluree_db_core::{is_rdf_type, StatsView};
 use fluree_db_query::{
     parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern, Ref, Term, TriplePattern,
@@ -287,6 +287,25 @@ pub async fn explain_jsonld(
     explain_from_parsed(snapshot, &vars, &parsed, query_json.clone(), where_clause)
 }
 
+/// Explain a JSON-LD query against a LedgerSnapshot, using a default JSON-LD context.
+///
+/// This mirrors query execution behavior: if the query provides no `@context`,
+/// `default_context` is used.
+pub async fn explain_jsonld_with_default_context(
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    query_json: &JsonValue,
+    default_context: Option<&JsonValue>,
+) -> Result<JsonValue> {
+    let (vars, parsed) = parse_jsonld_query(query_json, snapshot, default_context)?;
+
+    let query_obj = query_json
+        .as_object()
+        .ok_or_else(|| ApiError::query("Query must be an object"))?;
+    let where_clause = query_obj.get("where").cloned();
+
+    explain_from_parsed(snapshot, &vars, &parsed, query_json.clone(), where_clause)
+}
+
 /// Explain a SPARQL query against a LedgerSnapshot.
 ///
 /// Returns a JSON object like:
@@ -296,6 +315,20 @@ pub async fn explain_sparql(
     sparql: &str,
 ) -> Result<JsonValue> {
     let (vars, parsed) = parse_sparql_to_ir(sparql, snapshot, None)?;
+
+    explain_from_parsed(snapshot, &vars, &parsed, json!(sparql), None)
+}
+
+/// Explain a SPARQL query against a LedgerSnapshot, using a default JSON-LD context.
+///
+/// The `default_context` is used for prefix expansion during parsing and for
+/// user-facing IRI compaction in the plan output.
+pub async fn explain_sparql_with_default_context(
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    sparql: &str,
+    default_context: Option<&JsonValue>,
+) -> Result<JsonValue> {
+    let (vars, parsed) = parse_sparql_to_ir(sparql, snapshot, default_context)?;
 
     explain_from_parsed(snapshot, &vars, &parsed, json!(sparql), None)
 }

@@ -817,9 +817,9 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
             });
 
             let result = fluree
-                .query_view(&view, &query_ssn)
+                .query(&view, &query_ssn)
                 .await
-                .expect("query_view");
+                .expect("query");
             let jsonld = result.to_jsonld(&ledger2.snapshot).expect("to_jsonld");
 
             assert_eq!(

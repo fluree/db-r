@@ -68,8 +68,7 @@ async fn subjects_as_predicates_variable_predicate_scan() {
         "where": {"@id":"ex:subject-as-predicate","?p":"?o"}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -105,8 +104,7 @@ async fn subjects_as_predicates_reverse_crawl_without_star() {
         "where": {"@id":"ex:nested"}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -166,8 +164,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab2:firstName":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows1 = fluree
-        .query(&ledger, &q1)
+    let rows1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -184,8 +181,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab1:givenName":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -202,8 +198,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab3:prenom":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows3 = fluree
-        .query(&ledger, &q3)
+    let rows3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -225,8 +220,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"@id":"?s","vocab2:firstName":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows4 = fluree
-        .query(&ledger, &q4)
+    let rows4 = support::query_jsonld(&fluree, &ledger, &q4)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -310,8 +304,7 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:biologicalParent":"?parent"}
         // relies on default auto-RDFS (hierarchy exists)
     });
-    let rows1 = fluree
-        .query(&ledger, &q1)
+    let rows1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -329,8 +322,7 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:parent":"?parent"},
         "reasoning": "owl2ql"
     });
-    let rows2 = fluree
-        .query(&ledger, &q2)
+    let rows2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -353,8 +345,7 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:parent":"?parent"},
         "reasoning": "none"
     });
-    let rows3 = fluree
-        .query(&ledger, &q3)
+    let rows3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

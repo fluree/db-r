@@ -229,7 +229,7 @@ async fn dataset_single_default_graph_basic_query() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -286,7 +286,7 @@ async fn dataset_multiple_default_graphs_union() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -336,7 +336,7 @@ async fn dataset_composed_across_connections_selecting_variables() {
     });
 
     let result = fluree_movies
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query_dataset");
     let primary = dataset.primary().expect("primary");
@@ -385,7 +385,7 @@ async fn dataset_composed_across_connections_selecting_subgraph_depth_3() {
     });
 
     let result = fluree_movies
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query_dataset");
     let primary = dataset.primary().expect("primary");
@@ -449,7 +449,7 @@ async fn dataset_multiple_default_graphs_no_dedup() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -501,7 +501,7 @@ async fn dataset_named_graph_basic() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -552,7 +552,7 @@ async fn dataset_from_json_single_string() {
         .await
         .expect("build should succeed");
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -597,7 +597,7 @@ async fn dataset_from_json_array() {
         .await
         .expect("build should succeed");
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -647,7 +647,7 @@ async fn dataset_from_json_named() {
         .await
         .expect("build should succeed");
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -688,7 +688,7 @@ async fn dataset_empty_spec_fails() {
         "where": {"@id": "?s"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await;
+    let result = fluree.query_dataset(&dataset, &query).await;
     assert!(result.is_err(), "query with empty dataset should fail");
 }
 
@@ -758,7 +758,7 @@ async fn dataset_cross_graph_join_in_union() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -828,7 +828,7 @@ async fn sparql_graph_pattern_concrete_iri() {
     "#;
 
     let result = fluree
-        .query_dataset_view(&dataset, sparql)
+        .query_dataset(&dataset, sparql)
         .await
         .expect("query should succeed");
 
@@ -875,7 +875,7 @@ async fn sparql_graph_pattern_variable_iteration() {
     "#;
 
     let result = fluree
-        .query_dataset_view(&dataset, sparql)
+        .query_dataset(&dataset, sparql)
         .await
         .expect("query should succeed");
 
@@ -926,7 +926,7 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
     "#;
 
     let result = fluree
-        .query_dataset_view(&dataset, sparql)
+        .query_dataset(&dataset, sparql)
         .await
         .expect("query should succeed");
 
@@ -968,7 +968,7 @@ async fn sparql_graph_pattern_default_vs_named() {
     "#;
 
     let result_default = fluree
-        .query_dataset_view(&dataset, sparql_default)
+        .query_dataset(&dataset, sparql_default)
         .await
         .expect("query should succeed");
 
@@ -995,7 +995,7 @@ async fn sparql_graph_pattern_default_vs_named() {
     "#;
 
     let result_named = fluree
-        .query_dataset_view(&dataset, sparql_named)
+        .query_dataset(&dataset, sparql_named)
         .await
         .expect("query should succeed");
 
@@ -1048,7 +1048,7 @@ async fn fql_graph_pattern_basic() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed");
 
@@ -1092,7 +1092,7 @@ async fn fql_graph_pattern_with_alias() {
     });
 
     let result = fluree
-        .query_dataset_view(&dataset, &query)
+        .query_dataset(&dataset, &query)
         .await
         .expect("query should succeed using alias");
 
@@ -1143,7 +1143,7 @@ async fn dataset_time_travel_at_t() {
         "where": {"@id": "?s", "schema:name": "?name"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
@@ -1194,7 +1194,7 @@ async fn dataset_time_travel_at_time_iso() {
         "where": {"@id": "?s", "schema:name": "?name"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
@@ -1266,7 +1266,7 @@ async fn dataset_time_travel_mixed_graphs() {
         "where": {"@id": "?s", "schema:name": "?name"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
@@ -1313,7 +1313,7 @@ async fn dataset_time_travel_alias_syntax_at_t() {
     ));
 
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
@@ -1360,7 +1360,7 @@ async fn dataset_time_travel_at_commit() {
         "where": {"@id": "?s", "schema:name": "?name"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
@@ -1407,7 +1407,7 @@ async fn dataset_time_travel_at_commit_short_prefix() {
         "where": {"@id": "?s", "schema:name": "?name"}
     });
 
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
@@ -1457,7 +1457,7 @@ async fn dataset_time_travel_alias_syntax_commit() {
     ));
 
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
@@ -1547,8 +1547,7 @@ async fn sparql_single_db_graph_matching_alias() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("query should succeed");
 
@@ -1581,8 +1580,7 @@ async fn sparql_single_db_graph_non_matching_alias() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("query should succeed");
 
@@ -1612,8 +1610,7 @@ async fn sparql_single_db_graph_variable_unbound() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("query should succeed");
 
@@ -1656,8 +1653,7 @@ async fn sparql_single_db_graph_variable_bound_matching() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("query should succeed");
 
@@ -1689,8 +1685,7 @@ async fn sparql_single_db_graph_variable_bound_non_matching() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .expect("query should succeed");
 
@@ -1777,7 +1772,7 @@ async fn dataset_multi_ledger_time_travel_execution() {
 
     let spec = DatasetSpec::from_json(&query).expect("parse should succeed");
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
-    let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
+    let result = fluree.query_dataset(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
     let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();

@@ -68,8 +68,7 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
     });
 
     // Query against the returned ledger
-    let result0 = fluree
-        .query(&committed.ledger, &query)
+    let result0 = support::query_jsonld(&fluree, &committed.ledger, &query)
         .await
         .expect("query should succeed");
     let json0 = result0
@@ -80,8 +79,7 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
     let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
     assert_eq!(loaded.t(), 1);
 
-    let result1 = fluree
-        .query(&loaded, &query)
+    let result1 = support::query_jsonld(&fluree, &loaded, &query)
         .await
         .expect("query after reload");
     let json1 = result1
@@ -164,8 +162,7 @@ async fn file_storage_json_datatype_survives_commit_roundtrip() {
     });
 
     // Query in-memory
-    let result_mem = fluree
-        .query(&committed.ledger, &query)
+    let result_mem = support::query_jsonld(&fluree, &committed.ledger, &query)
         .await
         .expect("in-memory query should succeed");
     let json_mem = result_mem
@@ -181,8 +178,7 @@ async fn file_storage_json_datatype_survives_commit_roundtrip() {
     let loaded = fluree2.ledger(ledger_id).await.expect("reload ledger");
     assert_eq!(loaded.t(), 1);
 
-    let result_disk = fluree2
-        .query(&loaded, &query)
+    let result_disk = support::query_jsonld(&fluree2, &loaded, &query)
         .await
         .expect("query after reload should succeed");
     let json_disk = result_disk

@@ -12,7 +12,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
-    /// Execute a JSON-LD query via connection (Clojure parity: query-connection).
+    /// Execute a JSON-LD query via connection.
     ///
     /// This is the unified entry point for connection queries. It:
     /// 1. Parses dataset spec and options from query JSON
@@ -48,7 +48,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_view(&view, query_json).await;
+            return self.query(&view, query_json).await;
         }
 
         // Single-ledger with time travel: use GraphDb API
@@ -69,7 +69,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_view(&view, query_json).await;
+            return self.query(&view, query_json).await;
         }
 
         // Multi-ledger: use DataSetDb
@@ -79,7 +79,7 @@ where
             self.build_dataset_view(&spec).await?
         };
 
-        self.query_dataset_view(&dataset, query_json).await
+        self.query_dataset(&dataset, query_json).await
     }
 
     /// Execute a connection query and return a tracked JSON-LD response.
@@ -127,7 +127,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_view_tracked(&view, query_json).await;
+            return self.query_tracked(&view, query_json, None).await;
         }
 
         // Single-ledger with time travel: use GraphDb API
@@ -156,7 +156,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_view_tracked(&view, query_json).await;
+            return self.query_tracked(&view, query_json, None).await;
         }
 
         // Multi-ledger: use DataSetDb
@@ -170,7 +170,7 @@ where
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
         };
 
-        self.query_dataset_view_tracked(&dataset, query_json).await
+        self.query_dataset_tracked(&dataset, query_json, None).await
     }
 
     /// Clojure-parity alias: tracked connection query entrypoint.
@@ -203,13 +203,13 @@ where
             let view = view.with_policy(Arc::new(policy.clone()));
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
-            return self.query_view(&view, query_json).await;
+            return self.query(&view, query_json).await;
         }
 
         // Multi-ledger: use DataSetDb and apply explicit policy to each view
         let dataset = self.build_dataset_view(&spec).await?;
         let dataset = apply_policy_to_dataset(dataset, policy);
-        self.query_dataset_view(&dataset, query_json).await
+        self.query_dataset(&dataset, query_json).await
     }
 
     /// Execute a connection query with explicit policy context and return a tracked JSON-LD response.
@@ -242,7 +242,7 @@ where
             let view = view.with_policy(Arc::new(policy.clone()));
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
-            return self.query_view_tracked(&view, query_json).await;
+            return self.query_tracked(&view, query_json, None).await;
         }
 
         // Multi-ledger: use DataSetDb and apply explicit policy to each view
@@ -251,7 +251,7 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
-        self.query_dataset_view_tracked(&dataset, query_json).await
+        self.query_dataset_tracked(&dataset, query_json, None).await
     }
 
     /// Execute a SPARQL query via connection (dataset specified via SPARQL `FROM` / `FROM NAMED`).
@@ -269,7 +269,7 @@ where
         }
 
         let dataset = self.build_dataset_view(&spec).await?;
-        self.query_dataset_view(&dataset, sparql).await
+        self.query_dataset(&dataset, sparql).await
     }
 
     /// Execute a SPARQL query via connection with explicit policy context.
@@ -289,7 +289,7 @@ where
 
         let dataset = self.build_dataset_view(&spec).await?;
         let dataset = apply_policy_to_dataset(dataset, policy);
-        self.query_dataset_view(&dataset, sparql).await
+        self.query_dataset(&dataset, sparql).await
     }
 
     /// Execute a SPARQL query via connection with tracking (dataset specified via SPARQL `FROM` / `FROM NAMED`).
@@ -320,7 +320,7 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
-        self.query_dataset_view_tracked(&dataset, sparql).await
+        self.query_dataset_tracked(&dataset, sparql, None).await
     }
 
     /// Execute a SPARQL query via connection with explicit policy context and tracking.
@@ -353,7 +353,7 @@ where
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
 
-        self.query_dataset_view_tracked(&dataset, sparql).await
+        self.query_dataset_tracked(&dataset, sparql, None).await
     }
 
     /// Apply per-source or global policy to a view.

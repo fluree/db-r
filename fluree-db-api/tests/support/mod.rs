@@ -5,7 +5,10 @@
 // Many helpers are used by *some* integration test crates but not others.
 // Keep them centralized here and silence dead_code warnings in crates that
 // don't reference every helper.
-#![allow(dead_code)]
+//
+// Kept as a shared utility module across many integration tests. Individual
+// test crates intentionally do not use every helper.
+#![expect(dead_code)]
 
 pub mod span_capture;
 
@@ -16,6 +19,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "native")]
 use tokio::task::LocalSet;
+
+use fluree_db_api::{GraphDb, QueryResult};
 
 // =============================================================================
 // Type aliases (reduce boilerplate in test signatures)
@@ -49,6 +54,105 @@ pub fn default_context() -> JsonValue {
 // =============================================================================
 // Ledger helpers
 // =============================================================================
+
+/// Build a `GraphDb` view directly from a loaded `LedgerState`.
+///
+/// This is the preferred test-time bridge: it exercises the normal `GraphDb`
+/// query execution path.
+pub fn graphdb_from_ledger(ledger: &LedgerState) -> GraphDb {
+    GraphDb::from_ledger_state(ledger)
+}
+
+/// Execute a JSON-LD query against a loaded `LedgerState` via the normal `GraphDb` query path.
+pub async fn query_jsonld<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    query_json: &JsonValue,
+) -> fluree_db_api::Result<QueryResult>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger);
+    fluree.query(&db, query_json).await
+}
+
+/// Execute a SPARQL query against a loaded `LedgerState` via the normal `GraphDb` query path.
+pub async fn query_sparql<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    sparql: &str,
+) -> fluree_db_api::Result<QueryResult>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger);
+    fluree.query(&db, sparql).await
+}
+
+/// Execute a JSON-LD query and return formatted JSON-LD output (async formatting path).
+pub async fn query_jsonld_formatted<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    query_json: &JsonValue,
+) -> fluree_db_api::Result<JsonValue>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger);
+    let result = fluree.query(&db, query_json).await?;
+    Ok(result.to_jsonld_async(db.as_graph_db_ref()).await?)
+}
+
+/// Execute a JSON-LD query and format using a provided formatter config (async).
+pub async fn query_jsonld_format<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    query_json: &JsonValue,
+    config: &fluree_db_api::FormatterConfig,
+) -> fluree_db_api::Result<JsonValue>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger);
+    let result = fluree.query(&db, query_json).await?;
+    Ok(result.format_async(db.as_graph_db_ref(), config).await?)
+}
+
+/// Execute a JSON-LD query with policy enforcement via view composition.
+pub async fn query_jsonld_with_policy<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    query_json: &JsonValue,
+    policy: &fluree_db_policy::PolicyContext,
+) -> fluree_db_api::Result<QueryResult>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger).with_policy(Arc::new(policy.clone()));
+    fluree.query(&db, query_json).await
+}
+
+/// Execute a JSON-LD query with tracking enabled (fuel/time/policy stats).
+///
+/// This uses the public builder path (`GraphDb::query(...).execute_tracked()`), not
+/// the `Fluree::query_ledger_tracked` convenience.
+pub async fn query_jsonld_tracked<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &LedgerState,
+    query_json: &JsonValue,
+) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
+where
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_api::NameService,
+{
+    let db = graphdb_from_ledger(ledger);
+    db.query(fluree).jsonld(query_json).execute_tracked().await
+}
 
 /// Create a genesis ledger state for the given ledger ID.
 ///

@@ -24,7 +24,7 @@
 //! ```
 
 use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
-use crate::{ApiError, FlureeBuilder, Result};
+use crate::{ApiError, FlureeBuilder, GraphDb, Result};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_nameservice::{GraphSourcePublisher, NameService};
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
@@ -103,9 +103,15 @@ where
         .await
         .map_err(|e| ApiError::internal(format!("Failed to insert NS records: {}", e)))?;
 
-    // 8. Execute query against the populated ledger
-    temp_fluree
-        .query_jsonld(&result.ledger, query_json)
+    // 8. Execute query against the populated ledger via normal GraphDb query path
+    let db = GraphDb::from_ledger_state(&result.ledger);
+    let query_result = temp_fluree
+        .query(&db, query_json)
+        .await
+        .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
+
+    query_result
+        .to_jsonld_async(db.as_graph_db_ref())
         .await
         .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))
 

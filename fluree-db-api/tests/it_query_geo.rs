@@ -86,8 +86,7 @@ async fn geo_point_roundtrip_preserves_wkt_format() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -152,8 +151,7 @@ async fn geof_distance_in_filter_finds_nearby_cities() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -203,8 +201,7 @@ async fn geof_distance_in_bind_calculates_distances() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -247,8 +244,7 @@ async fn geof_distance_with_literal_wkt_points() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -296,8 +292,7 @@ async fn non_point_wkt_stored_as_string() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &query)
+    let result = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -349,8 +344,7 @@ async fn geof_distance_via_sparql() {
         }
     "#;
 
-    let result = fluree
-        .query_sparql(&ledger, sparql)
+    let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

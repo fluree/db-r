@@ -161,7 +161,9 @@ async fn modify_policy_allows_own_property() {
         }
     });
 
-    let query_result = fluree.query(&tx_result.ledger, &query).await.unwrap();
+    let query_result = support::query_jsonld(&fluree, &tx_result.ledger, &query)
+        .await
+        .unwrap();
     let rows = query_result.to_jsonld(&tx_result.ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 

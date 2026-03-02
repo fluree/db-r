@@ -27,7 +27,7 @@ use crate::OverlayProvider;
 ///     .with_named("http://example.org/graph2", view2);
 ///
 /// // Query across the dataset
-/// let result = fluree.query_dataset_view(&dataset, sparql_query).await?;
+/// let result = fluree.query_dataset(&dataset, sparql_query).await?;
 /// ```
 #[derive(Clone)]
 pub struct DataSetDb {

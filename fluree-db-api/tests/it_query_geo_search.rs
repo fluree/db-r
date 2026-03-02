@@ -114,7 +114,7 @@ async fn query_nearby(
         ]
     });
 
-    let result = fluree.query(ledger, &query).await;
+    let result = support::query_jsonld(fluree, ledger, &query).await;
     match result {
         Ok(r) => {
             let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -165,7 +165,7 @@ async fn query_nearby_with_distance(
         "orderBy": "?dist"
     });
 
-    let result = fluree.query(ledger, &query).await;
+    let result = support::query_jsonld(fluree, ledger, &query).await;
     match result {
         Ok(r) => {
             let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
@@ -535,7 +535,7 @@ async fn geo_search_respects_limit_returns_nearest() {
                 "limit": 2
             });
 
-            let result = fluree.query(&loaded, &query).await;
+            let result = support::query_jsonld(&fluree, &loaded, &query).await;
             match result {
                 Ok(r) => {
                     let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
@@ -673,7 +673,7 @@ async fn geo_search_respects_named_graph_boundaries() {
                 ]
             });
 
-            let result = fluree.query(&loaded, &default_query).await;
+            let result = support::query_jsonld(&fluree, &loaded, &default_query).await;
             match result {
                 Ok(r) => {
                     let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
@@ -781,7 +781,7 @@ async fn sparql_geof_distance_uses_geo_index() {
                 ORDER BY ?dist
             "#;
 
-            let result = fluree.query_sparql(&loaded, sparql).await;
+            let result = support::query_sparql(&fluree, &loaded, sparql).await;
             match result {
                 Ok(r) => {
                     let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");

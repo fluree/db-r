@@ -45,7 +45,10 @@ async fn file_backed_query_smoke_test() {
         "where": { "@id": "?s", "@type": "?type" }
     });
 
-    let result = fluree.query(&db, &query).await.expect("query");
+    let result = fluree
+        .query(&fluree_db_api::GraphDb::from_ledger_state(&db), &query)
+        .await
+        .expect("query");
     assert!(!result.is_empty(), "expected results from test database");
 }
 
@@ -76,7 +79,10 @@ async fn file_backed_query_benchmark() {
 
     // Warmup
     for _ in 0..10 {
-        let _ = fluree.query(&db, &query).await.unwrap();
+        let _ = fluree
+            .query(&fluree_db_api::GraphDb::from_ledger_state(&db), &query)
+            .await
+            .unwrap();
     }
 
     let iterations = 100;
@@ -84,7 +90,10 @@ async fn file_backed_query_benchmark() {
     let mut total_rows = 0;
 
     for _ in 0..iterations {
-        let result = fluree.query(&db, &query).await.unwrap();
+        let result = fluree
+            .query(&fluree_db_api::GraphDb::from_ledger_state(&db), &query)
+            .await
+            .unwrap();
         total_rows += result.row_count();
     }
 

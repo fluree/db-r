@@ -53,7 +53,9 @@ async fn list_container_serialization_test() {
         "select": {"crm:contact/contact-final": ["*"]}
     });
 
-    let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree2, &loaded_ledger, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
         .await
@@ -123,7 +125,9 @@ async fn list_container_multiple_values_test() {
         "select": {"ex:thing1": ["*"]}
     });
 
-    let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree2, &loaded_ledger, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
         .await
@@ -188,7 +192,9 @@ async fn list_container_with_objects_test() {
         "select": {"ex:charlie": ["*", {"ex:orderedFriends": ["*"]}]}
     });
 
-    let result = fluree2.query(&loaded_ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree2, &loaded_ledger, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(loaded_ledger.as_graph_db_ref(0))
         .await
@@ -250,7 +256,9 @@ async fn list_container_with_blank_node_objects_test() {
         "select": {"ex:recipe1": ["*", {"ex:steps": ["*"]}]}
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
