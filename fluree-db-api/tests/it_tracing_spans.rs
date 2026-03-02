@@ -74,7 +74,7 @@ async fn ac1_fql_query_waterfall() {
         }
     });
 
-    let result = fluree.query(&ledger, &query).await;
+    let result = support::query_jsonld(&fluree, &ledger, &query).await;
     assert!(result.is_ok(), "query should succeed: {:?}", result.err());
 
     // Verify query preparation hierarchy exists
@@ -170,7 +170,7 @@ async fn ac1_sparql_query_waterfall() {
         }
     "#;
 
-    let result = fluree.query_sparql(&ledger, sparql).await;
+    let result = support::query_sparql(&fluree, &ledger, sparql).await;
     assert!(
         result.is_ok(),
         "SPARQL query should succeed: {:?}",
@@ -418,8 +418,7 @@ async fn ac5_zero_noise_at_info() {
             "schema:name": "?name"
         }
     });
-    let _ = fluree
-        .query(&ledger, &query)
+    let _ = support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query should succeed");
 
@@ -521,8 +520,7 @@ async fn ac3_deferred_fields_recorded() {
         }
     });
 
-    fluree
-        .query(&ledger, &query)
+    support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query should succeed");
 
@@ -601,9 +599,9 @@ async fn ac4_commit_subspan_hierarchy() {
 
 /// Verify the query span hierarchy in the API layer.
 ///
-/// In the API layer, `fluree.query()` calls `prepare_execution()` + `execute_prepared()`
-/// separately, so there is no wrapping `query_execute` span. The top-level query
-/// spans are `query_prepare` and `query_run`.
+/// In the API layer, the query runner emits `query_prepare` and `query_run`.
+/// There is no wrapping `query_execute` span here — that span exists only in the
+/// server route handler (and other top-level wrappers).
 ///
 /// The `query_execute` span only exists in:
 /// - The server route handler (`routes/query.rs`)
@@ -631,8 +629,7 @@ async fn api_query_hierarchy_has_prepare_and_run_at_top() {
         }
     });
 
-    fluree
-        .query(&ledger, &query)
+    support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query should succeed");
 
@@ -778,8 +775,7 @@ async fn transaction_spans_not_in_query_path() {
         }
     });
 
-    fluree
-        .query(&ledger, &query)
+    support::query_jsonld(&fluree, &ledger, &query)
         .await
         .expect("query should succeed");
 

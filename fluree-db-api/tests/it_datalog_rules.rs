@@ -56,8 +56,7 @@ async fn datalog_grandparent_rule() {
         "select": ["?rule", "?ruleValue"],
         "where": {"@id": "?rule", "f:rule": "?ruleValue"}
     });
-    let rule_rows = fluree
-        .query(&ledger, &rule_check)
+    let rule_rows = support::query_jsonld(&fluree, &ledger, &rule_check)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -89,8 +88,7 @@ async fn datalog_grandparent_rule() {
         "select": ["?parent"],
         "where": {"@id": "ex:alice", "ex:parent": "?parent"}
     });
-    let data_rows = fluree
-        .query(&ledger, &data_check)
+    let data_rows = support::query_jsonld(&fluree, &ledger, &data_check)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -112,8 +110,7 @@ async fn datalog_grandparent_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -182,8 +179,7 @@ async fn datalog_sibling_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -226,8 +222,7 @@ async fn datalog_no_rules_returns_empty() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -302,8 +297,7 @@ async fn datalog_combined_with_owl2rl() {
         "reasoning": ["owl2rl", "datalog"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -384,8 +378,7 @@ async fn datalog_recursive_ancestor_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -576,8 +569,7 @@ async fn datalog_chains_off_owl_entailments() {
         "reasoning": ["owl2rl", "datalog"]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -652,8 +644,7 @@ async fn datalog_filter_expression() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -739,8 +730,7 @@ async fn datalog_filter_less_than() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -804,8 +794,7 @@ async fn datalog_query_time_rules() {
         }]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -854,8 +843,7 @@ async fn datalog_query_time_rules_with_id() {
         }]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -911,8 +899,7 @@ async fn datalog_query_time_rules_multiple() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -965,8 +952,7 @@ async fn datalog_query_time_rules_with_filter() {
         }]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1047,8 +1033,7 @@ async fn datalog_query_time_rules_merged_with_db_rules() {
         }]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

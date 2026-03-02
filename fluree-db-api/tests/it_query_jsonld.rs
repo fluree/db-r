@@ -19,7 +19,7 @@ async fn assert_query_bind_error(
     query: serde_json::Value,
     expected: &str,
 ) {
-    let result = fluree.query(ledger, &query).await;
+    let result = support::query_jsonld(fluree, ledger, &query).await;
     assert!(result.is_err(), "expected query error");
     if let Err(err) = result {
         assert!(
@@ -51,7 +51,9 @@ async fn jsonld_filter_single_filter() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -239,7 +241,9 @@ async fn jsonld_filter_single_filter_different_vars() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -269,7 +273,9 @@ async fn jsonld_filter_multiple_filters_same_var() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -300,7 +306,9 @@ async fn jsonld_filter_multiple_filters_different_vars() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -330,7 +338,9 @@ async fn jsonld_filter_nested_filters() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -361,7 +371,9 @@ async fn jsonld_filter_filtering_for_absence() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Flatten single column results
@@ -414,7 +426,9 @@ async fn jsonld_optional_basic_left_join() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -454,7 +468,9 @@ async fn jsonld_optional_with_passthrough() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -498,7 +514,9 @@ async fn jsonld_optional_sandwiched() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -542,7 +560,9 @@ async fn jsonld_optional_two_separate() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -589,7 +609,9 @@ async fn jsonld_optional_two_in_same_vector() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -637,7 +659,9 @@ async fn jsonld_optional_multiple_clauses_left_join() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -703,7 +727,9 @@ async fn jsonld_nested_optionals() {
         "select": ["?s1", "?p1", "?o1", "?p2", "?o2", "?p3", "?o3", "?p4", "?o4"]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Expected results with nested optionals creating multiple levels
@@ -753,7 +779,9 @@ async fn jsonld_union_basic_passthrough() {
         ]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     assert_eq!(
@@ -807,7 +835,9 @@ async fn jsonld_optional_with_filter() {
         "orderBy": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Alice's age passes filter (25 >= 18), Brian's doesn't (15 < 18), Cam has no age
@@ -856,7 +886,9 @@ async fn jsonld_optional_with_multiple_triples() {
         "orderBy": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Each optional is independent: Alice has both, Brian has only age, Cam has only city
@@ -907,7 +939,9 @@ async fn jsonld_optional_with_bind() {
         "orderBy": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Alice and Brian have prices, Cam doesn't
@@ -966,7 +1000,9 @@ async fn jsonld_optional_with_subquery() {
         "orderBy": ["?name", "?amt"]
     });
 
-    let result = fluree.query(&ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Alice has 2 orders (50, 75), Brian has 1 order (100), Cam has none
@@ -992,7 +1028,9 @@ async fn query_jsonld_works_for_values_only_query() {
         "values": ["?x", [1, 2, 3]]
     });
 
-    let v = fluree.query_jsonld(&ledger, &q).await.unwrap();
+    let v = support::query_jsonld_formatted(&fluree, &ledger, &q)
+        .await
+        .unwrap();
     assert!(v.is_array());
 }
 
@@ -1010,7 +1048,9 @@ async fn query_format_async_works_for_non_crawl_queries() {
     });
 
     let cfg = FormatterConfig::jsonld();
-    let v = fluree.query_format(&ledger, &q, &cfg).await.unwrap();
+    let v = support::query_jsonld_format(&fluree, &ledger, &q, &cfg)
+        .await
+        .unwrap();
     assert!(v.is_array());
 }
 
@@ -1098,7 +1138,9 @@ async fn grouping_single_field() {
         "order-by": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected grouped results per Clojure test
@@ -1151,7 +1193,9 @@ async fn grouping_multiple_fields() {
         "order-by": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected grouped results per Clojure test
@@ -1183,7 +1227,9 @@ async fn having_count_filter() {
         "having": "(>= (count ?favNums) 2)"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected filtered results per Clojure test
@@ -1210,7 +1256,9 @@ async fn having_avg_filter() {
         "having": "(>= (avg ?favNums) 10)"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected filtered results per Clojure test
@@ -1237,7 +1285,9 @@ async fn ordering_single_field_asc() {
         "order-by": "?name"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected ordered results per Clojure test
@@ -1269,7 +1319,9 @@ async fn ordering_single_field_desc() {
         "order-by": "(desc ?name)"
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected ordered results per Clojure test
@@ -1301,7 +1353,9 @@ async fn ordering_multiple_fields_asc() {
         "order-by": ["?age", "?name"]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected ordered results per Clojure test
@@ -1333,7 +1387,9 @@ async fn ordering_multiple_fields_mixed() {
         "order-by": ["(desc ?age)", "?name"]
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected ordered results per Clojure test
@@ -1364,7 +1420,9 @@ async fn select_distinct_basic() {
         }
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected distinct results per Clojure test
@@ -1397,7 +1455,9 @@ async fn select_distinct_with_limit_offset() {
         "offset": 1
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
     // Expected distinct results with limit/offset per Clojure test

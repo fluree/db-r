@@ -187,7 +187,9 @@ async fn query_integration_test() {
         }
     });
 
-    let result = fluree.query(&ledger, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
@@ -241,7 +243,9 @@ async fn fuel_integration_test() {
         }
     });
 
-    let basic_result = fluree.query(&ledger, &query_basic).await.unwrap();
+    let basic_result = support::query_jsonld(&fluree, &ledger, &query_basic)
+        .await
+        .unwrap();
     let rows = basic_result.to_jsonld(&ledger.snapshot).unwrap();
     assert_eq!(
         rows.as_array().unwrap().len(),
@@ -257,8 +261,7 @@ async fn fuel_integration_test() {
         "opts": {"meta": true}
     });
 
-    let tracked_result = fluree
-        .query_tracked(&ledger, &query_with_meta)
+    let tracked_result = support::query_jsonld_tracked(&fluree, &ledger, &query_with_meta)
         .await
         .unwrap();
     let query_fuel = tracked_result
@@ -297,7 +300,7 @@ async fn fuel_integration_test() {
         "opts": {"maxFuel": 1}
     });
 
-    let limited_result = fluree.query(&ledger, &query_with_limit).await;
+    let limited_result = support::query_jsonld(&fluree, &ledger, &query_with_limit).await;
     assert!(limited_result.is_err(), "Query with maxFuel=1 should fail");
     let err_msg = limited_result.unwrap_err().to_string();
     assert!(

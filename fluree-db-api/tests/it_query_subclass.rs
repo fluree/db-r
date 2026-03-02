@@ -93,8 +93,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "select": ["?p","?o"],
         "where": {"@id":"https://www.wikidata.org/wiki/Q836821","?p":"?o"}
     });
-    let any = fluree
-        .query(&ledger, &q_any)
+    let any = support::query_jsonld(&fluree, &ledger, &q_any)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -108,8 +107,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "select": ["?t"],
         "where": [{"@id":"https://www.wikidata.org/wiki/Q836821","@type":"?t"}]
     });
-    let types = fluree
-        .query(&ledger, &q_types)
+    let types = support::query_jsonld(&fluree, &ledger, &q_types)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -123,8 +121,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "select": ["?s"],
         "where": {"@id":"?s","@type":"https://schema.org/Movie"}
     });
-    let movie_rows = fluree
-        .query(&ledger, &q_movie)
+    let movie_rows = support::query_jsonld(&fluree, &ledger, &q_movie)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -136,8 +133,7 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "where": {"@id":"?s","@type":"https://schema.org/CreativeWork"}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -217,8 +213,7 @@ async fn subclass_inferencing_issue_core_48() {
         "where": {"@id":"?s","@type":"ex:Humanoid"},
         "select": {"?s":["*"]}
     });
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -286,8 +281,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
         "where": {"@id":"?s","@type":"ex:Humanoid"},
         "select": {"?s":["*"]}
     });
-    let rows = fluree2
-        .query(&loaded, &q)
+    let rows = support::query_jsonld(&fluree2, &loaded, &q)
         .await
         .unwrap()
         .to_jsonld_async(loaded.as_graph_db_ref(0))
@@ -355,8 +349,7 @@ async fn subclass_nested_stages() {
         "select": ["?s"],
         "where": {"@id":"?s","@type":"ex:Human"}
     });
-    let rows = fluree
-        .query(&db3, &q)
+    let rows = support::query_jsonld(&fluree, &db3, &q)
         .await
         .unwrap()
         .to_jsonld(&db3.snapshot)

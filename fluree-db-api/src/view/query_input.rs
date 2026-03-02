@@ -1,6 +1,6 @@
 //! Polymorphic query input type
 //!
-//! Allows `query_view` to accept either JSON-LD or SPARQL queries
+//! Allows `query` to accept either JSON-LD or SPARQL queries
 //! through a single entrypoint with ergonomic `From` conversions.
 
 use serde_json::Value as JsonValue;

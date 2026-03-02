@@ -116,8 +116,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
         }
     });
 
-    let result = fluree
-        .query_with_policy(&ledger, &query, &policy_ctx)
+    let result = support::query_jsonld_with_policy(&fluree, &ledger, &query, &policy_ctx)
         .await
         .expect("query with policy");
 
@@ -223,8 +222,7 @@ async fn policy_class_allows_non_restricted_properties() {
         }
     });
 
-    let result = fluree
-        .query_with_policy(&ledger, &query, &policy_ctx)
+    let result = support::query_jsonld_with_policy(&fluree, &ledger, &query, &policy_ctx)
         .await
         .expect("query with policy");
 
@@ -321,8 +319,7 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
         }
     });
 
-    let result = fluree
-        .query_with_policy(&ledger, &query, &policy_ctx)
+    let result = support::query_jsonld_with_policy(&fluree, &ledger, &query, &policy_ctx)
         .await
         .expect("query with policy");
 

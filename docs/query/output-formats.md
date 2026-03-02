@@ -240,6 +240,47 @@ WHERE {
 }
 ```
 
+## Rust API
+
+Use `FormatterConfig` to control output format via the query builder API:
+
+```rust
+use fluree_db_api::FormatterConfig;
+
+// Single-ledger query with explicit format
+let db = fluree.db("mydb:main").await?;
+let result = db.query(&fluree)
+    .sparql("SELECT ?name WHERE { ?s <schema:name> ?name }")
+    .format(FormatterConfig::typed_json())
+    .execute_formatted()
+    .await?;
+
+// Dataset query with format
+let result = dataset.query(&fluree)
+    .sparql("SELECT * WHERE { ?s ?p ?o }")
+    .format(FormatterConfig::sparql_json())
+    .execute_formatted()
+    .await?;
+
+// Connection-level query with format
+let result = fluree.query_from()
+    .jsonld(&query_with_from)
+    .format(FormatterConfig::jsonld())
+    .execute_formatted()
+    .await?;
+```
+
+Available format constructors:
+- `FormatterConfig::jsonld()` — JSON-LD (default for JSON-LD queries)
+- `FormatterConfig::sparql_json()` — SPARQL 1.1 JSON Results (default for SPARQL queries)
+- `FormatterConfig::typed_json()` — Typed JSON with explicit datatypes on every binding
+
+All three query paths (`db.query()`, `dataset.query()`, `fluree.query_from()`) support `.format()`.
+
+When no `.format()` is set:
+- JSON-LD queries default to JSON-LD format
+- SPARQL queries default to SPARQL JSON format
+
 ## Best Practices
 
 1. **Use JSON-LD for Applications**: Most applications benefit from JSON-LD's compact format

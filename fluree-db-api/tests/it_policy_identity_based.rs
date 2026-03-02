@@ -382,8 +382,7 @@ async fn wrap_identity_policy_view_api() {
         }
     });
 
-    let result = fluree
-        .query_with_policy(&ledger, &query, wrapped.policy())
+    let result = support::query_jsonld_with_policy(&fluree, &ledger, &query, wrapped.policy())
         .await
         .expect("query_with_policy");
     let result_json = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");

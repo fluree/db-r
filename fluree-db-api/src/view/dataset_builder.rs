@@ -35,7 +35,7 @@ where
     /// ```ignore
     /// let (spec, opts) = DatasetSpec::from_query_json(&query)?;
     /// let dataset = fluree.build_dataset_view(&spec).await?;
-    /// let result = fluree.query_dataset_view(&dataset, &query).await?;
+    /// let result = fluree.query_dataset(&dataset, &query).await?;
     /// ```
     pub async fn build_dataset_view(&self, spec: &DatasetSpec) -> Result<DataSetDb> {
         // History/changes queries are a Fluree dataset extension.

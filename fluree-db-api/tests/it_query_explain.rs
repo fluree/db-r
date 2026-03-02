@@ -7,7 +7,7 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use serde_json::json;
-use support::genesis_ledger;
+use support::{genesis_ledger, graphdb_from_ledger};
 
 #[tokio::test]
 async fn explain_no_stats_reports_none_and_reason() {
@@ -36,7 +36,8 @@ async fn explain_no_stats_reports_none_and_reason() {
         "where": [{"@id":"?person","ex:name":"?name"}]
     });
 
-    let resp = fluree.explain(&ledger, &q).await.expect("explain");
+    let db = graphdb_from_ledger(&ledger);
+    let resp = fluree.explain(&db, &q).await.expect("explain");
     assert_eq!(resp["plan"]["optimization"], "none");
     assert_eq!(resp["plan"]["reason"], "No statistics available");
     assert!(resp.get("query").is_some());
@@ -63,8 +64,9 @@ async fn explain_sparql_no_stats_reports_none_and_reason() {
 
     let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person WHERE { ?person ex:name ?name }";
 
+    let db = graphdb_from_ledger(&ledger);
     let resp = fluree
-        .explain_sparql(&ledger, sparql)
+        .explain_sparql(&db, sparql)
         .await
         .expect("explain_sparql");
     assert_eq!(resp["plan"]["optimization"], "none");
