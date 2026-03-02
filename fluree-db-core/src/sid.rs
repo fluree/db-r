@@ -102,8 +102,7 @@ impl Sid {
     /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
     pub fn xsd_integer() -> Sid {
         use std::sync::LazyLock;
-        static SID: LazyLock<Sid> =
-            LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::INTEGER));
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::INTEGER));
         SID.clone()
     }
 
@@ -112,8 +111,7 @@ impl Sid {
     /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
     pub fn xsd_double() -> Sid {
         use std::sync::LazyLock;
-        static SID: LazyLock<Sid> =
-            LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::DOUBLE));
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::DOUBLE));
         SID.clone()
     }
 
@@ -122,8 +120,7 @@ impl Sid {
     /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
     pub fn xsd_string() -> Sid {
         use std::sync::LazyLock;
-        static SID: LazyLock<Sid> =
-            LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::STRING));
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::STRING));
         SID.clone()
     }
 
