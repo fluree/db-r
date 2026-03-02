@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use fluree_db_api::{format, FlureeBuilder, FormatterConfig, ParsedContext, QueryOutput};
+use fluree_db_api::{format, FlureeBuilder, FormatterConfig, GraphDb, ParsedContext, QueryOutput};
 
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
@@ -129,8 +129,9 @@ pub async fn run_eval_test(
     let sparql = read_file_to_string(query_url)
         .with_context(|| format!("Reading query file: {query_url}"))?;
 
+    let db = GraphDb::from_ledger_state(&ledger);
     let query_result = fluree
-        .query_sparql(&ledger, &sparql)
+        .query(&db, &sparql)
         .await
         .with_context(|| format!("Executing SPARQL query for test {test_id}"))?;
 
