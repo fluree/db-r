@@ -185,8 +185,8 @@ impl From<DropReport> for DropResponse {
             DropStatus::NotFound => "not_found",
         };
 
-        let files_deleted = if report.commit_files_deleted > 0 || report.index_files_deleted > 0 {
-            Some(report.commit_files_deleted + report.index_files_deleted)
+        let files_deleted = if report.artifacts_deleted > 0 {
+            Some(report.artifacts_deleted)
         } else {
             None
         };

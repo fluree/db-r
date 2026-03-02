@@ -23,11 +23,10 @@ pub async fn run(name: &str, force: bool, dirs: &FlureeDir) -> CliResult<()> {
             if active.as_deref() == Some(name) {
                 config::clear_active_ledger(dirs.data_dir())?;
             }
-            let total = report.commit_files_deleted + report.index_files_deleted;
-            if total > 0 {
+            if report.artifacts_deleted > 0 {
                 println!(
-                    "Dropped ledger '{name}' (deleted {} commit + {} index files)",
-                    report.commit_files_deleted, report.index_files_deleted
+                    "Dropped ledger '{name}' (deleted {} artifacts)",
+                    report.artifacts_deleted
                 );
             } else {
                 println!("Dropped ledger '{name}'");

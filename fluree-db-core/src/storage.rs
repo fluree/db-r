@@ -225,6 +225,9 @@ pub const STORAGE_METHOD_MEMORY: &str = "memory";
 /// Storage method for AWS S3 object storage.
 pub const STORAGE_METHOD_S3: &str = "s3";
 
+/// Storage method for IPFS (Kubo) content-addressed storage.
+pub const STORAGE_METHOD_IPFS: &str = "ipfs";
+
 /// Identifies the storage method/scheme for CID-to-address mapping.
 ///
 /// Every storage backend must declare its method name (e.g.,

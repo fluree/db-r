@@ -19,8 +19,18 @@ Storage backend options:
 - Memory storage (development)
 - File system storage (single server)
 - AWS S3/DynamoDB (distributed)
+- IPFS / Kubo (decentralized)
 - Storage selection criteria
 - Switching between storage modes
+
+### [IPFS Storage](ipfs-storage.md)
+
+IPFS-specific setup and configuration:
+- Kubo node installation and setup
+- JSON-LD configuration fields
+- Content addressing and CID mapping
+- Pinning strategies
+- Operational considerations
 
 ### [DynamoDB Nameservice](dynamodb-guide.md)
 
@@ -107,6 +117,7 @@ AWS-backed distributed deployment:
 - Storage mode selection
 - Data directory (file mode)
 - AWS credentials (S3 mode)
+- IPFS / Kubo connection (IPFS mode)
 - Connection pooling
 - Cache settings
 
@@ -346,6 +357,7 @@ health_check:
 - Development: memory
 - Single server: file
 - Production/Distributed: AWS
+- Decentralized: IPFS
 
 ### 2. Enable Monitoring
 
