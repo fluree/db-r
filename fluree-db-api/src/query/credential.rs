@@ -80,6 +80,6 @@ where
         };
 
         let dataset = self.build_dataset_view_with_policy(&spec, &opts).await?;
-        self.query_dataset_view(&dataset, sparql).await
+        self.query_dataset(&dataset, sparql).await
     }
 }

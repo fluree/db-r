@@ -76,7 +76,9 @@ async fn staging_data_allow_false_values() {
         "where": {"@id": "?s", "?p": "?o"}
     });
 
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result.to_jsonld(&ledger1.snapshot).unwrap();
 
     assert_eq!(jsonld, json!([["ex:alice", "ex:isCool", false]]));
@@ -106,7 +108,9 @@ async fn staging_data_mixed_data_types() {
         "select": {"ex:brian": ["*"]}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -143,7 +147,9 @@ async fn staging_data_mixed_data_types_numeric() {
         "select": {"ex:wes": ["*"]}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -176,7 +182,9 @@ async fn iri_value_maps() {
         "select": {"http://example.com/foo": ["*"]}
     });
 
-    let result = fluree.query(&ledger1, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
@@ -223,7 +231,9 @@ async fn object_var_test() {
         "depth": 3
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -271,17 +281,17 @@ async fn transact_api_test() {
         ]
     });
     let ledger2 = fluree.update_with_ledger(&txn).await.unwrap().ledger;
-    let rows = fluree
-        .query(
-            &ledger2,
-            &json!({
-                "@context": [context.clone(), {"ex": "http://example.org/ns/"}, {"foo": "http://foo.com/"}],
-                "select": {"?s": ["*"]},
-                "where": {"@id": "?s", "@type": "ex:User"}
-            }),
-        )
-        .await
-        .unwrap()
+    let rows = support::query_jsonld(
+        &fluree,
+        &ledger2,
+        &json!({
+            "@context": [context.clone(), {"ex": "http://example.org/ns/"}, {"foo": "http://foo.com/"}],
+            "select": {"?s": ["*"]},
+            "where": {"@id": "?s", "@type": "ex:User"}
+        }),
+    )
+    .await
+    .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .unwrap();
@@ -300,24 +310,24 @@ async fn transact_api_test() {
         "insert": {"id-alias": "ex:alice", "schema:givenName": "Alicia"}
     });
     let ledger3 = fluree.update_with_ledger(&txn2).await.unwrap().ledger;
-    let rows2 = fluree
-        .query(
-            &ledger3,
-            &json!({
-                "@context": [
-                    context.clone(),
-                    {"ex": "http://example.org/ns/"},
-                    {"foo": "http://foo.com/", "bar": "http://bar.com/"}
-                ],
-                "select": {"?s": ["*"]},
-                "where": {"@id": "?s", "@type": "ex:User"}
-            }),
-        )
-        .await
-        .unwrap()
-        .to_jsonld_async(ledger3.as_graph_db_ref(0))
-        .await
-        .unwrap();
+    let rows2 = support::query_jsonld(
+        &fluree,
+        &ledger3,
+        &json!({
+            "@context": [
+                context.clone(),
+                {"ex": "http://example.org/ns/"},
+                {"foo": "http://foo.com/", "bar": "http://bar.com/"}
+            ],
+            "select": {"?s": ["*"]},
+            "where": {"@id": "?s", "@type": "ex:User"}
+        }),
+    )
+    .await
+    .unwrap()
+    .to_jsonld_async(ledger3.as_graph_db_ref(0))
+    .await
+    .unwrap();
     assert_eq!(
         normalize_rows(&rows2),
         normalize_rows(&json!([
@@ -337,24 +347,24 @@ async fn transact_api_test() {
         }]
     });
     let ledger4 = fluree.update_with_ledger(&txn3).await.unwrap().ledger;
-    let rows3 = fluree
-        .query(
-            &ledger4,
-            &json!({
-                "@context": [
-                    context.clone(),
-                    {"ex": "http://example.org/ns/"},
-                    {"foo": "http://foo.com/", "bar": "http://bar.com/", "quux": "http://quux.com/"}
-                ],
-                "select": {"?s": ["*"]},
-                "where": {"@id": "?s", "@type": "ex:User"}
-            }),
-        )
-        .await
-        .unwrap()
-        .to_jsonld_async(ledger4.as_graph_db_ref(0))
-        .await
-        .unwrap();
+    let rows3 = support::query_jsonld(
+        &fluree,
+        &ledger4,
+        &json!({
+            "@context": [
+                context.clone(),
+                {"ex": "http://example.org/ns/"},
+                {"foo": "http://foo.com/", "bar": "http://bar.com/", "quux": "http://quux.com/"}
+            ],
+            "select": {"?s": ["*"]},
+            "where": {"@id": "?s", "@type": "ex:User"}
+        }),
+    )
+    .await
+    .unwrap()
+    .to_jsonld_async(ledger4.as_graph_db_ref(0))
+    .await
+    .unwrap();
     assert_eq!(
         normalize_rows(&rows3),
         normalize_rows(&json!([
@@ -424,8 +434,7 @@ async fn base_and_vocab_test() {
             "@type": "http://example.org/terms/SeaMonster"
         }
     });
-    let r_full = fluree
-        .query(&ledger1, &q_full)
+    let r_full = support::query_jsonld(&fluree, &ledger1, &q_full)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -447,8 +456,7 @@ async fn base_and_vocab_test() {
         "select": {"?m": ["*"]},
         "where": {"@id": "?m", "@type": "SeaMonster"}
     });
-    let r_vocab = fluree
-        .query(&ledger1, &q_vocab)
+    let r_vocab = support::query_jsonld(&fluree, &ledger1, &q_vocab)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -473,8 +481,7 @@ async fn base_and_vocab_test() {
         }
     });
     let ledger3 = fluree.update(ledger2, &insert_object).await.unwrap().ledger;
-    let r2 = fluree
-        .query(&ledger3, &q_vocab)
+    let r2 = support::query_jsonld(&fluree, &ledger3, &q_vocab)
         .await
         .unwrap()
         .to_jsonld_async(ledger3.as_graph_db_ref(0))
@@ -518,8 +525,7 @@ async fn json_objects() {
         "where": {"@id": "?s", "@type": "ex:Person"},
         "select": {"?s": ["*"]}
     });
-    let r_graph = fluree
-        .query(&ledger1, &q_graph)
+    let r_graph = support::query_jsonld(&fluree, &ledger1, &q_graph)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -538,8 +544,7 @@ async fn json_objects() {
         "select": "?json",
         "where": {"@id": "?s", "ex:json": "?json"}
     });
-    let r_select = fluree
-        .query(&ledger1, &q_select)
+    let r_select = support::query_jsonld(&fluree, &ledger1, &q_select)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -582,7 +587,9 @@ async fn no_where_solutions() {
         "selectOne": {"ex:andrew": ["*"]}
     });
 
-    let result = fluree.query(&ledger2, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap();
     let jsonld = result
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
@@ -627,8 +634,7 @@ async fn transaction_iri_special_char() {
         "@context": {"ex": "http://example.org/"},
         "select": {"ex:a\u{0b83}": ["*"]}
     });
-    let r1 = fluree
-        .query(&ledger2, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger2, &q1)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -647,8 +653,7 @@ async fn transaction_iri_special_char() {
         "@context": {"ex": "http://example.org/"},
         "select": {"ex:\u{0b83}b": ["*"]}
     });
-    let r2 = fluree
-        .query(&ledger2, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger2, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -699,8 +704,7 @@ async fn transact_with_explicit_commit() {
         "@context": [default_context(), {"ex": "http://example.org/ns/"}],
         "select": {"ex:alice": ["*"]}
     });
-    let rows = fluree
-        .query(&ledger1, &query)
+    let rows = support::query_jsonld(&fluree, &ledger1, &query)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -754,7 +758,9 @@ async fn insert_data_then_query_names() {
         "where": {"schema:name": "?name"}
     });
 
-    let result = fluree.query(&inserted.ledger, &query).await.expect("query");
+    let result = support::query_jsonld(&fluree, &inserted.ledger, &query)
+        .await
+        .expect("query");
     let mut rows = result
         .to_jsonld(&inserted.ledger.snapshot)
         .expect("to_jsonld");
@@ -851,7 +857,9 @@ async fn retract_property_removes_only_that_property() {
         "@context": ctx_ex_schema(),
         "select": { "ex:alice": ["*"] }
     });
-    let result = fluree.query(&updated.ledger, &q).await.expect("query");
+    let result = support::query_jsonld(&fluree, &updated.ledger, &q)
+        .await
+        .expect("query");
     let jsonld = result
         .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
@@ -906,8 +914,7 @@ async fn retracting_ordered_lists_removes_list_values() {
 
     let q = json!({"@context": ctx, "select": {"ex:list-test": ["*"]}});
 
-    let before = fluree
-        .query(&seeded.ledger, &q)
+    let before = support::query_jsonld(&fluree, &seeded.ledger, &q)
         .await
         .expect("query before");
     let before_json = before
@@ -936,8 +943,7 @@ async fn retracting_ordered_lists_removes_list_values() {
         .await
         .expect("update delete lists");
 
-    let after = fluree
-        .query(&updated.ledger, &q)
+    let after = support::query_jsonld(&fluree, &updated.ledger, &q)
         .await
         .expect("query after");
     let after_json = after
@@ -993,8 +999,7 @@ async fn turtle_insert() {
             "ex:age": {"@value": 42, "@type": "xsd:integer"}
         }
     });
-    let rows = fluree
-        .query(&ledger1, &query)
+    let rows = support::query_jsonld(&fluree, &ledger1, &query)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -1013,8 +1018,7 @@ async fn turtle_insert() {
             "ex:age": {"@value": 41, "@type": "xsd:integer"}
         }
     });
-    let rows2 = fluree
-        .query(&ledger1, &query2)
+    let rows2 = support::query_jsonld(&fluree, &ledger1, &query2)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -1034,8 +1038,7 @@ async fn turtle_insert() {
         "select": {"?s": ["*"]},
         "where": {"@id":"?s","ex:age":33}
     });
-    let rows3 = fluree
-        .query(&ledger1, &query3)
+    let rows3 = support::query_jsonld(&fluree, &ledger1, &query3)
         .await
         .unwrap()
         .to_jsonld_async(ledger1.as_graph_db_ref(0))
@@ -1080,8 +1083,7 @@ async fn turtle_insert_and_commit() {
         "select": {"?s":["*"]},
         "where": {"@id":"?s","ex:age":{"@value":42,"@type":"xsd:integer"}}
     });
-    let rows = fluree
-        .query(&ledger2, &query)
+    let rows = support::query_jsonld(&fluree, &ledger2, &query)
         .await
         .unwrap()
         .to_jsonld_async(ledger2.as_graph_db_ref(0))
@@ -1115,19 +1117,19 @@ ex:foo ex:name "UPDATED Name" ;
         .unwrap()
         .ledger;
 
-    let rows = fluree
-        .query(
-            &ledger2,
-            &json!({
-                "@context": {"ex":"http://example.org/"},
-                "select": {"ex:foo":["*"]}
-            }),
-        )
-        .await
-        .unwrap()
-        .to_jsonld_async(ledger2.as_graph_db_ref(0))
-        .await
-        .unwrap();
+    let rows = support::query_jsonld(
+        &fluree,
+        &ledger2,
+        &json!({
+            "@context": {"ex":"http://example.org/"},
+            "select": {"ex:foo":["*"]}
+        }),
+    )
+    .await
+    .unwrap()
+    .to_jsonld_async(ledger2.as_graph_db_ref(0))
+    .await
+    .unwrap();
     assert_eq!(
         rows,
         json!([{"@id":"ex:foo","ex:name":"UPDATED Name","ex:age":33}])
@@ -1159,19 +1161,19 @@ ex:foo ex:name "UPDATED Name" ;
         .unwrap()
         .ledger;
 
-    let rows = fluree
-        .query(
-            &ledger2,
-            &json!({
-                "@context": {"ex":"http://example.org/"},
-                "select": {"ex:foo":["*"]}
-            }),
-        )
-        .await
-        .unwrap()
-        .to_jsonld_async(ledger2.as_graph_db_ref(0))
-        .await
-        .unwrap();
+    let rows = support::query_jsonld(
+        &fluree,
+        &ledger2,
+        &json!({
+            "@context": {"ex":"http://example.org/"},
+            "select": {"ex:foo":["*"]}
+        }),
+    )
+    .await
+    .unwrap()
+    .to_jsonld_async(ledger2.as_graph_db_ref(0))
+    .await
+    .unwrap();
     assert_eq!(
         rows,
         json!([{"@id":"ex:foo","ex:name":"UPDATED Name","ex:age":33}])

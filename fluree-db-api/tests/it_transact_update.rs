@@ -74,7 +74,9 @@ async fn query_names(
         "select": ["?name"],
         "where": {"schema:name": "?name"}
     });
-    let result = fluree.query(ledger, &q).await.expect("query names");
+    let result = support::query_jsonld(fluree, ledger, &q)
+        .await
+        .expect("query names");
     let v = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     let mut out: Vec<String> = v
         .as_array()
@@ -122,8 +124,7 @@ async fn update_delete_bob_age_only() {
         .expect("delete bob age");
 
     let q_bob = json!({ "@context": ctx_ex_schema(), "selectOne": { "ex:bob": ["*"] }});
-    let bob = fluree
-        .query(&out.ledger, &q_bob)
+    let bob = support::query_jsonld(&fluree, &out.ledger, &q_bob)
         .await
         .expect("query bob")
         .to_jsonld_async(out.ledger.as_graph_db_ref(0))
@@ -193,16 +194,16 @@ async fn update_bob_age_when_match() {
         .await
         .expect("update bob age when match");
 
-    let bob = fluree
-        .query(
-            &out.ledger,
-            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
-        )
-        .await
-        .expect("query bob")
-        .to_jsonld_async(out.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let bob = support::query_jsonld(
+        &fluree,
+        &out.ledger,
+        &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
+    )
+    .await
+    .expect("query bob")
+    .to_jsonld_async(out.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
     assert_eq!(
         bob,
         json!({"@id":"ex:bob","@type":"ex:User","schema:name":"Bob","schema:age":23})
@@ -229,16 +230,16 @@ async fn update_no_match_is_noop_success_and_does_not_bump_t() {
 
     assert_eq!(out.ledger.t(), t_before);
 
-    let bob = fluree
-        .query(
-            &out.ledger,
-            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
-        )
-        .await
-        .expect("query bob")
-        .to_jsonld_async(out.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let bob = support::query_jsonld(
+        &fluree,
+        &out.ledger,
+        &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
+    )
+    .await
+    .expect("query bob")
+    .to_jsonld_async(out.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
     assert_eq!(
         bob,
         json!({"@id":"ex:bob","@type":"ex:User","schema:name":"Bob","schema:age":22})
@@ -262,16 +263,16 @@ async fn update_replace_jane_age() {
         .await
         .expect("update jane age");
 
-    let jane = fluree
-        .query(
-            &out.ledger,
-            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:jane": ["*"]}}),
-        )
-        .await
-        .expect("query jane")
-        .to_jsonld_async(out.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let jane = support::query_jsonld(
+        &fluree,
+        &out.ledger,
+        &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:jane": ["*"]}}),
+    )
+    .await
+    .expect("query jane")
+    .to_jsonld_async(out.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
     assert_eq!(
         jane,
         json!({"@id":"ex:jane","@type":"ex:User","schema:name":"Jane","schema:email":"jane@flur.ee","schema:age":31})
@@ -316,19 +317,19 @@ async fn update_where_bind_hash_functions() {
         .await
         .expect("update hash fns");
 
-    let result = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:hash-fns": ["ex:sha512","ex:sha256"]}
-            }),
-        )
-        .await
-        .expect("query hash fns")
-        .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let result = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:hash-fns": ["ex:sha512","ex:sha256"]}
+        }),
+    )
+    .await
+    .expect("query hash fns")
+    .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
 
     assert_eq!(
         result,
@@ -407,16 +408,16 @@ async fn update_where_bind_datetime_functions() {
         .await
         .expect("update datetime fns");
 
-    let result = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:datetime-fns": ["ex:now","ex:year","ex:month","ex:day","ex:hours","ex:minutes","ex:seconds","ex:tz","ex:comp=","ex:comp<","ex:comp<=","ex:comp>","ex:comp>="]}
-            }),
-        )
-        .await
-        .expect("query datetime fns")
+    let result = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:datetime-fns": ["ex:now","ex:year","ex:month","ex:day","ex:hours","ex:minutes","ex:seconds","ex:tz","ex:comp=","ex:comp<","ex:comp<=","ex:comp>","ex:comp>="]}
+        }),
+    )
+    .await
+    .expect("query datetime fns")
         .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
@@ -510,19 +511,19 @@ async fn update_where_bind_numeric_and_math_functions() {
         .await
         .expect("update math fns");
 
-    let numeric = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:numeric-fns": ["ex:abs","ex:round","ex:ceil","ex:floor","ex:rand"]}
-            }),
-        )
-        .await
-        .expect("query numeric fns")
-        .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let numeric = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:numeric-fns": ["ex:abs","ex:round","ex:ceil","ex:floor","ex:rand"]}
+        }),
+    )
+    .await
+    .expect("query numeric fns")
+    .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
 
     let num_val = |v: &serde_json::Value| v.as_i64().map(|n| n as f64).or_else(|| v.as_f64());
     assert_eq!(numeric.get("ex:abs").and_then(num_val), Some(2.0));
@@ -531,19 +532,19 @@ async fn update_where_bind_numeric_and_math_functions() {
     assert_eq!(numeric.get("ex:floor").and_then(num_val), Some(1.0));
     assert!(numeric.get("ex:rand").is_some());
 
-    let math = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:math": ["ex:result"]}
-            }),
-        )
-        .await
-        .expect("query math fns")
-        .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
-        .await
-        .expect("to_jsonld_async");
+    let math = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:math": ["ex:result"]}
+        }),
+    )
+    .await
+    .expect("query math fns")
+    .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
+    .await
+    .expect("to_jsonld_async");
 
     assert_eq!(math.get("ex:result").and_then(num_val), Some(80.0));
 }
@@ -609,16 +610,16 @@ async fn update_where_bind_string_functions() {
         .await
         .expect("update string fns");
 
-    let result = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:string-fns": ["ex:strLen","ex:subStr","ex:ucase","ex:lcase","ex:strStarts","ex:strEnds","ex:contains","ex:strBefore","ex:strAfter","ex:concat","ex:regex"]}
-            }),
-        )
-        .await
-        .expect("query string fns")
+    let result = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:string-fns": ["ex:strLen","ex:subStr","ex:ucase","ex:lcase","ex:strStarts","ex:strEnds","ex:contains","ex:strBefore","ex:strAfter","ex:concat","ex:regex"]}
+        }),
+    )
+    .await
+    .expect("query string fns")
         .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
@@ -696,16 +697,16 @@ async fn update_where_bind_functional_forms() {
         .await
         .expect("update functional fns");
 
-    let result = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:functional-fns": ["ex:bound","ex:if","ex:coalesce","ex:in","ex:not-in","ex:logical-or","ex:logical-and"]}
-            }),
-        )
-        .await
-        .expect("query functional fns")
+    let result = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:functional-fns": ["ex:bound","ex:if","ex:coalesce","ex:in","ex:not-in","ex:logical-or","ex:logical-and"]}
+        }),
+    )
+    .await
+    .expect("query functional fns")
         .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
@@ -785,16 +786,16 @@ async fn update_where_bind_rdf_term_functions() {
         .await
         .expect("update rdf term fns");
 
-    let result = fluree
-        .query(
-            &updated.ledger,
-            &json!({
-                "@context": ctx_ex(),
-                "selectOne": {"ex:rdf-term-fns": ["ex:isIRI","ex:isLiteral","ex:lang","ex:datatype","ex:IRI","ex:bnode","ex:strdt","ex:strLang","ex:str"]}
-            }),
-        )
-        .await
-        .expect("query rdf term fns")
+    let result = support::query_jsonld(
+        &fluree,
+        &updated.ledger,
+        &json!({
+            "@context": ctx_ex(),
+            "selectOne": {"ex:rdf-term-fns": ["ex:isIRI","ex:isLiteral","ex:lang","ex:datatype","ex:IRI","ex:bnode","ex:strdt","ex:strLang","ex:str"]}
+        }),
+    )
+    .await
+    .expect("query rdf term fns")
         .to_jsonld_async(updated.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
@@ -885,19 +886,19 @@ async fn update_where_bind_error_handling_unknown_function() {
         .await
         .expect("seed error fns")
         .ledger;
-    let query_err = fluree
-        .query(
-            &ledger_for_query,
-            &json!({
-                "@context": ctx_ex(),
-                "where": [
-                    {"id":"ex:error","ex:text":"?text"},
-                    ["bind", "?err", "(foo ?text)"]
-                ],
-                "select": "?err"
-            }),
-        )
-        .await;
+    let query_err = support::query_jsonld(
+        &fluree,
+        &ledger_for_query,
+        &json!({
+            "@context": ctx_ex(),
+            "where": [
+                {"id":"ex:error","ex:text":"?text"},
+                ["bind", "?err", "(foo ?text)"]
+            ],
+            "select": "?err"
+        }),
+    )
+    .await;
 
     assert!(
         query_err.is_err(),

@@ -21,7 +21,8 @@
 //! usage when many flakes share the same subjects/predicates. Use per-Db
 //! for best memory efficiency.
 
-use fluree_vocab::namespaces::EMPTY;
+use fluree_vocab::namespaces::{self, EMPTY};
+use fluree_vocab::xsd_names;
 use hashbrown::HashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -94,6 +95,33 @@ impl Sid {
     /// Get the name as a string slice
     pub fn name_str(&self) -> &str {
         &self.name
+    }
+
+    /// XSD `xsd:integer` SID.
+    ///
+    /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
+    pub fn xsd_integer() -> Sid {
+        use std::sync::LazyLock;
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::INTEGER));
+        SID.clone()
+    }
+
+    /// XSD `xsd:double` SID.
+    ///
+    /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
+    pub fn xsd_double() -> Sid {
+        use std::sync::LazyLock;
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::DOUBLE));
+        SID.clone()
+    }
+
+    /// XSD `xsd:string` SID.
+    ///
+    /// Cached via `LazyLock` — the `Arc<str>` is allocated once and reused.
+    pub fn xsd_string() -> Sid {
+        use std::sync::LazyLock;
+        static SID: LazyLock<Sid> = LazyLock::new(|| Sid::new(namespaces::XSD, xsd_names::STRING));
+        SID.clone()
     }
 
     /// Canonical hash for HLL statistics.

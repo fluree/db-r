@@ -124,7 +124,7 @@ where
             .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
         let input = self.core.input.unwrap();
-        self.graph.fluree.query_view(&view, input).await
+        self.graph.fluree.query(&view, input).await
     }
 
     /// Execute and return formatted JSON output.
@@ -145,7 +145,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.graph.fluree.query_view(&view, input).await?;
+        let result = self.graph.fluree.query(&view, input).await?;
         match view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(view.as_graph_db_ref(), &format_config, policy)
@@ -158,7 +158,7 @@ where
 
     /// Execute with tracking (fuel, time, policy stats).
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -166,14 +166,18 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
-        let view = self
+        let db = self
             .graph
             .fluree
             .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await
             .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
-        self.graph.fluree.query_view_tracked(&view, input).await
+        self.graph
+            .fluree
+            .query_tracked(&db, input, format_config)
+            .await
     }
 }
 
@@ -276,7 +280,7 @@ where
         }
 
         let input = self.core.input.unwrap();
-        self.fluree.query_view(self.view, input).await
+        self.fluree.query(self.view, input).await
     }
 
     /// Execute and return formatted JSON output.
@@ -292,7 +296,7 @@ where
             .take()
             .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
-        let result = self.fluree.query_view(self.view, input).await?;
+        let result = self.fluree.query(self.view, input).await?;
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &format_config, policy)
@@ -305,7 +309,7 @@ where
 
     /// Execute with tracking (fuel, time, policy stats).
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -313,7 +317,10 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
-        self.fluree.query_view_tracked(self.view, input).await
+        self.fluree
+            .query_tracked(self.view, input, format_config)
+            .await
     }
 }

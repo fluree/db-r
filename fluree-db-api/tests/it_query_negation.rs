@@ -97,8 +97,7 @@ async fn exists_when_pattern_present_returns_subjects() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -121,8 +120,7 @@ async fn exists_when_pattern_absent_returns_no_subjects() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -145,8 +143,7 @@ async fn not_exists_filters_subjects_without_nickname() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -172,8 +169,7 @@ async fn not_exists_when_everyone_has_family_name_returns_none() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -196,8 +192,7 @@ async fn not_exists_all_variables_filters_everything() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -222,8 +217,7 @@ async fn not_exists_all_literals_filters_everything_when_match_exists() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -247,8 +241,7 @@ async fn minus_removes_bound_solutions() {
         ]
     });
 
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -276,8 +269,7 @@ async fn minus_all_variables_has_no_common_bindings_removes_nothing() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -317,8 +309,7 @@ async fn minus_all_literals_no_common_bindings_removes_nothing() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -370,8 +361,7 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
             ]
         ]
     });
-    let r1 = fluree
-        .query(&ledger, &q_not_exists)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q_not_exists)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -389,8 +379,7 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
             ]
         ]
     });
-    let r2 = fluree
-        .query(&ledger, &q_minus)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q_minus)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

@@ -76,8 +76,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "select": ["?o"],
         "where": {"@id":"ex:e","ex:y":"?o"}
     });
-    let sanity_rows = fluree
-        .query(&ledger, &sanity)
+    let sanity_rows = support::query_jsonld(&fluree, &ledger, &sanity)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -93,8 +92,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "select": ["?o"],
         "where": [{"@id":"ex:a","yPlus":"?o"}]
     });
-    let sanity_path_rows = fluree
-        .query(&ledger, &sanity_path)
+    let sanity_path_rows = support::query_jsonld(&fluree, &ledger, &sanity_path)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -109,8 +107,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "where": [{"@id":"ex:a","ex:y":{"@id":"ex:f"}}],
         "select": ["?dummy"]
     });
-    let r_non = fluree
-        .query(&ledger, &q_non)
+    let r_non = support::query_jsonld(&fluree, &ledger, &q_non)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -126,8 +123,7 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "where": [{"@id":"ex:a","yPlus":{"@id":"ex:f"}}],
         "select": ["?dummy"]
     });
-    let r_plus = fluree
-        .query(&ledger, &q_plus)
+    let r_plus = support::query_jsonld(&fluree, &ledger, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -145,8 +141,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","ex:knows":"?who"}],
         "select": ["?who"]
     });
-    let non = fluree
-        .query(&ledger1, &q_non)
+    let non = support::query_jsonld(&fluree, &ledger1, &q_non)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -162,8 +157,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let plus = fluree
-        .query(&ledger1, &q_plus)
+    let plus = support::query_jsonld(&fluree, &ledger1, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -185,8 +179,7 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let plus2 = fluree
-        .query(&ledger2, &q_plus2)
+    let plus2 = support::query_jsonld(&fluree, &ledger2, &q_plus2)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -207,8 +200,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         "where": [{"@id":"?who","ex:knows":{"@id":"ex:e"}}],
         "select": ["?who"]
     });
-    let non = fluree
-        .query(&ledger1, &q_non)
+    let non = support::query_jsonld(&fluree, &ledger1, &q_non)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -223,8 +215,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         "where": [{"@id":"?who","knowsPlus":{"@id":"ex:e"}}],
         "select": ["?who"]
     });
-    let plus = fluree
-        .query(&ledger1, &q_plus)
+    let plus = support::query_jsonld(&fluree, &ledger1, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -238,8 +229,7 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
     let tx_cycle = json!({"@context":{"ex":"http://example.org/"},"insert":{"@id":"ex:e","ex:knows":{"@id":"ex:a"}}});
     let ledger2 = fluree.update(ledger1, &tx_cycle).await.unwrap().ledger;
 
-    let plus2 = fluree
-        .query(&ledger2, &q_plus)
+    let plus2 = support::query_jsonld(&fluree, &ledger2, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -269,8 +259,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         "where": [{"@id":"?s","ex:knows":"?o"}],
         "select": ["?s","?o"]
     });
-    let non = fluree
-        .query(&ledger1, &q_non)
+    let non = support::query_jsonld(&fluree, &ledger1, &q_non)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -288,8 +277,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         "where": [{"@id":"?x","knowsPlus":"?y"}],
         "select": ["?x","?y"]
     });
-    let plus = fluree
-        .query(&ledger1, &q_plus)
+    let plus = support::query_jsonld(&fluree, &ledger1, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -307,8 +295,7 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
     let tx_cycle = json!({"@context":{"ex":"http://example.org/"},"insert":{"@id":"ex:3","ex:knows":{"@id":"ex:1"}}});
     let ledger2 = fluree.update(ledger1, &tx_cycle).await.unwrap().ledger;
 
-    let plus2 = fluree
-        .query(&ledger2, &q_plus)
+    let plus2 = support::query_jsonld(&fluree, &ledger2, &q_plus)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -342,8 +329,7 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         "where": [{"@id":"ex:a","knowsStar":"?who"}],
         "select": ["?who"]
     });
-    let star = fluree
-        .query(&ledger1, &q_star)
+    let star = support::query_jsonld(&fluree, &ledger1, &q_star)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -374,8 +360,7 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         "where": [{"@id":"?x","knowsStar":"?y"}],
         "select": ["?x","?y"]
     });
-    let xy = fluree
-        .query(&ledger2, &q_xy)
+    let xy = support::query_jsonld(&fluree, &ledger2, &q_xy)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -415,8 +400,7 @@ async fn property_path_array_form() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger1, &q)
+    let result = support::query_jsonld(&fluree, &ledger1, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger1.snapshot)
@@ -441,7 +425,7 @@ async fn property_path_unsupported_operator_error() {
         "where": [{"@id":"ex:a","maybeFriend":"?who"}],
         "select": ["?who"]
     });
-    let err = fluree.query(&ledger1, &q).await;
+    let err = support::query_jsonld(&fluree, &ledger1, &q).await;
     assert!(err.is_err(), "Zero-or-one paths should fail at execution");
     let msg = format!("{}", err.unwrap_err());
     assert!(
@@ -465,7 +449,7 @@ async fn property_path_reverse_and_path_mutually_exclusive() {
         "where": [{"@id":"ex:a","bad":"?who"}],
         "select": ["?who"]
     });
-    let err = fluree.query(&ledger1, &q).await;
+    let err = support::query_jsonld(&fluree, &ledger1, &q).await;
     assert!(err.is_err(), "@path + @reverse should error");
     let msg = format!("{}", err.unwrap_err());
     assert!(
@@ -491,8 +475,7 @@ async fn property_path_inverse_object_var() {
         "where": [{"@id":"ex:b","knownBy":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -514,8 +497,7 @@ async fn property_path_inverse_subject_var() {
         "where": [{"@id":"?who","knownBy":{"@id":"ex:a"}}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -547,8 +529,7 @@ async fn property_path_alternative_object_var() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -573,8 +554,7 @@ async fn property_path_alternative_with_inverse() {
         "where": [{"@id":"ex:b","knowsBoth":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -607,8 +587,7 @@ async fn property_path_alternative_array_form() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -642,8 +621,7 @@ async fn property_path_alternative_duplicate_semantics() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -670,7 +648,7 @@ async fn property_path_nested_alternative_under_transitive_errors() {
         "where": [{"@id":"ex:a","bad":"?who"}],
         "select": ["?who"]
     });
-    let err = fluree.query(&ledger, &q).await;
+    let err = support::query_jsonld(&fluree, &ledger, &q).await;
     assert!(err.is_err(), "(a|b)+ should error");
     let msg = format!("{}", err.unwrap_err());
     assert!(
@@ -698,8 +676,7 @@ async fn property_path_sequence_two_step_string_form() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -722,8 +699,7 @@ async fn property_path_sequence_two_step_array_form() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -747,8 +723,7 @@ async fn property_path_sequence_three_step() {
         "where": [{"@id":"ex:alice","friendFriendCity":"?city"}],
         "select": ["?city"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -775,8 +750,7 @@ async fn property_path_sequence_with_inverse_step() {
         "where": [{"@id":"ex:alice","childName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -799,8 +773,7 @@ async fn property_path_sequence_wildcard_hides_internal_vars() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": "*"
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -834,7 +807,7 @@ async fn property_path_sequence_transitive_step_errors() {
         "where": [{"@id":"ex:alice","bad":"?name"}],
         "select": ["?name"]
     });
-    let err = fluree.query(&ledger, &q).await;
+    let err = support::query_jsonld(&fluree, &ledger, &q).await;
     assert!(err.is_err(), "Transitive step in sequence should error");
     let msg = format!("{}", err.unwrap_err());
     assert!(
@@ -884,8 +857,7 @@ async fn property_path_alternative_of_sequences() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -917,8 +889,7 @@ async fn property_path_alternative_mixed_simple_and_sequence() {
         "where": [{"@id":"ex:alice","nameOrFriendName":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -943,8 +914,7 @@ async fn property_path_alternative_of_sequences_wildcard_hides_vars() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": "*"
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -989,8 +959,7 @@ async fn property_path_alternative_of_sequences_duplicate_semantics() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1020,8 +989,7 @@ async fn property_path_inverse_one_or_more() {
         "where": [{"@id":"ex:c","invKnowsPlus":"?x"}],
         "select": ["?x"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1047,8 +1015,7 @@ async fn property_path_inverse_zero_or_more() {
         "where": [{"@id":"ex:b","invKnowsStar":"?x"}],
         "select": ["?x"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1098,8 +1065,7 @@ async fn property_path_sequence_with_alternative_step() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1124,8 +1090,7 @@ async fn property_path_sequence_with_alternative_step_array_form() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1150,8 +1115,7 @@ async fn property_path_sequence_with_alternative_step_wildcard() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": "*"
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1191,8 +1155,7 @@ async fn property_path_inverse_of_sequence() {
         "where": [{"@id":"ex:carol","invFF":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1220,8 +1183,7 @@ async fn property_path_inverse_of_alternative() {
         "where": [{"@id":"ex:bob","invRel":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -1249,8 +1211,7 @@ async fn property_path_inverse_of_three_step_sequence() {
         "where": [{"@id":"ex:addr1","invChain":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree
-        .query(&ledger, &q)
+    let result = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

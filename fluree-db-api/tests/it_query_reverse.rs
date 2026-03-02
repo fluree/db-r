@@ -85,8 +85,7 @@ async fn reverse_predicate_in_where_selects_inverse_edges() {
         ]
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -113,8 +112,7 @@ async fn reverse_predicate_in_where_finds_kid() {
         "distinct": true
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -138,8 +136,7 @@ async fn reverse_at_type_in_where_finds_classes() {
         "distinct": true
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -163,8 +160,7 @@ async fn forward_at_type_in_where_finds_classes() {
         "distinct": true
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -190,8 +186,7 @@ async fn context_reverse_select_one_graph_crawl() {
         "select": {"ex:brian": ["schema:name","friended"]}
     });
 
-    let r1 = fluree
-        .query(&ledger, &q1)
+    let r1 = support::query_jsonld(&fluree, &ledger, &q1)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -215,8 +210,7 @@ async fn context_reverse_select_one_graph_crawl() {
         "select": {"ex:brian": ["schema:name","friended"]}
     });
 
-    let r2 = fluree
-        .query(&ledger, &q2)
+    let r2 = support::query_jsonld(&fluree, &ledger, &q2)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -240,8 +234,7 @@ async fn context_reverse_select_one_graph_crawl() {
         "select": {"ex:alice": ["schema:name","friended"]}
     });
 
-    let r3 = fluree
-        .query(&ledger, &q3)
+    let r3 = support::query_jsonld(&fluree, &ledger, &q3)
         .await
         .unwrap()
         .to_jsonld_async(ledger.as_graph_db_ref(0))
@@ -275,8 +268,7 @@ async fn reverse_predicate_in_where_selects_parents() {
         "where": {"@id":"ex:kid","parent":"?parent"}
     });
 
-    let rows = fluree
-        .query(&ledger, &q)
+    let rows = support::query_jsonld(&fluree, &ledger, &q)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
@@ -306,14 +298,12 @@ async fn type_reverse_and_forward_agree_on_classes() {
         "where": {"@id":"?x","@type":"?class"}
     });
 
-    let rows_reverse = fluree
-        .query(&ledger, &q_reverse)
+    let rows_reverse = support::query_jsonld(&fluree, &ledger, &q_reverse)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)
         .unwrap();
-    let rows_forward = fluree
-        .query(&ledger, &q_forward)
+    let rows_forward = support::query_jsonld(&fluree, &ledger, &q_forward)
         .await
         .unwrap()
         .to_jsonld(&ledger.snapshot)

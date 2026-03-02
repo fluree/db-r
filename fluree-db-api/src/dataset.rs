@@ -28,7 +28,7 @@
 //! let dataset = fluree.build_dataset_view(&spec).await?;
 //!
 //! // Execute query with dataset
-//! let result = fluree.query_dataset_view(&dataset, &query).await?;
+//! let result = fluree.query_dataset(&dataset, &query).await?;
 //! ```
 
 use fluree_db_core::{

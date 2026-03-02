@@ -412,6 +412,10 @@ impl RemoteLedgerClient {
         format!("{}/{}/{}", self.base_url, op, Self::ledger_tail(ledger))
     }
 
+    fn op_url_root(&self, op: &str) -> String {
+        format!("{}/{}", self.base_url, op)
+    }
+
     // =========================================================================
     // Query
     // =========================================================================
@@ -439,6 +443,36 @@ impl RemoteLedgerClient {
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = self.op_url("query", ledger);
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-query",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
+    }
+
+    /// Execute a JSON-LD connection query (ledger specified via `from` in body).
+    pub async fn query_connection_jsonld(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("query");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
+
+    /// Execute a SPARQL connection query (ledger specified via `FROM` clause).
+    pub async fn query_connection_sparql(
+        &self,
+        sparql: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("query");
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -524,10 +558,7 @@ impl RemoteLedgerClient {
     // Transact
     // =========================================================================
 
-    // Kept for: `fluree transact` CLI command (combined insert+delete with WHERE).
-    // Use when: a `transact` subcommand is added to the CLI.
     /// Execute a full JSON-LD transaction (insert + delete with WHERE).
-    #[expect(dead_code)]
     pub async fn transact_jsonld(
         &self,
         ledger: &str,
@@ -543,10 +574,7 @@ impl RemoteLedgerClient {
         .await
     }
 
-    // Kept for: `fluree transact` CLI command (SPARQL UPDATE support).
-    // Use when: a `transact` subcommand is added to the CLI.
     /// Execute a SPARQL UPDATE transaction.
-    #[expect(dead_code)]
     pub async fn transact_sparql(
         &self,
         ledger: &str,

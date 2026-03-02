@@ -143,19 +143,6 @@ pub(crate) fn build_query_result(
     }
 }
 
-/// Build a QueryResult for SPARQL queries (no graph_select support).
-pub(crate) fn build_sparql_result(
-    vars: VarRegistry,
-    mut parsed: ParsedQuery,
-    batches: Vec<Batch>,
-    t: i64,
-    novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_graph: Option<BinaryGraphView>,
-) -> QueryResult {
-    parsed.graph_select = None; // SPARQL doesn't support graph crawl
-    build_query_result(vars, parsed, batches, t, novelty, binary_graph)
-}
-
 // =============================================================================
 // R2RML Provider Macro
 // =============================================================================
@@ -229,11 +216,6 @@ pub(crate) fn parse_and_validate_sparql(sparql: &str) -> Result<fluree_db_sparql
     }
 
     Ok(ast)
-}
-
-pub(crate) fn tracker_from_query_json(query_json: &JsonValue) -> Tracker {
-    let opts = query_json.as_object().and_then(|o| o.get("opts"));
-    Tracker::new(TrackingOptions::from_opts_value(opts))
 }
 
 /// Creates a tracker for "tracked" query endpoints.

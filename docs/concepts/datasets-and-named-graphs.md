@@ -25,8 +25,21 @@ In SPARQL, **named graphs** are additional graphs (identified by IRIs) that part
 In Fluree, named graphs are used in several ways:
 
 - **Multi-graph execution (datasets)**: `FROM NAMED <...>` identifies additional **graph sources** (often other ledgers or non-ledger graph sources) that you can reference with `GRAPH <...> { ... }`.
-- **Named graphs within a ledger (txn metadata)**: Fluree provides a built-in named graph for commit/transaction metadata called **`txn-meta`**, queryable via the `#txn-meta` fragment on a ledger reference (e.g., `<mydb:main#txn-meta>`).
+- **System named graphs**: Fluree provides two built-in named graphs:
+  - **`txn-meta`** (`#txn-meta`): commit/transaction metadata, queryable via the `#txn-meta` fragment (e.g., `<mydb:main#txn-meta>`)
+  - **`config`** (`#config`): ledger-level configuration (policy, SHACL, reasoning, uniqueness constraints). See [Ledger configuration](../ledger-config/README.md).
 - **User-defined named graphs**: Fluree supports ingesting data into user-defined named graphs using TriG format. These graphs are identified by their IRI and can be queried using the structured `from` object syntax with a `graph` field.
+
+### HTTP endpoints and default graph behavior
+
+Fluree exposes two query styles over HTTP:
+
+- **Connection-scoped** (`POST /query`): the ledger(s) and graphs are identified by `from` / `from-named` (JSON-LD) or `FROM` / `FROM NAMED` (SPARQL). This is the dataset path and supports multi-ledger datasets.
+- **Ledger-scoped** (`POST /query/{ledger}`): the ledger is fixed by the URL. The request may still select a **named graph inside that ledger**:
+  - JSON-LD: `"from": "default"`, `"from": "txn-meta"`, or `"from": "<graph IRI>"`
+  - SPARQL: `FROM <default>`, `FROM <txn-meta>`, `FROM <graph IRI>`, and `FROM NAMED <graph IRI>`
+
+If the request body tries to target a different ledger than the one in the URL, the server rejects it with a "Ledger mismatch" error.
 
 ### Txn metadata named graph (`#txn-meta`)
 
@@ -105,10 +118,11 @@ Use the structured `from` object with a `graph` field:
 }
 ```
 
-**Graph IDs:**
-- **g_id=0**: Default graph (user data without GRAPH blocks)
-- **g_id=1**: txn-meta graph (commit metadata)
-- **g_id=2+**: User-defined named graphs (assigned in order of first use)
+**System and user graphs:**
+- **Default graph** (implicit): User data without GRAPH blocks
+- **`urn:fluree:{ledger_id}#txn-meta`**: Commit metadata
+- **`urn:fluree:{ledger_id}#config`**: Ledger configuration (see [Ledger configuration](../ledger-config/README.md))
+- **User-defined named graphs**: Identified by their IRI, allocated in order of first use
 
 **Notes:**
 - Named graph IRIs are stored in the commit's `graph_delta` field for replay
