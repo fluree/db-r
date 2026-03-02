@@ -802,7 +802,7 @@ where
     /// **Note**: Custom `.tracking()` options are not yet wired through this
     /// path. See [`ViewQueryBuilder::execute_tracked()`] for details.
     pub async fn execute_tracked(
-        self,
+        mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
         let errs = self.core.validate();
         if !errs.is_empty() {
@@ -810,23 +810,40 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let format_config = self.core.format.take();
         let input = self.core.input.unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_jsonld_tracked_with_policy(json, policy)
+                        .query_connection_jsonld_tracked_with_policy(
+                            json,
+                            policy,
+                            format_config,
+                        )
                         .await
                 }
-                None => self.fluree.query_connection_jsonld_tracked(json).await,
+                None => {
+                    self.fluree
+                        .query_connection_jsonld_tracked(json, format_config)
+                        .await
+                }
             },
             QueryInput::Sparql(sparql) => match &self.policy {
                 Some(policy) => {
                     self.fluree
-                        .query_connection_sparql_tracked_with_policy(sparql, policy)
+                        .query_connection_sparql_tracked_with_policy(
+                            sparql,
+                            policy,
+                            format_config,
+                        )
                         .await
                 }
-                None => self.fluree.query_connection_sparql_tracked(sparql).await,
+                None => {
+                    self.fluree
+                        .query_connection_sparql_tracked(sparql, format_config)
+                        .await
+                }
             },
         }
     }

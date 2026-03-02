@@ -5,7 +5,7 @@ use crate::query::helpers::{
     extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec,
 };
 use crate::view::DataSetDb;
-use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, Storage};
+use crate::{ApiError, Fluree, FormatterConfig, PolicyContext, QueryResult, Result, Storage};
 
 impl<S, N> Fluree<S, N>
 where
@@ -88,6 +88,7 @@ where
     pub(crate) async fn query_connection_jsonld_tracked(
         &self,
         query_json: &JsonValue,
+        format_config: Option<FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let (spec, qc_opts) = parse_dataset_spec(query_json)
@@ -127,7 +128,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_tracked(&view, query_json, None).await;
+            return self.query_tracked(&view, query_json, format_config).await;
         }
 
         // Single-ledger with time travel: use GraphDb API
@@ -156,7 +157,7 @@ where
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
 
-            return self.query_tracked(&view, query_json, None).await;
+            return self.query_tracked(&view, query_json, format_config).await;
         }
 
         // Multi-ledger: use DataSetDb
@@ -170,7 +171,8 @@ where
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
         };
 
-        self.query_dataset_tracked(&dataset, query_json, None).await
+        self.query_dataset_tracked(&dataset, query_json, format_config)
+            .await
     }
 
     /// Clojure-parity alias: tracked connection query entrypoint.
@@ -179,7 +181,7 @@ where
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        self.query_connection_jsonld_tracked(query_json).await
+        self.query_connection_jsonld_tracked(query_json, None).await
     }
 
     /// Execute a JSON-LD query via connection with explicit policy context.
@@ -219,6 +221,7 @@ where
         &self,
         query_json: &JsonValue,
         policy: &PolicyContext,
+        format_config: Option<FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let (spec, _qc_opts) = parse_dataset_spec(query_json)
@@ -242,7 +245,7 @@ where
             let view = view.with_policy(Arc::new(policy.clone()));
             let view = self.apply_config_reasoning(view, None);
             let view = self.apply_config_datalog(view, None);
-            return self.query_tracked(&view, query_json, None).await;
+            return self.query_tracked(&view, query_json, format_config).await;
         }
 
         // Multi-ledger: use DataSetDb and apply explicit policy to each view
@@ -251,7 +254,8 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
-        self.query_dataset_tracked(&dataset, query_json, None).await
+        self.query_dataset_tracked(&dataset, query_json, format_config)
+            .await
     }
 
     /// Execute a SPARQL query via connection (dataset specified via SPARQL `FROM` / `FROM NAMED`).
@@ -300,6 +304,7 @@ where
     pub async fn query_connection_sparql_tracked(
         &self,
         sparql: &str,
+        format_config: Option<FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let ast = parse_and_validate_sparql(sparql)
@@ -320,7 +325,8 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
-        self.query_dataset_tracked(&dataset, sparql, None).await
+        self.query_dataset_tracked(&dataset, sparql, format_config)
+            .await
     }
 
     /// Execute a SPARQL query via connection with explicit policy context and tracking.
@@ -332,6 +338,7 @@ where
         &self,
         sparql: &str,
         policy: &PolicyContext,
+        format_config: Option<FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let ast = parse_and_validate_sparql(sparql)
@@ -353,7 +360,8 @@ where
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
 
-        self.query_dataset_tracked(&dataset, sparql, None).await
+        self.query_dataset_tracked(&dataset, sparql, format_config)
+            .await
     }
 
     /// Apply per-source or global policy to a view.
