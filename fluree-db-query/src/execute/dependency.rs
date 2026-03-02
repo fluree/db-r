@@ -199,6 +199,7 @@ mod tests {
                 function: AggregateFn::Avg,
                 input_var: Some(VarId(1)),
                 output_var: VarId(3),
+                distinct: false,
             }]);
 
         let deps = compute_variable_deps(&query, &options).unwrap();
@@ -353,6 +354,7 @@ mod tests {
                 function: AggregateFn::Avg,
                 input_var: Some(VarId(1)),
                 output_var: VarId(2),
+                distinct: false,
             }]);
 
         let deps = compute_variable_deps(&query, &options).unwrap();
@@ -418,6 +420,7 @@ mod tests {
                 function: AggregateFn::Count,
                 input_var: Some(VarId(1)),
                 output_var: VarId(2),
+                distinct: false,
             }])
             .with_having(Expression::gt(
                 Expression::Var(VarId(2)),
