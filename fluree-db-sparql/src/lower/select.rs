@@ -151,11 +151,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         let mut having_aggregates: Vec<AggregateSpec> = Vec::new();
         if let Some(ref having) = modifiers.having {
             let mut aggregate_aliases = self.build_aggregate_aliases(select)?;
+            let mut having_pre_binds: Vec<Pattern> = Vec::new();
             for cond in &having.conditions {
                 self.collect_having_aggregates(
                     cond,
                     &mut aggregate_aliases,
                     &mut having_aggregates,
+                    &mut having_pre_binds,
                 )?;
             }
             self.aggregate_aliases = Some(aggregate_aliases);
@@ -163,10 +165,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             let filter = self.lower_having_conditions(&having.conditions)?;
             options.having = Some(filter);
             self.aggregate_aliases = None;
+            pre_group_binds.extend(having_pre_binds);
         }
 
         // Extract aggregates from SELECT clause
-        options.aggregates = self.extract_aggregates(select)?;
+        let (select_aggregates, select_agg_binds) = self.extract_aggregates(select)?;
+        options.aggregates = select_aggregates;
+        pre_group_binds.extend(select_agg_binds);
         if !having_aggregates.is_empty() {
             options.aggregates.extend(having_aggregates);
         }
@@ -364,7 +369,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         };
 
         // Extract aggregates from SELECT clause (e.g. COUNT(?x) AS ?count)
-        let aggregates = self.extract_aggregates(&select_clause)?;
+        let (aggregates, agg_binds) = self.extract_aggregates(&select_clause)?;
 
         // Lower GROUP BY (expression GROUP BY produces pre-group BINDs)
         let mut group_vars = Vec::new();
@@ -377,6 +382,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 }
             }
         }
+
+        // Aggregate expression inputs (e.g. SUM(YEAR(?o))) are desugared to
+        // pre-aggregation BIND patterns + aggregate over the synthetic var.
+        patterns.extend(agg_binds);
 
         // Build SubqueryPattern (after injecting any pre-group BINDs into patterns)
         let mut sq = SubqueryPattern::new(select, patterns);

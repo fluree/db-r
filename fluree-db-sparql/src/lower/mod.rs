@@ -125,6 +125,13 @@ struct LoweringContext<'a, E> {
     base: Option<Arc<str>>,
     /// Aggregate expression → alias variable mapping (for HAVING)
     aggregate_aliases: Option<HashMap<String, VarId>>,
+    /// Cache of lowered aggregate-input expressions that have been desugared to a
+    /// pre-aggregation `BIND(expr AS ?__agg_expr_N)` variable.
+    ///
+    /// Key is a span-free structural string of the input expression.
+    agg_expr_binds: HashMap<String, VarId>,
+    /// Monotonic counter for generating aggregate-input bind variables (`?__agg_expr_0`, `?__agg_expr_1`, …).
+    agg_counter: u32,
     /// Monotonic counter for generating intermediate property-path join variables (`?__pp0`, `?__pp1`, …).
     pp_counter: u32,
 }
@@ -147,6 +154,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             prefixes,
             base,
             aggregate_aliases: None,
+            agg_expr_binds: HashMap::new(),
+            agg_counter: 0,
             pp_counter: 0,
         }
     }
@@ -1414,6 +1423,32 @@ mod tests {
             query.options.aggregates[0].function,
             AggregateFn::Sum
         ));
+    }
+
+    #[test]
+    fn test_aggregate_over_expression_desugars_to_bind() {
+        let (query, vars) = lower_query_with_vars(
+            "PREFIX ex: <http://example.org/>
+             SELECT (SUM(YEAR(?dt)) AS ?sum) WHERE { ?s ex:created ?dt }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::Sum));
+
+        let input_var = agg.input_var.expect("expected aggregate input var");
+        let input_name = vars.name(input_var);
+        assert!(
+            input_name.starts_with("?__agg_expr_"),
+            "expected synthetic aggregate-input var, got: {input_name}"
+        );
+
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == input_var));
+        assert!(has_bind, "expected a pre-aggregation BIND for the input expression");
     }
 
     #[test]
