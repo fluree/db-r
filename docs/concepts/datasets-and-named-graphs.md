@@ -94,7 +94,7 @@ GRAPH <http://example.org/graphs/inventory> {
 Submit TriG data via HTTP API:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   --data-binary '@data.trig'
 ```

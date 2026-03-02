@@ -498,7 +498,7 @@ Bad (graph traversal before graph source means scanning all products first):
 Understand query execution:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Explain: true" \
   -d '{...}'
 ```

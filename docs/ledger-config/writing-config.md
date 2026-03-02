@@ -182,7 +182,7 @@ WHERE {
 ### Ledger-scoped endpoint
 
 ```bash
-curl -X POST "http://localhost:8090/query/mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/query/mydb:main" \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX f: <https://ns.flur.ee/db#>
       SELECT ?s ?p ?o

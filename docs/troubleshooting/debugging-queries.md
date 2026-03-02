@@ -9,7 +9,7 @@ This guide provides tools and techniques for debugging query performance and cor
 Get query execution plan:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Explain: true" \
   -H "Content-Type: application/json" \
   -d '{
@@ -86,7 +86,7 @@ curl -X POST http://localhost:8090/query \
 Get detailed execution trace:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Trace: true" \
   -d '{...}'
 ```
@@ -376,7 +376,7 @@ Ensure patterns are connected:
 See which policies apply:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```
@@ -444,11 +444,11 @@ Test on small dataset first:
 
 ```bash
 # Create test ledger
-curl -X POST "http://localhost:8090/transact?ledger=test:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=test:main" \
   -d '{"@graph": [small test data]}'
 
 # Test query
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "test:main", ...}'
 ```
 

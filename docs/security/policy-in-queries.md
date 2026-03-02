@@ -358,7 +358,7 @@ Fluree optimizes policy-augmented queries:
 
 Check query plan:
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Explain: true" \
   -d '{...}'
 ```
@@ -464,7 +464,7 @@ Same policies apply, showing historical data user was authorized to see.
 ### Enable Policy Trace
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```
@@ -493,7 +493,7 @@ Response:
 See augmented query:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Show-Augmented-Query: true" \
   -d '{...}'
 ```

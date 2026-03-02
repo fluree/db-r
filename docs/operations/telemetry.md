@@ -661,7 +661,7 @@ JSON format with consistent fields:
 Include request IDs for tracing:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Request-ID: abc-123-def-456" \
   -d '{...}'
 ```

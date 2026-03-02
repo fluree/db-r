@@ -28,7 +28,7 @@ curl http://localhost:8090/ledgers
 
 **Create ledger:**
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -d '{"@context": {}, "@graph": []}'
 ```
 
@@ -195,7 +195,7 @@ curl http://localhost:8090/ledgers/mydb:main
 
 **Increase timeout:**
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Timeout: 60000" \
   -d '{...}'
 ```
@@ -244,7 +244,7 @@ WHERE {
 
 **Test with policy trace:**
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```

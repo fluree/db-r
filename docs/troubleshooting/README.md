@@ -100,7 +100,7 @@ curl http://localhost:8090/health
 **Quick Checks:**
 ```bash
 # Enable explain
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Explain: true" \
   -d '{...}'
 
@@ -124,7 +124,7 @@ See [Debugging Queries](debugging-queries.md).
 # Use online validator: json-ld.org/playground
 
 # Check permissions
-curl -X POST http://localhost:8090/transact?dryRun=true \
+curl -X POST http://localhost:8090/v1/fluree/transact?dryRun=true \
   -d '{...}'
 
 # Check transaction stats
@@ -199,7 +199,7 @@ curl -X POST http://localhost:8090/admin/log-level \
 ### Enable Query Tracing
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Trace: true" \
   -d '{...}'
 ```
@@ -207,7 +207,7 @@ curl -X POST http://localhost:8090/query \
 ### Enable Policy Tracing
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```
@@ -215,7 +215,7 @@ curl -X POST http://localhost:8090/query \
 ### Get Query Plan
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Explain: true" \
   -d '{...}'
 ```

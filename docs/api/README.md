@@ -89,7 +89,7 @@ See [Signed Requests](signed-requests.md) for cryptographic authentication detai
 ### Transaction Request
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -104,7 +104,7 @@ curl -X POST http://localhost:8090/transact?ledger=mydb:main \
 ### Query Request
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "from": "mydb:main",
@@ -118,7 +118,7 @@ curl -X POST http://localhost:8090/query \
 ### SPARQL Query
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d 'SELECT ?name FROM <mydb:main> WHERE { ?person ex:name ?name }'
 ```
@@ -141,7 +141,7 @@ Fluree's HTTP API can be accessed from any language with HTTP client support:
 
 **JavaScript/TypeScript:**
 ```javascript
-const response = await fetch('http://localhost:8090/query', {
+const response = await fetch('http://localhost:8090/v1/fluree/query', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -157,7 +157,7 @@ const results = await response.json();
 ```python
 import requests
 
-response = requests.post('http://localhost:8090/query', json={
+response = requests.post('http://localhost:8090/v1/fluree/query', json={
     'from': 'mydb:main',
     'select': ['?name'],
     'where': [{'@id': '?person', 'ex:name': '?name'}]
@@ -169,7 +169,7 @@ results = response.json()
 ```java
 HttpClient client = HttpClient.newHttpClient();
 HttpRequest request = HttpRequest.newBuilder()
-    .uri(URI.create("http://localhost:8090/query"))
+    .uri(URI.create("http://localhost:8090/v1/fluree/query"))
     .header("Content-Type", "application/json")
     .POST(HttpRequest.BodyPublishers.ofString(queryJson))
     .build();

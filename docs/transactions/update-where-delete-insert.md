@@ -38,7 +38,7 @@ This:
 Update a single property value:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
