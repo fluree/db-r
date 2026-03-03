@@ -7,8 +7,8 @@ use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
-    decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, LeafletHeader, RunRecord,
-    RunSortOrder,
+    decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, LeafletHeader, OverlayOp,
+    RunRecord, RunSortOrder,
 };
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
@@ -16,6 +16,52 @@ use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::StatsView;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+struct FactKey {
+    s_id: u64,
+    o_kind: u8,
+    o_key: u64,
+    dt: u16,
+    lang_id: u16,
+    i_val: i32,
+}
+
+fn overlay_ops_for_ctx(
+    ctx: &ExecutionContext<'_>,
+    gv: &fluree_db_binary_index::BinaryGraphView,
+) -> Vec<OverlayOp> {
+    let Some(overlay) = ctx.overlay else {
+        return Vec::new();
+    };
+    let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
+        Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+    });
+    let dict_gv = fluree_db_binary_index::BinaryGraphView::new(gv.clone_store(), gv.g_id());
+    let mut dict_ov = crate::dict_overlay::DictOverlay::new(dict_gv, dn);
+    crate::binary_scan::translate_overlay_flakes(overlay, &mut dict_ov, ctx.to_t, gv.g_id())
+}
+
+#[inline]
+fn group_key_for_fact(key: &FactKey, single_dt_id: Option<u16>) -> GroupKey {
+    if key.o_kind == ObjKind::REF_ID.as_u8() {
+        GroupKey::Ref(key.o_key)
+    } else if let Some(dt_id) = single_dt_id {
+        GroupKey::Lit {
+            o_kind: key.o_kind,
+            o_key: key.o_key,
+            dt_id,
+            lang_id: 0,
+        }
+    } else {
+        GroupKey::Lit {
+            o_kind: key.o_kind,
+            o_key: key.o_key,
+            dt_id: key.dt,
+            lang_id: key.lang_id,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 enum GroupKey {
@@ -126,10 +172,7 @@ impl PredicateGroupCountFirstsOperator {
 
     #[inline]
     fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
-        ctx.graph_view().is_none()
-            || ctx.overlay.is_some()
-            || ctx.history_mode
-            || ctx.policy_enforcer.is_some()
+        ctx.graph_view().is_none() || ctx.history_mode || ctx.policy_enforcer.is_some()
     }
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -396,6 +439,70 @@ impl Operator for PredicateGroupCountFirstsOperator {
             }
         }
 
+        // Merge novelty overlay deltas (when present).
+        //
+        // We keep the fast base counting via leaflet skipping, then adjust counts using
+        // translated overlay ops. This is exact under the assumption that overlay
+        // retractions only occur for facts that exist in the merged view at that time.
+        if ctx.overlay.is_some() {
+            let overlay_ops = overlay_ops_for_ctx(ctx, &gv);
+            if !overlay_ops.is_empty() {
+                let mut ops: Vec<(FactKey, i64, bool)> = overlay_ops
+                    .into_iter()
+                    .filter(|op| op.p_id == p_id)
+                    .map(|op| {
+                        (
+                            FactKey {
+                                s_id: op.s_id,
+                                o_kind: op.o_kind,
+                                o_key: op.o_key,
+                                dt: op.dt,
+                                lang_id: op.lang_id,
+                                i_val: op.i_val,
+                            },
+                            op.t,
+                            op.op,
+                        )
+                    })
+                    .collect();
+                // Group by fact identity and apply ops in time order (retract before assert for same t).
+                ops.sort_unstable_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.cmp(&b.1))
+                        .then_with(|| a.2.cmp(&b.2))
+                });
+
+                let mut idx = 0usize;
+                while idx < ops.len() {
+                    let key = ops[idx].0;
+                    // If the first op is a retract, the fact must have existed before overlay.
+                    let mut present = !ops[idx].2;
+
+                    while idx < ops.len() && ops[idx].0 == key {
+                        let op_is_assert = ops[idx].2;
+                        if op_is_assert {
+                            if !present {
+                                present = true;
+                                Self::add_count(
+                                    &mut counts,
+                                    group_key_for_fact(&key, single_dt_id),
+                                    1,
+                                );
+                            }
+                        } else if present {
+                            present = false;
+                            Self::add_count(
+                                &mut counts,
+                                group_key_for_fact(&key, single_dt_id),
+                                -1,
+                            );
+                        }
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
         // Top-k by count desc.
         let mut rows: Vec<(GroupKey, i64)> = counts.into_iter().collect();
         rows.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -516,7 +623,9 @@ pub struct PredicateObjectCountFirstsOperator {
     /// Bound object term (Sid/Iri/Value).
     object: Term,
     /// Optional stats view (reserved for future scan-shape pruning).
-    #[allow(dead_code)]
+    // Kept for: future scan-shape pruning (e.g. datatype-gated equality / pruning).
+    // Use when: we extend this operator to apply StatsView-derived pruning beyond FIRST-based skipping.
+    #[expect(dead_code)]
     stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
@@ -583,10 +692,7 @@ impl PredicateObjectCountFirstsOperator {
 
     #[inline]
     fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
-        ctx.graph_view().is_none()
-            || ctx.overlay.is_some()
-            || ctx.history_mode
-            || ctx.policy_enforcer.is_some()
+        ctx.graph_view().is_none() || ctx.history_mode || ctx.policy_enforcer.is_some()
     }
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -606,12 +712,8 @@ impl PredicateObjectCountFirstsOperator {
             p: false,
             o: false,
         };
-        let scan: BoxedOperator = Box::new(ScanOperator::new_with_emit(
-            tp,
-            None,
-            Vec::new(),
-            scan_emit,
-        ));
+        let scan: BoxedOperator =
+            Box::new(ScanOperator::new_with_emit(tp, None, Vec::new(), scan_emit));
 
         let agg_specs = vec![StreamingAggSpec {
             function: AggregateFn::CountAll,
@@ -819,6 +921,62 @@ impl Operator for PredicateObjectCountFirstsOperator {
                         && o_keys[row] == target_key
                     {
                         total += 1;
+                    }
+                }
+            }
+        }
+
+        // Merge novelty overlay deltas (when present).
+        //
+        // We keep the fast base counting via leaflet skipping, then adjust the scalar count
+        // using translated overlay ops. This is exact under the assumption that overlay
+        // retractions only occur for facts that exist in the merged view at that time, and
+        // that overlay does not emit redundant assertions for already-present facts.
+        if ctx.overlay.is_some() {
+            let overlay_ops = overlay_ops_for_ctx(ctx, &gv);
+            if !overlay_ops.is_empty() {
+                let mut ops: Vec<(FactKey, i64, bool)> = overlay_ops
+                    .into_iter()
+                    .filter(|op| {
+                        op.p_id == p_id && op.o_kind == target_kind && op.o_key == target_key
+                    })
+                    .map(|op| {
+                        (
+                            FactKey {
+                                s_id: op.s_id,
+                                o_kind: op.o_kind,
+                                o_key: op.o_key,
+                                dt: op.dt,
+                                lang_id: op.lang_id,
+                                i_val: op.i_val,
+                            },
+                            op.t,
+                            op.op,
+                        )
+                    })
+                    .collect();
+                ops.sort_unstable_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.cmp(&b.1))
+                        .then_with(|| a.2.cmp(&b.2))
+                });
+
+                let mut idx = 0usize;
+                while idx < ops.len() {
+                    let key = ops[idx].0;
+                    let mut present = !ops[idx].2; // first retract => existed before overlay
+                    while idx < ops.len() && ops[idx].0 == key {
+                        let op_is_assert = ops[idx].2;
+                        if op_is_assert {
+                            if !present {
+                                present = true;
+                                total += 1;
+                            }
+                        } else if present {
+                            present = false;
+                            total -= 1;
+                        }
+                        idx += 1;
                     }
                 }
             }
