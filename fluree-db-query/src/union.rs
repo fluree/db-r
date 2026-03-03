@@ -397,8 +397,8 @@ mod tests {
             ))],
         ];
 
-        let op = UnionOperator::new(child, branches, None)
-            .with_out_schema(Some(&[VarId(0), VarId(2)]));
+        let op =
+            UnionOperator::new(child, branches, None).with_out_schema(Some(&[VarId(0), VarId(2)]));
 
         assert_eq!(op.schema(), &[VarId(0), VarId(2)]);
     }

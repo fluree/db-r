@@ -405,12 +405,11 @@ pub fn build_operator_tree(
             );
             if !options.aggregates.is_empty() {
                 operator = Box::new(
-                    AggregateOperator::new(operator, options.aggregates.clone())
-                        .with_out_schema(
-                            variable_deps
-                                .as_ref()
-                                .map(|d| d.required_aggregate_vars.as_slice()),
-                        ),
+                    AggregateOperator::new(operator, options.aggregates.clone()).with_out_schema(
+                        variable_deps
+                            .as_ref()
+                            .map(|d| d.required_aggregate_vars.as_slice()),
+                    ),
                 );
             }
         }
