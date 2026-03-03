@@ -158,7 +158,7 @@ pub struct Bm25SearchOperator {
     /// Search pattern
     pattern: IndexSearchPattern,
     /// Output schema (child schema + any new vars from the search result)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Mapping from variables to output column positions
     out_pos: HashMap<VarId, usize>,
     /// Cached BM25 index (loaded once in open) - used in legacy index provider mode
@@ -174,7 +174,7 @@ pub struct Bm25SearchOperator {
     /// State
     state: OperatorState,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl Bm25SearchOperator {
@@ -207,7 +207,7 @@ impl Bm25SearchOperator {
         Self {
             child,
             pattern,
-            schema,
+            in_schema: schema,
             out_pos,
             index: None,
             cached_search_result: None,
@@ -215,13 +215,13 @@ impl Bm25SearchOperator {
             analyzer: Analyzer::english_default(),
             datatypes: WellKnownDatatypes::new(),
             state: OperatorState::Created,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 
@@ -311,7 +311,7 @@ impl Bm25SearchOperator {
 #[async_trait]
 impl Operator for Bm25SearchOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -407,11 +407,11 @@ impl Operator for Bm25SearchOperator {
         };
 
         if input_batch.is_empty() {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
         // Output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols)
             .map(|_| Vec::with_capacity(input_batch.len()))
             .collect();
@@ -598,11 +598,11 @@ impl Operator for Bm25SearchOperator {
         }
 
         if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
-        let batch = Batch::new(self.schema.clone(), columns)?;
-        Ok(trim_batch(&self.downstream_vars, batch))
+        let batch = Batch::new(self.in_schema.clone(), columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

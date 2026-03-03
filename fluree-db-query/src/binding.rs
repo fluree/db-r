@@ -1023,34 +1023,33 @@ impl Batch {
     /// Returns `self` unchanged when `vars` is a superset of (or equal
     /// to) the current schema.  Returns `None` if any variable in `vars`
     /// is not present in the current schema.
-    pub fn retain(self, vars: &[VarId]) -> Option<Self> {
+    pub fn retain(self, new_schema: Arc<[VarId]>) -> Self {
         // Fast path: nothing to trim.
-        if vars.len() == self.schema.len() {
-            return Some(self);
+        if new_schema.len() == self.schema.len() {
+            return self;
         }
 
         // Single pass: filter schema to retained vars in schema order,
         // moving columns instead of cloning since `self` is consumed.
         let len = self.len;
-        let (new_schema, new_columns): (Vec<VarId>, Vec<Vec<Binding>>) = self
+        let new_columns: Vec<Vec<Binding>> = self
             .schema
             .iter()
-            .copied()
             .zip(self.columns)
-            .filter(|(var, _)| vars.contains(var))
-            .unzip();
+            .filter_map(|(var, col)| new_schema.contains(var).then_some(col))
+            .collect();
 
         debug_assert_eq!(
             new_schema.len(),
-            vars.len(),
+            new_columns.len(),
             "Batch::retain: requested variables not present in schema"
         );
 
-        Some(Self {
+        Self {
             len,
-            schema: Arc::from(new_schema.into_boxed_slice()),
+            schema: new_schema,
             columns: new_columns,
-        })
+        }
     }
 }
 

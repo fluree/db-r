@@ -50,7 +50,7 @@ pub struct SubqueryOperator {
     /// The subquery pattern to execute
     subquery: SubqueryPattern,
     /// Output schema (parent schema + new subquery variables)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Variables used for correlation (appear in BOTH parent schema and subquery patterns)
     correlation_vars: Vec<VarId>,
     /// New variables introduced by the subquery select list (not present in parent schema)
@@ -66,7 +66,7 @@ pub struct SubqueryOperator {
     /// Optional stats for selectivity-based pattern reordering in subquery
     stats: Option<Arc<StatsView>>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl SubqueryOperator {
@@ -118,7 +118,7 @@ impl SubqueryOperator {
         Self {
             child,
             subquery,
-            schema,
+            in_schema: schema,
             correlation_vars,
             new_vars,
             select_index,
@@ -126,13 +126,13 @@ impl SubqueryOperator {
             result_buffer: Vec::new(),
             buffer_pos: 0,
             stats,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 }
@@ -140,7 +140,7 @@ impl SubqueryOperator {
 #[async_trait]
 impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -187,7 +187,7 @@ impl Operator for SubqueryOperator {
 
             // Merge results with parent row
             for subquery_row in subquery_results {
-                let mut merged_row = Vec::with_capacity(self.schema.len());
+                let mut merged_row = Vec::with_capacity(self.in_schema.len());
 
                 // Copy parent bindings
                 for var in self.child.schema() {
@@ -250,7 +250,7 @@ impl SubqueryOperator {
         }
 
         // Build batch from buffer
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
 
         for row in &self.result_buffer[self.buffer_pos..] {
@@ -266,8 +266,8 @@ impl SubqueryOperator {
         if columns.is_empty() || columns[0].is_empty() {
             Ok(None)
         } else {
-            let batch = Batch::new(self.schema.clone(), columns)?;
-            Ok(trim_batch(&self.downstream_vars, batch))
+            let batch = Batch::new(self.in_schema.clone(), columns)?;
+            Ok(trim_batch(&self.out_schema, batch))
         }
     }
 

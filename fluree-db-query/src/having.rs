@@ -40,11 +40,11 @@ pub struct HavingOperator {
     /// Filter expression to evaluate
     expr: Expression,
     /// Output schema (same as child)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl HavingOperator {
@@ -59,15 +59,15 @@ impl HavingOperator {
         Self {
             child,
             expr,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 }
@@ -75,7 +75,7 @@ impl HavingOperator {
 #[async_trait]
 impl Operator for HavingOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -102,8 +102,8 @@ impl Operator for HavingOperator {
                 continue;
             }
 
-            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
-                return Ok(trim_batch(&self.downstream_vars, filtered));
+            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.in_schema, ctx)? {
+                return Ok(trim_batch(&self.out_schema, filtered));
             }
         }
     }

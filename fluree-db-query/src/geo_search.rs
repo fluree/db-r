@@ -42,7 +42,7 @@ pub struct GeoSearchOperator {
     /// The geo search pattern specification
     pattern: GeoSearchPattern,
     /// Output schema (variables from child + result variables)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Column position for each variable in output
     out_pos: HashMap<VarId, usize>,
     /// Well-known datatypes for binding construction
@@ -61,7 +61,7 @@ pub struct GeoSearchOperator {
     /// Operator lifecycle state
     state: OperatorState,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl GeoSearchOperator {
@@ -90,7 +90,7 @@ impl GeoSearchOperator {
         Self {
             child,
             pattern,
-            schema,
+            in_schema: schema,
             out_pos,
             datatypes: WellKnownDatatypes::new(),
             p_id: None,
@@ -98,13 +98,13 @@ impl GeoSearchOperator {
             overlay_epoch: 0,
             dict_overlay: None,
             state: OperatorState::Created,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 
@@ -264,7 +264,7 @@ impl GeoSearchOperator {
         }
 
         // Build output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut output_rows: Vec<Vec<Binding>> = Vec::with_capacity(results.len());
 
         for (s_id, distance) in results {
@@ -311,7 +311,7 @@ impl GeoSearchOperator {
 #[async_trait]
 impl Operator for GeoSearchOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -397,7 +397,7 @@ impl Operator for GeoSearchOperator {
         };
 
         if input_batch.is_empty() {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
         let child_schema = self.child.schema();
@@ -406,7 +406,7 @@ impl Operator for GeoSearchOperator {
             .collect();
 
         // Accumulate output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
 
         // Process each input row
@@ -439,8 +439,8 @@ impl Operator for GeoSearchOperator {
             }
         }
 
-        let batch = Batch::new(self.schema.clone(), columns)?;
-        Ok(trim_batch(&self.downstream_vars, batch))
+        let batch = Batch::new(self.in_schema.clone(), columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

@@ -10,6 +10,7 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Query execution operator
 ///
@@ -97,9 +98,9 @@ impl OperatorState {
 // Projection trimming helpers
 // ============================================================================
 //
-// These free functions implement the `with_downstream_vars` / `trim_output`
+// These free functions implement the `with_out_schema` / `trim_output`
 // pattern used by operators that support projection pushdown.  Each operator
-// stores an `Option<Vec<VarId>>` computed at construction time and uses
+// stores an `Option<Arc<[VarId]>>` computed at construction time and uses
 // these helpers to trim its output schema and batches.
 
 /// Intersect a full schema with downstream requirements, preserving order.
@@ -108,25 +109,26 @@ impl OperatorState {
 pub fn compute_trimmed_vars(
     full_schema: &[VarId],
     downstream: Option<&[VarId]>,
-) -> Option<Vec<VarId>> {
+) -> Option<Arc<[VarId]>> {
     downstream.map(|dv| {
-        full_schema
+        let trimmed: Vec<VarId> = full_schema
             .iter()
             .filter(|v| dv.contains(v))
             .copied()
-            .collect()
+            .collect();
+        Arc::from(trimmed.into_boxed_slice())
     })
 }
 
 /// Return the trimmed schema if set, otherwise the full schema.
-pub fn effective_schema<'a>(trimmed: &'a Option<Vec<VarId>>, full: &'a [VarId]) -> &'a [VarId] {
+pub fn effective_schema<'a>(trimmed: &'a Option<Arc<[VarId]>>, full: &'a [VarId]) -> &'a [VarId] {
     trimmed.as_deref().unwrap_or(full)
 }
 
 /// Trim a batch to only the required variables, or pass through unchanged.
-pub fn trim_batch(downstream_vars: &Option<Vec<VarId>>, batch: Batch) -> Option<Batch> {
-    match downstream_vars {
-        Some(vars) => batch.retain(vars),
+pub fn trim_batch(out_schema: &Option<Arc<[VarId]>>, batch: Batch) -> Option<Batch> {
+    match out_schema {
+        Some(schema) => Some(batch.retain(Arc::clone(schema))),
         None => Some(batch),
     }
 }

@@ -465,7 +465,7 @@ pub struct GroupAggregateOperator {
     /// Child operator
     child: BoxedOperator,
     /// Output schema
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Group key column indices
@@ -479,7 +479,7 @@ pub struct GroupAggregateOperator {
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
     graph_view: Option<BinaryGraphView>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl GroupAggregateOperator {
@@ -520,20 +520,20 @@ impl GroupAggregateOperator {
 
         Self {
             child,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
             group_key_indices,
             agg_specs,
             groups: HashMap::new(),
             emit_iter: None,
             graph_view,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 
@@ -587,7 +587,7 @@ impl GroupAggregateOperator {
 #[async_trait]
 impl Operator for GroupAggregateOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -696,7 +696,7 @@ impl Operator for GroupAggregateOperator {
 
         // Emit batches from accumulated groups
         let batch_size = ctx.batch_size;
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut output_columns: Vec<Vec<Binding>> = (0..num_cols)
             .map(|_| Vec::with_capacity(batch_size))
             .collect();
@@ -734,8 +734,8 @@ impl Operator for GroupAggregateOperator {
             return Ok(None);
         }
 
-        let batch = Batch::new(self.schema.clone(), output_columns)?;
-        Ok(trim_batch(&self.downstream_vars, batch))
+        let batch = Batch::new(self.in_schema.clone(), output_columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

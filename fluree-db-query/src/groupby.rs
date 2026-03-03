@@ -48,7 +48,7 @@ pub struct GroupByOperator {
     /// Child operator providing input solutions
     child: BoxedOperator,
     /// Output schema (same as input schema)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Accumulated groups: group_key -> list of complete rows
@@ -58,7 +58,7 @@ pub struct GroupByOperator {
     /// Indices of group key columns in the schema
     group_key_indices: Vec<usize>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl GroupByOperator {
@@ -88,18 +88,18 @@ impl GroupByOperator {
 
         Self {
             child,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
             groups: HashMap::new(),
             emit_iter: None,
             group_key_indices,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
         self
     }
 
@@ -155,7 +155,7 @@ impl GroupByOperator {
 #[async_trait]
 impl Operator for GroupByOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.schema)
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -176,7 +176,7 @@ impl Operator for GroupByOperator {
             let span = tracing::debug_span!(
                 "groupby_blocking",
                 group_key_cols = self.group_key_indices.len(),
-                schema_cols = self.schema.len(),
+                schema_cols = self.in_schema.len(),
                 input_batches = tracing::field::Empty,
                 input_rows = tracing::field::Empty,
                 groups = tracing::field::Empty,
@@ -217,13 +217,13 @@ impl Operator for GroupByOperator {
                     let proc_span = tracing::trace_span!(
                         "groupby_process_batch",
                         rows = batch.len(),
-                        schema_cols = self.schema.len()
+                        schema_cols = self.in_schema.len()
                     );
                     let proc_start = Instant::now();
                     let _pg = proc_span.enter();
                     for row_idx in 0..batch.len() {
                         input_rows += 1;
-                        let row: Vec<Binding> = (0..self.schema.len())
+                        let row: Vec<Binding> = (0..self.in_schema.len())
                             .map(|col| batch.get_by_col(row_idx, col).clone())
                             .collect();
 
@@ -255,7 +255,7 @@ impl Operator for GroupByOperator {
 
         // Emit batches from the accumulated groups
         let batch_size = ctx.batch_size;
-        let schema_len = self.schema.len();
+        let schema_len = self.in_schema.len();
         let group_key_indices = self.group_key_indices.clone();
         let mut output_columns: Vec<Vec<Binding>> = (0..schema_len)
             .map(|_| Vec::with_capacity(batch_size))
@@ -289,8 +289,8 @@ impl Operator for GroupByOperator {
             return Ok(None);
         }
 
-        let batch = Batch::new(self.schema.clone(), output_columns)?;
-        Ok(trim_batch(&self.downstream_vars, batch))
+        let batch = Batch::new(self.in_schema.clone(), output_columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

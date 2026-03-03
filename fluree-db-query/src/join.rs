@@ -179,7 +179,7 @@ pub struct NestedLoopJoinOperator {
     /// requiring separate Operator wrappers.
     inline_ops: Vec<InlineOperator>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl NestedLoopJoinOperator {
@@ -339,13 +339,13 @@ impl NestedLoopJoinOperator {
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
             inline_ops,
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.combined_schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.combined_schema, downstream_vars);
         self
     }
 
@@ -555,7 +555,7 @@ impl NestedLoopJoinOperator {
 #[async_trait]
 impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.combined_schema)
+        effective_schema(&self.out_schema, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -602,13 +602,13 @@ impl Operator for NestedLoopJoinOperator {
         loop {
             // 1. Pre-built output from batched flush
             if let Some(batch) = self.batched_output.pop_front() {
-                return Ok(trim_batch(&self.downstream_vars, batch));
+                return Ok(trim_batch(&self.out_schema, batch));
             }
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
                 if let Some(batch) = self.build_output_batch(ctx).await? {
-                    return Ok(trim_batch(&self.downstream_vars, batch));
+                    return Ok(trim_batch(&self.out_schema, batch));
                 }
                 // All pending rows were filtered out — continue to process more left rows
                 continue;

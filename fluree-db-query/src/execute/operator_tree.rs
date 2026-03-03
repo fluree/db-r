@@ -388,7 +388,7 @@ pub fn build_operator_tree(
                     streaming_specs,
                     None, // graph_view - will be set from context if needed
                 )
-                .with_downstream_vars(
+                .with_out_schema(
                     variable_deps
                         .as_ref()
                         .map(|d| d.required_aggregate_vars.as_slice()),
@@ -397,7 +397,7 @@ pub fn build_operator_tree(
         } else {
             // Traditional path: GroupByOperator + AggregateOperator
             operator = Box::new(
-                GroupByOperator::new(operator, options.group_by.clone()).with_downstream_vars(
+                GroupByOperator::new(operator, options.group_by.clone()).with_out_schema(
                     variable_deps
                         .as_ref()
                         .map(|d| d.required_groupby_vars.as_slice()),
@@ -406,7 +406,7 @@ pub fn build_operator_tree(
             if !options.aggregates.is_empty() {
                 operator = Box::new(
                     AggregateOperator::new(operator, options.aggregates.clone())
-                        .with_downstream_vars(
+                        .with_out_schema(
                             variable_deps
                                 .as_ref()
                                 .map(|d| d.required_aggregate_vars.as_slice()),
@@ -419,7 +419,7 @@ pub fn build_operator_tree(
     // HAVING (filter on aggregated results)
     if let Some(ref having_expr) = options.having {
         operator = Box::new(
-            HavingOperator::new(operator, having_expr.clone()).with_downstream_vars(
+            HavingOperator::new(operator, having_expr.clone()).with_out_schema(
                 variable_deps
                     .as_ref()
                     .map(|d| d.required_having_vars.as_slice()),
@@ -432,7 +432,7 @@ pub fn build_operator_tree(
         for (i, (var, expr)) in options.post_binds.iter().enumerate() {
             operator = Box::new(
                 crate::bind::BindOperator::new(operator, *var, expr.clone(), vec![])
-                    .with_downstream_vars(
+                    .with_out_schema(
                         variable_deps
                             .as_ref()
                             .and_then(|d| d.required_bind_vars.get(i))
@@ -479,7 +479,7 @@ pub fn build_operator_tree(
             }
         }
         operator = Box::new(
-            SortOperator::new(operator, options.order_by.clone()).with_downstream_vars(
+            SortOperator::new(operator, options.order_by.clone()).with_out_schema(
                 variable_deps
                     .as_ref()
                     .map(|d| d.required_sort_vars.as_slice()),

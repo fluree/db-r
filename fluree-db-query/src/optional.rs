@@ -500,7 +500,7 @@ pub struct OptionalOperator {
     /// The batch_idx and row_idx track progress for resuming when batch_size limit is hit.
     pending_output: VecDeque<PendingOptionalMatch>,
     /// Variables required by downstream operators; if set, output is trimmed.
-    downstream_vars: Option<Vec<VarId>>,
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 /// Tracks a required row's optional matches with progress cursor
@@ -545,13 +545,13 @@ impl OptionalOperator {
             current_required_batch: None,
             current_required_row: 0,
             pending_output: VecDeque::new(),
-            downstream_vars: None,
+            out_schema: None,
         }
     }
 
     /// Trim output to only the specified downstream variables.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
-        self.downstream_vars = compute_trimmed_vars(&self.combined_schema, downstream_vars);
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.combined_schema, downstream_vars);
         self
     }
 
@@ -662,7 +662,7 @@ impl OptionalOperator {
 #[async_trait]
 impl Operator for OptionalOperator {
     fn schema(&self) -> &[VarId] {
-        effective_schema(&self.downstream_vars, &self.combined_schema)
+        effective_schema(&self.out_schema, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -888,7 +888,7 @@ impl Operator for OptionalOperator {
         }
 
         let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(trim_batch(&self.downstream_vars, batch))
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

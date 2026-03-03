@@ -89,9 +89,9 @@ impl UnionOperator {
     /// Variables not in `downstream_vars` are excluded from the output schema,
     /// avoiding unnecessary Unbound padding in `normalize_batch` and carrying
     /// fewer columns through the rest of the pipeline.
-    pub fn with_downstream_vars(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
         if let Some(trimmed) = compute_trimmed_vars(&self.unified_schema, downstream_vars) {
-            self.effective_schema = Arc::from(trimmed.into_boxed_slice());
+            self.effective_schema = trimmed;
         }
         self
     }
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_union_with_downstream_vars_trims_schema() {
+    fn test_union_with_out_schema_trims_schema() {
         // Unified schema: [?s(0), ?n(1), ?e(2)]
         // Required vars: [?s(0), ?e(2)]
         // Expected effective schema: [?s(0), ?e(2)] (preserves unified order)
@@ -398,13 +398,13 @@ mod tests {
         ];
 
         let op = UnionOperator::new(child, branches, None)
-            .with_downstream_vars(Some(&[VarId(0), VarId(2)]));
+            .with_out_schema(Some(&[VarId(0), VarId(2)]));
 
         assert_eq!(op.schema(), &[VarId(0), VarId(2)]);
     }
 
     #[test]
-    fn test_union_with_downstream_vars_none_preserves_full_schema() {
+    fn test_union_with_out_schema_none_preserves_full_schema() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let child: BoxedOperator = Box::new(TestEmptyWithSchema {
             schema: child_schema,
@@ -416,7 +416,7 @@ mod tests {
             crate::triple::Term::Var(VarId(1)),
         ))]];
 
-        let op = UnionOperator::new(child, branches, None).with_downstream_vars(None);
+        let op = UnionOperator::new(child, branches, None).with_out_schema(None);
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
