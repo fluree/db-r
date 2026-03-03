@@ -141,7 +141,10 @@ impl Function {
                 "http://www.w3.org/2001/XMLSchema#integer" => {
                     numeric::eval_xsd_integer(args, row, ctx)
                 }
-                _ => Err(QueryError::InvalidFilter(format!("Unknown function: {}", name))),
+                _ => Err(QueryError::InvalidFilter(format!(
+                    "Unknown function: {}",
+                    name
+                ))),
             },
         }
     }

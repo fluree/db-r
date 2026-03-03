@@ -109,9 +109,9 @@ pub fn eval_xsd_integer<R: RowAccess>(
             }
             d.trunc() as i64
         }
-        ComparableValue::BigInt(bi) => bi.to_i64().ok_or_else(|| {
-            QueryError::InvalidFilter("xsd:integer cast overflow".to_string())
-        })?,
+        ComparableValue::BigInt(bi) => bi
+            .to_i64()
+            .ok_or_else(|| QueryError::InvalidFilter("xsd:integer cast overflow".to_string()))?,
         ComparableValue::Decimal(dec) => {
             // Prefer exact integral conversion; fall back to truncation if needed.
             if let Some(i) = dec.to_i64() {

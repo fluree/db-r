@@ -9,6 +9,7 @@
 //! - Union patterns (UnionOperator)
 //! - And more...
 
+use crate::binary_scan::EmitMask;
 use crate::bind::BindOperator;
 use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
@@ -1091,8 +1092,15 @@ pub fn build_scan_or_join(
             let bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
 
             Box::new(
-                NestedLoopJoinOperator::new(left, left_schema, tp.clone(), bounds, inline_ops)
-                    .with_out_schema(downstream_vars),
+                NestedLoopJoinOperator::new(
+                    left,
+                    left_schema,
+                    tp.clone(),
+                    bounds,
+                    inline_ops,
+                    EmitMask::ALL,
+                )
+                .with_out_schema(downstream_vars),
             )
         }
     }

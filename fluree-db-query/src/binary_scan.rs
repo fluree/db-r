@@ -43,8 +43,8 @@ use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
     ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
-use fluree_vocab::rdf;
 use fluree_vocab::namespaces::FLUREE_DB;
+use fluree_vocab::rdf;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -1168,7 +1168,8 @@ impl Operator for BinaryScanOperator {
                 }
 
                 // Use optimized subject lookup for SPOT with bound subject
-                let need_region2 = self.o_var_pos.is_some() && !object_var_is_ref_only(&self.pattern);
+                let need_region2 =
+                    self.o_var_pos.is_some() && !object_var_is_ref_only(&self.pattern);
                 tracing::debug!(
                     need_region2,
                     o_is_var = self.o_var_pos.is_some(),

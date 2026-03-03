@@ -4,8 +4,8 @@
 //! where left results drive right scans. It enforces var unification - shared
 //! vars between left and right must match exactly.
 
-use crate::binding::{Batch, Binding};
 use crate::binary_scan::EmitMask;
+use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};

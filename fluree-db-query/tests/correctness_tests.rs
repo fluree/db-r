@@ -11,8 +11,8 @@ use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
 
-use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::binary_scan::EmitMask;
+use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::ir::{Expression, FilterValue};
 use fluree_db_query::join::NestedLoopJoinOperator;
