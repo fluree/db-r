@@ -17,7 +17,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::expression::passes_filters;
 use crate::ir::Expression;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -40,13 +42,15 @@ pub struct BindOperator {
     /// eliminating the overhead of a separate FilterOperator.
     filters: Vec<Expression>,
     /// Output schema (child schema with var added if new)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Position of var in output schema
     var_position: usize,
     /// Whether this is a new variable (not in child schema)
     is_new_var: bool,
     /// Operator state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl BindOperator {
@@ -70,7 +74,7 @@ impl BindOperator {
         // Check if var already exists in child schema
         let existing_pos = child_schema.iter().position(|&v| v == var);
 
-        let (schema, var_position, is_new_var) = match existing_pos {
+        let (schema, var_position, is_new_var): (Arc<[VarId]>, usize, bool) = match existing_pos {
             Some(pos) => {
                 // Variable exists - schema stays the same
                 (
@@ -93,18 +97,25 @@ impl BindOperator {
             var,
             expr,
             filters,
-            schema,
+            in_schema: schema,
             var_position,
             is_new_var,
             state: OperatorState::Created,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for BindOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -133,7 +144,7 @@ impl Operator for BindOperator {
             }
 
             let child_num_cols = self.child.schema().len();
-            let num_output_cols = self.schema.len();
+            let num_output_cols = self.in_schema.len();
 
             // Build output columns
             let mut output_columns: Vec<Vec<Binding>> = (0..num_output_cols)
@@ -191,7 +202,7 @@ impl Operator for BindOperator {
                     } else {
                         filter_row[self.var_position] = computed.clone();
                     }
-                    if !passes_filters(&self.filters, &self.schema, &filter_row, Some(ctx)) {
+                    if !passes_filters(&self.filters, &self.in_schema, &filter_row, Some(ctx)) {
                         continue;
                     }
                 }
@@ -227,7 +238,8 @@ impl Operator for BindOperator {
                 continue;
             }
 
-            return Ok(Some(Batch::new(self.schema.clone(), output_columns)?));
+            let batch = Batch::new(self.in_schema.clone(), output_columns)?;
+            return Ok(trim_batch(&self.out_schema, batch));
         }
     }
 

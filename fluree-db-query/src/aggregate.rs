@@ -18,7 +18,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid};
@@ -87,7 +89,7 @@ pub struct AggregateOperator {
     /// Aggregate specifications
     aggregates: Vec<AggregateSpec>,
     /// Output schema
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Mapping from input column index to aggregate spec index (in-place aggregates)
@@ -99,6 +101,8 @@ pub struct AggregateOperator {
     group_size_col: Option<usize>,
     /// Number of columns from child schema (before extra additions)
     child_col_count: usize,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl AggregateOperator {
@@ -163,25 +167,32 @@ impl AggregateOperator {
             group_size_col = Some(0);
         }
 
-        let schema = Arc::from(output_vars.into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(output_vars.into_boxed_slice());
 
         Self {
             child,
             aggregates,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
             aggregate_map,
             extra_specs,
             group_size_col,
             child_col_count,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for AggregateOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -214,12 +225,12 @@ impl Operator for AggregateOperator {
             };
 
             if batch.is_empty() {
-                return Ok(Some(Batch::empty(self.schema.clone())?));
+                return Ok(Some(Batch::empty(self.in_schema.clone())?));
             }
 
             span.record("rows_in", batch.len() as u64);
 
-            let num_cols = self.schema.len();
+            let num_cols = self.in_schema.len();
             let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
 
             // Process child columns (regular aggregates and pass-through)
@@ -291,9 +302,9 @@ impl Operator for AggregateOperator {
                 }
             }
 
-            let out = Batch::new(self.schema.clone(), output_columns)?;
+            let out = Batch::new(self.in_schema.clone(), output_columns)?;
             span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-            Ok(Some(out))
+            Ok(trim_batch(&self.out_schema, out))
         }
         .instrument(span)
         .await

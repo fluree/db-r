@@ -16,7 +16,9 @@ use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{GeoSearchCenter, GeoSearchPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -40,7 +42,7 @@ pub struct GeoSearchOperator {
     /// The geo search pattern specification
     pattern: GeoSearchPattern,
     /// Output schema (variables from child + result variables)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Column position for each variable in output
     out_pos: HashMap<VarId, usize>,
     /// Well-known datatypes for binding construction
@@ -58,6 +60,8 @@ pub struct GeoSearchOperator {
     dict_overlay: Option<crate::dict_overlay::DictOverlay>,
     /// Operator lifecycle state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl GeoSearchOperator {
@@ -86,7 +90,7 @@ impl GeoSearchOperator {
         Self {
             child,
             pattern,
-            schema,
+            in_schema: schema,
             out_pos,
             datatypes: WellKnownDatatypes::new(),
             p_id: None,
@@ -94,12 +98,14 @@ impl GeoSearchOperator {
             overlay_epoch: 0,
             dict_overlay: None,
             state: OperatorState::Created,
+            out_schema: None,
         }
     }
 
-    /// Get the output schema
-    pub fn schema(&self) -> &[VarId] {
-        &self.schema
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 
     /// Resolve center point coordinates from pattern (constant or variable binding).
@@ -258,7 +264,7 @@ impl GeoSearchOperator {
         }
 
         // Build output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut output_rows: Vec<Vec<Binding>> = Vec::with_capacity(results.len());
 
         for (s_id, distance) in results {
@@ -305,7 +311,7 @@ impl GeoSearchOperator {
 #[async_trait]
 impl Operator for GeoSearchOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -391,7 +397,7 @@ impl Operator for GeoSearchOperator {
         };
 
         if input_batch.is_empty() {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
         let child_schema = self.child.schema();
@@ -400,7 +406,7 @@ impl Operator for GeoSearchOperator {
             .collect();
 
         // Accumulate output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
 
         // Process each input row
@@ -433,7 +439,8 @@ impl Operator for GeoSearchOperator {
             }
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.in_schema.clone(), columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

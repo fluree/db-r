@@ -9,7 +9,7 @@ use crate::{
 
 use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_query::parse::{parse_query, ParsedQuery, QueryOutput};
+use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;
 
@@ -100,18 +100,9 @@ pub(crate) fn parse_sparql_to_ir(
     Ok((vars, parsed))
 }
 
-/// Prepare a parsed query for execution, handling graph crawl mode.
-///
-/// Graph-crawl queries need to run in wildcard mode to preserve all bindings,
-/// but we keep the original parsed query for formatting.
+/// Prepare a parsed query for execution.
 pub(crate) fn prepare_for_execution(parsed: &ParsedQuery) -> ExecutableQuery {
-    if parsed.graph_select.is_some() {
-        let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.output = QueryOutput::Wildcard;
-        ExecutableQuery::simple(parsed_for_exec)
-    } else {
-        ExecutableQuery::simple(parsed.clone())
-    }
+    ExecutableQuery::simple(parsed.clone())
 }
 
 // =============================================================================

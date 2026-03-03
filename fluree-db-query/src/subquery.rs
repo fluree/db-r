@@ -31,7 +31,9 @@ use crate::having::HavingOperator;
 use crate::ir::SubqueryPattern;
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::project::ProjectOperator;
 use crate::seed::{EmptyOperator, SeedOperator};
 use crate::sort::SortOperator;
@@ -48,7 +50,7 @@ pub struct SubqueryOperator {
     /// The subquery pattern to execute
     subquery: SubqueryPattern,
     /// Output schema (parent schema + new subquery variables)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Variables used for correlation (appear in BOTH parent schema and subquery patterns)
     correlation_vars: Vec<VarId>,
     /// New variables introduced by the subquery select list (not present in parent schema)
@@ -63,6 +65,8 @@ pub struct SubqueryOperator {
     buffer_pos: usize,
     /// Optional stats for selectivity-based pattern reordering in subquery
     stats: Option<Arc<StatsView>>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl SubqueryOperator {
@@ -114,7 +118,7 @@ impl SubqueryOperator {
         Self {
             child,
             subquery,
-            schema,
+            in_schema: schema,
             correlation_vars,
             new_vars,
             select_index,
@@ -122,14 +126,21 @@ impl SubqueryOperator {
             result_buffer: Vec::new(),
             buffer_pos: 0,
             stats,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -176,7 +187,7 @@ impl Operator for SubqueryOperator {
 
             // Merge results with parent row
             for subquery_row in subquery_results {
-                let mut merged_row = Vec::with_capacity(self.schema.len());
+                let mut merged_row = Vec::with_capacity(self.in_schema.len());
 
                 // Copy parent bindings
                 for var in self.child.schema() {
@@ -239,7 +250,7 @@ impl SubqueryOperator {
         }
 
         // Build batch from buffer
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
 
         for row in &self.result_buffer[self.buffer_pos..] {
@@ -255,7 +266,8 @@ impl SubqueryOperator {
         if columns.is_empty() || columns[0].is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Batch::new(self.schema.clone(), columns)?))
+            let batch = Batch::new(self.in_schema.clone(), columns)?;
+            Ok(trim_batch(&self.out_schema, batch))
         }
     }
 
@@ -288,8 +300,12 @@ impl SubqueryOperator {
         };
 
         // Build full operator tree for subquery patterns (supports filters, optionals, union, etc.)
-        let mut operator: BoxedOperator =
-            build_where_operators_seeded(Some(seed), &self.subquery.patterns, self.stats.clone())?;
+        let mut operator: BoxedOperator = build_where_operators_seeded(
+            Some(seed),
+            &self.subquery.patterns,
+            self.stats.clone(),
+            None,
+        )?;
 
         // Apply GROUP BY / aggregates / HAVING for subqueries that use them.
         let needs_grouping =

@@ -10,6 +10,7 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Query execution operator
 ///
@@ -90,5 +91,44 @@ impl OperatorState {
     /// Check if operator is closed
     pub fn is_closed(&self) -> bool {
         matches!(self, OperatorState::Closed)
+    }
+}
+
+// ============================================================================
+// Projection trimming helpers
+// ============================================================================
+//
+// These free functions implement the `with_out_schema` / `trim_output`
+// pattern used by operators that support projection pushdown.  Each operator
+// stores an `Option<Arc<[VarId]>>` computed at construction time and uses
+// these helpers to trim its output schema and batches.
+
+/// Intersect a full schema with downstream requirements, preserving order.
+///
+/// Returns `None` when `downstream` is `None` (no trimming requested).
+pub fn compute_trimmed_vars(
+    full_schema: &[VarId],
+    downstream: Option<&[VarId]>,
+) -> Option<Arc<[VarId]>> {
+    downstream.map(|dv| {
+        let trimmed: Vec<VarId> = full_schema
+            .iter()
+            .filter(|v| dv.contains(v))
+            .copied()
+            .collect();
+        Arc::from(trimmed.into_boxed_slice())
+    })
+}
+
+/// Return the trimmed schema if set, otherwise the full schema.
+pub fn effective_schema<'a>(trimmed: &'a Option<Arc<[VarId]>>, full: &'a [VarId]) -> &'a [VarId] {
+    trimmed.as_deref().unwrap_or(full)
+}
+
+/// Trim a batch to only the required variables, or pass through unchanged.
+pub fn trim_batch(out_schema: &Option<Arc<[VarId]>>, batch: Batch) -> Option<Batch> {
+    match out_schema {
+        Some(schema) => Some(batch.retain(Arc::clone(schema))),
+        None => Some(batch),
     }
 }

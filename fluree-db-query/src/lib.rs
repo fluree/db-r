@@ -309,7 +309,7 @@ pub async fn execute_where_with_overlay_at(
     }
 
     let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
-    let mut operator = build_where_operators_seeded(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();
@@ -335,7 +335,7 @@ pub async fn execute_where_with_overlay_at_strict(
 
     let ctx =
         ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
-    let mut operator = build_where_operators_seeded(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();

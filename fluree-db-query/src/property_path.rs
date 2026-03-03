@@ -31,7 +31,9 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -58,7 +60,7 @@ pub struct PropertyPathOperator {
     /// Property path pattern to execute
     pattern: PropertyPathPattern,
     /// Output schema (variables from subject and object)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Safety bound for maximum visited nodes
@@ -71,6 +73,8 @@ pub struct PropertyPathOperator {
     current_child_batch: Option<Batch>,
     /// Current row index in child batch
     current_child_row: usize,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl PropertyPathOperator {
@@ -112,19 +116,26 @@ impl PropertyPathOperator {
         Self {
             child,
             pattern,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
             max_visited,
             results_buffer: None,
             results_idx: 0,
             current_child_batch: None,
             current_child_row: 0,
+            out_schema: None,
         }
     }
 
     /// Create with default max_visited
     pub fn with_defaults(child: Option<BoxedOperator>, pattern: PropertyPathPattern) -> Self {
         Self::new(child, pattern, DEFAULT_MAX_VISITED)
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 
     /// Traverse forward from a starting node (subject bound)
@@ -475,9 +486,9 @@ impl PropertyPathOperator {
                 // Build output rows
                 let mut rows = Vec::with_capacity(reachable.len());
                 for obj in reachable {
-                    let mut row: Vec<Binding> = Vec::with_capacity(self.schema.len());
+                    let mut row: Vec<Binding> = Vec::with_capacity(self.in_schema.len());
                     // Copy child bindings
-                    for var in self.schema.iter() {
+                    for var in self.in_schema.iter() {
                         if let Some(col) = child_batch.column(*var) {
                             row.push(col[row_idx].clone());
                         } else if Some(*var) == obj_var {
@@ -498,8 +509,8 @@ impl PropertyPathOperator {
 
                 let mut rows = Vec::with_capacity(sources.len());
                 for subj in sources {
-                    let mut row: Vec<Binding> = Vec::with_capacity(self.schema.len());
-                    for var in self.schema.iter() {
+                    let mut row: Vec<Binding> = Vec::with_capacity(self.in_schema.len());
+                    for var in self.in_schema.iter() {
                         if let Some(col) = child_batch.column(*var) {
                             row.push(col[row_idx].clone());
                         } else if Some(*var) == subj_var {
@@ -519,8 +530,8 @@ impl PropertyPathOperator {
                 let exists = self.path_exists(ctx, &start, &target).await?;
                 if exists {
                     // Keep this row unchanged
-                    let mut row: Vec<Binding> = Vec::with_capacity(self.schema.len());
-                    for var in self.schema.iter() {
+                    let mut row: Vec<Binding> = Vec::with_capacity(self.in_schema.len());
+                    for var in self.in_schema.iter() {
                         if let Some(col) = child_batch.column(*var) {
                             row.push(col[row_idx].clone());
                         } else {
@@ -539,8 +550,8 @@ impl PropertyPathOperator {
                 let pairs = self.compute_closure(ctx).await?;
                 let mut rows = Vec::with_capacity(pairs.len());
                 for (subj, obj) in pairs {
-                    let mut row: Vec<Binding> = Vec::with_capacity(self.schema.len());
-                    for var in self.schema.iter() {
+                    let mut row: Vec<Binding> = Vec::with_capacity(self.in_schema.len());
+                    for var in self.in_schema.iter() {
                         if let Some(col) = child_batch.column(*var) {
                             row.push(col[row_idx].clone());
                         } else if Some(*var) == subj_var {
@@ -562,7 +573,7 @@ impl PropertyPathOperator {
 #[async_trait]
 impl Operator for PropertyPathOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -607,7 +618,7 @@ impl Operator for PropertyPathOperator {
 
             // Build columns
             let mut columns: Vec<Vec<Binding>> = self
-                .schema
+                .in_schema
                 .iter()
                 .map(|_| Vec::with_capacity(batch_results.len()))
                 .collect();
@@ -622,7 +633,7 @@ impl Operator for PropertyPathOperator {
             };
 
             for (subj, obj) in batch_results {
-                for (col_idx, var) in self.schema.iter().enumerate() {
+                for (col_idx, var) in self.in_schema.iter().enumerate() {
                     if Some(*var) == subj_var {
                         columns[col_idx].push(Binding::Sid(subj.clone()));
                     } else if Some(*var) == obj_var {
@@ -633,7 +644,8 @@ impl Operator for PropertyPathOperator {
                 }
             }
 
-            return Ok(Some(Batch::new(self.schema.clone(), columns)?));
+            let batch = Batch::new(self.in_schema.clone(), columns)?;
+            return Ok(trim_batch(&self.out_schema, batch));
         }
 
         // Correlated mode: process child rows
@@ -680,7 +692,7 @@ impl Operator for PropertyPathOperator {
             if !all_rows.is_empty() {
                 // Build batch from rows
                 let mut columns: Vec<Vec<Binding>> = self
-                    .schema
+                    .in_schema
                     .iter()
                     .map(|_| Vec::with_capacity(all_rows.len()))
                     .collect();
@@ -691,7 +703,8 @@ impl Operator for PropertyPathOperator {
                     }
                 }
 
-                return Ok(Some(Batch::new(self.schema.clone(), columns)?));
+                let batch = Batch::new(self.in_schema.clone(), columns)?;
+                return Ok(trim_batch(&self.out_schema, batch));
             }
 
             // No rows from this batch, try next

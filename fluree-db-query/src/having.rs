@@ -23,7 +23,9 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::filter::filter_batch;
 use crate::ir::Expression;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -38,9 +40,11 @@ pub struct HavingOperator {
     /// Filter expression to evaluate
     expr: Expression,
     /// Output schema (same as child)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl HavingOperator {
@@ -51,20 +55,27 @@ impl HavingOperator {
     /// * `child` - Child operator (typically GroupByOperator or AggregateOperator)
     /// * `expr` - Filter expression to evaluate
     pub fn new(child: BoxedOperator, expr: Expression) -> Self {
-        let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
+        let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
             expr,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 }
 
 #[async_trait]
 impl Operator for HavingOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -91,8 +102,8 @@ impl Operator for HavingOperator {
                 continue;
             }
 
-            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
-                return Ok(Some(filtered));
+            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.in_schema, ctx)? {
+                return Ok(trim_batch(&self.out_schema, filtered));
             }
         }
     }
