@@ -170,7 +170,6 @@ async fn run_foreground(
         let _ = fs::write(&meta_file, json);
     }
 
-
     let server = FlureeServer::new(server_config).await.map_err(|e| {
         let _ = fs::remove_file(&meta_file);
         CliError::Server(format!("failed to initialize server: {e}"))

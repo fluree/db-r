@@ -1582,25 +1582,22 @@ async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
 }
 
 #[tokio::test]
-async fn sparql_property_path_sequence_transitive_step_errors() {
+async fn sparql_property_path_sequence_transitive_step_allowed() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-err:main").await;
 
-    // ex:friend+/ex:name — transitive inside sequence is not supported
+    // ex:friend+/ex:name — transitive modifier inside sequence should work
     let query = "\
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice ex:friend+/ex:name ?name }";
 
-    let result = support::query_sparql(&fluree, &ledger, query).await;
-    assert!(
-        result.is_err(),
-        "Transitive step inside sequence should error"
-    );
-    let msg = format!("{}", result.unwrap_err());
-    assert!(
-        msg.contains("simple predicates") || msg.contains("Sequence"),
-        "Error should mention sequence step constraints, got: {}",
-        msg
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("transitive step inside sequence should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Bob", "Carol"]))
     );
 }
 

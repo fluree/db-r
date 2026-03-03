@@ -459,6 +459,15 @@ impl NestedLoopJoinOperator {
                             }
                             // Otherwise leave as variable
                         }
+                        Binding::EncodedPid { p_id } => {
+                            // Predicates are IRIs; allow using an encoded predicate as a subject.
+                            if let Some(store) = store {
+                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                                    pattern.s = Ref::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
+                        }
                         _ => {
                             // Leave as variable
                         }
@@ -472,6 +481,16 @@ impl NestedLoopJoinOperator {
                         Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.p = Ref::Iri(iri.clone());
+                        }
+                        Binding::EncodedSid { s_id } => {
+                            // Allow cross-position reuse: an IRI bound as a subject/object can
+                            // be used to bind a predicate position. Resolve via subject dict.
+                            if let Some(store) = store {
+                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                                    pattern.p = Ref::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
                         }
                         Binding::EncodedPid { p_id } => {
                             // Resolve encoded p_id to IRI if store available
@@ -517,8 +536,14 @@ impl NestedLoopJoinOperator {
                             }
                             // Otherwise leave as variable
                         }
-                        Binding::EncodedPid { .. } => {
-                            // Predicate as object is unusual - leave as variable
+                        Binding::EncodedPid { p_id } => {
+                            // Allow using an encoded predicate IRI as an object IRI.
+                            if let Some(store) = store {
+                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                                    pattern.o = Term::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
                         }
                         Binding::Unbound | Binding::Poisoned => {
                             // Leave as variable (Poisoned vars from OPTIONAL also remain unbound)

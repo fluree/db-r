@@ -108,20 +108,32 @@ fn schema_from_pattern_with_emit(
 
     if emit.s {
         if let Ref::Var(v) = &pattern.s {
-            s_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                s_var_pos = Some(pos);
+            } else {
+                s_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
     if emit.p {
         if let Ref::Var(v) = &pattern.p {
-            p_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                p_var_pos = Some(pos);
+            } else {
+                p_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
     if emit.o {
         if let Term::Var(v) = &pattern.o {
-            o_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                o_var_pos = Some(pos);
+            } else {
+                o_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
 
@@ -226,6 +238,102 @@ pub struct BinaryScanOperator {
 }
 
 impl BinaryScanOperator {
+    #[inline]
+    fn base_schema_len(&self) -> usize {
+        let mut max_pos: Option<usize> = None;
+        for pos in [self.s_var_pos, self.p_var_pos, self.o_var_pos]
+            .into_iter()
+            .flatten()
+        {
+            max_pos = Some(max_pos.map_or(pos, |m| m.max(pos)));
+        }
+        max_pos.map_or(0, |m| m + 1)
+    }
+
+    /// Enforce within-pattern repeated-variable constraints.
+    ///
+    /// SPARQL allows the same variable to appear in multiple positions of a triple pattern,
+    /// e.g. `?x <p> ?x` or `?x ?x ?o`. These are equality constraints that must be applied
+    /// even when emission pruning omits one of the positions.
+    fn within_row_var_equality_ok(&mut self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
+        let s_var = match &self.pattern.s {
+            Ref::Var(v) => Some(*v),
+            _ => None,
+        };
+        let p_var = match &self.pattern.p {
+            Ref::Var(v) => Some(*v),
+            _ => None,
+        };
+        let o_var = match &self.pattern.o {
+            Term::Var(v) => Some(*v),
+            _ => None,
+        };
+
+        // s == o is only possible when o is a ref pointing to s_id.
+        if s_var.is_some_and(|v| o_var == Some(v)) {
+            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
+                return Ok(false);
+            }
+            if decoded.o_keys[row] != decoded.s_ids[row] {
+                return Ok(false);
+            }
+        }
+
+        // For comparisons involving predicate IDs, decode to Sid (different ID domains).
+        if s_var.is_some_and(|v| p_var == Some(v)) {
+            let s = self.resolve_s_id(decoded.s_ids[row])?;
+            let p = self.resolve_p_id(decoded.p_ids[row]);
+            if s != p {
+                return Ok(false);
+            }
+        }
+        if p_var.is_some_and(|v| o_var == Some(v)) {
+            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
+                return Ok(false);
+            }
+            let o = self.resolve_s_id(decoded.o_keys[row])?;
+            let p = self.resolve_p_id(decoded.p_ids[row]);
+            if o != p {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    #[inline]
+    fn set_binding_at(&mut self, slots: &mut [Binding], pos: usize, b: Binding) -> Result<bool> {
+        match &slots[pos] {
+            Binding::Unbound => {
+                slots[pos] = b;
+                Ok(true)
+            }
+            existing if existing == &b => Ok(true),
+            // When the same var is shared across positions, prefer allowing
+            // Encoded* vs Sid comparisons by decoding only in the mismatch case.
+            Binding::Sid(sid) => match b {
+                Binding::EncodedSid { s_id } => Ok(self.resolve_s_id(s_id)? == *sid),
+                Binding::EncodedPid { p_id } => Ok(self.resolve_p_id(p_id) == *sid),
+                _ => Ok(false),
+            },
+            Binding::EncodedSid { s_id } => match b {
+                Binding::Sid(sid) => Ok(self.resolve_s_id(*s_id)? == sid),
+                Binding::EncodedPid { p_id } => {
+                    Ok(self.resolve_s_id(*s_id)? == self.resolve_p_id(p_id))
+                }
+                _ => Ok(false),
+            },
+            Binding::EncodedPid { p_id } => match b {
+                Binding::Sid(sid) => Ok(self.resolve_p_id(*p_id) == sid),
+                Binding::EncodedSid { s_id } => {
+                    Ok(self.resolve_p_id(*p_id) == self.resolve_s_id(s_id)?)
+                }
+                _ => Ok(false),
+            },
+            _ => Ok(false),
+        }
+    }
+
     /// Create a new BinaryScanOperator for a triple pattern.
     ///
     /// The `graph_view` provides a graph-scoped view of the binary index store.
@@ -672,23 +780,45 @@ impl BinaryScanOperator {
     ) -> Result<usize> {
         let mut produced = 0;
         let ncols = self.schema.len();
-        let mut bindings = Vec::with_capacity(ncols);
+        let base_len = self.base_schema_len();
+        let mut bindings = Vec::with_capacity(ncols.max(base_len));
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
                 continue;
             }
 
-            bindings.clear();
+            if !self.within_row_var_equality_ok(decoded, row)? {
+                continue;
+            }
 
-            if let Some(b) = self.build_subject_binding(decoded.s_ids[row])? {
-                bindings.push(b);
+            bindings.clear();
+            bindings.resize(base_len, Binding::Unbound);
+
+            // Fill bindings in schema order using precomputed positions.
+            if let Some(pos) = self.s_var_pos {
+                let b = self
+                    .build_subject_binding(decoded.s_ids[row])?
+                    .expect("s_var_pos implies subject binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
-            if let Some(b) = self.build_predicate_binding(decoded.p_ids[row]) {
-                bindings.push(b);
+            if let Some(pos) = self.p_var_pos {
+                let b = self
+                    .build_predicate_binding(decoded.p_ids[row])
+                    .expect("p_var_pos implies predicate binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
-            if let Some(b) = self.build_object_binding(decoded, row)? {
-                bindings.push(b);
+            if let Some(pos) = self.o_var_pos {
+                let b = self
+                    .build_object_binding(decoded, row)?
+                    .expect("o_var_pos implies object binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
 
             // Apply inline operators; may extend `bindings` or skip the row.
