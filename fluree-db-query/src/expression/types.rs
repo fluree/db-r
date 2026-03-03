@@ -61,7 +61,13 @@ pub fn eval_is_numeric<R: RowAccess>(
     check_arity(args, 1, "isNumeric")?;
     let val = args[0].eval_to_comparable(row, ctx)?;
     Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
-        matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
+        matches!(
+            v,
+            ComparableValue::Long(_)
+                | ComparableValue::Double(_)
+                | ComparableValue::Decimal(_)
+                | ComparableValue::BigInt(_)
+        )
     }))))
 }
 

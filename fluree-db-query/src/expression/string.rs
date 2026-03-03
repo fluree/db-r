@@ -15,6 +15,35 @@ use std::sync::Arc;
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
 
+/// Extract the language tag from a binding, if present.
+/// Returns Some(lang) for language-tagged literals, None otherwise.
+fn extract_lang_tag<R: RowAccess>(
+    expr: &Expression,
+    row: &R,
+    _ctx: Option<&ExecutionContext<'_>>,
+) -> Option<Arc<str>> {
+    if let Expression::Var(var_id) = expr {
+        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
+            return lang.clone();
+        }
+    }
+    None
+}
+
+/// Wrap a string result with an optional language tag.
+/// If lang is Some, returns TypedLiteral with the language tag.
+/// Otherwise returns a plain String.
+fn string_with_lang(s: &str, lang: Option<Arc<str>>) -> ComparableValue {
+    match lang {
+        Some(tag) => ComparableValue::TypedLiteral {
+            val: FlakeValue::String(s.to_string()),
+            dt_iri: None,
+            lang: Some(tag),
+        },
+        None => ComparableValue::String(Arc::from(s)),
+    }
+}
+
 pub fn eval_str<R: RowAccess>(
     args: &[Expression],
     row: &R,
@@ -67,9 +96,10 @@ pub fn eval_lcase<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "LCASE")?;
+    let lang = extract_lang_tag(&args[0], row, ctx);
     match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => match v.as_str() {
-            Some(s) => Ok(Some(ComparableValue::String(Arc::from(s.to_lowercase())))),
+            Some(s) => Ok(Some(string_with_lang(&s.to_lowercase(), lang))),
             None => Err(QueryError::InvalidFilter(
                 "LCASE requires a string argument".to_string(),
             )),
@@ -84,9 +114,10 @@ pub fn eval_ucase<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "UCASE")?;
+    let lang = extract_lang_tag(&args[0], row, ctx);
     match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => match v.as_str() {
-            Some(s) => Ok(Some(ComparableValue::String(Arc::from(s.to_uppercase())))),
+            Some(s) => Ok(Some(string_with_lang(&s.to_uppercase(), lang))),
             None => Err(QueryError::InvalidFilter(
                 "UCASE requires a string argument".to_string(),
             )),
@@ -103,7 +134,7 @@ pub fn eval_strlen<R: RowAccess>(
     check_arity(args, 1, "STRLEN")?;
     match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => match v.as_str() {
-            Some(s) => Ok(Some(ComparableValue::Long(s.len() as i64))),
+            Some(s) => Ok(Some(ComparableValue::Long(s.chars().count() as i64))),
             None => Err(QueryError::InvalidFilter(
                 "STRLEN requires a string argument".to_string(),
             )),
@@ -210,14 +241,26 @@ pub fn eval_concat<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     let mut result = String::new();
+    // Per W3C: preserve language tag only if ALL args have the same tag
+    let mut common_lang: Option<Option<Arc<str>>> = None;
     for arg in args {
+        let lang = extract_lang_tag(arg, row, ctx);
+        match &common_lang {
+            None => common_lang = Some(lang),
+            Some(prev) => {
+                if *prev != lang {
+                    common_lang = Some(None); // mismatch → no tag
+                }
+            }
+        }
         if let Some(val) = arg.eval_to_comparable(row, ctx)? {
             if let Some(s) = val.as_str() {
                 result.push_str(s);
             }
         }
     }
-    Ok(Some(ComparableValue::String(Arc::from(result))))
+    let lang = common_lang.flatten();
+    Ok(Some(string_with_lang(&result, lang)))
 }
 
 pub fn eval_str_before<R: RowAccess>(
@@ -226,17 +269,16 @@ pub fn eval_str_before<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRBEFORE")?;
+    let lang = extract_lang_tag(&args[0], row, ctx);
     let arg1 = args[0].eval_to_comparable(row, ctx)?;
     let arg2 = args[1].eval_to_comparable(row, ctx)?;
     match (arg1, arg2) {
         (Some(ComparableValue::String(s)), Some(ComparableValue::String(d))) => {
             let result = s.find(d.as_ref()).map(|pos| &s[..pos]).unwrap_or("");
-            Ok(Some(ComparableValue::String(Arc::from(result))))
+            Ok(Some(string_with_lang(result, lang)))
         }
         (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
-            "STRBEFORE requires string arguments".to_string(),
-        )),
+        _ => Ok(None),
     }
 }
 
@@ -246,6 +288,7 @@ pub fn eval_str_after<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRAFTER")?;
+    let lang = extract_lang_tag(&args[0], row, ctx);
     let arg1 = args[0].eval_to_comparable(row, ctx)?;
     let arg2 = args[1].eval_to_comparable(row, ctx)?;
     match (arg1, arg2) {
@@ -254,12 +297,10 @@ pub fn eval_str_after<R: RowAccess>(
                 .find(d.as_ref())
                 .map(|pos| &s[pos + d.len()..])
                 .unwrap_or("");
-            Ok(Some(ComparableValue::String(Arc::from(result))))
+            Ok(Some(string_with_lang(result, lang)))
         }
         (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
-            "STRAFTER requires string arguments".to_string(),
-        )),
+        _ => Ok(None),
     }
 }
 
@@ -273,6 +314,7 @@ pub fn eval_replace<R: RowAccess>(
             "REPLACE requires 3-4 arguments".to_string(),
         ));
     }
+    let lang = extract_lang_tag(&args[0], row, ctx);
     let input = args[0].eval_to_comparable(row, ctx)?;
     let pattern = args[1].eval_to_comparable(row, ctx)?;
     let replacement = args[2].eval_to_comparable(row, ctx)?;
@@ -294,14 +336,11 @@ pub fn eval_replace<R: RowAccess>(
             Some(ComparableValue::String(r)),
         ) => {
             let re = build_regex_with_flags(&p, &flags)?;
-            Ok(Some(ComparableValue::String(Arc::from(
-                re.replace_all(&s, r.as_ref()).into_owned(),
-            ))))
+            let replaced = re.replace_all(&s, r.as_ref()).into_owned();
+            Ok(Some(string_with_lang(&replaced, lang)))
         }
         (None, _, _) | (_, None, _) | (_, _, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
-            "REPLACE requires string arguments".to_string(),
-        )),
+        _ => Ok(None),
     }
 }
 
@@ -315,6 +354,7 @@ pub fn eval_substr<R: RowAccess>(
             "SUBSTR requires 2-3 arguments".to_string(),
         ));
     }
+    let lang = extract_lang_tag(&args[0], row, ctx);
     let input = args[0].eval_to_comparable(row, ctx)?;
     let start = args[1].eval_to_comparable(row, ctx)?;
     let length = if args.len() > 2 {
@@ -343,30 +383,34 @@ pub fn eval_substr<R: RowAccess>(
         }
     };
 
+    // Use character-based indexing (not byte-based) per W3C SPARQL spec
+    let chars: Vec<char> = s.chars().collect();
+    let char_count = chars.len();
+
     let start_0 = if start_1 < 1 {
         0
     } else {
         (start_1 - 1) as usize
     };
 
-    if start_0 >= s.len() {
+    if start_0 >= char_count {
         return Ok(Some(ComparableValue::String(Arc::from(""))));
     }
 
-    let result = match length {
+    let result: String = match length {
         Some(ComparableValue::Long(len)) if len > 0 => {
-            let end = (start_0 + (len as usize)).min(s.len());
-            &s[start_0..end]
+            let end = (start_0 + (len as usize)).min(char_count);
+            chars[start_0..end].iter().collect()
         }
-        Some(ComparableValue::Long(_)) => "",
-        None => &s[start_0..],
+        Some(ComparableValue::Long(_)) => String::new(),
+        None => chars[start_0..].iter().collect(),
         Some(_) => {
             return Err(QueryError::InvalidFilter(
                 "SUBSTR requires an integer as third argument".to_string(),
             ))
         }
     };
-    Ok(Some(ComparableValue::String(Arc::from(result))))
+    Ok(Some(string_with_lang(&result, lang)))
 }
 
 pub fn eval_encode_for_uri<R: RowAccess>(
@@ -394,6 +438,15 @@ pub fn eval_str_dt<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRDT")?;
+    // Per W3C SPARQL spec: STRDT requires a simple literal (no language tag,
+    // no existing datatype). If the variable binding has a language tag, error.
+    if let Expression::Var(var_id) = &args[0] {
+        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
+            if lang.is_some() {
+                return Ok(None); // language-tagged → type error → unbound
+            }
+        }
+    }
     let val = args[0].eval_to_comparable(row, ctx)?;
     let dt = args[1].eval_to_comparable(row, ctx)?;
     match (val, dt) {
@@ -404,9 +457,7 @@ pub fn eval_str_dt<R: RowAccess>(
                 lang: None,
             }))
         }
-        (Some(_), Some(_)) => Err(QueryError::InvalidFilter(
-            "STRDT requires a string lexical form".to_string(),
-        )),
+        (Some(_), Some(_)) => Ok(None),
         _ => Ok(None),
     }
 }
@@ -417,6 +468,14 @@ pub fn eval_str_lang<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRLANG")?;
+    // Per W3C SPARQL spec: STRLANG requires a simple literal (no language tag).
+    if let Expression::Var(var_id) = &args[0] {
+        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
+            if lang.is_some() {
+                return Ok(None); // language-tagged → type error → unbound
+            }
+        }
+    }
     let val = args[0].eval_to_comparable(row, ctx)?;
     let lang = args[1].eval_to_comparable(row, ctx)?;
     match (val, lang) {
@@ -427,9 +486,7 @@ pub fn eval_str_lang<R: RowAccess>(
                 lang: lang_val.as_str().map(Arc::from),
             }))
         }
-        (Some(_), Some(_)) => Err(QueryError::InvalidFilter(
-            "STRLANG requires a string lexical form".to_string(),
-        )),
+        (Some(_), Some(_)) => Ok(None),
         _ => Ok(None),
     }
 }

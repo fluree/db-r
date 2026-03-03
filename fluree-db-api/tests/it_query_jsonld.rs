@@ -64,6 +64,8 @@ async fn jsonld_filter_single_filter() {
 
 #[tokio::test]
 async fn jsonld_bind_error_invalid_iri_type() {
+    // W3C §17: type mismatch in IRI() produces unbound, not an error.
+    // (iri 42) with a numeric arg returns Ok(None) → ?err is unbound.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "query/bind-error:iri-type";
     let ledger = seed_people_filter_dataset(&fluree, ledger_id).await;
@@ -78,13 +80,12 @@ async fn jsonld_bind_error_invalid_iri_type() {
         "select": "?err"
     });
 
-    assert_query_bind_error(
-        &fluree,
-        &ledger,
-        query,
-        "IRI requires a string or IRI argument",
-    )
-    .await;
+    let result = support::query_jsonld(&fluree, &ledger, &query).await;
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -108,6 +109,8 @@ async fn jsonld_bind_error_invalid_datatype_iri() {
 
 #[tokio::test]
 async fn jsonld_bind_error_strlang_non_string() {
+    // W3C §17: type mismatch in STRLANG() produces unbound, not an error.
+    // (str-lang 42 "en") with a numeric first arg returns Ok(None) → ?err is unbound.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "query/bind-error:strlang-non-string";
     let ledger = seed_people_filter_dataset(&fluree, ledger_id).await;
@@ -122,13 +125,12 @@ async fn jsonld_bind_error_strlang_non_string() {
         "select": "?err"
     });
 
-    assert_query_bind_error(
-        &fluree,
-        &ledger,
-        query,
-        "STRLANG requires a string lexical form",
-    )
-    .await;
+    let result = support::query_jsonld(&fluree, &ledger, &query).await;
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]

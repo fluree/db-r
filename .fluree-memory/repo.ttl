@@ -640,3 +640,19 @@ mem:artifact-01kjte32vm4nfdfmxwvka0nqze a mem:Artifact ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:46.132479+00:00"^^xsd:dateTime ;
     mem:artifactKind "file" .
+
+mem:artifact-01kjtmmwxeeczkxyzjt4bn84sy a mem:Artifact ;
+    mem:content "Issue #48 Implementation Plan (fix/sparql/builtin-functions branch)\n\nPlan file: /Users/ajohnson/.claude/plans/modular-inventing-dragon.md\nGitHub comment: https://github.com/fluree/db-r/issues/48#issuecomment-3993219418\n\n8 phases covering 43/48 failing function tests:\n1. STRDT/STRLANG parser wiring (6 tests) — SPARQL-only\n2. BNode/IRI/Rand lowering (5 tests) — SPARQL + minor shared\n3. SUBSTR/STRLEN char indexing (4-6 tests) — Shared\n4. Error semantics: type-mismatch→Ok(None), COALESCE/IF (9 tests) — Shared\n5. Decimal/BigInt in isNumeric + numeric fns (3+ tests) — Shared\n6. xsd:integer return type + SECONDS decimal (8-10 tests) — Shared\n7. TZ/TIMEZONE split + UUID→IRI (3-5 tests) — Mixed\n8. Language tag preservation (5 tests, optional) — Shared\n\n5 tests deferred: plus-1/2 (→#50/#62), in01/notin01/now01 (→new issue: ASK without triple patterns)\n\nUse `/rewind` checkpoint at plan-approved state if context runs out. Plan file tracks progress per phase with checkboxes." ;
+    mem:tag "builtin-functions" ;
+    mem:tag "checkpoint" ;
+    mem:tag "implementation-plan" ;
+    mem:tag "issue-48" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "/Users/ajohnson/.claude/plans/modular-inventing-dragon.md" ;
+    mem:artifactRef "fluree-db-query/src/expression/" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/expression.rs" ;
+    mem:branch "fix/sparql/builtin-functions" ;
+    mem:createdAt "2026-03-03T20:01:21.326479+00:00"^^xsd:dateTime ;
+    mem:artifactKind "file" .
