@@ -5,8 +5,6 @@
 
 use crate::ast::expr::{BinaryOp, Expression as AstExpression, FunctionName, UnaryOp};
 use crate::ast::term::{Literal, LiteralValue};
-use crate::span::SourceSpan;
-
 use fluree_db_core::FlakeValue;
 use fluree_db_query::ir::{Expression, FilterValue, Function};
 use fluree_db_query::parse::encode::IriEncoder;
@@ -78,7 +76,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             },
 
             AstExpression::FunctionCall { name, args, .. } => {
-                self.lower_function_call(name, args, expr.span())
+                self.lower_function_call(name, args)
             }
 
             AstExpression::Aggregate {
@@ -208,7 +206,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         &mut self,
         name: &FunctionName,
         args: &[AstExpression],
-        _span: SourceSpan,
     ) -> Result<Expression> {
         let func = match name {
             // Type checking functions

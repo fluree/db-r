@@ -17,14 +17,25 @@ use super::value::ComparableValue;
 
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
+/// Handles both materialized (`Lit`) and binary-store (`EncodedLit`) bindings.
 fn extract_lang_tag<R: RowAccess>(
     expr: &Expression,
     row: &R,
-    _ctx: Option<&ExecutionContext<'_>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Option<Arc<str>> {
     if let Expression::Var(var_id) = expr {
-        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
-            return lang.clone();
+        match row.get(*var_id) {
+            Some(Binding::Lit { lang, .. }) => {
+                return lang.clone();
+            }
+            Some(Binding::EncodedLit { lang_id, .. }) => {
+                if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
+                    if let Some(lang_str) = store.resolve_lang_id(*lang_id) {
+                        return Some(Arc::from(lang_str));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     None
