@@ -533,3 +533,17 @@ mem:fact-01kjt5bpzz5aqvv93syafs18m1 a mem:Fact ;
     mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
     mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
     mem:createdAt "2026-03-03T15:34:11.711499+00:00"^^xsd:dateTime .
+
+mem:fact-01kjtbbfnpgec8tk0zqjeg7sb8 a mem:Fact ;
+    mem:content "Added POST leaflet-skipping fast path for bound-object COUNT queries: `PredicateObjectCountFirstsOperator` answers `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` (single triple, bound predicate+object, no dt/lang constraint, no GROUP BY) by scanning POST leaflets using uncompressed FIRST (p,o) metadata and boundary-equality to add `row_count` without decoding; falls back to decoding Region1 for partial leaflets. Wired via `detect_predicate_object_count` in `execute/operator_tree.rs`, and preserves existing loose semantics when `tp.dtc` is None (ignores dt/lang)." ;
+    mem:tag "count" ;
+    mem:tag "fast-path" ;
+    mem:tag "leaflet" ;
+    mem:tag "optimization" ;
+    mem:tag "post-index" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T17:18:55.670244+00:00"^^xsd:dateTime .

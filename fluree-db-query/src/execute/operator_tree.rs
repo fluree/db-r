@@ -7,7 +7,9 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
-use crate::fast_group_count_firsts::PredicateGroupCountFirstsOperator;
+use crate::fast_group_count_firsts::{
+    PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
+};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
@@ -129,6 +131,70 @@ fn detect_predicate_group_by_object_count_topk(
         return None;
     }
     Some((pred, *o_var, agg.output_var, limit))
+}
+
+fn detect_predicate_object_count(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, crate::triple::Term, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+
+    // Must be ?s <p> <o> (subject var, predicate bound, object bound).
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if matches!(&tp.o, crate::triple::Term::Var(_)) {
+        return None;
+    }
+    // Loose semantics only (no explicit dt/lang constraint).
+    if tp.dtc.is_some() {
+        return None;
+    }
+    // No GROUP BY.
+    if !options.group_by.is_empty() {
+        return None;
+    }
+    // Exactly one COUNT aggregate on ?s (or COUNT(*) which is equivalent here).
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+
+    // SELECT must be exactly the count output var.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((pred, tp.o.clone(), agg.output_var))
 }
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -302,6 +368,47 @@ pub fn build_operator_tree(
             limit,
             stats.clone(),
         )));
+    }
+
+    // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
+    if let Some((pred, obj, count_var)) = detect_predicate_object_count(query, options) {
+        let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
+            pred,
+            obj,
+            count_var,
+            stats.clone(),
+        ));
+
+        // ORDER BY
+        if !options.order_by.is_empty() {
+            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        }
+
+        // PROJECT
+        if let Some(vars) = query.output.select_vars() {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
+        }
+
+        // DISTINCT
+        if options.distinct {
+            operator = Box::new(DistinctOperator::new(operator));
+        }
+
+        // OFFSET
+        if let Some(offset) = options.offset {
+            if offset > 0 {
+                operator = Box::new(OffsetOperator::new(operator, offset));
+            }
+        }
+
+        // LIMIT
+        if let Some(limit) = options.limit {
+            operator = Box::new(LimitOperator::new(operator, limit));
+        }
+
+        return Ok(operator);
     }
 
     // Fast-path: stats-based count-by-predicate query

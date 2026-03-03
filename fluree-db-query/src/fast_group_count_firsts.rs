@@ -2,6 +2,7 @@ use crate::binding::Binding;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::{Operator, OperatorState};
+use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -406,5 +407,310 @@ impl Operator for PredicateGroupCountFirstsOperator {
 
     fn estimated_rows(&self) -> Option<usize> {
         Some(self.limit)
+    }
+}
+
+/// Fast-path: `SELECT (COUNT(?s) AS ?count) WHERE { ?s <p> <o> }` in POST order.
+///
+/// Uses only per-leaflet uncompressed "FIRST" headers to skip decoding entire leaflets when
+/// `FIRST(i).(p,o) == FIRST(i+1).(p,o)` (boundary-equality implies the whole leaflet is that (p,o) in POST order).
+///
+/// Semantics: matches the current "loose" mode when no datatype/lang constraint is specified:
+/// compare on Region1 `(o_kind, o_key)` only (dt/lang are ignored).
+pub struct PredicateObjectCountFirstsOperator {
+    /// Output schema: [count_var]
+    schema: Arc<[VarId]>,
+    /// Bound predicate reference (Sid or Iri).
+    predicate: crate::triple::Ref,
+    /// Bound object term (Sid/Iri/Value).
+    object: Term,
+    /// Optional stats view (reserved for future scan-shape pruning).
+    #[allow(dead_code)]
+    stats: Option<Arc<StatsView>>,
+    /// Operator state
+    state: OperatorState,
+    /// Computed count (materialized at open)
+    count: i64,
+    /// Whether the single row has been emitted
+    emitted: bool,
+}
+
+impl PredicateObjectCountFirstsOperator {
+    pub fn new(
+        predicate: crate::triple::Ref,
+        object: Term,
+        count_var: VarId,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
+        Self {
+            schema: Arc::from(vec![count_var].into_boxed_slice()),
+            predicate,
+            object,
+            stats,
+            state: OperatorState::Created,
+            count: 0,
+            emitted: false,
+        }
+    }
+
+    fn read_leaflet_first(
+        leaf_mmap: &[u8],
+        dir: &fluree_db_binary_index::format::leaf::LeafletDirEntry,
+    ) -> std::io::Result<LeafletHeader> {
+        let end = dir.offset as usize + dir.compressed_len as usize;
+        let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
+        LeafletHeader::read_from(leaflet_bytes)
+    }
+
+    fn prefix_from_dir_or_leaflet(
+        leaf_mmap: &[u8],
+        dir: &fluree_db_binary_index::format::leaf::LeafletDirEntry,
+    ) -> std::io::Result<(u32, u8, u64)> {
+        if let (Some(k), Some(o)) = (dir.first_o_kind, dir.first_o_key) {
+            Ok((dir.first_p_id, k, o))
+        } else {
+            // Older leaf versions: fall back to reading the leaflet header.
+            let lh = Self::read_leaflet_first(leaf_mmap, dir)?;
+            Ok((lh.first_p_id, lh.first_o_kind, lh.first_o_key))
+        }
+    }
+
+    fn prefix_from_run_record(rec: &RunRecord) -> (u32, u8, u64) {
+        (rec.p_id, rec.o_kind, rec.o_key)
+    }
+
+    #[inline]
+    fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
+        QueryError::execution(format!("{where_}: {e}"))
+    }
+}
+
+#[async_trait]
+impl Operator for PredicateObjectCountFirstsOperator {
+    fn schema(&self) -> &[VarId] {
+        &self.schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        if !self.state.can_open() {
+            return Ok(());
+        }
+        self.state = OperatorState::Open;
+        self.count = 0;
+        self.emitted = false;
+
+        let Some(gv) = ctx.graph_view() else {
+            self.state = OperatorState::Exhausted;
+            return Ok(());
+        };
+        let store = gv.clone_store();
+        let g_id = gv.g_id();
+
+        let p_id = match &self.predicate {
+            crate::triple::Ref::Sid(sid) => store.sid_to_p_id(sid).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
+            })?,
+            crate::triple::Ref::Iri(iri) => store.find_predicate_id(iri).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
+            })?,
+            _ => {
+                return Err(QueryError::InvalidQuery(
+                    "predicate-object count fast-path requires a bound predicate".to_string(),
+                ))
+            }
+        };
+
+        // Translate the bound object term into its Region1 `(o_kind, o_key)` encoding.
+        let (target_kind, target_key): (u8, u64) = match &self.object {
+            Term::Sid(sid) => match store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::execution(format!("sid_to_s_id for object: {e}")))?
+            {
+                Some(s_id) => (ObjKind::REF_ID.as_u8(), s_id),
+                None => {
+                    self.state = OperatorState::Exhausted;
+                    return Ok(());
+                }
+            },
+            Term::Iri(iri) => match store.find_subject_id(iri).map_err(|e| {
+                QueryError::execution(format!("find_subject_id for object IRI: {e}"))
+            })? {
+                Some(s_id) => (ObjKind::REF_ID.as_u8(), s_id),
+                None => {
+                    self.state = OperatorState::Exhausted;
+                    return Ok(());
+                }
+            },
+            Term::Value(val) => {
+                match gv.value_to_obj_pair_for_predicate(val, p_id).map_err(|e| {
+                    QueryError::execution(format!("value_to_obj_pair_for_predicate: {e}"))
+                })? {
+                    Some((k, v)) => (k.as_u8(), v.as_u64()),
+                    None => {
+                        self.state = OperatorState::Exhausted;
+                        return Ok(());
+                    }
+                }
+            }
+            Term::Var(_) => {
+                return Err(QueryError::InvalidQuery(
+                    "predicate-object count fast-path requires a bound object".to_string(),
+                ))
+            }
+        };
+
+        let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Post) else {
+            self.state = OperatorState::Exhausted;
+            return Ok(());
+        };
+        let cmp = fluree_db_binary_index::cmp_for_order(RunSortOrder::Post);
+
+        // Range: fixed (p,o_kind,o_key), wildcard dt/lang/i/s/t.
+        let min_key = RunRecord {
+            g_id,
+            s_id: SubjectId::from_u64(0),
+            p_id,
+            dt: 0,
+            o_kind: target_kind,
+            op: 0,
+            o_key: target_key,
+            t: 0,
+            lang_id: 0,
+            i: 0,
+        };
+        let max_key = RunRecord {
+            g_id,
+            s_id: SubjectId::from_u64(u64::MAX),
+            p_id,
+            dt: u16::MAX,
+            o_kind: target_kind,
+            op: 1,
+            o_key: target_key,
+            t: u32::MAX,
+            lang_id: u16::MAX,
+            i: u32::MAX,
+        };
+
+        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+        let target_prefix = (p_id, target_kind, target_key);
+
+        let mut total: i64 = 0;
+
+        for leaf_idx in leaf_range.clone() {
+            let leaf_entry = &branch.leaves[leaf_idx];
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                QueryError::execution(format!("leaf {} has no resolved path", leaf_entry.leaf_cid))
+            })?;
+
+            let file = match std::fs::File::open(leaf_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    store
+                        .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)
+                        .map_err(|e| Self::io_to_query("ensure_index_leaf_cached", e))?;
+                    std::fs::File::open(leaf_path)
+                        .map_err(|e| Self::io_to_query("open leaf after cache", e))?
+                }
+                Err(e) => return Err(Self::io_to_query("open leaf", e)),
+            };
+
+            let leaf_mmap = unsafe {
+                memmap2::Mmap::map(&file).map_err(|e| Self::io_to_query("mmap leaf", e))?
+            };
+            let leaf_header = read_leaf_header(&leaf_mmap)
+                .map_err(|e| Self::io_to_query("read leaf header", e))?;
+
+            let dirs = &leaf_header.leaflet_dir;
+            for i in 0..dirs.len() {
+                let dir = &dirs[i];
+                let prefix = Self::prefix_from_dir_or_leaflet(&leaf_mmap, dir)
+                    .map_err(|e| Self::io_to_query("read leaflet first prefix", e))?;
+
+                if prefix < target_prefix {
+                    continue;
+                }
+                if prefix > target_prefix {
+                    break;
+                }
+
+                // Determine the "next leaflet's FIRST" (same leaf, or next leaf's first_key).
+                let next_prefix = if i + 1 < dirs.len() {
+                    let next_dir = &dirs[i + 1];
+                    Some(
+                        Self::prefix_from_dir_or_leaflet(&leaf_mmap, next_dir)
+                            .map_err(|e| Self::io_to_query("read next leaflet first prefix", e))?,
+                    )
+                } else if leaf_idx + 1 < leaf_range.end {
+                    Some(Self::prefix_from_run_record(
+                        &branch.leaves[leaf_idx + 1].first_key,
+                    ))
+                } else {
+                    None
+                };
+
+                if next_prefix == Some(target_prefix) {
+                    // Boundary-equality implies this leaflet is entirely (p,o).
+                    total += dir.row_count as i64;
+                    continue;
+                }
+
+                // Fallback for this leaflet: decode Region 1 and count exact (p,o_kind,o_key) matches.
+                let end = dir.offset as usize + dir.compressed_len as usize;
+                let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
+                let (_lh2, _s_ids, p_ids, o_kinds, o_keys) =
+                    decode_leaflet_region1(leaflet_bytes, leaf_header.p_width, RunSortOrder::Post)
+                        .map_err(|e| Self::io_to_query("decode leaflet region1", e))?;
+
+                for row in 0..p_ids.len() {
+                    if p_ids[row] == p_id
+                        && o_kinds[row] == target_kind
+                        && o_keys[row] == target_key
+                    {
+                        total += 1;
+                    }
+                }
+            }
+        }
+
+        self.count = total;
+        Ok(())
+    }
+
+    async fn next_batch(
+        &mut self,
+        _ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<crate::binding::Batch>> {
+        if !self.state.can_next() {
+            return Ok(None);
+        }
+        if self.emitted {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        }
+        self.emitted = true;
+
+        let col_c = vec![Binding::Lit {
+            val: fluree_db_core::FlakeValue::Long(self.count),
+            dt: fluree_db_core::Sid::xsd_integer(),
+            lang: None,
+            t: None,
+            op: None,
+            p_id: None,
+        }];
+
+        Ok(Some(crate::binding::Batch::new(
+            self.schema.clone(),
+            vec![col_c],
+        )?))
+    }
+
+    fn close(&mut self) {
+        self.state = OperatorState::Closed;
+        self.count = 0;
+        self.emitted = false;
+    }
+
+    fn estimated_rows(&self) -> Option<usize> {
+        Some(1)
     }
 }
