@@ -547,3 +547,20 @@ mem:fact-01kjtbbfnpgec8tk0zqjeg7sb8 a mem:Fact ;
     mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
     mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
     mem:createdAt "2026-03-03T17:18:55.670244+00:00"^^xsd:dateTime .
+
+mem:decision-01kjtd4ddbk45wadcafd8tfea7 a mem:Decision ;
+    mem:content "When a novelty overlay is present, the fast POST leaflet-skipping operators (`PredicateGroupCountFirstsOperator`, `PredicateObjectCountFirstsOperator`) can stay on the fast base path and apply an exact overlay delta by translating overlay flakes to `OverlayOp` IDs and simulating per-fact state transitions in time order. We infer initial presence from the first op (first retract => existed pre-overlay) and adjust counts on assert/retract transitions; this avoids falling back to `range_with_overlay` for overlays." ;
+    mem:tag "count" ;
+    mem:tag "leaflet" ;
+    mem:tag "novelty" ;
+    mem:tag "overlay" ;
+    mem:tag "performance" ;
+    mem:tag "post" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T17:50:01.131764+00:00"^^xsd:dateTime ;
+    mem:rationale "Preserve the leaflet FIRST-skipping performance while still producing correct results under novelty, given the invariant that overlay retractions only target facts that existed at the time." ;
+    mem:alternatives "Always fall back when overlay/policy/history is active; use BinaryCursor merge for overlay even in fast-path; do per-assert base existence checks." .
