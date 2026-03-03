@@ -133,10 +133,16 @@ impl Function {
             Function::Op => fluree::eval_op(args, row),
 
             // Unknown function
-            Function::Custom(name) => Err(QueryError::InvalidFilter(format!(
-                "Unknown function: {}",
-                name
-            ))),
+            Function::Custom(name) => match name.as_str() {
+                // SPARQL datatype constructor functions (subset)
+                //
+                // Some queries use `xsd:integer(<boolean>)` to count matches.
+                // Many SPARQL engines accept this and treat booleans as 0/1.
+                "http://www.w3.org/2001/XMLSchema#integer" => {
+                    numeric::eval_xsd_integer(args, row, ctx)
+                }
+                _ => Err(QueryError::InvalidFilter(format!("Unknown function: {}", name))),
+            },
         }
     }
 

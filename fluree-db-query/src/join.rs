@@ -5,6 +5,7 @@
 //! vars between left and right must match exactly.
 
 use crate::binding::{Batch, Binding};
+use crate::binary_scan::EmitMask;
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
@@ -32,12 +33,14 @@ use tracing::Instrument;
 fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: &Option<ObjectBounds>,
+    emit: EmitMask,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
-    Box::new(crate::binary_scan::ScanOperator::new(
+    Box::new(crate::binary_scan::ScanOperator::new_with_emit(
         pattern,
         object_bounds.clone(),
         Vec::new(),
+        emit,
     ))
 }
 
@@ -135,6 +138,11 @@ pub struct NestedLoopJoinOperator {
     right_pattern: TriplePattern,
     /// Schema from left operator
     left_schema: Arc<[VarId]>,
+    /// Which right-pattern variables to emit into the right scan schema.
+    ///
+    /// This enables pruning of unused right-side variables so the scan can avoid
+    /// decoding and materializing values that do not affect the query result.
+    right_emit: EmitMask,
     /// New variables introduced by right pattern (not in left schema)
     right_new_vars: Vec<VarId>,
     /// Combined output schema: left vars + new right vars
@@ -198,6 +206,7 @@ impl NestedLoopJoinOperator {
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        right_emit: EmitMask,
     ) -> Self {
         // Build bind instructions: which left columns bind which right pattern positions
         let mut bind_instructions = Vec::new();
@@ -237,12 +246,30 @@ impl NestedLoopJoinOperator {
             }
         }
 
-        // Determine right pattern output vars (vars that are still unbound after substitution)
-        let right_output_vars: Vec<VarId> = right_pattern
-            .variables()
-            .into_iter()
-            .filter(|v| !left_var_positions.contains_key(v))
-            .collect();
+        // Determine right pattern output vars (vars that are still unbound after substitution),
+        // filtered by the emission mask. This allows plan-time pruning of unused vars.
+        let mut right_output_vars: Vec<VarId> = Vec::new();
+        if right_emit.s {
+            if let Ref::Var(v) = &right_pattern.s {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
+        if right_emit.p {
+            if let Ref::Var(v) = &right_pattern.p {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
+        if right_emit.o {
+            if let Term::Var(v) = &right_pattern.o {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
 
         // Build combined schema: left schema + new right vars + inline bind vars
         let mut combined = left_schema.to_vec();
@@ -321,6 +348,7 @@ impl NestedLoopJoinOperator {
             left,
             right_pattern,
             left_schema,
+            right_emit,
             right_new_vars: right_output_vars,
             combined_schema,
             bind_instructions,
@@ -726,7 +754,8 @@ impl Operator for NestedLoopJoinOperator {
                         left_row,
                         ctx.binary_store.as_deref(),
                     );
-                    let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+                    let mut right_scan =
+                        make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
@@ -747,7 +776,8 @@ impl Operator for NestedLoopJoinOperator {
                     left_row,
                     ctx.binary_store.as_deref(),
                 );
-                let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+                let mut right_scan =
+                    make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
@@ -917,7 +947,8 @@ impl NestedLoopJoinOperator {
                     ctx.binary_store.as_deref(),
                 )
             };
-            let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+            let mut right_scan =
+                make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
             right_scan.open(ctx).await?;
             right_scans += 1;
             while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -1708,6 +1739,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
@@ -1796,6 +1828,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // Verify that ?v is NOT in unify_instructions (it's substituted, not unified)
@@ -1898,6 +1931,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // No unify_instructions since no shared vars between left [?s] and right [?x, ?y]

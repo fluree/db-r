@@ -2469,16 +2469,18 @@ mod tests {
     }
 
     #[test]
-    fn test_property_path_sequence_transitive_step_errors() {
-        // Transitive modifier inside a sequence step should error
-        let result = lower_query(
+    fn test_property_path_sequence_transitive_step_allowed() {
+        // Transitive modifier inside a sequence step should work
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?x WHERE { ?s ex:parent+/ex:name ?x }",
-        );
+        )
+        .unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
+        // Should lower to: PropertyPath(?s, ex:parent, +, ?__pp0), Triple(?__pp0, ex:name, ?x)
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+        assert!(matches!(query.patterns[1], Pattern::Triple(_)));
     }
 
     #[test]

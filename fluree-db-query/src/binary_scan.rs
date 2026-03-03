@@ -43,11 +43,36 @@ use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
     ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
+use fluree_vocab::rdf;
 use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::policy::QueryPolicyEnforcer;
+
+// ============================================================================
+// Variable emission control
+// ============================================================================
+
+/// Controls which triple-pattern variables are emitted into the operator schema.
+///
+/// This enables plan-time pruning of unused variables so scans can avoid decoding
+/// and materializing values that do not affect query results (e.g., COUNT(*) queries
+/// with unused object vars).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitMask {
+    pub s: bool,
+    pub p: bool,
+    pub o: bool,
+}
+
+impl EmitMask {
+    pub const ALL: Self = Self {
+        s: true,
+        p: true,
+        o: true,
+    };
+}
 
 // ============================================================================
 // IndexType → RunSortOrder mapping
@@ -72,25 +97,32 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
 ///
 /// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where each position
 /// is the column index of that variable in the schema (None if bound).
-fn schema_from_pattern(
+fn schema_from_pattern_with_emit(
     pattern: &TriplePattern,
+    emit: EmitMask,
 ) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
     let mut schema_vec = Vec::with_capacity(3);
     let mut s_var_pos = None;
     let mut p_var_pos = None;
     let mut o_var_pos = None;
 
-    if let Ref::Var(v) = &pattern.s {
-        s_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
+    if emit.s {
+        if let Ref::Var(v) = &pattern.s {
+            s_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
     }
-    if let Ref::Var(v) = &pattern.p {
-        p_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
+    if emit.p {
+        if let Ref::Var(v) = &pattern.p {
+            p_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
     }
-    if let Term::Var(v) = &pattern.o {
-        o_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
+    if emit.o {
+        if let Term::Var(v) = &pattern.o {
+            o_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
     }
 
     (
@@ -99,6 +131,31 @@ fn schema_from_pattern(
         p_var_pos,
         o_var_pos,
     )
+}
+
+/// True when the triple pattern's predicate is `rdf:type` (by Sid or IRI).
+///
+/// This is used for performance short-circuits based on RDF semantics, e.g.
+/// avoiding literal-metadata decoding for `?s rdf:type ?o` scans.
+#[inline]
+fn predicate_is_rdf_type(p: &Ref) -> bool {
+    match p {
+        Ref::Sid(sid) => fluree_db_core::is_rdf_type(sid),
+        Ref::Iri(iri) => iri.as_ref() == rdf::TYPE,
+        Ref::Var(_) => false,
+    }
+}
+
+/// True when a variable-object scan can safely skip Region 2 decoding because
+/// the object is semantically ref-only.
+///
+/// Today this is limited to `rdf:type` patterns with no datatype/lang constraint:
+/// RDF requires `rdf:type` objects to be IRIs (or blank nodes), so dt/lang/i/t
+/// metadata is irrelevant. Skipping Region 2 reduces zstd decode and cache churn
+/// on large `rdf:type` scans (common in sparqloscope benchmarks).
+#[inline]
+fn object_var_is_ref_only(pattern: &TriplePattern) -> bool {
+    matches!(pattern.o, Term::Var(_)) && pattern.dtc.is_none() && predicate_is_rdf_type(&pattern.p)
 }
 
 // ============================================================================
@@ -179,6 +236,7 @@ impl BinaryScanOperator {
         graph_view: BinaryGraphView,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
     ) -> Self {
         let mut index = IndexType::for_query(
             pattern.s_bound(),
@@ -193,7 +251,8 @@ impl BinaryScanOperator {
             index = IndexType::Post;
         }
 
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
+            schema_from_pattern_with_emit(&pattern, emit);
         let p_is_var = pattern.p.is_var();
 
         // Extend schema with new bind variables from inline operators.
@@ -228,7 +287,7 @@ impl BinaryScanOperator {
         index: IndexType,
         inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let mut op = Self::new(pattern, graph_view, None, inline_ops);
+        let mut op = Self::new(pattern, graph_view, None, inline_ops, EmitMask::ALL);
         op.index = index;
         op
     }
@@ -1109,7 +1168,14 @@ impl Operator for BinaryScanOperator {
                 }
 
                 // Use optimized subject lookup for SPOT with bound subject
-                let need_region2 = self.o_var_pos.is_some();
+                let need_region2 = self.o_var_pos.is_some() && !object_var_is_ref_only(&self.pattern);
+                tracing::debug!(
+                    need_region2,
+                    o_is_var = self.o_var_pos.is_some(),
+                    object_ref_only = object_var_is_ref_only(&self.pattern),
+                    p = ?self.pattern.p,
+                    "binary_scan: cursor need_region2 decision"
+                );
                 let cursor = if order == RunSortOrder::Spot {
                     if let Some(s_id) = filter.s_id {
                         BinaryCursor::for_subject(
@@ -1388,6 +1454,8 @@ pub struct ScanOperator {
     /// Applied after building bindings, before returning the batch.
     /// This reduces operator overhead by avoiding separate FilterOperator/BindOperator nodes.
     inline_ops: Vec<InlineOperator>,
+    /// Which pattern variables to emit into schema.
+    emit: EmitMask,
 }
 
 impl ScanOperator {
@@ -1402,7 +1470,17 @@ impl ScanOperator {
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let (base_schema, _, _, _) = schema_from_pattern(&pattern);
+        Self::new_with_emit(pattern, object_bounds, inline_ops, EmitMask::ALL)
+    }
+
+    /// Create a new scan operator with explicit emission control.
+    pub fn new_with_emit(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+    ) -> Self {
+        let (base_schema, _, _, _) = schema_from_pattern_with_emit(&pattern, emit);
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
         Self {
             pattern,
@@ -1411,6 +1489,7 @@ impl ScanOperator {
             inner: None,
             state: OperatorState::Created,
             inline_ops,
+            emit,
         }
     }
 }
@@ -1509,6 +1588,7 @@ impl Operator for ScanOperator {
                 gv,
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.inline_ops),
+                self.emit,
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
@@ -1524,6 +1604,7 @@ impl Operator for ScanOperator {
                 self.pattern.clone(),
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.inline_ops),
+                self.emit,
             ))
         };
 
@@ -1594,9 +1675,11 @@ impl RangeScanOperator {
         pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
     ) -> Self {
         let p_is_var = pattern.p.is_var();
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
+            schema_from_pattern_with_emit(&pattern, emit);
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
 
         Self {
