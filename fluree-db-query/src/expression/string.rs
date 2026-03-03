@@ -134,7 +134,15 @@ pub fn eval_strlen<R: RowAccess>(
     check_arity(args, 1, "STRLEN")?;
     match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => match v.as_str() {
-            Some(s) => Ok(Some(ComparableValue::Long(s.chars().count() as i64))),
+            Some(s) => {
+                // ASCII fast-path: len() is O(1) and equals char count for ASCII
+                let len = if s.is_ascii() {
+                    s.len()
+                } else {
+                    s.chars().count()
+                };
+                Ok(Some(ComparableValue::Long(len as i64)))
+            }
             None => Err(QueryError::InvalidFilter(
                 "STRLEN requires a string argument".to_string(),
             )),
@@ -383,15 +391,37 @@ pub fn eval_substr<R: RowAccess>(
         }
     };
 
-    // Use character-based indexing (not byte-based) per W3C SPARQL spec
-    let chars: Vec<char> = s.chars().collect();
-    let char_count = chars.len();
-
     let start_0 = if start_1 < 1 {
         0
     } else {
         (start_1 - 1) as usize
     };
+
+    // ASCII fast-path: byte indexing is safe and avoids Vec<char> allocation
+    if s.is_ascii() {
+        let byte_count = s.len();
+        if start_0 >= byte_count {
+            return Ok(Some(ComparableValue::String(Arc::from(""))));
+        }
+        let result = match length {
+            Some(ComparableValue::Long(len)) if len > 0 => {
+                let end = (start_0 + (len as usize)).min(byte_count);
+                &s[start_0..end]
+            }
+            Some(ComparableValue::Long(_)) => "",
+            None => &s[start_0..],
+            Some(_) => {
+                return Err(QueryError::InvalidFilter(
+                    "SUBSTR requires an integer as third argument".to_string(),
+                ))
+            }
+        };
+        return Ok(Some(string_with_lang(result, lang)));
+    }
+
+    // Multi-byte path: use character-based indexing per W3C SPARQL spec
+    let chars: Vec<char> = s.chars().collect();
+    let char_count = chars.len();
 
     if start_0 >= char_count {
         return Ok(Some(ComparableValue::String(Arc::from(""))));
