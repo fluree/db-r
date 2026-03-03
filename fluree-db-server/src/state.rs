@@ -434,6 +434,44 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn spawn_leaflet_cache_stats_logger<S, N>(fluree: Arc<Fluree<S, N>>)
+    where
+        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
+        N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
+    {
+        // Keep logging lightweight and periodic: one line per minute.
+        let cache = Arc::clone(fluree.leaflet_cache());
+        let budget_mb = fluree.cache_budget_mb();
+        let budget_bytes = (budget_mb as u64) * 1024 * 1024;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let used = cache.weighted_size_bytes();
+                let entries = cache.entry_count();
+
+                let used_gib = (used as f64) / (1024.0 * 1024.0 * 1024.0);
+                let budget_gib = (budget_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                let pct = if budget_bytes == 0 {
+                    0.0
+                } else {
+                    (used as f64) * 100.0 / (budget_bytes as f64)
+                };
+
+                tracing::info!(
+                    cache_entries = entries,
+                    cache_weighted_bytes = used,
+                    cache_weighted_gib = used_gib,
+                    cache_budget_mb = budget_mb,
+                    cache_budget_gib = budget_gib,
+                    cache_budget_pct = pct,
+                    "LeafletCache stats"
+                );
+            }
+        });
+    }
+
     /// Create new application state from config
     ///
     /// Initializes either file-backed or proxy-backed Fluree based on config:
@@ -539,8 +577,9 @@ impl AppState {
                 .with_indexing_thresholds(config.reindex_min_bytes, config.reindex_max_bytes);
         }
 
-        let fluree = builder.build()?;
-        Ok(FlureeInstance::File(Arc::new(fluree)))
+        let fluree = Arc::new(builder.build()?);
+        Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        Ok(FlureeInstance::File(fluree))
     }
 
     /// Create a proxy-backed Fluree instance for peer proxy mode
@@ -570,7 +609,9 @@ impl AppState {
         let fluree = Fluree::new(connection, nameservice).enable_ledger_caching();
 
         tracing::info!("Initialized peer with proxy storage mode");
-        Ok(FlureeInstance::Proxy(Arc::new(fluree)))
+        let fluree = Arc::new(fluree);
+        Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        Ok(FlureeInstance::Proxy(fluree))
     }
 
     /// Get server uptime in seconds

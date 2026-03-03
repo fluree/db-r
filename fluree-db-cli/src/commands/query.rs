@@ -149,12 +149,72 @@ pub async fn run(
             remote_name,
             ..
         } => {
+            // Delimited fast path: for SPARQL + TSV/CSV, request the format directly
+            // from the server and stream the raw bytes to stdout (no JSON round-trip).
             if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
-                return Err(CliError::Usage(
-                    "--format tsv/csv is not supported for tracked (remote) ledgers; \
-                     use json or table instead"
-                        .to_string(),
-                ));
+                if query_format != detect::QueryFormat::Sparql {
+                    return Err(CliError::Usage(
+                        "--format tsv/csv is only supported for SPARQL queries on remote ledgers"
+                            .to_string(),
+                    ));
+                }
+                let accept = if output_format == OutputFormatKind::Tsv {
+                    "text/tab-separated-values"
+                } else {
+                    "text/csv"
+                };
+                let fmt_name = if output_format == OutputFormatKind::Tsv {
+                    "tsv"
+                } else {
+                    "csv"
+                };
+
+                let timer = Instant::now();
+                let bytes = match at {
+                    Some(at_str) => {
+                        if fluree_db_api::sparql_dataset_ledger_ids(&content)
+                            .map(|v| !v.is_empty())
+                            .unwrap_or(false)
+                        {
+                            return Err(CliError::Usage(
+                                "SPARQL query already contains FROM/FROM NAMED; \
+                                 for remote time travel, encode time travel in the FROM IRI \
+                                 (e.g., FROM <ledger@t:1>) instead of using --at"
+                                    .to_string(),
+                            ));
+                        }
+                        let spec = parse_time_spec(at_str);
+                        let suffix = time_spec_to_suffix(&spec);
+                        let from_iri =
+                            attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                        let injected =
+                            inject_sparql_from_before_where(&content, &from_iri).ok_or_else(
+                                || {
+                                    CliError::Usage(
+                                        "unable to inject SPARQL FROM clause for remote time travel; \
+                                         please write the query as `SELECT ... WHERE { ... }` or include an explicit FROM"
+                                            .to_string(),
+                                    )
+                                },
+                            )?;
+                        client
+                            .query_connection_sparql_accept_bytes(&injected, accept)
+                            .await?
+                    }
+                    None => {
+                        client
+                            .query_sparql_accept_bytes(&remote_alias, &content, accept)
+                            .await?
+                    }
+                };
+                let elapsed = timer.elapsed();
+
+                context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+                use std::io::Write;
+                std::io::stdout().write_all(&bytes)?;
+                eprintln!("({}, {})", fmt_name, format_duration(elapsed));
+                return Ok(());
             }
 
             // Execute query via remote HTTP

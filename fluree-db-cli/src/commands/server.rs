@@ -130,6 +130,9 @@ async fn run_foreground(
     profile: Option<String>,
     extra_args: &[String],
 ) -> CliResult<()> {
+    let dirs = config::require_fluree_dir(config_override)?;
+    let data_dir = dirs.data_dir();
+
     let server_config = build_server_config(
         config_override,
         listen_addr,
@@ -149,14 +152,35 @@ async fn run_foreground(
         "Starting Fluree server (foreground)"
     );
 
-    let server = FlureeServer::new(server_config)
-        .await
-        .map_err(|e| CliError::Server(format!("failed to initialize server: {e}")))?;
+    // Write server.meta.json so CLI auto-routing works for foreground servers too.
+    let meta_file = meta_path(data_dir);
+    let meta = ServerMeta {
+        pid: std::process::id(),
+        listen_addr: server_config.listen_addr.to_string(),
+        storage_path: server_config
+            .storage_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(memory)".into()),
+        config_path: config_override.map(|p| p.display().to_string()),
+        started_at: now_iso8601(),
+        args: Vec::new(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&meta) {
+        let _ = fs::write(&meta_file, json);
+    }
 
-    server
-        .run()
-        .await
-        .map_err(|e| CliError::Server(format!("server error: {e}")))?;
+    let server = FlureeServer::new(server_config).await.map_err(|e| {
+        let _ = fs::remove_file(&meta_file);
+        CliError::Server(format!("failed to initialize server: {e}"))
+    })?;
+
+    let result = server.run().await;
+
+    // Clean up meta file on exit (normal shutdown or error).
+    let _ = fs::remove_file(&meta_file);
+
+    result.map_err(|e| CliError::Server(format!("server error: {e}")))?;
 
     shutdown_tracer().await;
     Ok(())

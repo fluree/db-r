@@ -228,7 +228,7 @@ pub enum Commands {
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
 
-        /// Output format (json, table, or csv)
+        /// Output format (json, table, csv, or tsv)
         #[arg(long, default_value = "table")]
         format: String,
 
@@ -274,7 +274,7 @@ pub enum Commands {
         #[arg(short = 'p', long)]
         predicate: Option<String>,
 
-        /// Output format (json, table, or csv)
+        /// Output format (json, table, csv, or tsv)
         #[arg(long, default_value = "table")]
         format: String,
     },

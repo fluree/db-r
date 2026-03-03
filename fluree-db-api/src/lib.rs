@@ -2290,6 +2290,16 @@ where
         &self.r2rml_cache
     }
 
+    /// Get a reference to the global decoded-artifact cache.
+    pub fn leaflet_cache(&self) -> &std::sync::Arc<fluree_db_binary_index::LeafletCache> {
+        &self.leaflet_cache
+    }
+
+    /// Global cache budget in MB.
+    pub fn cache_budget_mb(&self) -> usize {
+        self.connection.config().cache.max_mb
+    }
+
     /// Check if ledger caching is enabled
     ///
     /// Returns true if `with_ledger_caching()` was called on the builder.
