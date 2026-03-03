@@ -1024,24 +1024,13 @@ impl Batch {
     /// to) the current schema.  Returns `None` if any variable in `vars`
     /// is not present in the current schema.
     pub fn retain(self, vars: &[VarId]) -> Option<Self> {
-        // Verify all requested vars exist in the schema.
-        if !vars.iter().all(|v| self.schema.contains(v)) {
-            tracing::debug!(
-                requested = ?vars,
-                schema = ?self.schema.as_ref(),
-                "Batch::retain: requested variables not present in schema"
-            );
-            return None;
-        }
-
         // Fast path: nothing to trim.
         if vars.len() == self.schema.len() {
             return Some(self);
         }
 
-        // Walk the current schema in order, keeping only columns whose
-        // variable is in the retain set.  Moves columns instead of cloning
-        // since `self` is consumed.
+        // Single pass: filter schema to retained vars in schema order,
+        // moving columns instead of cloning since `self` is consumed.
         let len = self.len;
         let (new_schema, new_columns): (Vec<VarId>, Vec<Vec<Binding>>) = self
             .schema
@@ -1050,6 +1039,12 @@ impl Batch {
             .zip(self.columns)
             .filter(|(var, _)| vars.contains(var))
             .unzip();
+
+        debug_assert_eq!(
+            new_schema.len(),
+            vars.len(),
+            "Batch::retain: requested variables not present in schema"
+        );
 
         Some(Self {
             len,
