@@ -72,7 +72,7 @@ fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> b
 fn detect_predicate_group_by_object_count_topk(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, VarId, VarId, usize)> {
+) -> Option<(Ref, VarId, VarId, VarId, usize)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean
@@ -130,13 +130,13 @@ fn detect_predicate_group_by_object_count_topk(
     if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
         return None;
     }
-    Some((pred, *o_var, agg.output_var, limit))
+    Some((pred, *s_var, *o_var, agg.output_var, limit))
 }
 
 fn detect_predicate_object_count(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, crate::triple::Term, VarId)> {
+) -> Option<(Ref, VarId, crate::triple::Term, VarId)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
@@ -194,7 +194,7 @@ fn detect_predicate_object_count(
         return None;
     }
 
-    Some((pred, tp.o.clone(), agg.output_var))
+    Some((pred, *s_var, tp.o.clone(), agg.output_var))
 }
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -358,10 +358,11 @@ pub fn build_operator_tree(
     // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
     //
     // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.
-    if let Some((pred, o_var, count_var, limit)) =
+    if let Some((pred, s_var, o_var, count_var, limit)) =
         detect_predicate_group_by_object_count_topk(query, options)
     {
         return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
+            s_var,
             o_var,
             count_var,
             pred,
@@ -371,9 +372,10 @@ pub fn build_operator_tree(
     }
 
     // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
-    if let Some((pred, obj, count_var)) = detect_predicate_object_count(query, options) {
+    if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
         let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
             pred,
+            s_var,
             obj,
             count_var,
             stats.clone(),

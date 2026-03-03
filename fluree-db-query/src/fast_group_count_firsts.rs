@@ -1,6 +1,7 @@
 use crate::binding::Binding;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::operator::BoxedOperator;
 use crate::operator::{Operator, OperatorState};
 use crate::triple::Term;
 use crate::var_registry::VarId;
@@ -41,6 +42,9 @@ enum GroupKey {
 pub struct PredicateGroupCountFirstsOperator {
     /// Output schema: [object_var, count_var]
     schema: Arc<[VarId]>,
+    subject_var: VarId,
+    object_var: VarId,
+    count_var: VarId,
     /// Bound predicate reference (Sid or Iri).
     predicate: crate::triple::Ref,
     /// LIMIT k (top-k by count)
@@ -49,6 +53,8 @@ pub struct PredicateGroupCountFirstsOperator {
     stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
+    /// Fallback operator for non-binary / overlay / policy / history contexts.
+    fallback: Option<BoxedOperator>,
     /// Materialized results (already sorted and truncated to limit)
     results: Vec<(GroupKey, i64)>,
     /// Next result to emit
@@ -57,6 +63,7 @@ pub struct PredicateGroupCountFirstsOperator {
 
 impl PredicateGroupCountFirstsOperator {
     pub fn new(
+        subject_var: VarId,
         object_var: VarId,
         count_var: VarId,
         predicate: crate::triple::Ref,
@@ -65,10 +72,14 @@ impl PredicateGroupCountFirstsOperator {
     ) -> Self {
         Self {
             schema: Arc::from(vec![object_var, count_var].into_boxed_slice()),
+            subject_var,
+            object_var,
+            count_var,
             predicate,
             limit: limit.max(1),
             stats,
             state: OperatorState::Created,
+            fallback: None,
             results: Vec::new(),
             pos: 0,
         }
@@ -112,6 +123,69 @@ impl PredicateGroupCountFirstsOperator {
     fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
         QueryError::execution(format!("{where_}: {e}"))
     }
+
+    #[inline]
+    fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
+        ctx.graph_view().is_none()
+            || ctx.overlay.is_some()
+            || ctx.history_mode
+            || ctx.policy_enforcer.is_some()
+    }
+
+    async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        use crate::aggregate::AggregateFn;
+        use crate::binary_scan::{EmitMask, ScanOperator};
+        use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
+        use crate::limit::LimitOperator;
+        use crate::sort::{SortDirection, SortOperator, SortSpec};
+        use crate::triple::{Ref, TriplePattern};
+
+        let tp = TriplePattern::new(
+            Ref::Var(self.subject_var),
+            self.predicate.clone(),
+            Term::Var(self.object_var),
+        );
+
+        let scan_emit = EmitMask {
+            s: false,
+            p: false,
+            o: true,
+        };
+        let scan: BoxedOperator = Box::new(ScanOperator::new_with_emit_and_index(
+            tp,
+            None,
+            Vec::new(),
+            scan_emit,
+            Some(fluree_db_core::IndexType::Post),
+        ));
+
+        let agg_specs = vec![StreamingAggSpec {
+            function: AggregateFn::CountAll,
+            input_col: None,
+            output_var: self.count_var,
+            distinct: false,
+        }];
+        let grouped: BoxedOperator = Box::new(GroupAggregateOperator::new(
+            scan,
+            vec![self.object_var],
+            agg_specs,
+            None,
+            false,
+        ));
+
+        let sorted: BoxedOperator = Box::new(SortOperator::new(
+            grouped,
+            vec![SortSpec {
+                var: self.count_var,
+                direction: SortDirection::Descending,
+            }],
+        ));
+
+        let mut limited: BoxedOperator = Box::new(LimitOperator::new(sorted, self.limit));
+        limited.open(ctx).await?;
+        self.fallback = Some(limited);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -127,11 +201,16 @@ impl Operator for PredicateGroupCountFirstsOperator {
         self.state = OperatorState::Open;
         self.results.clear();
         self.pos = 0;
+        self.fallback = None;
+
+        if Self::should_fallback(ctx) {
+            return self.open_fallback(ctx).await;
+        }
 
         let Some(gv) = ctx.graph_view() else {
-            return Err(QueryError::InvalidQuery(
-                "predicate group-count fast-path requires binary index store".to_string(),
-            ));
+            // Defensive; should be handled by should_fallback().
+            self.state = OperatorState::Exhausted;
+            return Ok(());
         };
         let store = gv.clone_store();
         let g_id = gv.g_id();
@@ -330,6 +409,13 @@ impl Operator for PredicateGroupCountFirstsOperator {
         &mut self,
         ctx: &ExecutionContext<'_>,
     ) -> Result<Option<crate::binding::Batch>> {
+        if let Some(op) = self.fallback.as_mut() {
+            let batch = op.next_batch(ctx).await?;
+            if batch.is_none() {
+                self.state = OperatorState::Exhausted;
+            }
+            return Ok(batch);
+        }
         if !self.state.can_next() {
             return Ok(None);
         }
@@ -401,6 +487,9 @@ impl Operator for PredicateGroupCountFirstsOperator {
 
     fn close(&mut self) {
         self.state = OperatorState::Closed;
+        if let Some(mut op) = self.fallback.take() {
+            op.close();
+        }
         self.results.clear();
         self.pos = 0;
     }
@@ -420,6 +509,8 @@ impl Operator for PredicateGroupCountFirstsOperator {
 pub struct PredicateObjectCountFirstsOperator {
     /// Output schema: [count_var]
     schema: Arc<[VarId]>,
+    subject_var: VarId,
+    count_var: VarId,
     /// Bound predicate reference (Sid or Iri).
     predicate: crate::triple::Ref,
     /// Bound object term (Sid/Iri/Value).
@@ -429,6 +520,8 @@ pub struct PredicateObjectCountFirstsOperator {
     stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
+    /// Fallback operator for non-binary / overlay / policy / history contexts.
+    fallback: Option<BoxedOperator>,
     /// Computed count (materialized at open)
     count: i64,
     /// Whether the single row has been emitted
@@ -438,16 +531,20 @@ pub struct PredicateObjectCountFirstsOperator {
 impl PredicateObjectCountFirstsOperator {
     pub fn new(
         predicate: crate::triple::Ref,
+        subject_var: VarId,
         object: Term,
         count_var: VarId,
         stats: Option<Arc<StatsView>>,
     ) -> Self {
         Self {
             schema: Arc::from(vec![count_var].into_boxed_slice()),
+            subject_var,
+            count_var,
             predicate,
             object,
             stats,
             state: OperatorState::Created,
+            fallback: None,
             count: 0,
             emitted: false,
         }
@@ -483,6 +580,56 @@ impl PredicateObjectCountFirstsOperator {
     fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
         QueryError::execution(format!("{where_}: {e}"))
     }
+
+    #[inline]
+    fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
+        ctx.graph_view().is_none()
+            || ctx.overlay.is_some()
+            || ctx.history_mode
+            || ctx.policy_enforcer.is_some()
+    }
+
+    async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        use crate::aggregate::AggregateFn;
+        use crate::binary_scan::{EmitMask, ScanOperator};
+        use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
+        use crate::triple::{Ref, TriplePattern};
+
+        let tp = TriplePattern::new(
+            Ref::Var(self.subject_var),
+            self.predicate.clone(),
+            self.object.clone(),
+        );
+
+        let scan_emit = EmitMask {
+            s: true,
+            p: false,
+            o: false,
+        };
+        let scan: BoxedOperator = Box::new(ScanOperator::new_with_emit(
+            tp,
+            None,
+            Vec::new(),
+            scan_emit,
+        ));
+
+        let agg_specs = vec![StreamingAggSpec {
+            function: AggregateFn::CountAll,
+            input_col: None,
+            output_var: self.count_var,
+            distinct: false,
+        }];
+        let mut op: BoxedOperator = Box::new(GroupAggregateOperator::new(
+            scan,
+            vec![],
+            agg_specs,
+            None,
+            false,
+        ));
+        op.open(ctx).await?;
+        self.fallback = Some(op);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -498,6 +645,11 @@ impl Operator for PredicateObjectCountFirstsOperator {
         self.state = OperatorState::Open;
         self.count = 0;
         self.emitted = false;
+        self.fallback = None;
+
+        if Self::should_fallback(ctx) {
+            return self.open_fallback(ctx).await;
+        }
 
         let Some(gv) = ctx.graph_view() else {
             self.state = OperatorState::Exhausted;
@@ -678,8 +830,15 @@ impl Operator for PredicateObjectCountFirstsOperator {
 
     async fn next_batch(
         &mut self,
-        _ctx: &ExecutionContext<'_>,
+        ctx: &ExecutionContext<'_>,
     ) -> Result<Option<crate::binding::Batch>> {
+        if let Some(op) = self.fallback.as_mut() {
+            let batch = op.next_batch(ctx).await?;
+            if batch.is_none() {
+                self.state = OperatorState::Exhausted;
+            }
+            return Ok(batch);
+        }
         if !self.state.can_next() {
             return Ok(None);
         }
@@ -706,6 +865,9 @@ impl Operator for PredicateObjectCountFirstsOperator {
 
     fn close(&mut self) {
         self.state = OperatorState::Closed;
+        if let Some(mut op) = self.fallback.take() {
+            op.close();
+        }
         self.count = 0;
         self.emitted = false;
     }
