@@ -75,9 +75,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 }
             },
 
-            AstExpression::FunctionCall { name, args, .. } => {
-                self.lower_function_call(name, args)
-            }
+            AstExpression::FunctionCall { name, args, .. } => self.lower_function_call(name, args),
 
             AstExpression::Aggregate {
                 function,
