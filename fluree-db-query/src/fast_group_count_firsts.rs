@@ -5,45 +5,68 @@ use crate::operator::{Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
-    decode_leaflet_region1, read_leaf_header, LeafletHeader, RunRecord, RunSortOrder,
+    decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, LeafletHeader, RunRecord,
+    RunSortOrder,
 };
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
-use fluree_vocab::rdf;
+use fluree_db_core::value_id::ValueTypeTag;
+use fluree_db_core::StatsView;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Fast-path: `?s rdf:type ?o GROUP BY ?o (COUNT(?s) AS ?count)` with `ORDER BY DESC(?count) LIMIT k`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+enum GroupKey {
+    Ref(u64),
+    Lit {
+        o_kind: u8,
+        o_key: u64,
+        dt_id: u16,
+        lang_id: u16,
+    },
+}
+
+/// Fast-path: `?s <p> ?o GROUP BY ?o (COUNT(?s) AS ?count)` with `ORDER BY DESC(?count) LIMIT k`.
 ///
 /// Uses only per-leaflet uncompressed "FIRST" headers to skip decoding entire leaflets when
 /// `FIRST(i).(p,o) == FIRST(i+1).(p,o)` (boundary-equality implies the whole leaflet is that (p,o) in POST order).
 ///
-/// This is a first-step prototype that requires:
+/// If stats indicate this predicate has exactly one datatype for this graph, the operator never
+/// decodes Region 2 (dt/lang are treated as constant). Otherwise it falls back to decoding Region 2
+/// and grouping by full RDF literal identity (dt/lang).
+///
+/// Requires:
 /// - POST order access
-/// - ref-only objects (enforced at runtime; returns error if non-ref is seen)
-pub struct RdfTypeGroupCountFirstsOperator {
+pub struct PredicateGroupCountFirstsOperator {
     /// Output schema: [object_var, count_var]
     schema: Arc<[VarId]>,
-    /// Bound predicate id (p_id for rdf:type).
-    ///
-    /// When `None`, resolves `rdf:type` from the binary store at `open()`.
-    p_id: Option<u32>,
+    /// Bound predicate reference (Sid or Iri).
+    predicate: crate::triple::Ref,
     /// LIMIT k (top-k by count)
     limit: usize,
+    /// Optional stats view used to detect single-datatype predicates.
+    stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
     /// Materialized results (already sorted and truncated to limit)
-    results: Vec<(u64, i64)>,
+    results: Vec<(GroupKey, i64)>,
     /// Next result to emit
     pos: usize,
 }
 
-impl RdfTypeGroupCountFirstsOperator {
-    pub fn new(object_var: VarId, count_var: VarId, p_id: Option<u32>, limit: usize) -> Self {
+impl PredicateGroupCountFirstsOperator {
+    pub fn new(
+        object_var: VarId,
+        count_var: VarId,
+        predicate: crate::triple::Ref,
+        limit: usize,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         Self {
             schema: Arc::from(vec![object_var, count_var].into_boxed_slice()),
-            p_id,
+            predicate,
             limit: limit.max(1),
+            stats,
             state: OperatorState::Created,
             results: Vec::new(),
             pos: 0,
@@ -80,8 +103,8 @@ impl RdfTypeGroupCountFirstsOperator {
         (rec.p_id, rec.o_kind, rec.o_key)
     }
 
-    fn add_count(map: &mut HashMap<u64, i64>, o_s_id: u64, add: i64) {
-        *map.entry(o_s_id).or_insert(0) += add;
+    fn add_count(map: &mut HashMap<GroupKey, i64>, key: GroupKey, add: i64) {
+        *map.entry(key).or_insert(0) += add;
     }
 
     #[inline]
@@ -91,7 +114,7 @@ impl RdfTypeGroupCountFirstsOperator {
 }
 
 #[async_trait]
-impl Operator for RdfTypeGroupCountFirstsOperator {
+impl Operator for PredicateGroupCountFirstsOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
@@ -106,20 +129,37 @@ impl Operator for RdfTypeGroupCountFirstsOperator {
 
         let Some(gv) = ctx.graph_view() else {
             return Err(QueryError::InvalidQuery(
-                "rdf:type count fast-path requires binary index store".to_string(),
+                "predicate group-count fast-path requires binary index store".to_string(),
             ));
         };
         let store = gv.clone_store();
         let g_id = gv.g_id();
 
-        let p_id = match self.p_id {
-            Some(p) => p,
-            None => store.find_predicate_id(rdf::TYPE).ok_or_else(|| {
-                QueryError::InvalidQuery(
-                    "rdf:type predicate not found in binary predicate dict".to_string(),
-                )
+        let p_id = match &self.predicate {
+            crate::triple::Ref::Sid(sid) => store.sid_to_p_id(sid).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
             })?,
+            crate::triple::Ref::Iri(iri) => store.find_predicate_id(iri).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
+            })?,
+            _ => {
+                return Err(QueryError::InvalidQuery(
+                    "predicate group-count fast-path requires a bound predicate".to_string(),
+                ))
+            }
         };
+
+        let single_dt_id: Option<u16> = self.stats.as_ref().and_then(|stats| {
+            let gp = stats.get_graph_property(g_id, p_id)?;
+            if gp.datatypes.len() != 1 {
+                return None;
+            }
+            let (tag, _count) = gp.datatypes[0];
+            if tag == ValueTypeTag::LANG_STRING {
+                return None;
+            }
+            tag.to_reserved_dict_id().map(|dt| dt.as_u16())
+        });
 
         // Build a leaf range for POST where p_id is fixed and everything else is wildcard.
         let min_key = RunRecord {
@@ -155,7 +195,7 @@ impl Operator for RdfTypeGroupCountFirstsOperator {
         let cmp = fluree_db_binary_index::cmp_for_order(RunSortOrder::Post);
         let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
 
-        let mut counts: HashMap<u64, i64> = HashMap::new();
+        let mut counts: HashMap<GroupKey, i64> = HashMap::new();
 
         for leaf_idx in leaf_range.clone() {
             let leaf_entry = &branch.leaves[leaf_idx];
@@ -193,12 +233,6 @@ impl Operator for RdfTypeGroupCountFirstsOperator {
                     break;
                 }
 
-                if o_kind != ObjKind::REF_ID.as_u8() {
-                    return Err(QueryError::InvalidQuery(
-                        "rdf:type count fast-path encountered non-ref object; requires ref-only objects".to_string(),
-                    ));
-                }
-
                 // Determine the "next leaflet's FIRST" (same leaf, or next leaf's first_key).
                 let next_prefix = if i + 1 < dirs.len() {
                     let next_dir = &dirs[i + 1];
@@ -214,34 +248,76 @@ impl Operator for RdfTypeGroupCountFirstsOperator {
                     None
                 };
 
-                if next_prefix == Some((p, o_kind, o_key)) {
-                    // Boundary-equality implies this leaflet is entirely (p,o).
-                    Self::add_count(&mut counts, o_key, dir.row_count as i64);
-                    continue;
-                }
-
-                // Fallback for this leaflet: decode Region 1 and count by object.
-                let end = dir.offset as usize + dir.compressed_len as usize;
-                let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
-                let (_lh2, _s_ids, p_ids, o_kinds, o_keys) =
-                    decode_leaflet_region1(leaflet_bytes, leaf_header.p_width, RunSortOrder::Post)
-                        .map_err(|e| Self::io_to_query("decode leaflet region1", e))?;
-                for row in 0..p_ids.len() {
-                    if p_ids[row] != p_id {
+                if let Some(dt_id) = single_dt_id {
+                    if next_prefix == Some((p, o_kind, o_key)) {
+                        // Boundary-equality implies this leaflet is entirely (p,o) in POST order.
+                        let key = if o_kind == ObjKind::REF_ID.as_u8() {
+                            GroupKey::Ref(o_key)
+                        } else {
+                            GroupKey::Lit {
+                                o_kind,
+                                o_key,
+                                dt_id,
+                                lang_id: 0,
+                            }
+                        };
+                        Self::add_count(&mut counts, key, dir.row_count as i64);
                         continue;
                     }
-                    if o_kinds[row] != ObjKind::REF_ID.as_u8() {
-                        return Err(QueryError::InvalidQuery(
-                            "rdf:type count fast-path encountered non-ref object; requires ref-only objects".to_string(),
-                        ));
+                }
+
+                let end = dir.offset as usize + dir.compressed_len as usize;
+                let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
+                let (lh2, _s_ids, p_ids, o_kinds, o_keys) =
+                    decode_leaflet_region1(leaflet_bytes, leaf_header.p_width, RunSortOrder::Post)
+                        .map_err(|e| Self::io_to_query("decode leaflet region1", e))?;
+
+                if let Some(dt_id) = single_dt_id {
+                    // Single-datatype mode: count from Region 1 only.
+                    for row in 0..p_ids.len() {
+                        if p_ids[row] != p_id {
+                            continue;
+                        }
+                        let key = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
+                            GroupKey::Ref(o_keys[row])
+                        } else {
+                            GroupKey::Lit {
+                                o_kind: o_kinds[row],
+                                o_key: o_keys[row],
+                                dt_id,
+                                lang_id: 0,
+                            }
+                        };
+                        Self::add_count(&mut counts, key, 1);
                     }
-                    Self::add_count(&mut counts, o_keys[row], 1);
+                } else {
+                    // Fallback mode: decode Region 2 and group by (o_kind,o_key,dt_id,lang_id).
+                    let r2 = decode_leaflet_region2(leaflet_bytes, &lh2, leaf_header.dt_width)
+                        .map_err(|e| Self::io_to_query("decode leaflet region2", e))?;
+                    for row in 0..p_ids.len() {
+                        if p_ids[row] != p_id {
+                            continue;
+                        }
+                        let key = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
+                            GroupKey::Ref(o_keys[row])
+                        } else {
+                            let dt_id = r2.dt_values[row] as u16;
+                            let lang_id = r2.lang.as_ref().map(|c| c.get(row as u16)).unwrap_or(0);
+                            GroupKey::Lit {
+                                o_kind: o_kinds[row],
+                                o_key: o_keys[row],
+                                dt_id,
+                                lang_id,
+                            }
+                        };
+                        Self::add_count(&mut counts, key, 1);
+                    }
                 }
             }
         }
 
         // Top-k by count desc.
-        let mut rows: Vec<(u64, i64)> = counts.into_iter().collect();
+        let mut rows: Vec<(GroupKey, i64)> = counts.into_iter().collect();
         rows.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         rows.truncate(self.limit);
         self.results = rows;
@@ -261,15 +337,51 @@ impl Operator for RdfTypeGroupCountFirstsOperator {
             return Ok(None);
         }
 
+        let Some(gv) = ctx.graph_view() else {
+            return Err(QueryError::InvalidQuery(
+                "predicate group-count fast-path requires binary index store".to_string(),
+            ));
+        };
+        let store = gv.clone_store();
+        let p_id = match &self.predicate {
+            crate::triple::Ref::Sid(sid) => store.sid_to_p_id(sid).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
+            })?,
+            crate::triple::Ref::Iri(iri) => store.find_predicate_id(iri).ok_or_else(|| {
+                QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
+            })?,
+            _ => {
+                return Err(QueryError::InvalidQuery(
+                    "predicate group-count fast-path requires a bound predicate".to_string(),
+                ))
+            }
+        };
+
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
         let mut col_c: Vec<Binding> = Vec::with_capacity(batch_size);
 
         while self.pos < self.results.len() && col_o.len() < batch_size {
-            let (o_s_id, count) = self.results[self.pos];
+            let (key, count) = self.results[self.pos];
             self.pos += 1;
 
-            col_o.push(Binding::EncodedSid { s_id: o_s_id });
+            match key {
+                GroupKey::Ref(s_id) => col_o.push(Binding::EncodedSid { s_id }),
+                GroupKey::Lit {
+                    o_kind,
+                    o_key,
+                    dt_id,
+                    lang_id,
+                } => col_o.push(Binding::EncodedLit {
+                    o_kind,
+                    o_key,
+                    p_id,
+                    dt_id,
+                    lang_id,
+                    i_val: fluree_db_core::ListIndex::none().as_i32(),
+                    t: 0,
+                }),
+            }
             col_c.push(Binding::Lit {
                 val: fluree_db_core::FlakeValue::Long(count),
                 dt: fluree_db_core::Sid::xsd_integer(),

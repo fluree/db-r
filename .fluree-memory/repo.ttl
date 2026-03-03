@@ -516,3 +516,20 @@ mem:fact-01kjp8g2s9pfh64sbx1crx42d8 a mem:Fact ;
     mem:supersedes mem:fact-01kjn63vy23w6kehy3gbs30ncv ;
     mem:createdAt "2026-03-02T03:12:02.857222+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+
+mem:fact-01kjt5bpzz5aqvv93syafs18m1 a mem:Fact ;
+    mem:content "Fast GROUP BY ?o COUNT(?s) top-k optimization is now generic for any bound predicate in POST: `PredicateGroupCountFirstsOperator` scans leaflets using uncompressed per-leaflet FIRST (p,o) metadata and uses boundary-equality (FIRST(i)==FIRST(i+1)) to add `row_count` without decoding. It consults `StatsView::get_graph_property(g_id,p_id)` at open-time: if exactly one datatype and it maps to a reserved dt_id (and is not langString), it avoids decoding Region2 entirely and emits `EncodedLit` with constant dt_id/lang_id=0; otherwise it falls back to decoding Region2 and groups by (o_kind,o_key,dt_id,lang_id) for correctness." ;
+    mem:tag "count" ;
+    mem:tag "datatype" ;
+    mem:tag "group-by" ;
+    mem:tag "leaflet" ;
+    mem:tag "optimization" ;
+    mem:tag "post-index" ;
+    mem:tag "region2" ;
+    mem:tag "sparql" ;
+    mem:tag "statsview" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T15:34:11.711499+00:00"^^xsd:dateTime .

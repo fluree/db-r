@@ -1023,7 +1023,10 @@ mod tests {
 
         // Verify magic + version
         assert_eq!(&leaf.bytes[0..4], b"FLI2");
-        assert_eq!(leaf.bytes[4], fluree_db_binary_index::format::leaf::LEAF_VERSION); // version
+        assert_eq!(
+            leaf.bytes[4],
+            fluree_db_binary_index::format::leaf::LEAF_VERSION
+        ); // version
 
         // Verify CID is consistent with content
         let mut hasher = Sha256::new();

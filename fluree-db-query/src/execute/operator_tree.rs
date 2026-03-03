@@ -7,7 +7,7 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
-use crate::fast_group_count_firsts::RdfTypeGroupCountFirstsOperator;
+use crate::fast_group_count_firsts::PredicateGroupCountFirstsOperator;
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
@@ -67,10 +67,10 @@ fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> b
     gb == *sv || gb == *ov
 }
 
-fn detect_rdf_type_group_by_object_count_topk(
+fn detect_predicate_group_by_object_count_topk(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(VarId, VarId, usize)> {
+) -> Option<(Ref, VarId, VarId, usize)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean
@@ -83,7 +83,11 @@ fn detect_rdf_type_group_by_object_count_topk(
     let Pattern::Triple(tp) = &query.patterns[0] else {
         return None;
     };
-    if !tp.p.is_rdf_type() {
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if tp.dtc.is_some() {
         return None;
     }
     let Ref::Var(s_var) = &tp.s else {
@@ -124,7 +128,7 @@ fn detect_rdf_type_group_by_object_count_topk(
     if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
         return None;
     }
-    Some((*o_var, agg.output_var, limit))
+    Some((pred, *o_var, agg.output_var, limit))
 }
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -285,15 +289,18 @@ pub fn build_operator_tree(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
-    // Fast-path: `?s rdf:type ?o GROUP BY ?o COUNT(?s)` top-k using only leaflet FIRST headers.
+    // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
     //
     // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.
-    if let Some((o_var, count_var, limit)) =
-        detect_rdf_type_group_by_object_count_topk(query, options)
+    if let Some((pred, o_var, count_var, limit)) =
+        detect_predicate_group_by_object_count_topk(query, options)
     {
-        return Ok(Box::new(RdfTypeGroupCountFirstsOperator::new(
-            o_var, count_var, None, // resolve rdf:type at open()
+        return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
+            o_var,
+            count_var,
+            pred,
             limit,
+            stats.clone(),
         )));
     }
 
