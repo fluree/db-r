@@ -20,11 +20,17 @@
 //! - **Membership**: `in`, `not-in`, `notin`
 //! - **Functions**: any other operator treated as function call
 
-use super::ast::UnresolvedExpression;
+use super::ast::{UnresolvedExpression, UnresolvedPattern};
 use super::error::{ParseError, Result};
 use super::filter_common;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+
+/// Callback type for parsing EXISTS/NOT EXISTS pattern content inside filter expressions.
+///
+/// Given the arguments after the "exists"/"not-exists" keyword (a slice of JSON values
+/// representing node-map patterns), returns a list of `UnresolvedPattern`.
+pub type PatternParserFn<'a> = &'a dyn Fn(&[JsonValue]) -> Result<Vec<UnresolvedPattern>>;
 
 /// Check if a string is a variable (starts with '?')
 fn is_variable(s: &str) -> bool {
@@ -163,6 +169,135 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
         // Everything else is a function call
         _ => {
             let fn_args: Result<Vec<_>> = args.iter().map(parse_filter_expr).collect();
+            Ok(UnresolvedExpression::Call {
+                func: Arc::from(op_name),
+                args: fn_args?,
+            })
+        }
+    }
+}
+
+/// Parse a filter expression with EXISTS/NOT EXISTS support.
+///
+/// Like `parse_filter_expr` but recognizes `["exists", ...]` and `["not-exists", ...]`
+/// inside compound expressions (e.g., `["or", ["=", "?x", "?y"], ["not-exists", {...}]]`).
+/// The `pattern_parser` callback handles parsing the node-map patterns inside EXISTS.
+pub fn parse_filter_expr_ctx<'a>(
+    value: &JsonValue,
+    pattern_parser: PatternParserFn<'a>,
+) -> Result<UnresolvedExpression> {
+    match value {
+        JsonValue::String(s) => {
+            if is_variable(s) {
+                Ok(UnresolvedExpression::var(s))
+            } else {
+                Ok(UnresolvedExpression::string(s))
+            }
+        }
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(UnresolvedExpression::long(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(UnresolvedExpression::double(f))
+            } else {
+                Err(ParseError::InvalidFilter(format!(
+                    "unsupported number in filter: {}",
+                    n
+                )))
+            }
+        }
+        JsonValue::Bool(b) => Ok(UnresolvedExpression::boolean(*b)),
+        JsonValue::Array(arr) => parse_filter_array_ctx(arr, pattern_parser),
+        JsonValue::Null => Err(ParseError::InvalidFilter(
+            "null not supported in filter expressions".to_string(),
+        )),
+        JsonValue::Object(_) => Err(ParseError::InvalidFilter(
+            "objects not supported in filter expressions".to_string(),
+        )),
+    }
+}
+
+/// Context-aware variant of `parse_filter_array` that handles EXISTS/NOT EXISTS.
+fn parse_filter_array_ctx<'a>(
+    arr: &[JsonValue],
+    pattern_parser: PatternParserFn<'a>,
+) -> Result<UnresolvedExpression> {
+    if arr.is_empty() {
+        return Err(ParseError::InvalidFilter(
+            "empty array in filter expression".to_string(),
+        ));
+    }
+
+    let op_name = arr[0]
+        .as_str()
+        .ok_or_else(|| ParseError::InvalidFilter("filter operator must be a string".to_string()))?;
+
+    let op_lower = op_name.to_lowercase();
+    let args = &arr[1..];
+
+    // Wrap the recursive parser as a closure for filter_common helpers
+    let recurse = |v: &JsonValue| -> Result<UnresolvedExpression> {
+        parse_filter_expr_ctx(v, pattern_parser)
+    };
+
+    match op_lower.as_str() {
+        // EXISTS / NOT EXISTS — delegate to pattern parser
+        "exists" | "not-exists" | "notexists" => {
+            if args.is_empty() {
+                return Err(ParseError::InvalidFilter(
+                    "exists/not-exists requires at least one pattern".to_string(),
+                ));
+            }
+            let negated = op_lower != "exists";
+            let patterns = pattern_parser(args)?;
+            Ok(UnresolvedExpression::Exists { patterns, negated })
+        }
+
+        // Same operator handling as parse_filter_array, using context-aware recursion
+        op @ ("=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">="
+        | "ge") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(args, canonical, recurse, 1, "comparison operator")
+        }
+        "and" => filter_common::build_and(args, recurse),
+        "or" => filter_common::build_or(args, recurse),
+        "not" => filter_common::build_not(args, recurse),
+        "in" | "not-in" | "notin" => {
+            if args.len() < 2 {
+                return Err(ParseError::InvalidFilter(
+                    "'in' requires at least 2 arguments".to_string(),
+                ));
+            }
+            let expr = recurse(&args[0])?;
+            let negated = matches!(op_lower.as_str(), "not-in" | "notin");
+            let values: Result<Vec<_>> = if args.len() == 2 {
+                if let JsonValue::Array(list) = &args[1] {
+                    list.iter().map(recurse).collect()
+                } else {
+                    vec![recurse(&args[1])].into_iter().collect()
+                }
+            } else {
+                args[1..].iter().map(recurse).collect()
+            };
+            Ok(UnresolvedExpression::In {
+                expr: Box::new(expr),
+                values: values?,
+                negated,
+            })
+        }
+        op @ ("+" | "add" | "*" | "mul" | "/" | "div") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(args, canonical, recurse, 1, "arithmetic operator")
+        }
+        "-" | "sub" => {
+            if args.len() == 1 {
+                filter_common::build_call(args, "negate", recurse, 1, "unary negation")
+            } else {
+                filter_common::build_call(args, "-", recurse, 1, "arithmetic operator")
+            }
+        }
+        _ => {
+            let fn_args: Result<Vec<_>> = args.iter().map(recurse).collect();
             Ok(UnresolvedExpression::Call {
                 func: Arc::from(op_name),
                 args: fn_args?,

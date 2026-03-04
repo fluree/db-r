@@ -446,6 +446,11 @@ fn rewrite_having_aggregates(
                 })
             }
         }
+
+        // EXISTS/NOT EXISTS makes no sense in HAVING expressions
+        E::Exists { .. } => Err(ParseError::InvalidFilter(
+            "EXISTS/NOT EXISTS not supported in HAVING expressions".to_string(),
+        )),
     }
 }
 

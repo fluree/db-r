@@ -25,8 +25,13 @@ use std::sync::Arc;
 
 /// MINUS operator - anti-join semantics (set difference)
 ///
-/// For each input row, executes the MINUS patterns with an empty seed (fresh scope).
-/// If any result matches the input row on shared variables, the input row is filtered out.
+/// Executes the MINUS patterns once with an empty seed (fresh scope), materializes
+/// all results, then filters input rows that match on shared variables.
+///
+/// The MINUS subtree is always uncorrelated (empty seed, no outer variable access),
+/// so its results are invariant across input rows. Materializing once converts the
+/// cost from O(N * subtree_execution) to O(subtree_execution + N * M) where
+/// M = materialized MINUS rows.
 pub struct MinusOperator {
     /// Child operator providing input solutions
     child: BoxedOperator,
@@ -40,6 +45,8 @@ pub struct MinusOperator {
     state: OperatorState,
     /// Optional stats for nested query optimization (Arc for cheap cloning in nested operators)
     stats: Option<Arc<StatsView>>,
+    /// Materialized MINUS results (populated in open(), used in next_batch())
+    materialized_minus: Vec<Batch>,
 }
 
 impl MinusOperator {
@@ -72,6 +79,7 @@ impl MinusOperator {
             schema,
             state: OperatorState::Created,
             stats,
+            materialized_minus: Vec::new(),
         }
     }
 
@@ -123,6 +131,29 @@ impl Operator for MinusOperator {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        // Materialize the MINUS subtree once with an empty seed (fresh scope).
+        // MINUS is always uncorrelated — the subtree doesn't see outer variables.
+        if !self.shared_vars.is_empty() {
+            #[allow(clippy::box_default)]
+            let seed: BoxedOperator = Box::new(EmptyOperator::new());
+            let mut minus_op = build_where_operators_seeded(
+                Some(seed),
+                &self.minus_patterns,
+                self.stats.clone(),
+                None,
+            )?;
+
+            minus_op.open(ctx).await?;
+
+            while let Some(batch) = minus_op.next_batch(ctx).await? {
+                if !batch.is_empty() {
+                    self.materialized_minus.push(batch);
+                }
+            }
+
+            minus_op.close();
+        }
+
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
@@ -149,40 +180,24 @@ impl Operator for MinusOperator {
                 return Ok(Some(input_batch));
             }
 
-            // For each input row, check if it should be kept
+            // If MINUS subtree produced no results, nothing can be removed
+            if self.materialized_minus.is_empty() {
+                return Ok(Some(input_batch));
+            }
+
+            // For each input row, check against materialized MINUS results
             let mut keep_rows: Vec<bool> = vec![true; input_batch.len()];
 
             #[allow(clippy::needless_range_loop)]
             for row_idx in 0..input_batch.len() {
-                // Execute MINUS patterns with empty seed (fresh scope)
-                #[allow(clippy::box_default)]
-                let seed: BoxedOperator = Box::new(EmptyOperator::new());
-                let mut minus_op = build_where_operators_seeded(
-                    Some(seed),
-                    &self.minus_patterns,
-                    self.stats.clone(),
-                    None,
-                )?;
-
-                minus_op.open(ctx).await?;
-
-                // Check all MINUS results for a match
-                'minus_loop: while let Some(minus_batch) = minus_op.next_batch(ctx).await? {
-                    if minus_batch.is_empty() {
-                        continue;
-                    }
-
-                    // Check each row in the MINUS result
+                'outer: for minus_batch in &self.materialized_minus {
                     for minus_row_idx in 0..minus_batch.len() {
-                        if self.rows_match(&input_batch, row_idx, &minus_batch, minus_row_idx) {
-                            // Match found - filter out this input row
+                        if self.rows_match(&input_batch, row_idx, minus_batch, minus_row_idx) {
                             keep_rows[row_idx] = false;
-                            break 'minus_loop;
+                            break 'outer;
                         }
                     }
                 }
-
-                minus_op.close();
             }
 
             // Build output batch with only kept rows
@@ -297,5 +312,134 @@ mod tests {
         }
 
         fn close(&mut self) {}
+    }
+
+    /// Helper: build a MinusOperator with a given child schema and shared vars
+    fn make_minus_with_shared(shared: Vec<VarId>) -> MinusOperator {
+        let child_schema: Arc<[VarId]> = Arc::from(shared.clone().into_boxed_slice());
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
+            schema: child_schema.clone(),
+        });
+        MinusOperator {
+            child,
+            minus_patterns: vec![],
+            shared_vars: shared,
+            schema: child_schema,
+            state: OperatorState::Created,
+            stats: None,
+            materialized_minus: Vec::new(),
+        }
+    }
+
+    /// Helper: build a 1-row Batch with given bindings
+    fn batch_1row(schema: &[VarId], bindings: Vec<Binding>) -> Batch {
+        let arc_schema: Arc<[VarId]> = Arc::from(schema.to_vec().into_boxed_slice());
+        let columns: Vec<Vec<Binding>> = bindings.into_iter().map(|b| vec![b]).collect();
+        Batch::new(arc_schema, columns).unwrap()
+    }
+
+    #[test]
+    fn rows_match_both_bound_equal() {
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let sid = Sid::new(100, "x");
+        let input = batch_1row(&[VarId(0)], vec![Binding::Sid(sid.clone())]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(sid)]);
+        assert!(op.rows_match(&input, 0, &minus, 0));
+    }
+
+    #[test]
+    fn rows_match_both_bound_unequal() {
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let input = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(200, "y"))]);
+        assert!(!op.rows_match(&input, 0, &minus, 0));
+    }
+
+    #[test]
+    fn rows_match_input_unbound_trivially_compatible() {
+        // Input has Unbound, MINUS has a value — trivially compatible
+        // but no shared bound variables → match should NOT fire
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let input = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
+        assert!(
+            !op.rows_match(&input, 0, &minus, 0),
+            "no shared bound var → match must not fire"
+        );
+    }
+
+    #[test]
+    fn rows_match_minus_unbound_trivially_compatible() {
+        // MINUS has Unbound, input has a value — trivially compatible
+        // but no shared bound variables → match should NOT fire
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let input = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        assert!(
+            !op.rows_match(&input, 0, &minus, 0),
+            "no shared bound var → match must not fire"
+        );
+    }
+
+    #[test]
+    fn rows_match_both_unbound() {
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let input = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        assert!(
+            !op.rows_match(&input, 0, &minus, 0),
+            "both unbound → no shared bound var → no match"
+        );
+    }
+
+    #[test]
+    fn rows_match_poisoned_trivially_compatible() {
+        // Poisoned (from failed OPTIONAL) is not in domain
+        let op = make_minus_with_shared(vec![VarId(0)]);
+        let input = batch_1row(&[VarId(0)], vec![Binding::Poisoned]);
+        let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
+        assert!(
+            !op.rows_match(&input, 0, &minus, 0),
+            "poisoned is not matchable → no shared bound var"
+        );
+    }
+
+    #[test]
+    fn rows_match_multi_var_one_unbound_one_equal() {
+        // Two shared vars: var0 is bound+equal, var1 has input Unbound
+        // Compatible (unbound is trivially ok) AND has shared bound (var0)
+        let op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let sid = Sid::new(100, "x");
+        let input = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid.clone()), Binding::Unbound],
+        );
+        let minus = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid), Binding::Sid(Sid::new(200, "y"))],
+        );
+        assert!(
+            op.rows_match(&input, 0, &minus, 0),
+            "var0 is shared+equal, var1 unbound in input → compatible + has_shared_bound"
+        );
+    }
+
+    #[test]
+    fn rows_match_multi_var_one_equal_one_unequal() {
+        // Two shared vars: var0 bound+equal, var1 bound+unequal → NOT compatible
+        let op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let sid = Sid::new(100, "x");
+        let input = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid.clone()), Binding::Sid(Sid::new(300, "a"))],
+        );
+        let minus = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid), Binding::Sid(Sid::new(400, "b"))],
+        );
+        assert!(
+            !op.rows_match(&input, 0, &minus, 0),
+            "var1 disagrees → incompatible"
+        );
     }
 }

@@ -23,9 +23,10 @@ use crate::error::Result;
 use crate::execute::build_where_operators_seeded;
 use crate::ir::{Expression, FilterValue, Pattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::seed::SeedOperator;
+use crate::seed::{EmptyOperator, SeedOperator};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Filter rows from a batch using two-valued logic.
@@ -79,7 +80,41 @@ pub fn contains_exists(expr: &Expression) -> bool {
     }
 }
 
-/// Evaluate an EXISTS subquery for a given row.
+/// Check if an EXISTS subquery is uncorrelated with respect to a batch schema.
+///
+/// An EXISTS is uncorrelated when its pattern variables share no variables with
+/// the batch schema — meaning the result is the same regardless of the row.
+fn is_uncorrelated_exists(patterns: &[Pattern], batch_schema: &[VarId]) -> bool {
+    let schema_vars: HashSet<VarId> = batch_schema.iter().copied().collect();
+    let pattern_vars: HashSet<VarId> = patterns.iter().flat_map(|p| p.variables()).collect();
+    pattern_vars.is_disjoint(&schema_vars)
+}
+
+/// Evaluate an EXISTS subquery once (uncorrelated) using an empty seed.
+async fn eval_exists_uncorrelated(
+    patterns: &[Pattern],
+    negated: bool,
+    ctx: &ExecutionContext<'_>,
+) -> Result<bool> {
+    #[allow(clippy::box_default)]
+    let seed: BoxedOperator = Box::new(EmptyOperator::new());
+    let mut exists_op = build_where_operators_seeded(Some(seed), patterns, None, None)?;
+
+    exists_op.open(ctx).await?;
+
+    let has_match = loop {
+        match exists_op.next_batch(ctx).await? {
+            Some(b) if !b.is_empty() => break true,
+            Some(_) => continue,
+            None => break false,
+        }
+    };
+
+    exists_op.close();
+    Ok(if negated { !has_match } else { has_match })
+}
+
+/// Evaluate an EXISTS subquery for a given row (correlated).
 ///
 /// Seeds the subquery with the current row's bindings and checks if any
 /// result is produced.
@@ -107,11 +142,46 @@ async fn eval_exists_for_row(
     Ok(if negated { !has_match } else { has_match })
 }
 
-/// Replace all `Expression::Exists` nodes with pre-computed boolean constants.
+/// Pre-evaluate all uncorrelated EXISTS nodes in an expression tree.
 ///
-/// Recursively walks the expression tree. For each EXISTS node, evaluates the
-/// subquery for the given row and replaces it with `Const(Bool(result))`.
-fn resolve_exists<'a>(
+/// Called once per batch (not per row). Uncorrelated EXISTS subexpressions
+/// are evaluated against an empty seed and replaced with boolean constants.
+/// Correlated EXISTS nodes are left in place for per-row evaluation.
+fn pre_resolve_uncorrelated<'a>(
+    expr: &'a Expression,
+    batch_schema: &'a [VarId],
+    ctx: &'a ExecutionContext<'a>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Expression>> + Send + 'a>> {
+    Box::pin(async move {
+        match expr {
+            Expression::Exists { patterns, negated } => {
+                if is_uncorrelated_exists(patterns, batch_schema) {
+                    let result = eval_exists_uncorrelated(patterns, *negated, ctx).await?;
+                    Ok(Expression::Const(FilterValue::Bool(result)))
+                } else {
+                    Ok(expr.clone())
+                }
+            }
+            Expression::Call { func, args } => {
+                let mut resolved_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    resolved_args.push(pre_resolve_uncorrelated(arg, batch_schema, ctx).await?);
+                }
+                Ok(Expression::Call {
+                    func: func.clone(),
+                    args: resolved_args,
+                })
+            }
+            _ => Ok(expr.clone()),
+        }
+    })
+}
+
+/// Replace remaining (correlated) `Expression::Exists` nodes with per-row constants.
+///
+/// Called once per row. Evaluates correlated EXISTS subqueries seeded with
+/// the current row's bindings and replaces them with `Const(Bool(result))`.
+fn resolve_exists_for_row<'a>(
     expr: &'a Expression,
     batch: &'a Batch,
     row_idx: usize,
@@ -126,14 +196,14 @@ fn resolve_exists<'a>(
             Expression::Call { func, args } => {
                 let mut resolved_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    resolved_args.push(resolve_exists(arg, batch, row_idx, ctx).await?);
+                    resolved_args.push(resolve_exists_for_row(arg, batch, row_idx, ctx).await?);
                 }
                 Ok(Expression::Call {
                     func: func.clone(),
                     args: resolved_args,
                 })
             }
-            // Var and Const have no EXISTS nodes
+            // Var and Const have no EXISTS nodes — already resolved or irrelevant
             _ => Ok(expr.clone()),
         }
     })
@@ -141,18 +211,32 @@ fn resolve_exists<'a>(
 
 /// Filter a batch using an expression that contains EXISTS subexpressions.
 ///
-/// For each row, pre-evaluates all EXISTS subqueries (async), substitutes
-/// their results as boolean constants, then evaluates the full expression.
+/// Two-phase evaluation:
+/// 1. Pre-resolve uncorrelated EXISTS once per batch (O(1) per subexpression).
+/// 2. For each row, resolve remaining correlated EXISTS per-row, then evaluate.
+///
+/// If ALL EXISTS subexpressions are uncorrelated, phase 2 skips async work
+/// entirely and uses the fast synchronous `filter_batch` path.
 async fn filter_batch_with_exists(
     batch: &Batch,
     expr: &Expression,
     schema: &Arc<[VarId]>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Option<Batch>> {
+    // Phase 1: resolve uncorrelated EXISTS once for the whole batch
+    let partially_resolved = pre_resolve_uncorrelated(expr, batch.schema(), ctx).await?;
+
+    // If no EXISTS nodes remain, we can use the fast synchronous path
+    if !contains_exists(&partially_resolved) {
+        return filter_batch(batch, &partially_resolved, schema, ctx);
+    }
+
+    // Phase 2: resolve remaining correlated EXISTS per-row
     let mut keep_indices: Vec<usize> = Vec::new();
 
     for row_idx in 0..batch.len() {
-        let resolved_expr = resolve_exists(expr, batch, row_idx, ctx).await?;
+        let resolved_expr =
+            resolve_exists_for_row(&partially_resolved, batch, row_idx, ctx).await?;
         let Some(row) = batch.row_view(row_idx) else {
             continue;
         };
@@ -268,5 +352,104 @@ impl Operator for FilterOperator {
     fn estimated_rows(&self) -> Option<usize> {
         // Estimate: child rows * selectivity (assume 50% for now)
         self.child.estimated_rows().map(|r| r / 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::FilterValue;
+    use crate::triple::{Ref, Term, TriplePattern};
+    use fluree_db_core::Sid;
+
+    #[test]
+    fn contains_exists_false_for_var() {
+        assert!(!contains_exists(&Expression::Var(VarId(0))));
+    }
+
+    #[test]
+    fn contains_exists_false_for_const() {
+        assert!(!contains_exists(&Expression::Const(FilterValue::Bool(
+            true
+        ))));
+    }
+
+    #[test]
+    fn contains_exists_true_for_direct() {
+        let expr = Expression::Exists {
+            patterns: vec![],
+            negated: false,
+        };
+        assert!(contains_exists(&expr));
+    }
+
+    #[test]
+    fn contains_exists_true_for_negated() {
+        let expr = Expression::Exists {
+            patterns: vec![],
+            negated: true,
+        };
+        assert!(contains_exists(&expr));
+    }
+
+    #[test]
+    fn contains_exists_true_nested_in_call() {
+        // FILTER(?x = ?y || NOT EXISTS { ... })
+        let exists = Expression::Exists {
+            patterns: vec![],
+            negated: true,
+        };
+        let eq = Expression::eq(Expression::Var(VarId(0)), Expression::Var(VarId(1)));
+        let or = Expression::or(vec![eq, exists]);
+        assert!(contains_exists(&or));
+    }
+
+    #[test]
+    fn contains_exists_false_for_plain_call() {
+        let eq = Expression::eq(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(42)),
+        );
+        assert!(!contains_exists(&eq));
+    }
+
+    #[test]
+    fn contains_exists_deeply_nested() {
+        // AND(OR(true, EXISTS{}), ?x > 5)
+        let exists = Expression::Exists {
+            patterns: vec![],
+            negated: false,
+        };
+        let inner_or = Expression::or(vec![Expression::Const(FilterValue::Bool(true)), exists]);
+        let gt = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(5)),
+        );
+        let and = Expression::and(vec![inner_or, gt]);
+        assert!(contains_exists(&and));
+    }
+
+    #[test]
+    fn uncorrelated_exists_no_shared_vars() {
+        // EXISTS { ?z :p ?w } where batch schema is [?x, ?y]
+        let patterns = vec![Pattern::Triple(TriplePattern::new(
+            Ref::Var(VarId(10)),
+            Ref::Sid(Sid::new(100, "p")),
+            Term::Var(VarId(11)),
+        ))];
+        let schema = &[VarId(0), VarId(1)];
+        assert!(is_uncorrelated_exists(&patterns, schema));
+    }
+
+    #[test]
+    fn correlated_exists_shared_vars() {
+        // EXISTS { ?x :p ?w } where batch schema is [?x, ?y]
+        let patterns = vec![Pattern::Triple(TriplePattern::new(
+            Ref::Var(VarId(0)), // shared with schema
+            Ref::Sid(Sid::new(100, "p")),
+            Term::Var(VarId(11)),
+        ))];
+        let schema = &[VarId(0), VarId(1)];
+        assert!(!is_uncorrelated_exists(&patterns, schema));
     }
 }

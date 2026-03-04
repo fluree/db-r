@@ -89,7 +89,10 @@ pub fn eval_iri<R: RowAccess>(
             // This is critical for FILTER comparisons like `?type = ex:Reptile`
             // where the variable binding is a Sid but the constant IRI would
             // otherwise become ComparableValue::Iri — an incomparable type pair.
-            if let Some(sid) = ctx.and_then(|c| c.encode_iri(&s)) {
+            //
+            // Use encode_iri_strict so unknown namespaces stay as IRI strings
+            // rather than silently mapping to the EMPTY namespace (code 0).
+            if let Some(sid) = ctx.and_then(|c| c.encode_iri_strict(&s)) {
                 Ok(Some(ComparableValue::Sid(sid)))
             } else {
                 Ok(Some(ComparableValue::Iri(s)))
@@ -113,4 +116,59 @@ pub fn eval_bnode(args: &[Expression]) -> Result<Option<ComparableValue>> {
         "_:fdb-{}",
         Uuid::new_v4()
     )))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::Batch;
+    use crate::ir::FilterValue;
+    use crate::var_registry::VarId;
+    use fluree_db_core::Sid;
+
+    #[test]
+    fn eval_iri_string_without_context_returns_iri() {
+        // Without an ExecutionContext, IRI() on a string returns ComparableValue::Iri
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let col = vec![Binding::Iri(Arc::from("http://example.org/ns/Reptile"))];
+        let batch = Batch::new(schema, vec![col]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        // Evaluate IRI(?x) where ?x is an IRI string
+        let args = [Expression::Const(FilterValue::String(
+            "http://unknown.org/ns/Foo".to_string(),
+        ))];
+        let result = eval_iri(&args, &row, None).unwrap();
+        assert!(
+            matches!(result, Some(ComparableValue::Iri(_))),
+            "IRI of unknown namespace without context should return Iri, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn eval_iri_sid_passthrough() {
+        // IRI() of a Sid should return the Sid unchanged
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let sid = Sid::new(100, "x");
+        let col = vec![Binding::Sid(sid.clone())];
+        let batch = Batch::new(schema, vec![col]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        let args = [Expression::Var(VarId(0))];
+        let result = eval_iri(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Sid(sid)));
+    }
+
+    #[test]
+    fn eval_iri_none_returns_none() {
+        // IRI() of an unbound var returns None
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let col = vec![Binding::Unbound];
+        let batch = Batch::new(schema, vec![col]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        let args = [Expression::Var(VarId(0))];
+        let result = eval_iri(&args, &row, None).unwrap();
+        assert_eq!(result, None);
+    }
 }

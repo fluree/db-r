@@ -2491,3 +2491,54 @@ async fn sparql_compound_filter_not_exists_equals_standalone() {
         "compound (false || NOT EXISTS) should equal standalone NOT EXISTS"
     );
 }
+
+/// Test that SELECT * with empty results still produces a variable header.
+///
+/// W3C requires that `head.vars` includes the query's projected variables
+/// even when the result set is empty. This tests the VarRegistry fallback
+/// in the SPARQL JSON formatter.
+#[tokio::test]
+async fn sparql_wildcard_header_with_empty_results() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:empty-wildcard");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/ns/" },
+        "@graph": [
+            {"@id": "ex:a", "@type": "ex:Thing"}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert data");
+
+    // SELECT * with a condition that matches nothing
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT * WHERE {
+            ?x ex:nonExistentProperty ?y
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("empty wildcard query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    // Should have variables in head even with 0 results
+    let head_vars = sparql_json["head"]["vars"]
+        .as_array()
+        .expect("head.vars array");
+    assert!(
+        !head_vars.is_empty(),
+        "SELECT * with empty results should still have variables in head.vars, got: {sparql_json}"
+    );
+
+    // Should have 0 bindings
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(bindings.len(), 0, "Should have 0 results");
+}
