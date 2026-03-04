@@ -18,6 +18,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::helpers::WELL_KNOWN_DATATYPES;
+use crate::triple::DatatypeIriConstraint;
 
 /// Errors that can occur during arithmetic operations
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -219,11 +220,10 @@ pub enum ComparableValue {
     GeoPoint(GeoPointBits),
     // IRI/URI
     Iri(Arc<str>),
-    // Typed literal with optional datatype IRI and language tag
+    // Typed literal with optional datatype IRI constraint
     TypedLiteral {
         val: FlakeValue,
-        dt_iri: Option<Arc<str>>,
-        lang: Option<Arc<str>>,
+        dtc: Option<DatatypeIriConstraint>,
     },
 }
 
@@ -414,10 +414,9 @@ impl ComparableValue {
                 }
                 Ok(Binding::Iri(iri))
             }
-            ComparableValue::TypedLiteral { val, dt_iri, lang } => {
-                if let Some(lang) = lang {
-                    Ok(Binding::lit_lang(val, lang))
-                } else if let Some(dt_iri) = dt_iri {
+            ComparableValue::TypedLiteral { val, dtc } => match dtc {
+                Some(DatatypeIriConstraint::LangTag(lang)) => Ok(Binding::lit_lang(val, lang)),
+                Some(DatatypeIriConstraint::Explicit(dt_iri)) => {
                     let ctx = ctx.ok_or_else(|| {
                         QueryError::InvalidFilter(
                             "bind evaluation requires database context for str-dt/str-lang"
@@ -428,10 +427,9 @@ impl ComparableValue {
                         QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
                     })?;
                     Ok(Binding::lit(val, dt))
-                } else {
-                    Ok(Binding::lit(val, datatypes.xsd_string.clone()))
                 }
-            }
+                None => Ok(Binding::lit(val, datatypes.xsd_string.clone())),
+            },
         }
     }
 }
@@ -487,11 +485,7 @@ impl From<FilterValue> for ComparableValue {
             FilterValue::Double(d) => ComparableValue::Double(d),
             FilterValue::String(s) => ComparableValue::String(Arc::from(s)),
             FilterValue::Bool(b) => ComparableValue::Bool(b),
-            FilterValue::Temporal(fv) => ComparableValue::TypedLiteral {
-                val: fv,
-                dt_iri: None,
-                lang: None,
-            },
+            FilterValue::Temporal(fv) => ComparableValue::TypedLiteral { val: fv, dtc: None },
         }
     }
 }
@@ -505,8 +499,7 @@ impl From<&FilterValue> for ComparableValue {
             FilterValue::Bool(b) => ComparableValue::Bool(*b),
             FilterValue::Temporal(fv) => ComparableValue::TypedLiteral {
                 val: fv.clone(),
-                dt_iri: None,
-                lang: None,
+                dtc: None,
             },
         }
     }
@@ -544,8 +537,7 @@ impl TryFrom<&FlakeValue> for ComparableValue {
             | FlakeValue::DayTimeDuration(_)
             | FlakeValue::Duration(_) => Ok(ComparableValue::TypedLiteral {
                 val: val.clone(),
-                dt_iri: None,
-                lang: None,
+                dtc: None,
             }),
         }
     }
@@ -577,11 +569,7 @@ impl TryFrom<FlakeValue> for ComparableValue {
             | FlakeValue::GMonthDay(_)
             | FlakeValue::YearMonthDuration(_)
             | FlakeValue::DayTimeDuration(_)
-            | FlakeValue::Duration(_)) => Ok(ComparableValue::TypedLiteral {
-                val,
-                dt_iri: None,
-                lang: None,
-            }),
+            | FlakeValue::Duration(_)) => Ok(ComparableValue::TypedLiteral { val, dtc: None }),
         }
     }
 }

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
+use crate::triple::DatatypeIriConstraint;
 
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
@@ -48,8 +49,7 @@ fn string_with_lang(s: &str, lang: Option<Arc<str>>) -> ComparableValue {
     match lang {
         Some(tag) => ComparableValue::TypedLiteral {
             val: FlakeValue::String(s.to_string()),
-            dt_iri: None,
-            lang: Some(tag),
+            dtc: Some(DatatypeIriConstraint::LangTag(tag)),
         },
         None => ComparableValue::String(Arc::from(s)),
     }
@@ -494,8 +494,9 @@ pub fn eval_str_dt<R: RowAccess>(
         (Some(ComparableValue::String(s)), Some(dt_val)) => {
             Ok(Some(ComparableValue::TypedLiteral {
                 val: FlakeValue::String(s.to_string()),
-                dt_iri: dt_val.as_str().map(Arc::from),
-                lang: None,
+                dtc: dt_val
+                    .as_str()
+                    .map(|s| DatatypeIriConstraint::Explicit(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),
@@ -523,8 +524,9 @@ pub fn eval_str_lang<R: RowAccess>(
         (Some(ComparableValue::String(s)), Some(lang_val)) => {
             Ok(Some(ComparableValue::TypedLiteral {
                 val: FlakeValue::String(s.to_string()),
-                dt_iri: None,
-                lang: lang_val.as_str().map(Arc::from),
+                dtc: lang_val
+                    .as_str()
+                    .map(|s| DatatypeIriConstraint::LangTag(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),

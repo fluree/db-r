@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use super::helpers::{check_arity, parse_datetime_from_binding};
 use super::value::ComparableValue;
+use crate::triple::DatatypeIriConstraint;
 
 pub fn eval_now(args: &[Expression]) -> Result<Option<ComparableValue>> {
     check_arity(args, 0, "NOW")?;
@@ -125,10 +126,9 @@ pub fn eval_timezone<R: RowAccess>(
                         let duration = format_day_time_duration(total_secs);
                         Ok(Some(ComparableValue::TypedLiteral {
                             val: fluree_db_core::FlakeValue::String(duration),
-                            dt_iri: Some(Arc::from(
+                            dtc: Some(DatatypeIriConstraint::Explicit(Arc::from(
                                 "http://www.w3.org/2001/XMLSchema#dayTimeDuration",
-                            )),
-                            lang: None,
+                            ))),
                         }))
                     }
                     None => Ok(None),
