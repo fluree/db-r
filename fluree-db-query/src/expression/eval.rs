@@ -5,15 +5,13 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
+use super::value::ComparableValue;
 use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FilterValue, Function};
+use crate::ir::{Expression, FilterValue};
 use crate::var_registry::VarId;
 use std::sync::Arc;
-
-use super::helpers::has_unbound_vars;
-use super::value::ComparableValue;
 
 impl Expression {
     /// Evaluate a filter expression against a row.
@@ -161,27 +159,11 @@ impl Expression {
         let comparable = match self.eval_to_comparable(row, ctx) {
             Ok(Some(val)) => val,
             Ok(None) => {
-                if has_unbound_vars(self, row) {
-                    return Ok(Binding::Unbound);
-                }
-                // Vector functions return None for type mismatches or
-                // mathematically undefined cases. Treat as Unbound.
-                if matches!(
-                    self,
-                    Expression::Call {
-                        func: Function::CosineSimilarity
-                            | Function::DotProduct
-                            | Function::EuclideanDistance
-                            | Function::Fulltext,
-                        ..
-                    }
-                ) {
-                    return Ok(Binding::Unbound);
-                }
-                return Err(QueryError::InvalidFilter(format!(
-                    "bind evaluation failed for expression: {:?}",
-                    self
-                )));
+                // Expression evaluated to no value — treat as unbound.
+                // This covers: unbound variables, type mismatches that
+                // return Ok(None) per W3C SPARQL §17.3, and functions
+                // like vector/fulltext that return None for undefined cases.
+                return Ok(Binding::Unbound);
             }
             Err(err) => return Err(err),
         };

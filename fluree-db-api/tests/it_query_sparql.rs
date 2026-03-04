@@ -118,6 +118,236 @@ async fn seed_books(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
         .ledger
 }
 
+// =========================================================================
+// SPARQL Property Path Tests: Inverse (^) and Alternative (|)
+// =========================================================================
+
+/// Seed a knows-chain for SPARQL property path tests.
+///
+/// Graph: a→b, b→c, b→d, d→e
+async fn sparql_seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:b","ex:knows":[{"@id":"ex:c"},{"@id":"ex:d"}]},
+            {"@id":"ex:d","ex:knows":{"@id":"ex:e"}}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence (/)
+// =========================================================================
+
+/// Seed chain data for SPARQL sequence tests.
+///
+/// Graph: alice --friend--> bob --friend--> carol
+///        alice --name--> "Alice"
+///        bob   --name--> "Bob"
+///        carol --name--> "Carol"
+///        alice --parent--> bob
+///        bob   --parent--> carol
+async fn sparql_seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:friend": {"@id": "ex:bob"},
+                "ex:parent": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:friend": {"@id": "ex:carol"},
+                "ex:parent": {"@id": "ex:carol"}
+            },
+            {
+                "@id": "ex:carol",
+                "ex:name": "Carol"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence-in-Alternative
+// =========================================================================
+
+/// Seed data for alternative-of-sequences tests.
+///
+/// Graph:
+///   ex:alice --ex:friend--> ex:bob
+///   ex:alice --ex:colleague--> ex:carol
+///   ex:bob   --ex:name--> "Bob"
+///   ex:carol --ex:name--> "Carol"
+async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:alice","ex:friend":{"@id":"ex:bob"},"ex:colleague":{"@id":"ex:carol"}},
+            {"@id":"ex:bob","ex:name":"Bob"},
+            {"@id":"ex:carol","ex:name":"Carol"}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =============================================================================
+// SPARQL Alternative-in-Sequence distribution tests
+// =============================================================================
+
+async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:nick": "Ali",
+                "ex:friend": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:nick": "Bobby"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// ============================================================================
+// Custom namespace STR() and full-IRI predicate matching
+// ============================================================================
+
+/// Seed data with a custom namespace that is NOT one of the default W3C namespaces.
+async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {
+                "@id": "ex:item1",
+                "@type": "ex:Item",
+                "cust:packageType": "premium",
+                "cust:category": "electronics"
+            },
+            {
+                "@id": "ex:item2",
+                "@type": "ex:Item",
+                "cust:packageType": "standard",
+                "cust:category": "books"
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert custom ns data")
+        .ledger
+}
+
+// =============================================================================
+// Bug regression: exact user repro — overlapping namespace prefixes + ref values
+// =============================================================================
+
+/// Seed ledger with exact data from the user's bug report.
+///
+/// Uses overlapping namespace prefixes (`https://taxo.cbcrc.ca/ns/` and
+/// `https://taxo.cbcrc.ca/id/`) and ref-valued custom predicates.
+async fn seed_exact_repro(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "skos": "http://www.w3.org/2004/02/skos/core#",
+            "skosxl": "http://www.w3.org/2008/05/skos-xl#",
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "cbc": "https://taxo.cbcrc.ca/id/"
+        },
+        "@graph": [
+            {
+                "@id": "cust:assocType/coverage",
+                "skosxl:prefLabel": {
+                    "@id": "cbc:label/assocType-coverage-en",
+                    "@type": "skosxl:Label",
+                    "skosxl:literalForm": {"@value": "Coverage Package", "@language": "en"}
+                }
+            },
+            {
+                "@id": "cbc:assoc/coverage-001",
+                "@type": "cust:CoveragePackage",
+                "cust:associationType": {"@id": "cust:assocType/coverage"},
+                "cust:anchor": {"@id": "https://taxo.cbcrc.ca/id/e9235fd0-c1fc-4f9e-828b-b933922b5764"},
+                "cust:member": [
+                    {"@id": "https://taxo.cbcrc.ca/id/5b33544d-d6cf-413b-915f-f1f084ba11c7"},
+                    {"@id": "https://taxo.cbcrc.ca/id/0476a33f-bcfc-459e-8b6b-e78baa81be3b"}
+                ]
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert exact repro data")
+        .ledger
+}
+
+// =========================================================================
+// Built-in Function Coverage: multi-byte chars, TIMEZONE, UUID, isNumeric,
+// language-tag preservation
+// =========================================================================
+
+/// Seed dataset with multi-byte strings, datetime, and decimal values for
+/// built-in function tests.
+async fn seed_builtin_fn_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:sushi",
+                "ex:label": "食べ物",
+                "ex:note": {"@value": "Hola mundo", "@language": "es"},
+                "ex:price": {"@value": "12.50", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-06-15T10:30:00Z", "@type": "xsd:dateTime"}
+            },
+            {
+                "@id": "ex:beer",
+                "ex:label": "Ölympics",
+                "ex:note": {"@value": "Good stuff", "@language": "en"},
+                "ex:price": {"@value": "7.99", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-01-20T14:00:00+05:30", "@type": "xsd:dateTime"}
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("seed builtin fn data")
+        .ledger
+}
+
 #[tokio::test]
 async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
     assert_index_defaults();
@@ -1278,26 +1508,6 @@ async fn sparql_concat_with_langtag_argument() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Inverse (^) and Alternative (|)
-// =========================================================================
-
-/// Seed a knows-chain for SPARQL property path tests.
-///
-/// Graph: a→b, b→c, b→d, d→e
-async fn sparql_seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
-            {"@id":"ex:b","ex:knows":[{"@id":"ex:c"},{"@id":"ex:d"}]},
-            {"@id":"ex:d","ex:knows":{"@id":"ex:e"}}
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_inverse_object_var() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1462,44 +1672,6 @@ async fn sparql_property_path_nested_alternative_under_transitive_errors() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Sequence (/)
-// =========================================================================
-
-/// Seed chain data for SPARQL sequence tests.
-///
-/// Graph: alice --friend--> bob --friend--> carol
-///        alice --name--> "Alice"
-///        bob   --name--> "Bob"
-///        carol --name--> "Carol"
-///        alice --parent--> bob
-///        bob   --parent--> carol
-async fn sparql_seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {
-                "@id": "ex:alice",
-                "ex:name": "Alice",
-                "ex:friend": {"@id": "ex:bob"},
-                "ex:parent": {"@id": "ex:bob"}
-            },
-            {
-                "@id": "ex:bob",
-                "ex:name": "Bob",
-                "ex:friend": {"@id": "ex:carol"},
-                "ex:parent": {"@id": "ex:carol"}
-            },
-            {
-                "@id": "ex:carol",
-                "ex:name": "Carol"
-            }
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_sequence_two_step() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1649,30 +1821,6 @@ async fn sparql_property_path_inverse_zero_or_more() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Sequence-in-Alternative
-// =========================================================================
-
-/// Seed data for alternative-of-sequences tests.
-///
-/// Graph:
-///   ex:alice --ex:friend--> ex:bob
-///   ex:alice --ex:colleague--> ex:carol
-///   ex:bob   --ex:name--> "Bob"
-///   ex:carol --ex:name--> "Carol"
-async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {"@id":"ex:alice","ex:friend":{"@id":"ex:bob"},"ex:colleague":{"@id":"ex:carol"}},
-            {"@id":"ex:bob","ex:name":"Bob"},
-            {"@id":"ex:carol","ex:name":"Carol"}
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_alternative_of_sequences() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1719,31 +1867,6 @@ async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Alice", "Bob"]))
     );
-}
-
-// =============================================================================
-// SPARQL Alternative-in-Sequence distribution tests
-// =============================================================================
-
-async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {
-                "@id": "ex:alice",
-                "ex:name": "Alice",
-                "ex:nick": "Ali",
-                "ex:friend": {"@id": "ex:bob"}
-            },
-            {
-                "@id": "ex:bob",
-                "ex:name": "Bob",
-                "ex:nick": "Bobby"
-            }
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
 }
 
 #[tokio::test]
@@ -1849,42 +1972,6 @@ async fn sparql_property_path_inverse_of_alternative() {
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:alice"]))
     );
-}
-
-// ============================================================================
-// Custom namespace STR() and full-IRI predicate matching
-// ============================================================================
-
-/// Seed data with a custom namespace that is NOT one of the default W3C namespaces.
-async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-
-    let insert = json!({
-        "@context": {
-            "cust": "https://taxo.cbcrc.ca/ns/",
-            "ex": "http://example.org/ns/"
-        },
-        "@graph": [
-            {
-                "@id": "ex:item1",
-                "@type": "ex:Item",
-                "cust:packageType": "premium",
-                "cust:category": "electronics"
-            },
-            {
-                "@id": "ex:item2",
-                "@type": "ex:Item",
-                "cust:packageType": "standard",
-                "cust:category": "books"
-            }
-        ]
-    });
-
-    fluree
-        .insert(ledger0, &insert)
-        .await
-        .expect("insert custom ns data")
-        .ledger
 }
 
 /// STR() on a custom-namespace predicate variable must return the full IRI,
@@ -2022,53 +2109,6 @@ async fn sparql_prefix_shorthand_matches_custom_namespace() {
         "Expected 'standard', got: {:?}",
         rows
     );
-}
-
-// =============================================================================
-// Bug regression: exact user repro — overlapping namespace prefixes + ref values
-// =============================================================================
-
-/// Seed ledger with exact data from the user's bug report.
-///
-/// Uses overlapping namespace prefixes (`https://taxo.cbcrc.ca/ns/` and
-/// `https://taxo.cbcrc.ca/id/`) and ref-valued custom predicates.
-async fn seed_exact_repro(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-
-    let insert = json!({
-        "@context": {
-            "skos": "http://www.w3.org/2004/02/skos/core#",
-            "skosxl": "http://www.w3.org/2008/05/skos-xl#",
-            "cust": "https://taxo.cbcrc.ca/ns/",
-            "cbc": "https://taxo.cbcrc.ca/id/"
-        },
-        "@graph": [
-            {
-                "@id": "cust:assocType/coverage",
-                "skosxl:prefLabel": {
-                    "@id": "cbc:label/assocType-coverage-en",
-                    "@type": "skosxl:Label",
-                    "skosxl:literalForm": {"@value": "Coverage Package", "@language": "en"}
-                }
-            },
-            {
-                "@id": "cbc:assoc/coverage-001",
-                "@type": "cust:CoveragePackage",
-                "cust:associationType": {"@id": "cust:assocType/coverage"},
-                "cust:anchor": {"@id": "https://taxo.cbcrc.ca/id/e9235fd0-c1fc-4f9e-828b-b933922b5764"},
-                "cust:member": [
-                    {"@id": "https://taxo.cbcrc.ca/id/5b33544d-d6cf-413b-915f-f1f084ba11c7"},
-                    {"@id": "https://taxo.cbcrc.ca/id/0476a33f-bcfc-459e-8b6b-e78baa81be3b"}
-                ]
-            }
-        ]
-    });
-
-    fluree
-        .insert(ledger0, &insert)
-        .await
-        .expect("insert exact repro data")
-        .ledger
 }
 
 /// Bug 1 repro: custom namespace predicate without rdf:type returns 0 rows.
@@ -2541,4 +2581,304 @@ async fn sparql_wildcard_header_with_empty_results() {
         .as_array()
         .expect("bindings array");
     assert_eq!(bindings.len(), 0, "Should have 0 results");
+}
+
+#[tokio::test]
+async fn sparql_strlen_multibyte_characters() {
+    // STRLEN must count Unicode characters, not bytes.
+    // "食べ物" is 3 characters but 9 bytes in UTF-8.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:strlen-mb").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label (STRLEN(?label) AS ?len)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("STRLEN query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    // "食べ物" → 3 characters
+    assert_eq!(jsonld, json!([["食べ物", 3]]));
+}
+
+#[tokio::test]
+async fn sparql_substr_multibyte_characters() {
+    // SUBSTR must use character-based indexing (1-based per W3C fn:substring).
+    // SUBSTR("食べ物", 2, 2) should return "べ物" (chars 2 and 3).
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (SUBSTR(?label, 2, 2) AS ?sub)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SUBSTR query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["べ物"]));
+}
+
+#[tokio::test]
+async fn sparql_substr_multibyte_no_length() {
+    // SUBSTR("食べ物", 2) without length → rest of the string from position 2.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb-nolen").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (SUBSTR(?label, 2) AS ?sub)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SUBSTR no-length query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["べ物"]));
+}
+
+#[tokio::test]
+async fn sparql_timezone_returns_day_time_duration() {
+    // TIMEZONE() must return xsd:dayTimeDuration, not a plain string.
+    // For UTC ("Z"), should return "PT0S".
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:timezone").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TIMEZONE(?dt) AS ?tz)
+        WHERE { ex:sushi ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TIMEZONE query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let tz = &bindings[0]["tz"];
+    assert_eq!(
+        tz["value"].as_str().unwrap(),
+        "PT0S",
+        "UTC timezone should be PT0S"
+    );
+    assert_eq!(
+        tz["datatype"].as_str().unwrap(),
+        "http://www.w3.org/2001/XMLSchema#dayTimeDuration",
+        "TIMEZONE must return xsd:dayTimeDuration"
+    );
+}
+
+#[tokio::test]
+async fn sparql_timezone_positive_offset() {
+    // TIMEZONE for +05:30 → "PT5H30M"
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:timezone-pos").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TIMEZONE(?dt) AS ?tz)
+        WHERE { ex:beer ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TIMEZONE +offset query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let tz = &bindings[0]["tz"];
+    assert_eq!(tz["value"].as_str().unwrap(), "PT5H30M");
+}
+
+#[tokio::test]
+async fn sparql_tz_returns_string() {
+    // TZ() returns a plain string ("Z", "+05:30", etc.), not a typed literal.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:tz-string").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TZ(?dt) AS ?tz)
+        WHERE { ex:sushi ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TZ query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["Z"]));
+}
+
+#[tokio::test]
+async fn sparql_uuid_returns_iri() {
+    // UUID() must return an IRI of the form urn:uuid:..., not a plain string.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:uuid-iri").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (UUID() AS ?id)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("UUID query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let id = &bindings[0]["id"];
+    assert_eq!(
+        id["type"].as_str().unwrap(),
+        "uri",
+        "UUID() must return an IRI (type=uri), not a literal"
+    );
+    assert!(
+        id["value"].as_str().unwrap().starts_with("urn:uuid:"),
+        "UUID() value must start with urn:uuid:"
+    );
+}
+
+#[tokio::test]
+async fn sparql_struuid_returns_string() {
+    // STRUUID() returns a plain string (no urn:uuid: prefix), type=literal.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:struuid-str").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (STRUUID() AS ?id)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("STRUUID query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let id = &bindings[0]["id"];
+    assert_eq!(
+        id["type"].as_str().unwrap(),
+        "literal",
+        "STRUUID() must return a literal, not a URI"
+    );
+    assert!(
+        !id["value"].as_str().unwrap().starts_with("urn:uuid:"),
+        "STRUUID() value must NOT have urn:uuid: prefix"
+    );
+    // Should be a valid UUID format (8-4-4-4-12 hex)
+    assert_eq!(
+        id["value"].as_str().unwrap().len(),
+        36,
+        "STRUUID() should be 36 chars (UUID format)"
+    );
+}
+
+#[tokio::test]
+async fn sparql_isnumeric_decimal() {
+    // isNumeric must recognize xsd:decimal values as numeric.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:isnumeric-dec").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label (isNumeric(?price) AS ?numP) (isNumeric(?label) AS ?numL)
+        WHERE {
+            ex:sushi ex:price ?price .
+            ex:sushi ex:label ?label .
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("isNumeric query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    // price is decimal → true, label is string → false
+    assert_eq!(jsonld, json!([["食べ物", true, false]]));
+}
+
+#[tokio::test]
+async fn sparql_ucase_preserves_language_tag() {
+    // W3C: UCASE must preserve language tags from the input.
+    // SPARQL JSON output should include xml:lang on the result.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:ucase-lang").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (UCASE(?note) AS ?upper)
+        WHERE { ex:sushi ex:note ?note }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("UCASE lang query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let upper = &bindings[0]["upper"];
+    assert_eq!(upper["value"].as_str().unwrap(), "HOLA MUNDO");
+    assert_eq!(
+        upper["xml:lang"].as_str().unwrap(),
+        "es",
+        "UCASE must preserve the language tag"
+    );
+}
+
+#[tokio::test]
+async fn sparql_lcase_preserves_language_tag() {
+    // W3C: LCASE must preserve language tags from the input.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:lcase-lang").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (LCASE(?note) AS ?lower)
+        WHERE { ex:beer ex:note ?note }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("LCASE lang query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let lower = &bindings[0]["lower"];
+    assert_eq!(lower["value"].as_str().unwrap(), "good stuff");
+    assert_eq!(
+        lower["xml:lang"].as_str().unwrap(),
+        "en",
+        "LCASE must preserve the language tag"
+    );
 }

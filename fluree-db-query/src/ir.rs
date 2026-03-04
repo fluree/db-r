@@ -1875,6 +1875,7 @@ pub enum Function {
     Minutes,
     Seconds,
     Tz,
+    Timezone,
 
     // =========================================================================
     // Type functions
