@@ -171,14 +171,18 @@ async fn run_foreground(
     }
 
     let server = FlureeServer::new(server_config).await.map_err(|e| {
-        let _ = fs::remove_file(&meta_file);
+        if let Err(rm_err) = fs::remove_file(&meta_file) {
+            tracing::warn!(path = %meta_file.display(), error = %rm_err, "failed to remove meta file after server init failure");
+        }
         CliError::Server(format!("failed to initialize server: {e}"))
     })?;
 
     let result = server.run().await;
 
     // Clean up meta file on exit (normal shutdown or error).
-    let _ = fs::remove_file(&meta_file);
+    if let Err(rm_err) = fs::remove_file(&meta_file) {
+        tracing::warn!(path = %meta_file.display(), error = %rm_err, "failed to remove meta file on shutdown");
+    }
 
     result.map_err(|e| CliError::Server(format!("server error: {e}")))?;
 
