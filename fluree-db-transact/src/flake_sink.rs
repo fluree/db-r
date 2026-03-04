@@ -7,8 +7,10 @@ use crate::generate::infer_datatype;
 use crate::namespace::{NamespaceRegistry, NsAllocator};
 use crate::value_convert::{convert_native_literal, convert_string_literal};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+use fluree_db_query::triple::DatatypeConstraint;
 use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // ResolvedTerm — internal term representation
@@ -21,11 +23,10 @@ use std::collections::HashMap;
 enum ResolvedTerm {
     /// IRI or blank node (already resolved to a Sid)
     Sid(Sid),
-    /// Literal value with datatype and optional language
+    /// Literal value with datatype constraint
     Literal {
         value: FlakeValue,
-        dt_sid: Sid,
-        language: Option<String>,
+        dtc: DatatypeConstraint,
     },
 }
 
@@ -109,19 +110,15 @@ impl<'a> FlakeSink<'a> {
         }
     }
 
-    /// Resolve a TermId in object position → (FlakeValue, dt Sid, optional lang).
-    fn resolve_object(&self, id: TermId) -> Option<(FlakeValue, Sid, Option<String>)> {
+    /// Resolve a TermId in object position → (FlakeValue, DatatypeConstraint).
+    fn resolve_object(&self, id: TermId) -> Option<(FlakeValue, DatatypeConstraint)> {
         match &self.terms[id.index() as usize] {
             ResolvedTerm::Sid(sid) => {
                 let val = FlakeValue::Ref(sid.clone());
                 let dt = infer_datatype(&val);
-                Some((val, dt, None))
+                Some((val, DatatypeConstraint::Explicit(dt)))
             }
-            ResolvedTerm::Literal {
-                value,
-                dt_sid,
-                language,
-            } => Some((value.clone(), dt_sid.clone(), language.clone())),
+            ResolvedTerm::Literal { value, dtc } => Some((value.clone(), dtc.clone())),
         }
     }
 
@@ -135,12 +132,10 @@ impl<'a> FlakeSink<'a> {
     ) -> Option<Flake> {
         let s = self.resolve_sid(subject)?;
         let p = self.resolve_sid(predicate)?;
-        let (o, mut dt, lang) = self.resolve_object(object)?;
+        let (o, dtc) = self.resolve_object(object)?;
 
-        // Language-tagged literals use rdf:langString datatype (Clojure parity)
-        if lang.is_some() {
-            dt = Sid::new(fluree_vocab::namespaces::RDF, "langString");
-        }
+        let dt = dtc.datatype().clone();
+        let lang = dtc.lang_tag().map(|s| s.to_string());
 
         let meta = match (&lang, list_index) {
             (Some(l), Some(i)) => Some(FlakeMeta {
@@ -198,31 +193,24 @@ impl<'a> GraphSink for FlakeSink<'a> {
     }
 
     fn term_literal(&mut self, value: &str, datatype: Datatype, language: Option<&str>) -> TermId {
-        let lang = language.map(|s| s.to_string());
-
-        // Determine dt Sid and FlakeValue from the datatype IRI
         let dt_iri = datatype.as_iri();
         let (flake_value, dt_sid) =
             convert_string_literal(value, dt_iri, &mut NsAllocator::Exclusive(self.ns_registry));
 
-        // Language-tagged literals override dt to rdf:langString
-        let dt_sid = if lang.is_some() {
-            Sid::new(fluree_vocab::namespaces::RDF, "langString")
-        } else {
-            dt_sid
+        let dtc = match language {
+            Some(lang) => DatatypeConstraint::LangTag(Arc::from(lang)),
+            None => DatatypeConstraint::Explicit(dt_sid),
         };
 
         self.add_term(ResolvedTerm::Literal {
             value: flake_value,
-            dt_sid,
-            language: lang,
+            dtc,
         })
     }
 
     fn term_literal_value(&mut self, value: LiteralValue, datatype: Datatype) -> TermId {
         let flake_value = convert_native_literal(&value);
         let dt_sid = if datatype.is_json() {
-            // rdf:JSON
             Sid::new(fluree_vocab::namespaces::RDF, "JSON")
         } else {
             infer_datatype(&flake_value)
@@ -230,8 +218,7 @@ impl<'a> GraphSink for FlakeSink<'a> {
 
         self.add_term(ResolvedTerm::Literal {
             value: flake_value,
-            dt_sid,
-            language: None,
+            dtc: DatatypeConstraint::Explicit(dt_sid),
         })
     }
 

@@ -20,6 +20,7 @@
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
+use fluree_db_query::triple::DatatypeConstraint;
 use fluree_db_query::{VarId, VarRegistry};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -227,11 +228,8 @@ pub struct TripleTemplate {
     /// Object term
     pub object: TemplateTerm,
 
-    /// Datatype for the object (resolved during parsing, None if not yet known)
-    pub datatype: Option<Sid>,
-
-    /// Language tag for string literals (e.g., "en", "fr")
-    pub language: Option<String>,
+    /// Datatype constraint for the object (resolved during parsing, None if not yet known)
+    pub dtc: Option<DatatypeConstraint>,
 
     /// List index for ordered collections (maps to FlakeMeta.i)
     ///
@@ -261,22 +259,15 @@ impl TripleTemplate {
             subject,
             predicate,
             object,
-            datatype: None,
-            language: None,
+            dtc: None,
             list_index: None,
             graph_id: None,
         }
     }
 
-    /// Set the datatype
-    pub fn with_datatype(mut self, dt: Sid) -> Self {
-        self.datatype = Some(dt);
-        self
-    }
-
-    /// Set the language tag
-    pub fn with_language(mut self, lang: impl Into<String>) -> Self {
-        self.language = Some(lang.into());
+    /// Set the datatype constraint
+    pub fn with_dtc(mut self, dtc: DatatypeConstraint) -> Self {
+        self.dtc = Some(dtc);
         self
     }
 

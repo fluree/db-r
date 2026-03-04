@@ -38,11 +38,12 @@
 use std::mem;
 use std::sync::Arc;
 
-use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_core::FlakeValue;
 use fluree_db_query::parse::{
     LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedTerm,
     UnresolvedTriplePattern,
 };
+use fluree_db_query::triple::DatatypeConstraint;
 use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
     BlankNodeValue, Iri, IriValue, Literal, LiteralValue as SparqlLiteralValue, Modify,
@@ -109,8 +110,7 @@ impl BlankNodeCounter {
 /// Result of converting a literal to template form.
 struct LiteralResult {
     term: TemplateTerm,
-    datatype: Option<Sid>,
-    language: Option<String>,
+    dtc: Option<DatatypeConstraint>,
 }
 
 /// Lower a parsed SPARQL AST to the Transaction IR.
@@ -405,24 +405,19 @@ fn lower_triple_to_template(
     let predicate = predicate_to_template(&triple.predicate, prologue, ns, vars)?;
 
     // Object needs special handling for literal metadata
-    let (object, datatype, language) = match &triple.object {
+    let (object, dtc) = match &triple.object {
         Term::Literal(lit) => {
             let result = literal_to_template(lit, prologue, ns)?;
-            (result.term, result.datatype, result.language)
+            (result.term, result.dtc)
         }
-        other => (
-            object_to_template(other, prologue, ns, vars, bnodes)?,
-            None,
-            None,
-        ),
+        other => (object_to_template(other, prologue, ns, vars, bnodes)?, None),
     };
 
     Ok(TripleTemplate {
         subject,
         predicate,
         object,
-        datatype,
-        language,
+        dtc,
         list_index: None, // Always None for SPARQL UPDATE
         graph_id: None,   // Default graph
     })
@@ -630,13 +625,11 @@ fn literal_to_template(
     match &lit.value {
         SparqlLiteralValue::Simple(s) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::String(s.to_string())),
-            datatype: None,
-            language: None,
+            dtc: None,
         }),
         SparqlLiteralValue::LangTagged { value, lang } => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::String(value.to_string())),
-            datatype: None,
-            language: Some(lang.to_string()),
+            dtc: Some(DatatypeConstraint::LangTag(Arc::from(lang.as_ref()))),
         }),
         SparqlLiteralValue::Typed { value, datatype } => {
             let dt_iri = expand_iri(datatype, prologue)?;
@@ -644,19 +637,16 @@ fn literal_to_template(
             let coerced = coerce_typed_flake_value(value, &dt_iri);
             Ok(LiteralResult {
                 term: TemplateTerm::Value(coerced),
-                datatype: Some(dt_sid),
-                language: None,
+                dtc: Some(DatatypeConstraint::Explicit(dt_sid)),
             })
         }
         SparqlLiteralValue::Integer(i) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Long(*i)),
-            datatype: Some(ns.sid_for_iri(xsd::INTEGER)),
-            language: None,
+            dtc: Some(DatatypeConstraint::Explicit(ns.sid_for_iri(xsd::INTEGER))),
         }),
         SparqlLiteralValue::Double(d) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Double(*d)),
-            datatype: Some(ns.sid_for_iri(xsd::DOUBLE)),
-            language: None,
+            dtc: Some(DatatypeConstraint::Explicit(ns.sid_for_iri(xsd::DOUBLE))),
         }),
         SparqlLiteralValue::Decimal(s) => {
             // Try to parse as f64; on failure, keep as string with datatype
@@ -666,14 +656,12 @@ fn literal_to_template(
             };
             Ok(LiteralResult {
                 term,
-                datatype: Some(ns.sid_for_iri(xsd::DECIMAL)),
-                language: None,
+                dtc: Some(DatatypeConstraint::Explicit(ns.sid_for_iri(xsd::DECIMAL))),
             })
         }
         SparqlLiteralValue::Boolean(b) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Boolean(*b)),
-            datatype: Some(ns.sid_for_iri(xsd::BOOLEAN)),
-            language: None,
+            dtc: Some(DatatypeConstraint::Explicit(ns.sid_for_iri(xsd::BOOLEAN))),
         }),
     }
 }

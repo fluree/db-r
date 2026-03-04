@@ -17,11 +17,13 @@ use crate::ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnTyp
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
+use fluree_db_query::triple::DatatypeConstraint;
 use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
 use fluree_vocab::rdf::{self, TYPE};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Assigns per-transaction graph IDs for JSON-LD `@graph` selectors.
 ///
@@ -685,11 +687,8 @@ fn parse_expanded_object(
             if let Some(g_id) = graph_id {
                 template = template.with_graph_id(g_id);
             }
-            if let Some(dt) = parsed_value.datatype {
-                template = template.with_datatype(dt);
-            }
-            if let Some(lang) = parsed_value.language {
-                template = template.with_language(lang);
+            if let Some(dtc) = parsed_value.dtc {
+                template = template.with_dtc(dtc);
             }
             if let Some(idx) = parsed_value.list_index {
                 template = template.with_list_index(idx);
@@ -728,11 +727,10 @@ fn parse_expanded_id(
     }
 }
 
-/// Parsed value with optional datatype, language, and list index
+/// Parsed value with optional datatype constraint and list index
 struct ParsedValue {
     term: TemplateTerm,
-    datatype: Option<fluree_db_core::Sid>,
-    language: Option<String>,
+    dtc: Option<DatatypeConstraint>,
     list_index: Option<i32>,
 }
 
@@ -740,19 +738,13 @@ impl ParsedValue {
     fn new(term: TemplateTerm) -> Self {
         Self {
             term,
-            datatype: None,
-            language: None,
+            dtc: None,
             list_index: None,
         }
     }
 
-    fn with_datatype(mut self, dt: fluree_db_core::Sid) -> Self {
-        self.datatype = Some(dt);
-        self
-    }
-
-    fn with_language(mut self, lang: String) -> Self {
-        self.language = Some(lang);
+    fn with_dtc(mut self, dtc: DatatypeConstraint) -> Self {
+        self.dtc = Some(dtc);
         self
     }
 
@@ -1023,7 +1015,7 @@ fn parse_literal_value_with_meta(
                 let datatype_sid = ns_registry.sid_for_iri(rdf::JSON);
                 return Ok(
                     ParsedValue::new(TemplateTerm::Value(FlakeValue::Json(json_string)))
-                        .with_datatype(datatype_sid),
+                        .with_dtc(DatatypeConstraint::Explicit(datatype_sid)),
                 );
             }
 
@@ -1057,7 +1049,7 @@ fn parse_literal_value_with_meta(
                     return Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
                         s.clone(),
                     )))
-                    .with_language(lang.to_string()));
+                    .with_dtc(DatatypeConstraint::LangTag(Arc::from(lang))));
                 }
             }
 
@@ -1130,7 +1122,8 @@ fn coerce_value_with_datatype(
     let flake_value = fluree_db_core::coerce::coerce_json_value(val, type_iri)
         .map_err(|e| TransactError::Parse(e.message))?;
 
-    Ok(ParsedValue::new(TemplateTerm::Value(flake_value)).with_datatype(datatype_sid))
+    Ok(ParsedValue::new(TemplateTerm::Value(flake_value))
+        .with_dtc(DatatypeConstraint::Explicit(datatype_sid)))
 }
 
 /// Convert a string value to the appropriate FlakeValue based on XSD datatype,
@@ -1161,7 +1154,8 @@ fn convert_typed_value_with_meta(
     let flake_value = fluree_db_core::coerce::coerce_json_value(&json_value, type_iri)
         .map_err(|e| TransactError::Parse(e.message))?;
 
-    Ok(ParsedValue::new(TemplateTerm::Value(flake_value)).with_datatype(datatype_sid))
+    Ok(ParsedValue::new(TemplateTerm::Value(flake_value))
+        .with_dtc(DatatypeConstraint::Explicit(datatype_sid)))
 }
 
 /// Parse a @list value into a ParsedValue representing the first list element
@@ -1440,9 +1434,8 @@ mod tests {
             TemplateTerm::Value(FlakeValue::Long(42))
         ));
         // Verify datatype is preserved
-        assert!(result.datatype.is_some());
-        let dt = result.datatype.unwrap();
-        assert!(dt.name.as_ref().contains("integer"));
+        let dtc = result.dtc.as_ref().expect("should have dtc");
+        assert!(dtc.datatype().name.as_ref().contains("integer"));
 
         // Double - should preserve xsd:double datatype
         let result = convert_typed_value_with_meta(
@@ -1456,7 +1449,7 @@ mod tests {
         } else {
             panic!("Expected double");
         }
-        assert!(result.datatype.is_some());
+        assert!(result.dtc.is_some());
 
         // Boolean - should preserve xsd:boolean datatype
         let result = convert_typed_value_with_meta(
@@ -1469,7 +1462,7 @@ mod tests {
             result.term,
             TemplateTerm::Value(FlakeValue::Boolean(true))
         ));
-        assert!(result.datatype.is_some());
+        assert!(result.dtc.is_some());
     }
 
     #[test]
@@ -1522,9 +1515,8 @@ mod tests {
             result.term,
             TemplateTerm::Value(FlakeValue::Long(42))
         ));
-        assert!(result.datatype.is_some());
-        let dt = result.datatype.unwrap();
-        assert!(dt.name.as_ref().contains("integer"));
+        let dtc = result.dtc.as_ref().expect("should have dtc");
+        assert!(dtc.datatype().name.as_ref().contains("integer"));
     }
 
     #[test]
@@ -1553,8 +1545,7 @@ mod tests {
             result.term,
             TemplateTerm::Value(FlakeValue::String(_))
         ));
-        assert!(result.language.is_some());
-        assert_eq!(result.language.unwrap(), "en");
+        assert_eq!(result.dtc.as_ref().and_then(|d| d.lang_tag()), Some("en"));
     }
 
     #[test]

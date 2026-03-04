@@ -22,6 +22,7 @@ use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::TxnMetaEntry;
+use fluree_db_query::triple::DatatypeConstraint;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
 use fluree_db_transact::stage as stage_txn;
@@ -734,39 +735,33 @@ fn convert_named_graphs_to_templates(
         obj: &RawObject,
         prefixes: &rustc_hash::FxHashMap<String, String>,
         ns_registry: &mut NamespaceRegistry,
-    ) -> Result<(TemplateTerm, Option<fluree_db_core::Sid>, Option<String>)> {
+    ) -> Result<(TemplateTerm, Option<DatatypeConstraint>)> {
         use fluree_db_core::FlakeValue;
         match obj {
             RawObject::Iri(iri) => {
                 if let Some(local) = iri.strip_prefix("_:") {
-                    Ok((TemplateTerm::BlankNode(local.to_string()), None, None))
+                    Ok((TemplateTerm::BlankNode(local.to_string()), None))
                 } else {
-                    Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(iri)), None, None))
+                    Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(iri)), None))
                 }
             }
             RawObject::PrefixedName { prefix, local } => {
                 let iri = expand_prefixed_name(prefix, local, prefixes)?;
-                Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(&iri)), None, None))
+                Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(&iri)), None))
             }
-            RawObject::String(s) => Ok((
-                TemplateTerm::Value(FlakeValue::String(s.clone())),
-                None,
-                None,
-            )),
-            RawObject::Integer(n) => Ok((TemplateTerm::Value(FlakeValue::Long(*n)), None, None)),
-            RawObject::Double(n) => Ok((TemplateTerm::Value(FlakeValue::Double(*n)), None, None)),
-            RawObject::Boolean(b) => Ok((TemplateTerm::Value(FlakeValue::Boolean(*b)), None, None)),
+            RawObject::String(s) => Ok((TemplateTerm::Value(FlakeValue::String(s.clone())), None)),
+            RawObject::Integer(n) => Ok((TemplateTerm::Value(FlakeValue::Long(*n)), None)),
+            RawObject::Double(n) => Ok((TemplateTerm::Value(FlakeValue::Double(*n)), None)),
+            RawObject::Boolean(b) => Ok((TemplateTerm::Value(FlakeValue::Boolean(*b)), None)),
             RawObject::LangString { value, lang } => Ok((
                 TemplateTerm::Value(FlakeValue::String(value.clone())),
-                None,
-                Some(lang.clone()),
+                Some(DatatypeConstraint::LangTag(Arc::from(lang.as_str()))),
             )),
             RawObject::TypedLiteral { value, datatype } => {
                 let dt_sid = ns_registry.sid_for_iri(datatype);
                 Ok((
                     TemplateTerm::Value(FlakeValue::String(value.clone())),
-                    Some(dt_sid),
-                    None,
+                    Some(DatatypeConstraint::Explicit(dt_sid)),
                 ))
             }
         }
@@ -791,16 +786,12 @@ fn convert_named_graphs_to_templates(
             let predicate_term = convert_term(&triple.predicate, &block.prefixes, ns_registry)?;
 
             for obj in &triple.objects {
-                let (object_term, datatype, language) =
-                    convert_object(obj, &block.prefixes, ns_registry)?;
+                let (object_term, dtc) = convert_object(obj, &block.prefixes, ns_registry)?;
                 let mut template =
                     TripleTemplate::new(subject_term.clone(), predicate_term.clone(), object_term);
                 template = template.with_graph_id(g_id);
-                if let Some(dt) = datatype {
-                    template = template.with_datatype(dt);
-                }
-                if let Some(lang) = language {
-                    template = template.with_language(lang);
+                if let Some(dtc) = dtc {
+                    template = template.with_dtc(dtc);
                 }
                 templates.push(template);
             }

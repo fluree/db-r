@@ -153,8 +153,8 @@ impl<'a> FlakeGenerator<'a> {
         // Resolve each component
         let s = self.resolve_subject(&template.subject, bindings, row_idx)?;
         let p = self.resolve_predicate(&template.predicate, bindings, row_idx)?;
-        let (o, dt) =
-            self.resolve_object(&template.object, &template.datatype, bindings, row_idx)?;
+        let explicit_dt = template.dtc.as_ref().map(|d| d.datatype());
+        let (o, dt) = self.resolve_object(&template.object, explicit_dt, bindings, row_idx)?;
 
         let bound_lang = match &template.object {
             TemplateTerm::Var(var_id) => match bindings.get(row_idx, *var_id) {
@@ -164,8 +164,14 @@ impl<'a> FlakeGenerator<'a> {
             _ => None,
         };
 
+        let template_lang = template
+            .dtc
+            .as_ref()
+            .and_then(|d| d.lang_tag())
+            .map(|s| s.to_string());
+
         // Language-tagged literals use rdf:langString datatype (Clojure parity).
-        let dt = if template.language.is_some() || bound_lang.is_some() {
+        let dt = if template_lang.is_some() || bound_lang.is_some() {
             dt.map(|_| DT_LANG_STRING.clone())
         } else {
             dt
@@ -178,7 +184,7 @@ impl<'a> FlakeGenerator<'a> {
         };
 
         // Create metadata if language tag or list_index is present
-        let meta_lang = template.language.clone().or(bound_lang);
+        let meta_lang = template_lang.or(bound_lang);
         let meta = match (&meta_lang, &template.list_index) {
             (Some(lang), Some(idx)) => {
                 // Both language and list_index
@@ -314,7 +320,7 @@ impl<'a> FlakeGenerator<'a> {
     fn resolve_object(
         &mut self,
         term: &TemplateTerm,
-        explicit_dt: &Option<Sid>,
+        explicit_dt: Option<&Sid>,
         bindings: &Batch,
         row: usize,
     ) -> Result<(Option<FlakeValue>, Option<Sid>)> {
@@ -324,7 +330,7 @@ impl<'a> FlakeGenerator<'a> {
                 Ok((Some(FlakeValue::Ref(sid.clone())), Some(DT_ID.clone())))
             }
             TemplateTerm::Value(val) => {
-                let dt = explicit_dt.clone().unwrap_or_else(|| infer_datatype(val));
+                let dt = explicit_dt.cloned().unwrap_or_else(|| infer_datatype(val));
                 Ok((Some(val.clone()), Some(dt)))
             }
             TemplateTerm::Var(var_id) => {
@@ -420,6 +426,7 @@ pub fn infer_datatype(val: &FlakeValue) -> Sid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_query::triple::DatatypeConstraint;
     use fluree_db_query::VarId;
     use std::sync::Arc;
 
@@ -561,7 +568,7 @@ mod tests {
             TemplateTerm::Sid(Sid::new(1, "ex:names")),
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         )
-        .with_language("en")
+        .with_dtc(DatatypeConstraint::LangTag(Arc::from("en")))
         .with_list_index(0)];
 
         let batch = make_empty_batch();
