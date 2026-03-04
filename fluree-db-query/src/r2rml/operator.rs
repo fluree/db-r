@@ -175,7 +175,7 @@ impl R2rmlScanOperator {
 
                 // Create literal binding with optional language tag
                 if let Some(lang) = language {
-                    Ok(Binding::lit_lang(val, dt_sid, lang.as_str()))
+                    Ok(Binding::lit_lang(val, lang.as_str()))
                 } else {
                     Ok(Binding::lit(val, dt_sid))
                 }

@@ -158,9 +158,7 @@ impl<'a> FlakeGenerator<'a> {
 
         let bound_lang = match &template.object {
             TemplateTerm::Var(var_id) => match bindings.get(row_idx, *var_id) {
-                Some(Binding::Lit {
-                    lang: Some(lang), ..
-                }) => Some(lang.to_string()),
+                Some(Binding::Lit { dtc, .. }) => dtc.lang_tag().map(|tag| tag.to_string()),
                 _ => None,
             },
             _ => None,
@@ -341,7 +339,9 @@ impl<'a> FlakeGenerator<'a> {
                         Binding::IriMatch { primary_sid, .. } => {
                             Ok((Some(FlakeValue::Ref(primary_sid.clone())), Some(DT_ID.clone())))
                         }
-                        Binding::Lit { val, dt, .. } => Ok((Some(val.clone()), Some(dt.clone()))),
+                        Binding::Lit { val, dtc, .. } => {
+                            Ok((Some(val.clone()), Some(dtc.datatype().clone())))
+                        }
                         Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
                             "EncodedLit must be materialized before flake generation".to_string(),
                         )),

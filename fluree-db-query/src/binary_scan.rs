@@ -29,6 +29,7 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::triple::DatatypeConstraint;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -555,14 +556,19 @@ impl BinaryScanOperator {
 
         let binding = match val {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
-            other => Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang,
-                t: Some(t),
-                op: None,
-                p_id: Some(p_id),
-            },
+            other => {
+                let dtc = match lang {
+                    Some(tag) => DatatypeConstraint::LangTag(tag),
+                    None => DatatypeConstraint::Explicit(dt_sid),
+                };
+                Binding::Lit {
+                    val: other,
+                    dtc,
+                    t: Some(t),
+                    op: None,
+                    p_id: Some(p_id),
+                }
+            }
         };
 
         Ok(binding)
@@ -1794,19 +1800,25 @@ impl RangeScanOperator {
         if self.o_var_pos.is_some() {
             let binding = match &f.o {
                 FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
-                val => Binding::Lit {
-                    val: val.clone(),
-                    dt: f.dt.clone(),
-                    lang: f
+                val => {
+                    let dtc = match f
                         .m
                         .as_ref()
-                        .and_then(|m| m.lang.as_ref().map(|s| Arc::from(s.as_str()))),
-                    // Always attach `t` for literal bindings so `t(?var)` works even
-                    // outside history mode when explicitly requested via `@t`.
-                    t: Some(f.t),
-                    op: if history_mode { Some(f.op) } else { None },
-                    p_id: None,
-                },
+                        .and_then(|m| m.lang.as_ref().map(|s| Arc::from(s.as_str())))
+                    {
+                        Some(lang) => DatatypeConstraint::LangTag(lang),
+                        None => DatatypeConstraint::Explicit(f.dt.clone()),
+                    };
+                    Binding::Lit {
+                        val: val.clone(),
+                        dtc,
+                        // Always attach `t` for literal bindings so `t(?var)` works even
+                        // outside history mode when explicitly requested via `@t`.
+                        t: Some(f.t),
+                        op: if history_mode { Some(f.op) } else { None },
+                        p_id: None,
+                    }
+                }
             };
             row.push(binding);
         }

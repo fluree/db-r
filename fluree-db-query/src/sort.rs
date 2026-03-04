@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
+use crate::triple::DatatypeConstraint;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
@@ -44,10 +45,13 @@ fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Bin
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
                     let meta = gv.store().decode_meta(*lang_id, *i_val);
+                    let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                        Some(lang) => DatatypeConstraint::LangTag(lang),
+                        None => DatatypeConstraint::Explicit(dt_sid),
+                    };
                     Some(Binding::Lit {
                         val: other,
-                        dt: dt_sid,
-                        lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                        dtc,
                         t: Some(*t),
                         op: None,
                         p_id: Some(*p_id),
@@ -539,7 +543,7 @@ mod tests {
             Self {
                 batches,
                 idx: 0,
-                schema: schema,
+                schema,
                 state: OperatorState::Created,
             }
         }

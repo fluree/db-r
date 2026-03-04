@@ -19,7 +19,7 @@ static RDF_LANG_STRING_SID: LazyLock<Sid> =
 /// implies that the datatype is `rdf:langString` (per RDF 1.1); this sum
 /// type makes the illegal state (both an explicit non-`rdf:langString`
 /// datatype and a language tag) unrepresentable.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DatatypeConstraint {
     /// Explicitly specified datatype (e.g. `xsd:integer`, `xsd:dateTime`)
     Explicit(Sid),

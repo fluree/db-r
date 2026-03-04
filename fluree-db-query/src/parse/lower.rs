@@ -522,7 +522,6 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
             //
             // NOTE: Even if a datatype is provided, rdf:langString is the correct datatype
             // for language-tagged strings. We preserve the lang tag in the Binding.
-            let lang_dt = fluree_db_core::Sid::new(3, "langString");
 
             // Build initial FlakeValue from the literal
             let initial_fv = match value {
@@ -558,7 +557,7 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
                         "Language-tagged VALUES literals must be strings".to_string(),
                     ));
                 }
-                Binding::lit_lang(fv, lang_dt, lang.as_ref())
+                Binding::lit_lang(fv, lang.as_ref())
             } else {
                 Binding::lit(fv, dt_sid)
             })

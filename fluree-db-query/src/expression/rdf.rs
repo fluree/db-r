@@ -20,7 +20,7 @@ pub fn eval_datatype<R: RowAccess>(
     if let Expression::Var(var_id) = &args[0] {
         match row.get(*var_id) {
             Some(binding) => match binding {
-                Binding::Lit { dt, .. } => Ok(Some(format_datatype_sid(dt))),
+                Binding::Lit { dtc, .. } => Ok(Some(format_datatype_sid(dtc.datatype()))),
                 Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_) => {
                     Ok(Some(ComparableValue::String(Arc::from("@id"))))
                 }

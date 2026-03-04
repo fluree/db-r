@@ -96,16 +96,16 @@ fn format_binding(
         Binding::Iri(iri) => Ok(json!({"@id": iri.as_ref()})),
 
         // Literal value - always include @type (except language-tagged)
-        Binding::Lit { val, dt, lang, .. } => {
-            let dt_iri = compactor.compact_sid(dt)?;
+        Binding::Lit { val, dtc, .. } => {
+            let dt_iri = compactor.compact_sid(dtc.datatype())?;
 
             match val {
                 FlakeValue::String(s) => {
-                    if let Some(lang_tag) = lang {
+                    if let Some(lang_tag) = dtc.lang_tag() {
                         // Language-tagged string - use @language instead of @type
                         Ok(json!({
                             "@value": s,
-                            "@language": lang_tag.as_ref()
+                            "@language": lang_tag
                         }))
                     } else {
                         Ok(json!({
@@ -395,11 +395,7 @@ mod tests {
     fn test_format_binding_language_tagged() {
         let compactor = make_test_compactor();
         let result = make_test_result();
-        let binding = Binding::lit_lang(
-            FlakeValue::String("Hello".to_string()),
-            Sid::new(3, "langString"),
-            "en",
-        );
+        let binding = Binding::lit_lang(FlakeValue::String("Hello".to_string()), "en");
         let formatted = format_binding(&result, &binding, &compactor).unwrap();
         // Language-tagged strings use @language, not @type
         assert_eq!(formatted, json!({"@value": "Hello", "@language": "en"}));

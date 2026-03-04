@@ -39,6 +39,7 @@ use crate::aggregate::AggregateFn;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::triple::DatatypeConstraint;
 // Note: JoinKey and Materializer would be used for multi-ledger/dataset mode
 // but for now we use GroupKeyOwned for single-ledger simplicity
 use crate::operator::{
@@ -119,10 +120,13 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
                     let meta = store.decode_meta(*lang_id, *i_val);
+                    let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                        Some(lang) => DatatypeConstraint::LangTag(lang),
+                        None => DatatypeConstraint::Explicit(dt_sid),
+                    };
                     Binding::Lit {
                         val,
-                        dt: dt_sid,
-                        lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                        dtc,
                         t: Some(*t),
                         op: None,
                         p_id: Some(*p_id),
@@ -326,7 +330,7 @@ enum GroupKeyOwned {
 }
 
 /// Hashable key for materialized literals
-/// Includes datatype and language for correct GROUP BY / COUNT(DISTINCT) semantics.
+/// Includes datatype constraint for correct GROUP BY / COUNT(DISTINCT) semantics.
 /// Without these, "1"^^xsd:string and "1"^^xsd:integer would incorrectly merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MaterializedLitKey {
@@ -337,10 +341,8 @@ struct MaterializedLitKey {
     number_bits: Option<u64>,
     // For booleans
     bool_val: Option<bool>,
-    // Datatype SID (namespace_code, name) - critical for correct comparison
-    dt: Option<(u16, Arc<str>)>,
-    // Language tag
-    lang: Option<Arc<str>>,
+    // Datatype constraint - critical for correct comparison
+    dtc: DatatypeConstraint,
 }
 
 impl Hash for MaterializedLitKey {
@@ -349,10 +351,9 @@ impl Hash for MaterializedLitKey {
         self.string_val.hash(state);
         self.number_bits.hash(state);
         self.bool_val.hash(state);
-        // Critical: include datatype and language for correct GROUP BY / COUNT(DISTINCT) semantics
+        // Critical: include datatype constraint for correct GROUP BY / COUNT(DISTINCT) semantics
         // Without these, "1"^^xsd:string and "1"^^xsd:integer would incorrectly hash the same
-        self.dt.hash(state);
-        self.lang.hash(state);
+        self.dtc.hash(state);
     }
 }
 
@@ -380,8 +381,8 @@ fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
             lang_id: *lang_id,
         },
         Binding::Sid(sid) => GroupKeyOwned::MaterializedSid(sid.namespace_code, sid.name.clone()),
-        Binding::Lit { val, dt, lang, .. } => {
-            GroupKeyOwned::MaterializedLit(flake_value_to_key(val, dt, lang.as_ref()))
+        Binding::Lit { val, dtc, .. } => {
+            GroupKeyOwned::MaterializedLit(flake_value_to_key(val, dtc))
         }
         Binding::Unbound | Binding::Poisoned => GroupKeyOwned::Absent,
         Binding::IriMatch { iri, .. } => {
@@ -396,11 +397,8 @@ fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
     }
 }
 
-fn flake_value_to_key(val: &FlakeValue, dt: &Sid, lang: Option<&Arc<str>>) -> MaterializedLitKey {
-    // Convert Sid to (namespace_code, name) tuple for dt
-    let dt_key = Some((dt.namespace_code, dt.name.clone()));
-    // Clone language tag
-    let lang_key = lang.cloned();
+fn flake_value_to_key(val: &FlakeValue, dtc: &DatatypeConstraint) -> MaterializedLitKey {
+    let dtc = dtc.clone();
 
     match val {
         FlakeValue::String(s) => MaterializedLitKey {
@@ -408,40 +406,35 @@ fn flake_value_to_key(val: &FlakeValue, dt: &Sid, lang: Option<&Arc<str>>) -> Ma
             string_val: Some(Arc::from(s.as_str())),
             number_bits: None,
             bool_val: None,
-            dt: dt_key,
-            lang: lang_key,
+            dtc,
         },
         FlakeValue::Long(n) => MaterializedLitKey {
             discriminant: 2,
             string_val: None,
             number_bits: Some(*n as u64),
             bool_val: None,
-            dt: dt_key,
-            lang: lang_key,
+            dtc,
         },
         FlakeValue::Double(d) => MaterializedLitKey {
             discriminant: 3,
             string_val: None,
             number_bits: Some(d.to_bits()),
             bool_val: None,
-            dt: dt_key,
-            lang: lang_key,
+            dtc,
         },
         FlakeValue::Boolean(b) => MaterializedLitKey {
             discriminant: 4,
             string_val: None,
             number_bits: None,
             bool_val: Some(*b),
-            dt: dt_key,
-            lang: lang_key,
+            dtc,
         },
         _ => MaterializedLitKey {
             discriminant: 0,
             string_val: Some(Arc::from(format!("{:?}", val))),
             number_bits: None,
             bool_val: None,
-            dt: dt_key,
-            lang: lang_key,
+            dtc,
         },
     }
 }

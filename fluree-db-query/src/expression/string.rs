@@ -41,8 +41,8 @@ pub fn eval_lang<R: RowAccess>(
     check_arity(args, 1, "LANG")?;
     let tag = match &args[0] {
         Expression::Var(var_id) => match row.get(*var_id) {
-            Some(Binding::Lit { lang, .. }) => {
-                lang.as_ref().map(|l| l.to_string()).unwrap_or_default()
+            Some(Binding::Lit { dtc, .. }) => {
+                dtc.lang_tag().map(|l| l.to_string()).unwrap_or_default()
             }
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {

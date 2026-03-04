@@ -83,10 +83,13 @@ fn materialize_encoded_lit(binding: &Binding, gv: &BinaryGraphView) -> std::io::
                 .cloned()
                 .unwrap_or_else(|| Sid::new(0, ""));
             let meta = store.decode_meta(*lang_id, *i_val);
+            let dtc = match meta.and_then(|m| m.lang.map(std::sync::Arc::from)) {
+                Some(lang) => fluree_db_query::triple::DatatypeConstraint::LangTag(lang),
+                None => fluree_db_query::triple::DatatypeConstraint::Explicit(dt_sid),
+            };
             Ok(Binding::Lit {
                 val: other,
-                dt: dt_sid,
-                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                dtc,
                 t: Some(*t),
                 op: None,
                 p_id: Some(*p_id),

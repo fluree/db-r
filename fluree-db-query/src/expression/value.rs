@@ -418,8 +418,7 @@ impl ComparableValue {
             }
             ComparableValue::TypedLiteral { val, dt_iri, lang } => {
                 if let Some(lang) = lang {
-                    let dt = fluree_db_core::Sid::new(3, "langString");
-                    Ok(Binding::lit_lang(val, dt, lang))
+                    Ok(Binding::lit_lang(val, lang))
                 } else if let Some(dt_iri) = dt_iri {
                     let ctx = ctx.ok_or_else(|| {
                         QueryError::InvalidFilter(

@@ -572,7 +572,7 @@ mod tests {
         ];
 
         let result = agg_count(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(3));
     }
 
@@ -588,7 +588,7 @@ mod tests {
         ];
 
         let result = agg_count_all(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         // All 5 rows are counted, not just the 3 bound values
         assert_eq!(*val, FlakeValue::Long(5));
     }
@@ -597,7 +597,7 @@ mod tests {
     fn test_agg_count_all_empty() {
         let values: Vec<Binding> = vec![];
         let result = agg_count_all(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(0));
     }
 
@@ -611,7 +611,7 @@ mod tests {
         ];
 
         let result = agg_count_distinct(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(2));
     }
 
@@ -624,7 +624,7 @@ mod tests {
         ];
 
         let result = agg_sum(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(60));
     }
 
@@ -643,7 +643,7 @@ mod tests {
         ];
 
         let result = agg_sum(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(30.5));
     }
 
@@ -656,7 +656,7 @@ mod tests {
         ];
 
         let result = agg_avg(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(20.0));
     }
 
@@ -669,7 +669,7 @@ mod tests {
         ];
 
         let result = agg_min(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(10));
     }
 
@@ -682,7 +682,7 @@ mod tests {
         ];
 
         let result = agg_max(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(30));
     }
 
@@ -695,7 +695,7 @@ mod tests {
         ];
 
         let result = agg_median(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(3.0));
     }
 
@@ -709,7 +709,7 @@ mod tests {
         ];
 
         let result = agg_median(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(2.5));
     }
 
@@ -731,7 +731,7 @@ mod tests {
         ];
 
         let result = agg_variance(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(4.0));
     }
 
@@ -750,7 +750,7 @@ mod tests {
         ];
 
         let result = agg_stddev(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(2.0));
     }
 
@@ -763,7 +763,7 @@ mod tests {
         ];
 
         let result = agg_group_concat(&values, ", ");
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::String("a, b, c".into()));
     }
 
@@ -776,7 +776,7 @@ mod tests {
         ];
 
         let result = agg_sample(&values);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(42)); // First non-unbound
     }
 
@@ -804,7 +804,7 @@ mod tests {
         ]);
 
         let result = apply_aggregate(&AggregateFn::Sum, &grouped, false);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(6));
     }
 
@@ -820,7 +820,7 @@ mod tests {
         ]);
 
         let result = apply_aggregate(&AggregateFn::Sum, &grouped, true);
-        let (val, _, _) = result.as_lit().unwrap();
+        let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(6)); // 1+2+3 = 6, not 1+2+1+3+2 = 9
     }
 }

@@ -134,8 +134,9 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
     let datatypes = &*WELL_KNOWN_DATATYPES;
 
     match binding {
-        Binding::Lit { val, dt, .. } => {
+        Binding::Lit { val, dtc, .. } => {
             // Check datatype is datetime/date/time using known Sids (no IRI decoding)
+            let dt = dtc.datatype();
             let is_datetime_type = *dt == datatypes.xsd_datetime
                 || *dt == datatypes.xsd_date
                 || *dt == datatypes.xsd_time;
