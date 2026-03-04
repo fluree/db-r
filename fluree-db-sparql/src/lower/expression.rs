@@ -5,8 +5,6 @@
 
 use crate::ast::expr::{BinaryOp, Expression as AstExpression, FunctionName, UnaryOp};
 use crate::ast::term::{Literal, LiteralValue};
-use crate::span::SourceSpan;
-
 use fluree_db_core::FlakeValue;
 use fluree_db_query::ir::{Expression, FilterValue, Function};
 use fluree_db_query::parse::encode::IriEncoder;
@@ -77,9 +75,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 }
             },
 
-            AstExpression::FunctionCall { name, args, .. } => {
-                self.lower_function_call(name, args, expr.span())
-            }
+            AstExpression::FunctionCall { name, args, .. } => self.lower_function_call(name, args),
 
             AstExpression::Aggregate {
                 function,
@@ -208,7 +204,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         &mut self,
         name: &FunctionName,
         args: &[AstExpression],
-        span: SourceSpan,
     ) -> Result<Expression> {
         let func = match name {
             // Type checking functions
@@ -235,12 +230,19 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             FunctionName::StrBefore => Function::StrBefore,
             FunctionName::StrAfter => Function::StrAfter,
             FunctionName::Replace => Function::Replace,
+            FunctionName::StrDt => Function::StrDt,
+            FunctionName::StrLang => Function::StrLang,
+
+            // Constructor functions
+            FunctionName::Iri | FunctionName::Uri => Function::Iri,
+            FunctionName::BNode => Function::Bnode,
 
             // Numeric functions
             FunctionName::Abs => Function::Abs,
             FunctionName::Round => Function::Round,
             FunctionName::Ceil => Function::Ceil,
             FunctionName::Floor => Function::Floor,
+            FunctionName::Rand => Function::Rand,
 
             // DateTime functions
             FunctionName::Now => Function::Now,
@@ -250,7 +252,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             FunctionName::Hours => Function::Hours,
             FunctionName::Minutes => Function::Minutes,
             FunctionName::Seconds => Function::Seconds,
-            FunctionName::Timezone | FunctionName::Tz => Function::Tz,
+            FunctionName::Timezone => Function::Timezone,
+            FunctionName::Tz => Function::Tz,
 
             // Accessor functions
             FunctionName::Str => Function::Str,
@@ -284,14 +287,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     }
                     _ => Function::Custom(full_iri),
                 }
-            }
-
-            // Not yet implemented
-            _ => {
-                return Err(LowerError::not_implemented(
-                    format!("Function {:?}", name),
-                    span,
-                ))
             }
         };
 

@@ -539,7 +539,7 @@ mod tests {
             Self {
                 batches,
                 idx: 0,
-                schema: schema,
+                schema,
                 state: OperatorState::Created,
             }
         }

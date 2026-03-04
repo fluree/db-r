@@ -267,9 +267,11 @@ async fn test_bind_clobber_same_value() {
     let vars = VarRegistry::new();
     let ctx = ExecutionContext::new(&snapshot, &vars);
 
-    // Create a seed that already has ?x = 42
+    // Create a seed that already has ?x = 42.
+    // Use xsd_integer (not xsd_long) to match the datatype that
+    // ComparableValue::Long.to_binding() now produces.
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-    let columns = vec![vec![Binding::lit(FlakeValue::Long(42), xsd_long())]];
+    let columns = vec![vec![Binding::lit(FlakeValue::Long(42), Sid::xsd_integer())]];
     let seed_batch = Batch::new(schema.clone(), columns).unwrap();
 
     use fluree_db_query::seed::SeedOperator;

@@ -195,6 +195,8 @@ pub enum TokenKind {
     KwLangMatches,
     KwRegex,
     KwReplace,
+    KwStrDt,
+    KwStrLang,
 
     // Numeric functions
     KwAbs,
@@ -413,6 +415,8 @@ impl TokenKind {
                 | TokenKind::KwLangMatches
                 | TokenKind::KwRegex
                 | TokenKind::KwReplace
+                | TokenKind::KwStrDt
+                | TokenKind::KwStrLang
                 | TokenKind::KwAbs
                 | TokenKind::KwRound
                 | TokenKind::KwCeil
@@ -543,6 +547,8 @@ impl TokenKind {
             TokenKind::KwLangMatches => Some("LANGMATCHES"),
             TokenKind::KwRegex => Some("REGEX"),
             TokenKind::KwReplace => Some("REPLACE"),
+            TokenKind::KwStrDt => Some("STRDT"),
+            TokenKind::KwStrLang => Some("STRLANG"),
             TokenKind::KwAbs => Some("ABS"),
             TokenKind::KwRound => Some("ROUND"),
             TokenKind::KwCeil => Some("CEIL"),
@@ -714,6 +720,8 @@ pub fn keyword_from_str(s: &str) -> Option<TokenKind> {
         "LANGMATCHES" => Some(TokenKind::KwLangMatches),
         "REGEX" => Some(TokenKind::KwRegex),
         "REPLACE" => Some(TokenKind::KwReplace),
+        "STRDT" => Some(TokenKind::KwStrDt),
+        "STRLANG" => Some(TokenKind::KwStrLang),
         "ABS" => Some(TokenKind::KwAbs),
         "ROUND" => Some(TokenKind::KwRound),
         "CEIL" => Some(TokenKind::KwCeil),
