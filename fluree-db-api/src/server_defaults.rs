@@ -14,7 +14,6 @@ pub const DEFAULT_STORAGE_PATH: &str = ".fluree/storage";
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 pub const DEFAULT_CORS_ENABLED: bool = true;
 pub const DEFAULT_BODY_LIMIT: usize = 52_428_800; // 50 MB
-pub const DEFAULT_CACHE_MAX_ENTRIES: usize = 10_000;
 
 // ── Indexing ────────────────────────────────────────────────────────
 
@@ -260,7 +259,7 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # log_level = "{log_level}"                 # trace, debug, info, warn, error
 # cors_enabled = {cors_enabled}
 # body_limit = {body_limit}              # 50 MB
-# cache_max_entries = {cache_max_entries}
+# cache_max_mb = 4096                    # global cache budget (MB); default: 50% of RAM
 
 # [server.indexing]
 # enabled = {indexing_enabled}
@@ -331,7 +330,6 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
         log_level = DEFAULT_LOG_LEVEL,
         cors_enabled = DEFAULT_CORS_ENABLED,
         body_limit = DEFAULT_BODY_LIMIT,
-        cache_max_entries = DEFAULT_CACHE_MAX_ENTRIES,
         indexing_enabled = DEFAULT_INDEXING_ENABLED,
         reindex_min_bytes = DEFAULT_REINDEX_MIN_BYTES,
         reindex_min_kb = DEFAULT_REINDEX_MIN_BYTES / 1000,
@@ -369,7 +367,6 @@ pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> S
             "log_level": DEFAULT_LOG_LEVEL,
             "cors_enabled": DEFAULT_CORS_ENABLED,
             "body_limit": DEFAULT_BODY_LIMIT,
-            "cache_max_entries": DEFAULT_CACHE_MAX_ENTRIES,
             "indexing": {
                 "enabled": DEFAULT_INDEXING_ENABLED,
                 "reindex_min_bytes": DEFAULT_REINDEX_MIN_BYTES,
@@ -448,10 +445,7 @@ mod tests {
         )));
         assert!(t.contains(&format!("# log_level = \"{}\"", DEFAULT_LOG_LEVEL)));
         assert!(t.contains(&format!("# enabled = {}", DEFAULT_INDEXING_ENABLED)));
-        assert!(t.contains(&format!(
-            "# cache_max_entries = {}",
-            DEFAULT_CACHE_MAX_ENTRIES
-        )));
+        assert!(t.contains("# cache_max_mb = 4096"));
     }
 
     #[test]

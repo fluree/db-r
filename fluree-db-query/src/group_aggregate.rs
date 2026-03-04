@@ -1284,7 +1284,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
+        let cache = Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(64));
+        let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir, cache).unwrap());
 
         // --- Build GroupAggregateOperator over encoded subject IDs ---
         let snapshot = make_test_snapshot();

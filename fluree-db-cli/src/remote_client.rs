@@ -452,6 +452,62 @@ impl RemoteLedgerClient {
         .await
     }
 
+    /// Execute a SPARQL query and return the raw response bytes with a custom Accept header.
+    ///
+    /// Used by the CLI to request delimited formats (TSV/CSV) directly from the server,
+    /// bypassing JSON serialization on both sides.
+    pub async fn query_sparql_accept_bytes(
+        &self,
+        ledger: &str,
+        sparql: &str,
+        accept: &str,
+    ) -> Result<bytes::Bytes, RemoteLedgerError> {
+        let url = self.op_url("query", ledger);
+        let resp = self
+            .send_raw(
+                reqwest::Method::POST,
+                &url,
+                "application/sparql-query",
+                Some(accept),
+                Some(RequestBody::Text(sparql)),
+            )
+            .await?;
+
+        if resp.status().is_success() {
+            resp.bytes()
+                .await
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
+        } else {
+            Err(Self::map_error(resp).await)
+        }
+    }
+
+    /// Execute a connection-scoped SPARQL query and return raw response bytes with a custom Accept header.
+    pub async fn query_connection_sparql_accept_bytes(
+        &self,
+        sparql: &str,
+        accept: &str,
+    ) -> Result<bytes::Bytes, RemoteLedgerError> {
+        let url = self.op_url_root("query");
+        let resp = self
+            .send_raw(
+                reqwest::Method::POST,
+                &url,
+                "application/sparql-query",
+                Some(accept),
+                Some(RequestBody::Text(sparql)),
+            )
+            .await?;
+
+        if resp.status().is_success() {
+            resp.bytes()
+                .await
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
+        } else {
+            Err(Self::map_error(resp).await)
+        }
+    }
+
     /// Execute a JSON-LD connection query (ledger specified via `from` in body).
     pub async fn query_connection_jsonld(
         &self,

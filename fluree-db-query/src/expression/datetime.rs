@@ -3,6 +3,7 @@
 //! Implements SPARQL datetime functions: NOW, YEAR, MONTH, DAY, HOURS, MINUTES, SECONDS, TZ, TIMEZONE
 
 use crate::binding::RowAccess;
+use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
 use bigdecimal::BigDecimal;
@@ -22,32 +23,56 @@ pub fn eval_now(args: &[Expression]) -> Result<Option<ComparableValue>> {
     Ok(Some(ComparableValue::DateTime(parsed)))
 }
 
-pub fn eval_year<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64)
+pub fn eval_year<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "YEAR", |dt| dt.year() as i64)
 }
 
-pub fn eval_month<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64)
+pub fn eval_month<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "MONTH", |dt| dt.month() as i64)
 }
 
-pub fn eval_day<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64)
+pub fn eval_day<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "DAY", |dt| dt.day() as i64)
 }
 
-pub fn eval_hours<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64)
+pub fn eval_hours<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "HOURS", |dt| dt.hour() as i64)
 }
 
-pub fn eval_minutes<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
-    eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64)
+pub fn eval_minutes<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    eval_datetime_component(args, row, ctx, "MINUTES", |dt| dt.minute() as i64)
 }
 
-pub fn eval_seconds<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
+pub fn eval_seconds<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
     // W3C: SECONDS returns xsd:decimal (fractional seconds)
     check_arity(args, 1, "SECONDS")?;
     if let Expression::Var(var) = &args[0] {
         match row.get(*var) {
-            Some(binding) => match parse_datetime_from_binding(binding) {
+            Some(binding) => match parse_datetime_from_binding(binding, ctx) {
                 Some(dt) => {
                     let secs = dt.second() as i64;
                     let nanos = dt.nanosecond() as i64;
@@ -70,13 +95,17 @@ pub fn eval_seconds<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option
     }
 }
 
-pub fn eval_tz<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
+pub fn eval_tz<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "TZ")?;
     if let Expression::Var(var_id) = &args[0] {
         match row.get(*var_id) {
             Some(binding) => {
                 let has_tz = has_timezone_info(binding);
-                match parse_datetime_from_binding(binding) {
+                match parse_datetime_from_binding(binding, ctx) {
                     Some(dt) => {
                         if !has_tz {
                             // No timezone info in the original value
@@ -109,13 +138,14 @@ pub fn eval_tz<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<Comp
 pub fn eval_timezone<R: RowAccess>(
     args: &[Expression],
     row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "TIMEZONE")?;
     if let Expression::Var(var_id) = &args[0] {
         match row.get(*var_id) {
             Some(binding) => {
                 let has_tz = has_timezone_info(binding);
-                match parse_datetime_from_binding(binding) {
+                match parse_datetime_from_binding(binding, ctx) {
                     Some(dt) => {
                         if !has_tz {
                             // No timezone → unbound per W3C
@@ -187,6 +217,7 @@ fn format_day_time_duration(total_secs: i32) -> String {
 fn eval_datetime_component<R: RowAccess, F>(
     args: &[Expression],
     row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     extract: F,
 ) -> Result<Option<ComparableValue>>
@@ -196,7 +227,7 @@ where
     check_arity(args, 1, fn_name)?;
     if let Expression::Var(var) = &args[0] {
         match row.get(*var) {
-            Some(binding) => match parse_datetime_from_binding(binding) {
+            Some(binding) => match parse_datetime_from_binding(binding, ctx) {
                 Some(dt) => Ok(Some(ComparableValue::Long(extract(&dt)))),
                 None => Ok(None),
             },

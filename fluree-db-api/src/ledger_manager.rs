@@ -478,7 +478,7 @@ pub struct LedgerManagerConfig {
     pub cache_dir: PathBuf,
     /// Shared leaflet cache across all ledgers.
     ///
-    /// Default capacity: 8 GiB or `FLUREE_LEAFLET_CACHE_BYTES` env var.
+    /// By default this is injected by `Fluree` from its global cache budget.
     pub leaflet_cache: Option<Arc<LeafletCache>>,
 }
 
@@ -495,23 +495,11 @@ impl std::fmt::Debug for LedgerManagerConfig {
 
 impl Default for LedgerManagerConfig {
     fn default() -> Self {
-        // Match `BinaryIndexStore::load_from_root_v5_default()`:
-        // - enable a shared leaflet cache by default
-        // - allow override via `FLUREE_LEAFLET_CACHE_BYTES`
-        //
-        // IMPORTANT: Ledger caching and leaflet caching are complementary.
-        // Ledger caching prevents repeated full store loads; leaflet caching
-        // prevents repeated decode churn during scans/formatting.
-        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(8 * 1024 * 1024 * 1024);
-
         Self {
             idle_ttl: Duration::from_secs(30 * 60),
             sweep_interval: Duration::from_secs(60),
             cache_dir: std::env::temp_dir().join("fluree_binary_cache"),
-            leaflet_cache: Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes))),
+            leaflet_cache: None,
         }
     }
 }

@@ -1144,6 +1144,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         // Start background indexing if enabled in config
         let indexing_mode = start_background_indexing_if_enabled(
             aws_handle.config(),
@@ -1156,6 +1158,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         return Ok(Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1188,6 +1191,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             let nameservice =
                 AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
+            let leaflet_cache = make_leaflet_cache(connection.config());
+
             // Start background indexing if enabled in config
             let index_config = derive_index_config(connection.config());
             let indexing_mode = start_background_indexing_if_enabled(
@@ -1199,6 +1204,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             Ok(Fluree {
                 connection,
                 nameservice,
+                leaflet_cache,
                 indexing_mode,
                 index_config,
                 r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1252,6 +1258,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 let nameservice =
                     AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
+                let leaflet_cache = make_leaflet_cache(connection.config());
+
                 // Start background indexing if enabled in config
                 let index_config = derive_index_config(connection.config());
                 let indexing_mode = start_background_indexing_if_enabled(
@@ -1263,6 +1271,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 Ok(Fluree {
                     connection,
                     nameservice,
+                    leaflet_cache,
                     indexing_mode,
                     index_config,
                     r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1389,6 +1398,14 @@ pub struct IndexingBuilderConfig {
     pub indexer_config: IndexerConfig,
     /// Controls novelty backpressure thresholds.
     pub index_config: IndexConfig,
+}
+
+fn make_leaflet_cache(
+    config: &fluree_db_connection::ConnectionConfig,
+) -> std::sync::Arc<fluree_db_binary_index::LeafletCache> {
+    std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(
+        config.cache.max_mb as u64,
+    ))
 }
 
 impl FlureeBuilder {
@@ -1665,15 +1682,6 @@ impl FlureeBuilder {
         Ok(key)
     }
 
-    /// Set the maximum cache entries directly.
-    ///
-    /// By default, cache size is calculated automatically based on 50% of
-    /// available system memory. Use this method to override with a specific count.
-    pub fn cache_max_entries(mut self, max_entries: usize) -> Self {
-        self.config.cache = fluree_db_connection::CacheConfig::with_max_entries(max_entries);
-        self
-    }
-
     /// Set the maximum cache size in MB.
     ///
     /// By default, cache size is calculated automatically based on 50% of
@@ -1764,8 +1772,13 @@ impl FlureeBuilder {
 
         let nameservice = FileNameService::new(&path);
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|config| {
+        let ledger_manager = self.ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
             Arc::new(LedgerManager::new(
                 storage.clone(),
                 nameservice.clone(),
@@ -1792,6 +1805,7 @@ impl FlureeBuilder {
         Ok(Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1892,6 +1906,8 @@ impl FlureeBuilder {
 
         let nameservice = FileNameService::new(&path);
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         let index_config = self
             .indexing_config
             .map(|c| c.index_config)
@@ -1901,6 +1917,7 @@ impl FlureeBuilder {
         Ok(Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1922,10 +1939,15 @@ impl FlureeBuilder {
         let connection = Connection::new(self.config, storage.clone());
         let nameservice = MemoryNameService::new();
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         // Create LedgerManager if caching is enabled
-        let ledger_manager = self
-            .ledger_cache_config
-            .map(|config| Arc::new(LedgerManager::new(storage, nameservice.clone(), config)));
+        let ledger_manager = self.ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
+            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
+        });
 
         let index_config = self
             .indexing_config
@@ -1935,6 +1957,7 @@ impl FlureeBuilder {
         Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -1961,6 +1984,8 @@ impl FlureeBuilder {
         let connection = Connection::new(self.config, storage);
         let nameservice = MemoryNameService::new();
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         let index_config = self
             .indexing_config
             .map(|c| c.index_config)
@@ -1970,6 +1995,7 @@ impl FlureeBuilder {
         Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -2036,6 +2062,8 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         let index_config = self
             .indexing_config
             .map(|c| c.index_config)
@@ -2044,6 +2072,7 @@ impl FlureeBuilder {
         Ok(Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -2121,6 +2150,8 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
 
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
         let index_config = self
             .indexing_config
             .map(|c| c.index_config)
@@ -2129,6 +2160,7 @@ impl FlureeBuilder {
         Ok(Fluree {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -2150,6 +2182,8 @@ pub struct Fluree<S: Storage + 'static, N> {
     connection: Connection<S>,
     /// Nameservice for ledger discovery
     nameservice: N,
+    /// Shared global cache for decoded index artifacts (one budget).
+    leaflet_cache: std::sync::Arc<fluree_db_binary_index::LeafletCache>,
     /// Indexing mode (disabled or background with handle)
     pub indexing_mode: tx::IndexingMode,
     /// Novelty backpressure thresholds used by commits and soft-trigger logic.
@@ -2175,9 +2209,11 @@ where
     ///
     /// Most users should use `FlureeBuilder` instead.
     pub fn new(connection: Connection<S>, nameservice: N) -> Self {
+        let leaflet_cache = make_leaflet_cache(connection.config());
         Self {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -2191,9 +2227,11 @@ where
         nameservice: N,
         indexing_mode: tx::IndexingMode,
     ) -> Self {
+        let leaflet_cache = make_leaflet_cache(connection.config());
         Self {
             connection,
             nameservice,
+            leaflet_cache,
             indexing_mode,
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
@@ -2245,6 +2283,16 @@ where
     /// Get a reference to the R2RML cache
     pub fn r2rml_cache(&self) -> &std::sync::Arc<graph_source::R2rmlCache> {
         &self.r2rml_cache
+    }
+
+    /// Get a reference to the global decoded-artifact cache.
+    pub fn leaflet_cache(&self) -> &std::sync::Arc<fluree_db_binary_index::LeafletCache> {
+        &self.leaflet_cache
+    }
+
+    /// Global cache budget in MB.
+    pub fn cache_budget_mb(&self) -> usize {
+        self.connection.config().cache.max_mb
     }
 
     /// Check if ledger caching is enabled
@@ -2461,9 +2509,13 @@ where
     /// Enable connection-level ledger caching with a custom configuration.
     ///
     /// If caching is already enabled, this is a no-op.
-    pub fn enable_ledger_cache_config(mut self, config: LedgerManagerConfig) -> Self {
+    pub fn enable_ledger_cache_config(mut self, mut config: LedgerManagerConfig) -> Self {
         if self.ledger_manager.is_some() {
             return self;
+        }
+
+        if config.leaflet_cache.is_none() {
+            config.leaflet_cache = Some(std::sync::Arc::clone(&self.leaflet_cache));
         }
 
         let storage = self.connection.storage().clone();
@@ -2685,11 +2737,9 @@ mod tests {
 
     #[test]
     fn test_fluree_builder_memory() {
-        let fluree = FlureeBuilder::memory()
-            .cache_max_entries(500)
-            .build_memory();
+        let fluree = FlureeBuilder::memory().cache_max_mb(500).build_memory();
 
-        assert_eq!(fluree.connection.config().cache.max_entries, 500);
+        assert_eq!(fluree.connection.config().cache.max_mb, 500);
     }
 
     #[test]
@@ -2697,7 +2747,7 @@ mod tests {
     fn test_fluree_builder_file() {
         let result = FlureeBuilder::file("/tmp/test")
             .parallelism(8)
-            .cache_max_entries(1000)
+            .cache_max_mb(1000)
             .build();
 
         assert!(result.is_ok());

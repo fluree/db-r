@@ -36,7 +36,7 @@ This removes the age property from ex:alice.
 Remove a specific property value:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -314,12 +314,12 @@ To cascade, explicitly match and delete references.
 
 ```bash
 # Current query (after retraction at t=5)
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main", "select": ["?name"], ...}'
 # Returns: [] (no results)
 
 # Historical query (before retraction)
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main@t:3", "select": ["?name"], ...}'
 # Returns: [{"name": "Alice"}] (data visible)
 ```
@@ -329,7 +329,7 @@ curl -X POST http://localhost:8090/query \
 Query the history to see both assertions and retractions:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{
     "@context": { "schema": "http://schema.org/" },
     "from": "mydb:main@t:1",

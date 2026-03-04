@@ -37,7 +37,7 @@ Example `config.toml`:
 listen_addr = "0.0.0.0:8090"
 storage_path = "/var/lib/fluree"
 log_level = "info"
-cache_max_entries = 10000
+# cache_max_mb = 4096  # global cache budget (MB); default: 50% of RAM
 
 [server.indexing]
 enabled = true
@@ -218,11 +218,11 @@ Options: `trace`, `debug`, `info`, `warn`, `error`
 
 ### Cache Size
 
-Maximum cache entries per ledger:
+Global cache budget (MB):
 
-| Flag                  | Env Var                    | Default |
-| --------------------- | -------------------------- | ------- |
-| `--cache-max-entries` | `FLUREE_CACHE_MAX_ENTRIES` | `10000` |
+| Flag              | Env Var              | Default                |
+| ----------------- | -------------------- | ---------------------- |
+| `--cache-max-mb`  | `FLUREE_CACHE_MAX_MB`| `50% of system RAM`    |
 
 ### Background Indexing
 
@@ -624,7 +624,7 @@ fluree-server \
 | `FLUREE_INDEXING_ENABLED`               | Enable background indexing                      | `false`                                                                 |
 | `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes)                  | `100000`                                                                |
 | `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes)                  | `1000000`                                                               |
-| `FLUREE_CACHE_MAX_ENTRIES`              | Cache size per ledger                           | `10000`                                                                 |
+| `FLUREE_CACHE_MAX_MB`                   | Global cache budget (MB)                        | `50% of system RAM`                                                     |
 | `FLUREE_BODY_LIMIT`                     | Max request body bytes                          | `52428800`                                                              |
 | `FLUREE_LOG_LEVEL`                      | Log level                                       | `info`                                                                  |
 | `FLUREE_SERVER_ROLE`                    | Server role                                     | `transaction`                                                           |

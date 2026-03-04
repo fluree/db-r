@@ -321,7 +321,7 @@ Policies are optimized during query planning:
 Policies are created via transactions:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=policies:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=policies:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@graph": [

@@ -80,14 +80,14 @@ impl Function {
 
             // DateTime functions
             Function::Now => datetime::eval_now(args),
-            Function::Year => datetime::eval_year(args, row),
-            Function::Month => datetime::eval_month(args, row),
-            Function::Day => datetime::eval_day(args, row),
-            Function::Hours => datetime::eval_hours(args, row),
-            Function::Minutes => datetime::eval_minutes(args, row),
-            Function::Seconds => datetime::eval_seconds(args, row),
-            Function::Tz => datetime::eval_tz(args, row),
-            Function::Timezone => datetime::eval_timezone(args, row),
+            Function::Year => datetime::eval_year(args, row, ctx),
+            Function::Month => datetime::eval_month(args, row, ctx),
+            Function::Day => datetime::eval_day(args, row, ctx),
+            Function::Hours => datetime::eval_hours(args, row, ctx),
+            Function::Minutes => datetime::eval_minutes(args, row, ctx),
+            Function::Seconds => datetime::eval_seconds(args, row, ctx),
+            Function::Tz => datetime::eval_tz(args, row, ctx),
+            Function::Timezone => datetime::eval_timezone(args, row, ctx),
 
             // Type-checking functions
             Function::Bound => types::eval_bound(args, row),
@@ -97,7 +97,7 @@ impl Function {
             Function::IsBlank => types::eval_is_blank(),
 
             // RDF term functions
-            Function::Datatype => rdf::eval_datatype(args, row),
+            Function::Datatype => rdf::eval_datatype(args, row, ctx),
             Function::LangMatches => rdf::eval_lang_matches(args, row, ctx),
             Function::SameTerm => rdf::eval_same_term(args, row, ctx),
             Function::Iri => rdf::eval_iri(args, row, ctx),

@@ -140,7 +140,7 @@ https://[host]:[port]/[endpoint]?[parameters]
 
 Example:
 ```text
-http://localhost:8090/transact?ledger=mydb:main&mode=replace
+http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace
 ```
 
 ### Query Parameters
@@ -344,7 +344,7 @@ https://api.example.com/v2/query
 Use upsert mode for idempotent transactions:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main&mode=replace" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace" \
   -H "Content-Type: application/json" \
   -d '{...}'
 ```

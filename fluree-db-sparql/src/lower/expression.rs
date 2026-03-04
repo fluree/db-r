@@ -77,16 +77,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             AstExpression::FunctionCall { name, args, .. } => self.lower_function_call(name, args),
 
-            AstExpression::Aggregate {
-                function,
-                expr: agg_expr,
-                distinct,
-                separator,
-                span,
-            } => {
+            agg @ AstExpression::Aggregate { function, span, .. } => {
                 if let Some(aliases) = &self.aggregate_aliases {
-                    let key =
-                        self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
+                    let key = self.aggregate_key(agg)?;
                     if let Some(var_id) = aliases.get(&key) {
                         return Ok(Expression::Var(*var_id));
                     }

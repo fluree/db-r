@@ -39,7 +39,7 @@ The **transaction time** is a monotonically increasing integer uniquely identify
 
 ```bash
 # Query at specific transaction
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main@t:42", ...}'
 ```
 
@@ -63,7 +63,7 @@ ISO 8601 formatted timestamp of when the transaction was committed:
 
 ```bash
 # Query at specific time
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main@iso:2024-01-22T10:30:00Z", ...}'
 ```
 
@@ -87,7 +87,7 @@ Content-addressed identifier for the commit:
 
 ```bash
 # Query at specific commit
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main@commit:bafybeig...commitT42", ...}'
 ```
 

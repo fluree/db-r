@@ -245,6 +245,7 @@ pub(crate) fn status_for_query_error(err: &fluree_db_query::QueryError) -> u16 {
         fluree_db_query::QueryError::FuelLimitExceeded(_) => 400,
         fluree_db_query::QueryError::InvalidQuery(_) => 400,
         fluree_db_query::QueryError::InvalidFilter(_) => 400,
+        fluree_db_query::QueryError::InvalidExpression(_) => 400,
         _ => 500,
     }
 }

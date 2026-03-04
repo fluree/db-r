@@ -118,7 +118,7 @@ pub struct ImportConfig {
     /// Publish nameservice head every N chunks during import. Default: 50.
     /// 0 disables periodic checkpoints.
     pub publish_every: usize,
-    /// Overall memory budget in MB for the import pipeline. 0 = auto-detect (75% of RAM).
+    /// Overall memory budget in MB for the import pipeline. 0 = auto-detect (60% of RAM).
     ///
     /// Used to derive `chunk_size_mb` and `max_inflight_chunks` when those fields
     /// are left at 0.
@@ -216,8 +216,8 @@ impl ImportConfig {
             self.memory_budget_mb
         } else {
             let ram = detect_system_memory_mb();
-            // 75% of system RAM
-            (ram as f64 * 0.75) as usize
+            // 60% of system RAM
+            (ram as f64 * 0.60) as usize
         }
     }
 
@@ -325,7 +325,7 @@ impl ImportConfig {
 /// Used to report to the user what the import pipeline will use when values are auto-detected.
 #[derive(Debug, Clone)]
 pub struct EffectiveImportSettings {
-    /// Memory budget in MB (75% of system RAM when not set).
+    /// Memory budget in MB (60% of system RAM when not set).
     pub memory_budget_mb: usize,
     /// Number of parallel parse threads (system cores capped at 6 when not set).
     pub parallelism: usize,
@@ -668,7 +668,7 @@ where
         self
     }
 
-    /// Set the overall memory budget in MB. 0 = auto-detect (75% of RAM).
+    /// Set the overall memory budget in MB. 0 = auto-detect (60% of RAM).
     pub fn memory_budget_mb(mut self, mb: usize) -> Self {
         self.config.memory_budget_mb = mb;
         self

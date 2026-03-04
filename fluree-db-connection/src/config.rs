@@ -151,29 +151,12 @@ impl Default for StorageConfig {
 pub struct CacheConfig {
     /// Maximum cache size in MB
     pub max_mb: usize,
-    /// Maximum number of entries (derived from max_mb)
-    pub max_entries: usize,
 }
 
 impl CacheConfig {
-    /// Create a cache config with the given max MB, calculating entries automatically.
+    /// Create a cache config with the given max MB.
     pub fn with_max_mb(max_mb: usize) -> Self {
-        let max_entries = crate::cache::memory_to_cache_size(max_mb, None);
-        CacheConfig {
-            max_mb,
-            max_entries,
-        }
-    }
-
-    /// Create a cache config with an explicit entry count.
-    pub fn with_max_entries(max_entries: usize) -> Self {
-        // Estimate MB from entries (reverse of memory_to_cache_size)
-        // avg_segment_mb ≈ 0.183 MB
-        let max_mb = ((max_entries as f64) * 0.183).ceil() as usize;
-        CacheConfig {
-            max_mb,
-            max_entries,
-        }
+        CacheConfig { max_mb }
     }
 }
 
@@ -181,11 +164,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         // Use memory-based default: 50% of system memory
         let max_mb = crate::cache::default_cache_max_mb();
-        let max_entries = crate::cache::memory_to_cache_size(max_mb, None);
-        CacheConfig {
-            max_mb,
-            max_entries,
-        }
+        CacheConfig { max_mb }
     }
 }
 
@@ -684,7 +663,6 @@ impl CacheConfig {
             .ok_or_else(|| ConnectionError::invalid_config("Cache config must be an object"))?;
 
         let mut max_mb: Option<usize> = None;
-        let mut max_entries: Option<usize> = None;
 
         for (key, value) in obj {
             match key.as_str() {
@@ -697,9 +675,6 @@ impl CacheConfig {
                 "maxMb" | "max_mb" | "cacheMaxMb" => {
                     max_mb = Some(resolve_config_value_usize(value)?);
                 }
-                "maxEntries" | "max_entries" => {
-                    max_entries = Some(resolve_config_value_usize(value)?);
-                }
                 _ => {
                     return Err(ConnectionError::invalid_config(format!(
                         "Unknown cache configuration field: '{}'",
@@ -709,15 +684,9 @@ impl CacheConfig {
             }
         }
 
-        // When both are provided, use explicit values; otherwise derive one from the other
-        Ok(match (max_entries, max_mb) {
-            (Some(entries), Some(mb)) => CacheConfig {
-                max_mb: mb,
-                max_entries: entries,
-            },
-            (Some(entries), None) => CacheConfig::with_max_entries(entries),
-            (None, Some(mb)) => CacheConfig::with_max_mb(mb),
-            (None, None) => CacheConfig::default(),
+        Ok(match max_mb {
+            Some(mb) => CacheConfig::with_max_mb(mb),
+            None => CacheConfig::default(),
         })
     }
 }
@@ -987,14 +956,12 @@ mod tests {
     fn test_parse_config_with_cache() {
         let json = json!({
             "cache": {
-                "maxMb": 256,
-                "maxEntries": 5000
+                "maxMb": 256
             }
         });
 
         let config = ConnectionConfig::from_json(&json).unwrap();
         assert_eq!(config.cache.max_mb, 256);
-        assert_eq!(config.cache.max_entries, 5000);
     }
 
     #[test]

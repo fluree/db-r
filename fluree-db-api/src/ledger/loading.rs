@@ -53,15 +53,19 @@ where
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(cs);
-                let mut store =
-                    BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
-                        .await
-                        .map_err(|e| {
-                            ApiError::internal(format!(
-                                "failed to load binary index store for {}: {}",
-                                index_cid, e
-                            ))
-                        })?;
+                let mut store = BinaryIndexStore::load_from_root_bytes(
+                    cs,
+                    &bytes,
+                    &cache_dir,
+                    Some(Arc::clone(&self.leaflet_cache)),
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to load binary index store for {}: {}",
+                        index_cid, e
+                    ))
+                })?;
 
                 // Vector shards are truly lazy — loaded on demand per-shard
                 // when decode_value hits a VECTOR_ID, using the same sync→async
