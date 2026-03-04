@@ -161,21 +161,33 @@ be accessed without scanning the entire file.
 ```text
 [LeafHeader: variable size]
   magic: "FLI2" (4B)
-  version: u8
+  version: u8          (currently 3; v2 also supported on read)
   leaflet_count: u8
-  dt_width: u8    (currently 1; may widen to 2)
-  p_width: u8     (2=u16, 4=u32)
+  dt_width: u8         (currently 1; may widen to 2)
+  p_width: u8          (2=u16, 4=u32)
   total_rows: u64
   first_key: SortKey (28B)
   last_key:  SortKey (28B)
-  [LeafletDirectory: leaflet_count × 28B]
+  [LeafletDirectory: leaflet_count × 40B]    (v2: 28B, lacks first_o_*)
     offset: u64
     compressed_len: u32
     row_count: u32
     first_s_id: u64
     first_p_id: u32
+    first_o_kind: u8   (v3+)
+    _pad: [u8; 3]      (v3+)
+    first_o_key: u64   (v3+)
 [LeafletData: concatenated encoded leaflets]
 ```
+
+The v3 leaflet directory adds `first_o_kind` and `first_o_key` to each entry.
+These fields enable **leaflet-boundary skip-decoding**: if two adjacent leaflet
+directory entries share the same `(p_id, o_kind, o_key)`, the entire earlier
+leaflet is guaranteed to contain only that `(p, o)` combination. Fast-path
+COUNT + GROUP BY operators use this property to count rows by `row_count`
+without decompressing Region 1, which significantly reduces CPU and I/O for
+large predicate scans. v2 leaves (which lack these fields) are still readable
+but always require full leaflet decoding.
 
 ### `SortKey` (leaf routing key)
 
@@ -413,7 +425,7 @@ The `u16` big-endian prefix ensures that lexicographic byte comparisons match lo
 
 - Fact artifacts:
   - branch: magic `FBR2`, version `1`
-  - leaf: magic `FLI2`, version `2`
+  - leaf: magic `FLI2`, version `3` (v2 readable for backward compat)
 - Dictionary tree artifacts:
   - branch: magic `DTB1`
   - leaves: magic `DLF1` / `DLR1`

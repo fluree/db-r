@@ -871,6 +871,20 @@ impl BinaryCursor {
 
             batch.row_count = batch.s_ids.len();
             if batch.row_count > 0 {
+                // This is the key diagnostic for "are we decoding Region 2?" investigations:
+                // - If `need_region2=false` and `time_traveling=false` and `has_overlay=false`,
+                //   then `r2_hits/r2_misses` should remain 0 for this batch.
+                // - Non-zero `r2_misses` implies we decoded Region 2 at least once.
+                tracing::debug!(
+                    need_region2 = self.need_region2,
+                    time_traveling,
+                    has_overlay,
+                    leaflets,
+                    r2_hits,
+                    r2_misses,
+                    rows = batch.row_count,
+                    "binary_cursor: produced decoded batch"
+                );
                 span.record("leaflets", leaflets);
                 span.record("r1_hits", r1_hits);
                 span.record("r1_misses", r1_misses);

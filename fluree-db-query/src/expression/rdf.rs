@@ -136,22 +136,48 @@ pub fn eval_iri<R: RowAccess>(
     check_arity(args, 1, "IRI")?;
     match args[0].eval_to_comparable(row, ctx)? {
         Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
+        Some(ComparableValue::Iri(iri)) => Ok(Some(ComparableValue::Iri(iri))),
         Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
-        Some(_) => Err(QueryError::InvalidExpression(
-            "IRI requires a string or IRI argument".to_string(),
-        )),
+        Some(_) => Ok(None),
         None => Ok(None),
     }
 }
 
-pub fn eval_bnode(args: &[Expression]) -> Result<Option<ComparableValue>> {
-    if !args.is_empty() {
-        return Err(QueryError::InvalidExpression(
-            "BNODE requires no arguments".to_string(),
-        ));
+pub fn eval_bnode<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    match args.len() {
+        0 => {
+            // No args: generate a fresh blank node
+            Ok(Some(ComparableValue::Iri(Arc::from(format!(
+                "_:fdb-{}",
+                Uuid::new_v4()
+            )))))
+        }
+        1 => {
+            // Label arg: deterministic blank node for the same label within a query
+            match args[0].eval_to_comparable(row, ctx)? {
+                Some(v) => match v.as_str() {
+                    Some(label) => {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        label.hash(&mut hasher);
+                        let hash = hasher.finish();
+                        Ok(Some(ComparableValue::Iri(Arc::from(format!(
+                            "_:b{:x}",
+                            hash
+                        )))))
+                    }
+                    None => Ok(None),
+                },
+                None => Ok(None),
+            }
+        }
+        _ => Err(QueryError::InvalidExpression(
+            "BNODE requires 0 or 1 arguments".to_string(),
+        )),
     }
-    Ok(Some(ComparableValue::Iri(Arc::from(format!(
-        "_:fdb-{}",
-        Uuid::new_v4()
-    )))))
 }

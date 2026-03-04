@@ -87,6 +87,7 @@ impl Function {
             Function::Minutes => datetime::eval_minutes(args, row, ctx),
             Function::Seconds => datetime::eval_seconds(args, row, ctx),
             Function::Tz => datetime::eval_tz(args, row, ctx),
+            Function::Timezone => datetime::eval_timezone(args, row, ctx),
 
             // Type-checking functions
             Function::Bound => types::eval_bound(args, row),
@@ -100,7 +101,7 @@ impl Function {
             Function::LangMatches => rdf::eval_lang_matches(args, row, ctx),
             Function::SameTerm => rdf::eval_same_term(args, row, ctx),
             Function::Iri => rdf::eval_iri(args, row, ctx),
-            Function::Bnode => rdf::eval_bnode(args),
+            Function::Bnode => rdf::eval_bnode(args, row, ctx),
 
             // Conditional functions
             Function::If => conditional::eval_if(args, row, ctx),

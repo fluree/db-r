@@ -179,6 +179,7 @@ impl PropertyJoinCountAllOperator {
             vec![],
             agg_specs,
             None,
+            false,
         ));
         op.open(ctx).await?;
         self.fallback = Some(op);

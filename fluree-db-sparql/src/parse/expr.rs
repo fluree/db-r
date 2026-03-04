@@ -588,6 +588,12 @@ fn check_builtin_function_keyword(tokens: &TokenStream) -> Option<FunctionName> 
     if tokens.check_keyword(TokenKind::KwReplace) {
         return Some(FunctionName::Replace);
     }
+    if tokens.check_keyword(TokenKind::KwStrDt) {
+        return Some(FunctionName::StrDt);
+    }
+    if tokens.check_keyword(TokenKind::KwStrLang) {
+        return Some(FunctionName::StrLang);
+    }
 
     // Numeric functions
     if tokens.check_keyword(TokenKind::KwAbs) {

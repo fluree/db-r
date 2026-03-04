@@ -297,6 +297,8 @@ pub enum FunctionName {
     LangMatches,
     Regex,
     Replace,
+    StrDt,
+    StrLang,
 
     // Numeric functions
     Abs,
@@ -369,6 +371,8 @@ impl FunctionName {
             "LANGMATCHES" => Some(FunctionName::LangMatches),
             "REGEX" => Some(FunctionName::Regex),
             "REPLACE" => Some(FunctionName::Replace),
+            "STRDT" => Some(FunctionName::StrDt),
+            "STRLANG" => Some(FunctionName::StrLang),
             "ABS" => Some(FunctionName::Abs),
             "ROUND" => Some(FunctionName::Round),
             "CEIL" => Some(FunctionName::Ceil),

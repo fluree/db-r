@@ -101,6 +101,62 @@ fn schema_from_pattern(
     )
 }
 
+/// Controls which triple-pattern variables are emitted into the scan output schema.
+///
+/// This is a light-weight physical-property knob used by WHERE planning to avoid
+/// materializing unused columns (especially large object columns) when safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitMask {
+    pub s: bool,
+    pub p: bool,
+    pub o: bool,
+}
+
+impl EmitMask {
+    pub const ALL: Self = Self {
+        s: true,
+        p: true,
+        o: true,
+    };
+}
+
+/// Like `schema_from_pattern`, but allows pruning emitted variables via `emit`.
+fn schema_from_pattern_with_emit(
+    pattern: &TriplePattern,
+    emit: EmitMask,
+) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
+    let mut schema_vec = Vec::with_capacity(3);
+    let mut s_var_pos = None;
+    let mut p_var_pos = None;
+    let mut o_var_pos = None;
+
+    if emit.s {
+        if let Ref::Var(v) = &pattern.s {
+            s_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+    }
+    if emit.p {
+        if let Ref::Var(v) = &pattern.p {
+            p_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+    }
+    if emit.o {
+        if let Term::Var(v) = &pattern.o {
+            o_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+    }
+
+    (
+        Arc::from(schema_vec.into_boxed_slice()),
+        s_var_pos,
+        p_var_pos,
+        o_var_pos,
+    )
+}
+
 // ============================================================================
 // BinaryScanOperator
 // ============================================================================
@@ -179,13 +235,15 @@ impl BinaryScanOperator {
         graph_view: BinaryGraphView,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+        index_hint: Option<IndexType>,
     ) -> Self {
-        let mut index = IndexType::for_query(
-            pattern.s_bound(),
-            pattern.p_bound(),
-            pattern.o_bound(),
-            pattern.o_is_ref(),
-        );
+        let s_bound = pattern.s_bound();
+        let p_bound = pattern.p_bound();
+        let o_bound = pattern.o_bound();
+        let o_is_ref = pattern.o_is_ref();
+
+        let mut index = IndexType::for_query(s_bound, p_bound, o_bound, o_is_ref);
 
         // When object bounds are present and default index is PSOT, switch to POST
         // for object-range scanning.
@@ -193,7 +251,24 @@ impl BinaryScanOperator {
             index = IndexType::Post;
         }
 
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        // Plan-time override to align physical order with downstream operators.
+        if let Some(hint) = index_hint {
+            index = hint;
+        }
+
+        tracing::debug!(
+            s_bound,
+            p_bound,
+            o_bound,
+            o_is_ref,
+            ?index,
+            ?index_hint,
+            has_object_bounds = object_bounds.is_some(),
+            "binary scan index selected"
+        );
+
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
+            schema_from_pattern_with_emit(&pattern, emit);
         let p_is_var = pattern.p.is_var();
 
         // Extend schema with new bind variables from inline operators.
@@ -228,9 +303,14 @@ impl BinaryScanOperator {
         index: IndexType,
         inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let mut op = Self::new(pattern, graph_view, None, inline_ops);
-        op.index = index;
-        op
+        Self::new(
+            pattern,
+            graph_view,
+            None,
+            inline_ops,
+            EmitMask::ALL,
+            Some(index),
+        )
     }
 
     /// Get the index type being used.
@@ -1388,6 +1468,12 @@ pub struct ScanOperator {
     /// Applied after building bindings, before returning the batch.
     /// This reduces operator overhead by avoiding separate FilterOperator/BindOperator nodes.
     inline_ops: Vec<InlineOperator>,
+    /// Which pattern variables to emit into schema.
+    emit: EmitMask,
+    /// Optional explicit index selection (overrides IndexType::for_query).
+    ///
+    /// Used to align scan physical order with downstream operators (e.g., GROUP BY).
+    index_hint: Option<IndexType>,
 }
 
 impl ScanOperator {
@@ -1402,7 +1488,28 @@ impl ScanOperator {
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let (base_schema, _, _, _) = schema_from_pattern(&pattern);
+        Self::new_with_emit(pattern, object_bounds, inline_ops, EmitMask::ALL)
+    }
+
+    /// Create a new scan operator with explicit emission control.
+    pub fn new_with_emit(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+    ) -> Self {
+        Self::new_with_emit_and_index(pattern, object_bounds, inline_ops, emit, None)
+    }
+
+    /// Create a new scan operator with explicit emission control and index hint.
+    pub fn new_with_emit_and_index(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+        index_hint: Option<IndexType>,
+    ) -> Self {
+        let (base_schema, _, _, _) = schema_from_pattern_with_emit(&pattern, emit);
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
         Self {
             pattern,
@@ -1411,6 +1518,8 @@ impl ScanOperator {
             inner: None,
             state: OperatorState::Created,
             inline_ops,
+            emit,
+            index_hint,
         }
     }
 }
@@ -1509,6 +1618,8 @@ impl Operator for ScanOperator {
                 gv,
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.inline_ops),
+                self.emit,
+                self.index_hint,
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
