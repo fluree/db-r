@@ -14,34 +14,39 @@ The ratio is extraordinary: ~700 lines of Rust infrastructure drive 700+ W3C tes
 
 ## Quick Start
 
+> **Important:** The `testsuite-sparql` crate is **excluded from the Cargo workspace** (see root `Cargo.toml`). You must `cd testsuite-sparql/` before running any `cargo` or `make` commands. Using `cargo test -p testsuite-sparql` from the workspace root will fail.
+
+All commands below assume you are already in `testsuite-sparql/`.
+
 ### Run All Tests
 
 ```bash
-cargo test -p testsuite-sparql
+cd testsuite-sparql
+cargo test
 ```
 
-This runs all non-ignored W3C test suites. Currently that includes SPARQL 1.0 and 1.1 syntax tests. Query evaluation tests (12 categories, 233 tests) are registered but `#[ignore]`'d — run them with `--include-ignored` or via the Makefile.
+This runs all non-ignored W3C test suites. Currently that includes SPARQL 1.0 and 1.1 syntax tests. Query evaluation tests (12 categories, 327 tests) are registered but `#[ignore]`'d — run them with `--include-ignored` or via the Makefile.
 
 ### Run a Specific Suite
 
 ```bash
 # SPARQL 1.1 syntax only
-cargo test -p testsuite-sparql sparql11_syntax_query_tests
+cargo test sparql11_syntax_query_tests
 
 # SPARQL 1.0 syntax only
-cargo test -p testsuite-sparql sparql10_syntax_tests
+cargo test sparql10_syntax_tests
 
 # Full query evaluation (~5 min, includes all 12 categories)
-cargo test -p testsuite-sparql sparql11_query_w3c_testsuite -- --include-ignored
+cargo test sparql11_query_w3c_testsuite -- --include-ignored
 
 # Single evaluation category
-cargo test -p testsuite-sparql sparql11_functions -- --include-ignored
+cargo test sparql11_functions -- --include-ignored
 ```
 
 ### Run With Verbose Output
 
 ```bash
-cargo test -p testsuite-sparql -- --nocapture 2>&1
+cargo test -- --nocapture 2>&1
 ```
 
 The suite writes progress to stderr (`Running test N: <test_id> ...`) and a summary at the end.
@@ -51,8 +56,7 @@ The suite writes progress to stderr (`Running test N: <test_id> ...`) and a summ
 The `testsuite-sparql/Makefile` provides convenience targets:
 
 ```bash
-cd testsuite-sparql
-
+# --- Running tests ---
 make test              # Run syntax tests (live output)
 make test-syntax11     # SPARQL 1.1 syntax tests only
 make test-syntax10     # SPARQL 1.0 syntax tests only
@@ -60,17 +64,26 @@ make test-eval         # Full eval suite, all 12 categories
 make test-eval-cat CAT=functions
                        # Run one eval category
 make test-eval10       # Run SPARQL 1.0 eval tests
+
+# --- Reports ---
 make count-eval        # Quick pass/fail counts for eval tests
-make report-eval       # Run eval tests, save to report-eval.txt
-make report-eval-json  # JSON report for 1.1 eval tests
-make report-10-json    # JSON report for 1.0 eval tests
-make report            # Run syntax tests, save to report.txt
-make failures          # Show failing syntax tests with details
-make count             # Show syntax test pass/fail counts
+make report-eval-json  # JSON report for 1.1 eval → report-eval.json
+make report-10-json    # JSON report for 1.0 eval → report-10.json
+make cat-json CAT=functions
+                       # JSON report for a single category
+
+# --- Analysis (requires report-eval.json) ---
+make summary           # Per-category pass/fail breakdown
+make classify          # Group failures by error type
+make failures-eval     # List all eval failures with type
+make failures-eval CAT=functions
+                       # Filter failures to one category
+
+# --- Investigating specific tests ---
+make investigate-eval TEST=substring01
+                       # Search eval report for a test
 make show-query TEST=syntax-select-expr-04.rq
                        # Print the .rq file for a test
-make investigate TEST=test_34
-                       # Search report for a specific test
 make clean             # Remove generated report files
 ```
 
@@ -122,6 +135,87 @@ https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-query/manifest.ttl#test_3
 
 The fragment (`#test_34`) identifies the specific test within that manifest. The path tells you the W3C category (`syntax-query`, `aggregates`, `bind`, etc.).
 
+## Analyzing Results
+
+### Per-Category Breakdown
+
+Use `make summary` to see pass/fail rates by W3C category:
+
+```bash
+make summary
+```
+
+This requires `report-eval.json` (generated automatically if missing). Output looks like:
+
+```
+Category                  Pass  Fail Total    Rate
+----------------------------------------------------
+syntax-query                80    14    94     85%
+subquery                     8     6    14     57%
+functions                   27    48    75     36%
+...
+----------------------------------------------------
+TOTAL                      167   160   327   51.1%
+```
+
+### Error Classification
+
+Use `make classify` to group failures by root cause:
+
+```bash
+make classify
+```
+
+Error types:
+- **RESULT MISMATCH** — Query runs but returns wrong values
+- **INTERNAL ERROR** — Execution fails with an internal error
+- **PARSE/LOWERING** — SPARQL parsing or IR lowering fails
+- **NEGATIVE SYNTAX** — Parser accepts a query it should reject
+- **POSITIVE SYNTAX** — Parser rejects a query it should accept
+- **EMPTY RESULTS** — Query returns no results when some were expected
+- **NOT IMPLEMENTED** — Feature not yet implemented
+- **PANIC** — Subprocess crashed (usually an index/unwrap bug)
+- **TIMEOUT** — Test exceeded 5s (syntax) or 10s (eval) timeout
+
+### Listing Failures
+
+Use `make failures-eval` to list all failures with their type and first error line:
+
+```bash
+make failures-eval               # All failures
+make failures-eval CAT=functions # Just one category
+```
+
+### JSON Reports
+
+For programmatic analysis, generate a JSON report:
+
+```bash
+make report-eval-json    # → report-eval.json
+make report-10-json      # → report-10.json
+make cat-json CAT=bind   # → report-bind.json
+```
+
+Report format:
+
+```json
+{
+  "total": 327, "passed": 167, "failed": 160, "pass_rate": "51.1%",
+  "tests": [
+    { "test_id": "http://...#agg01", "status": "pass", "error": null, "timeout": false },
+    { "test_id": "http://...#agg02", "status": "fail", "error": "Results not isomorphic...", "timeout": false }
+  ]
+}
+```
+
+The analysis script at `scripts/analyze_report.py` can also be used directly:
+
+```bash
+python3 scripts/analyze_report.py summary report-eval.json
+python3 scripts/analyze_report.py classify report-eval.json
+python3 scripts/analyze_report.py failures report-eval.json --category functions
+```
+
 ## From Failure to Fix: The Workflow
 
 ### Step 1: Identify the Failure Category
@@ -129,7 +223,7 @@ The fragment (`#test_34`) identifies the specific test within that manifest. The
 Run the suite and look at the failure message:
 
 ```bash
-cargo test -p testsuite-sparql sparql11_syntax_query_tests -- --nocapture 2>&1 | tail -40
+cargo test sparql11_syntax_query_tests -- --nocapture 2>&1 | tail -40
 ```
 
 Determine which category:
@@ -225,14 +319,14 @@ Use this template:
 After making code changes:
 
 ```bash
-# Verify the specific test passes (run the suite, grep for the test)
-cargo test -p testsuite-sparql sparql11_syntax_query_tests -- --nocapture 2>&1 | grep "test_34"
+# Verify the specific test passes (from testsuite-sparql/)
+cargo test sparql11_syntax_query_tests -- --nocapture 2>&1 | grep "test_34"
 
 # Verify you haven't regressed other tests
-cargo test -p testsuite-sparql
+make count-eval
 
-# Run the parser's own tests
-cargo test -p fluree-db-sparql
+# Run the parser's own tests (from workspace root)
+cd .. && cargo test -p fluree-db-sparql
 
 # Full CI parity check
 cargo clippy -p fluree-db-sparql --all-features -- -D warnings
@@ -320,14 +414,45 @@ The parser code for BIND is in fluree-db-sparql/src/parser/. Please find the
 common root cause and fix all three.
 ```
 
+## JSON-LD Query Parity
+
+SPARQL and JSON-LD queries in Fluree compile to the **same intermediate representation** (`fluree-db-query/src/ir.rs`) and share the entire execution engine. This means:
+
+1. **Shared code changes affect both languages.** If you add a new `Expression` variant, `Pattern` variant, or `AggregateFn` for SPARQL, it automatically becomes available to JSON-LD query as well. Ensure JSON-LD tests still pass.
+
+2. **New SPARQL features may need JSON-LD test coverage.** If a feature you're implementing for SPARQL compliance (e.g., a new built-in function, a new filter operator) is also expressible in JSON-LD query syntax, add corresponding JSON-LD integration tests.
+
+3. **Some features are SPARQL-only.** Property paths, RDF-star, ASK query form, and SPARQL Update don't have JSON-LD equivalents. These don't require parity testing.
+
+### Where to add parity tests
+
+| Language | Test files |
+| -------- | ---------- |
+| SPARQL   | `fluree-db-api/tests/it_query_sparql.rs` |
+| JSON-LD  | `fluree-db-api/tests/it_query.rs`, `it_query_analytical.rs`, `it_query_grouping.rs` |
+| Shared   | Unit tests in `fluree-db-query/src/` modules |
+
+### Validation after shared-code changes
+
+```bash
+# SPARQL W3C tests (from testsuite-sparql/)
+make test-eval-cat CAT=<category>
+
+# JSON-LD query tests (from workspace root)
+cargo test -p fluree-db-api --test it_query
+cargo test -p fluree-db-api --test it_query_analytical
+```
+
 ## Architecture Overview
 
 ### Crate Structure
 
 ```
 testsuite-sparql/
-├── Cargo.toml                      # Workspace member, publish = false
+├── Cargo.toml                      # Excluded from workspace, publish = false
 ├── Makefile                        # Developer convenience targets
+├── scripts/
+│   └── analyze_report.py           # JSON report analysis (summary, classify, failures)
 ├── src/
 │   ├── lib.rs                      # check_testsuite() entry point
 │   ├── vocab.rs                    # W3C namespace constants (mf:, qt:, etc.)
@@ -433,7 +558,8 @@ git commit -m "chore: update W3C rdf-tests submodule"
 After updating, run the full suite to check for new tests or changed expectations:
 
 ```bash
-cargo test -p testsuite-sparql
+cd testsuite-sparql
+cargo test
 ```
 
 ## Related Documentation
