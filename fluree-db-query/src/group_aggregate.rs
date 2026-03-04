@@ -474,12 +474,22 @@ pub struct GroupAggregateOperator {
     agg_specs: Vec<StreamingAggSpec>,
     /// Accumulated groups: composite_key -> group_state
     groups: HashMap<CompositeGroupKey, GroupState>,
-    /// Iterator for emitting results
-    emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
+    /// If true, input is already partitioned by the GROUP BY key(s), so we can
+    /// aggregate per-run without hashing each row into a map.
+    partitioned: bool,
+    /// Accumulated groups in partitioned mode (in input order).
+    partitioned_groups: Vec<GroupState>,
+    /// Iterator for emitting results.
+    emit_iter: Option<GroupEmitIter>,
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
     graph_view: Option<BinaryGraphView>,
     /// Variables required by downstream operators; if set, output is trimmed.
     out_schema: Option<Arc<[VarId]>>,
+}
+
+enum GroupEmitIter {
+    Hash(std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>),
+    Vec(std::vec::IntoIter<GroupState>),
 }
 
 impl GroupAggregateOperator {
@@ -496,6 +506,7 @@ impl GroupAggregateOperator {
         group_vars: Vec<VarId>,
         agg_specs: Vec<StreamingAggSpec>,
         graph_view: Option<BinaryGraphView>,
+        partitioned: bool,
     ) -> Self {
         let child_schema = child.schema().to_vec();
 
@@ -525,6 +536,8 @@ impl GroupAggregateOperator {
             group_key_indices,
             agg_specs,
             groups: HashMap::new(),
+            partitioned,
+            partitioned_groups: Vec::new(),
             emit_iter: None,
             graph_view,
             out_schema: None,
@@ -594,6 +607,7 @@ impl Operator for GroupAggregateOperator {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.groups.clear();
+        self.partitioned_groups.clear();
         self.emit_iter = None;
         // If the execution context has a binary store, use it to materialize
         // encoded bindings for correct MIN/MAX comparison semantics.
@@ -614,6 +628,7 @@ impl Operator for GroupAggregateOperator {
                 "group_aggregate_streaming",
                 group_key_cols = self.group_key_indices.len(),
                 agg_count = self.agg_specs.len(),
+                partitioned = self.partitioned,
                 input_batches = tracing::field::Empty,
                 input_rows = tracing::field::Empty,
                 groups = tracing::field::Empty,
@@ -625,7 +640,85 @@ impl Operator for GroupAggregateOperator {
                 let mut input_batches: u64 = 0;
                 let mut input_rows: u64 = 0;
 
-                // Drain all input, updating aggregate states incrementally
+                if self.partitioned && self.group_key_indices.len() == 1 {
+                    // Partitioned fast path: input is grouped by a single key column.
+                    let key_col = self.group_key_indices[0];
+                    let mut current_key: Option<GroupKeyOwned> = None;
+                    let mut current_state: Option<GroupState> = None;
+
+                    loop {
+                        let batch = match self.child.next_batch(ctx).await? {
+                            Some(b) => b,
+                            None => break,
+                        };
+                        input_batches += 1;
+                        if batch.is_empty() {
+                            continue;
+                        }
+
+                        for row_idx in 0..batch.len() {
+                            input_rows += 1;
+                            let key_binding = batch.get_by_col(row_idx, key_col);
+                            let key = binding_to_group_key_owned(key_binding);
+
+                            let same_group = current_key.as_ref().is_some_and(|k| k == &key);
+                            if !same_group {
+                                if let Some(state) = current_state.take() {
+                                    self.partitioned_groups.push(state);
+                                }
+                                current_key = Some(key);
+                                // First row of new group: capture original key bindings for output.
+                                let key_bindings = self.extract_key_bindings(&batch, row_idx);
+                                let agg_states = self
+                                    .agg_specs
+                                    .iter()
+                                    .map(|spec| AggState::new(&spec.function))
+                                    .collect();
+                                current_state = Some(GroupState {
+                                    key_bindings,
+                                    agg_states,
+                                });
+                            }
+
+                            // Update aggregate states for current group.
+                            let gv_ref = self.graph_view.as_ref();
+                            let group_state = current_state
+                                .as_mut()
+                                .expect("partitioned aggregation must have current group state");
+                            for (agg_idx, spec) in self.agg_specs.iter().enumerate() {
+                                match spec.input_col {
+                                    Some(col_idx) => {
+                                        let binding = batch.get_by_col(row_idx, col_idx);
+                                        group_state.agg_states[agg_idx].update(binding, gv_ref);
+                                    }
+                                    None => {
+                                        // COUNT(*) - count all rows
+                                        group_state.agg_states[agg_idx].update_count_all();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(state) = current_state.take() {
+                        self.partitioned_groups.push(state);
+                    }
+
+                    span.record("input_batches", input_batches);
+                    span.record("input_rows", input_rows);
+                    span.record("groups", self.partitioned_groups.len() as u64);
+                    span.record(
+                        "drain_ms",
+                        (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
+                    );
+
+                    self.emit_iter = Some(GroupEmitIter::Vec(
+                        std::mem::take(&mut self.partitioned_groups).into_iter(),
+                    ));
+                    return Ok::<_, crate::error::QueryError>(());
+                }
+
+                // General path: hash-based accumulation.
                 loop {
                     let batch = match self.child.next_batch(ctx).await? {
                         Some(b) => b,
@@ -687,7 +780,7 @@ impl Operator for GroupAggregateOperator {
 
                 // Prepare iterator for emission
                 let groups = std::mem::take(&mut self.groups);
-                self.emit_iter = Some(groups.into_iter());
+                self.emit_iter = Some(GroupEmitIter::Hash(groups.into_iter()));
                 Ok::<_, crate::error::QueryError>(())
             }
             .instrument(span)
@@ -704,8 +797,12 @@ impl Operator for GroupAggregateOperator {
 
         if let Some(ref mut iter) = self.emit_iter {
             while rows_added < batch_size {
-                match iter.next() {
-                    Some((_composite_key, group_state)) => {
+                let next_state = match iter {
+                    GroupEmitIter::Hash(it) => it.next().map(|(_k, s)| s),
+                    GroupEmitIter::Vec(it) => it.next(),
+                };
+                match next_state {
+                    Some(group_state) => {
                         // Output group key columns
                         for (col_idx, key_binding) in
                             group_state.key_bindings.into_iter().enumerate()
@@ -741,6 +838,7 @@ impl Operator for GroupAggregateOperator {
     fn close(&mut self) {
         self.child.close();
         self.groups.clear();
+        self.partitioned_groups.clear();
         self.emit_iter = None;
         self.state = OperatorState::Closed;
     }
@@ -873,7 +971,7 @@ mod tests {
             distinct: false,
         }];
 
-        let mut op = GroupAggregateOperator::new(child, vec![VarId(0)], agg_specs, None);
+        let mut op = GroupAggregateOperator::new(child, vec![VarId(0)], agg_specs, None, false);
         op.open(&ctx).await.unwrap();
 
         // Collect results
@@ -993,7 +1091,7 @@ mod tests {
             },
         ];
 
-        let mut op = GroupAggregateOperator::new(child, vec![VarId(0)], agg_specs, None);
+        let mut op = GroupAggregateOperator::new(child, vec![VarId(0)], agg_specs, None, false);
         op.open(&ctx).await.unwrap();
 
         let mut results: HashMap<String, (i64, f64)> = HashMap::new();
@@ -1235,7 +1333,7 @@ mod tests {
             distinct: false,
         }];
 
-        let mut op = GroupAggregateOperator::new(child, vec![], agg_specs, None);
+        let mut op = GroupAggregateOperator::new(child, vec![], agg_specs, None, false);
         op.open(&ctx).await.unwrap();
         let out = op
             .next_batch(&ctx)

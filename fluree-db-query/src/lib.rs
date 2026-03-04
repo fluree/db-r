@@ -28,6 +28,7 @@ pub mod execute;
 pub mod exists;
 pub mod explain;
 pub mod expression;
+pub mod fast_group_count_firsts;
 pub mod filter;
 pub mod geo_rewrite;
 pub mod geo_search;
