@@ -93,6 +93,33 @@ cargo nextest run --workspace --all-features --no-fail-fast  # full workspace (C
 - Ready to commit → `cargo fmt --all` + clippy/test on affected crates
 - Ready for PR → full workspace CI-parity commands above
 
+## SPARQL W3C Compliance Testing
+
+The `testsuite-sparql/` crate runs official W3C SPARQL test cases. It is **excluded from the workspace** (`Cargo.toml` line 41) — you must `cd testsuite-sparql/` before running any cargo or make commands.
+
+### Quick Commands (from testsuite-sparql/)
+
+| Command | Purpose |
+|---------|---------|
+| `make count-eval` | Quick 1.1 eval pass/fail summary |
+| `make test-eval-cat CAT=functions` | Run one eval category |
+| `make summary` | Per-category breakdown table |
+| `make classify` | Group failures by error type |
+| `make failures-eval CAT=functions` | List failures for one category |
+| `make report-eval-json` | Full JSON report → `report-eval.json` |
+| `make show-query TEST=file.rq` | Print a W3C test query |
+| `make investigate-eval TEST=agg01` | Search eval report for a test |
+
+### SPARQL ↔ JSON-LD Query Parity
+
+Both SPARQL and JSON-LD queries compile to the same IR (`fluree-db-query/src/ir.rs`) and share the entire execution engine. When fixing W3C compliance issues:
+
+1. If you change shared code (Expression, Pattern, AggregateFn variants, execution operators), verify JSON-LD query tests still pass
+2. If a newly-supported SPARQL feature is also expressible in JSON-LD, add corresponding JSON-LD tests
+3. SPARQL tests: `fluree-db-api/tests/it_query_sparql.rs` | JSON-LD tests: `fluree-db-api/tests/it_query.rs`
+
+See `docs/contributing/sparql-compliance.md` for the full workflow.
+
 ## Session Start: Dead Code Audit
 
 **At the start of every session**, scan for `#[allow(dead_code)]` and `#[expect(dead_code)]` annotations:

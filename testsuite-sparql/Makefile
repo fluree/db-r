@@ -15,9 +15,10 @@ LOCAL_PREFIX := $(RDF_TESTS)/
 .PHONY: help test test-all test-syntax11 test-syntax10 test-syntax-update \
         test-eval test-eval-cat test-eval10 test-update test-fed \
         test-results test-entailment \
-        report report-eval report-json \
+        report report-eval report-json report-eval-json report-10-json \
         failures failures-list count count-eval \
-        investigate show-query check clean update-submodule
+        summary classify failures-eval cat-json \
+        investigate investigate-eval show-query check clean update-submodule
 
 help: ## Show this help
 	@echo "W3C SPARQL Compliance Test Suite"
@@ -34,8 +35,12 @@ help: ## Show this help
 	@echo "  make test-eval-cat CAT=functions    Run one eval category"
 	@echo "  make test-eval10                    Run SPARQL 1.0 eval tests"
 	@echo "  make count-eval                     Quick pass/fail counts for eval"
-	@echo "  make report-json                    Generate JSON report"
+	@echo "  make report-eval-json               Generate JSON report for 1.1 eval"
+	@echo "  make summary                        Per-category pass/fail breakdown"
+	@echo "  make classify                       Group failures by error type"
+	@echo "  make cat-json CAT=functions         JSON report for a single category"
 	@echo "  make investigate TEST=...           Show context for a specific test"
+	@echo "  make investigate-eval TEST=...      Show context in eval report"
 	@echo "  make show-query TEST=...            Print the .rq file for a test"
 
 # ---------------------------------------------------------------------------
@@ -144,6 +149,59 @@ count-eval: ## Show pass/fail counts for 1.1 eval tests
 	@$(CARGO) test sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
 
 # ---------------------------------------------------------------------------
+# Analysis (require report-eval.json — run `make report-eval-json` first)
+# ---------------------------------------------------------------------------
+
+ANALYZE := python3 scripts/analyze_report.py
+
+summary: ## Per-category pass/fail breakdown (generates report if needed)
+	@if [ ! -f report-eval.json ]; then \
+		echo "No report-eval.json found — generating (this takes ~5 min)..."; \
+		$(MAKE) report-eval-json; \
+	fi
+	@echo ""
+	@echo "=== Per-Category Breakdown (SPARQL 1.1 Eval) ==="
+	@echo ""
+	@$(ANALYZE) summary report-eval.json
+
+classify: ## Group eval failures by error type (generates report if needed)
+	@if [ ! -f report-eval.json ]; then \
+		echo "No report-eval.json found — generating (this takes ~5 min)..."; \
+		$(MAKE) report-eval-json; \
+	fi
+	@echo ""
+	@echo "=== Failure Classification (SPARQL 1.1 Eval) ==="
+	@echo ""
+	@$(ANALYZE) classify report-eval.json
+
+failures-eval: ## List all eval failures with error type (--category CAT to filter)
+	@if [ ! -f report-eval.json ]; then \
+		echo "No report-eval.json found — generating (this takes ~5 min)..."; \
+		$(MAKE) report-eval-json; \
+	fi
+ifdef CAT
+	@$(ANALYZE) failures report-eval.json --category $(CAT)
+else
+	@$(ANALYZE) failures report-eval.json
+endif
+
+cat-json: ## JSON report + summary for one eval category (CAT=functions|bind|...)
+ifndef CAT
+	@echo "Usage: make cat-json CAT=<category>"
+	@echo ""
+	@echo "SPARQL 1.1 categories:"
+	@echo "  aggregates, bind, bindings, cast, construct, exists,"
+	@echo "  functions, grouping, negation, project_expression,"
+	@echo "  property_path, subquery"
+	@exit 1
+endif
+	@echo "Running W3C SPARQL 1.1 $(CAT) tests (JSON output → report-$(CAT).json)..."
+	@W3C_REPORT_JSON=report-$(CAT).json $(CARGO) test sparql11_$(CAT) \
+		-- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
+	@echo "JSON report written to report-$(CAT).json"
+	@python3 -c "import json; r=json.load(open('report-$(CAT).json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # Investigating specific tests
 # ---------------------------------------------------------------------------
 
@@ -165,6 +223,24 @@ endif
 	@find $(RDF_TESTS) -name "*.rq" | xargs grep -l "$(TEST)" 2>/dev/null || \
 		find $(RDF_TESTS) -name "*$(TEST)*" 2>/dev/null || \
 		echo "(no matching query files found)"
+
+investigate-eval: ## Show eval test context (TEST=<test_url_or_fragment>)
+ifndef TEST
+	@echo "Usage: make investigate-eval TEST=<test_id>"
+	@echo ""
+	@echo "TEST can be:"
+	@echo "  - Full URL fragment: agg01"
+	@echo "  - Test name: substring01"
+	@echo "  (searches report-eval.txt — run 'make report-eval' first)"
+	@exit 1
+endif
+	@echo "=== Eval Test: $(TEST) ==="
+	@echo ""
+	@echo "--- Searching eval report ---"
+	@grep "$(TEST)" report-eval.txt 2>/dev/null || echo "(not found in report-eval.txt — run 'make report-eval' first)"
+	@echo ""
+	@echo "--- Matching test files ---"
+	@find $(RDF_TESTS) -name "*$(TEST)*" 2>/dev/null || echo "(no matching files found)"
 
 show-query: ## Print the .rq query file for a test (TEST=<path_fragment>)
 ifndef TEST
@@ -199,4 +275,4 @@ check: ## Run cargo check on the testsuite crate
 	$(CARGO) check
 
 clean: ## Remove generated report files
-	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt report.json report-eval.json report-10.json
+	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt report.json report-eval.json report-10.json report-*.json

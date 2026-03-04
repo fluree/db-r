@@ -516,3 +516,143 @@ mem:fact-01kjp8g2s9pfh64sbx1crx42d8 a mem:Fact ;
     mem:supersedes mem:fact-01kjn63vy23w6kehy3gbs30ncv ;
     mem:createdAt "2026-03-02T03:12:02.857222+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+
+mem:fact-01kjte0r70p5ppv4cjkfyyedpe a mem:Fact ;
+    mem:content "SPARQL Testsuite: Critical Gotchas & How to Run\n\n- **MUST `cd testsuite-sparql/` first** — it's in workspace `exclude = []` (root Cargo.toml line 41-42), so `cargo test -p testsuite-sparql` from workspace root FAILS with \"did not match any packages\"\n- Syntax tests run by default (`cargo test`); eval tests are `#[ignore]` and need `--include-ignored`\n- Each test runs in a subprocess (`run-w3c-test` binary) with 5s (syntax) / 10s (eval) timeouts — panics/hangs show as \"Subprocess error\"\n- W3C test data lives in git submodule `testsuite-sparql/rdf-tests/` (from github.com/w3c/rdf-tests)\n- W3C URL→local path: strip `https://w3c.github.io/rdf-tests/`, prepend `testsuite-sparql/rdf-tests/`\n- Tests declared in `tests/w3c_sparql.rs` — each function calls `check_testsuite(manifest_url, ignored_tests)`\n- Result comparison is isomorphic (order-independent, blank-node-relabeling-tolerant)\n- Key commands (from testsuite-sparql/):\n  - `make test-eval-cat CAT=functions` — single eval category\n  - `make count-eval` — quick pass/fail summary\n  - `make report-eval-json` — JSON report (best for analysis) → report-eval.json\n  - `make show-query TEST=strdt01.rq` — read test query file\n  - `make report-10-json` — SPARQL 1.0 JSON report → report-10.json\n- `make investigate` only searches syntax `report.txt`, NOT eval `report-eval.txt` — use `make investigate-eval` or grep manually for eval failures\n- JSON report format: `{ total, passed, failed, pass_rate, tests: [{ test_id, status, error, timeout }] }`\n- SPARQL 1.1 eval categories: aggregates, bind, bindings, cast, construct, exists, functions, grouping, negation, project_expression, property_path, subquery" ;
+    mem:tag "commands" ;
+    mem:tag "compliance" ;
+    mem:tag "gotchas" ;
+    mem:tag "testing" ;
+    mem:tag "testsuite-sparql" ;
+    mem:tag "w3c" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "Cargo.toml" ;
+    mem:artifactRef "testsuite-sparql/Cargo.toml" ;
+    mem:artifactRef "testsuite-sparql/Makefile" ;
+    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:05:29.696388+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kjte15ttyc87azr53xda0bzg a mem:Fact ;
+    mem:content "Testsuite JSON Report Analysis Recipes (dry-run validated 2026-03-03)\n\nNo built-in Makefile targets for per-category breakdowns or error classification. Use `make summary` and `make classify` (added as new targets), or these Python snippets for ad-hoc analysis (all assume `cd testsuite-sparql/`):\n\n**Generate reports first:**\n- `make report-eval-json` → report-eval.json (SPARQL 1.1, ~5 min)\n- `make report-10-json` → report-10.json (SPARQL 1.0, ~5 min)\n\n**Per-category breakdown** (multi-line version):\n```python\nimport json; from collections import defaultdict\nr = json.load(open('report-eval.json'))\ncats = defaultdict(lambda: {'pass':0,'fail':0,'total':0})\nfor t in r['tests']:\n    parts = t['test_id'].split('/')\n    cat = next((parts[i+1] for i,p in enumerate(parts) if p=='data-sparql11' and i+1&lt;len(parts)),'unknown')\n    cats[cat]['total'] += 1\n    cats[cat]['pass' if t['status']=='pass' else 'fail'] += 1\nfor cat in sorted(cats):\n    c=cats[cat]; rate=f\"{100*c['pass']/c['total']:.0f}%\"\n    print(f\"{cat:&lt;22} {c['pass']:>4}/{c['total']:&lt;4} {rate}\")\n```\n(For SPARQL 1.0: change `data-sparql11` to `data-r2` and read `report-10.json`)\n\n**Error classification** (group failures by root cause):\n- `t.get('timeout')` → TIMEOUT\n- `'Subprocess error' in err and 'panicked' in err` → PANIC (check JSON report for full stack trace)\n- `'SPARQL error' in err or 'unexpected character' in err` → PARSE/LOWERING ERROR\n- `'Internal' in err` → INTERNAL ERROR (execution bug)\n- `'not isomorphic' in err and 'got 0' in err` → EMPTY RESULTS (data load or query match issue)\n- `'not isomorphic' in err` → RESULT MISMATCH (wrong values)\n- `'not yet implemented' in err` → NOT IMPLEMENTED\n\n**List failures for a specific category:**\n```python\nimport json\nr = json.load(open('report-eval.json'))\nfor t in r['tests']:\n    if t['status']=='fail' and '/functions/' in t['test_id']:\n        tid = t['test_id'].split('#')[-1]\n        err = t['error'].strip().split('\\n')[0][:80]\n        print(f\"{tid}: {err}\")\n```" ;
+    mem:tag "analysis" ;
+    mem:tag "json-report" ;
+    mem:tag "python" ;
+    mem:tag "reporting" ;
+    mem:tag "testsuite-sparql" ;
+    mem:tag "workflow" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "testsuite-sparql/Makefile" ;
+    mem:artifactRef "testsuite-sparql/src/report.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:05:43.642584+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kjte1h3a7ws19tjrcy3m2v9f a mem:Fact ;
+    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-03 on main)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rates:\n- SPARQL 1.1 eval: 167/327 (51.1%) — 12 categories + syntax\n- SPARQL 1.0 eval: 126/282 (44.7%) — 24 categories\n- Combined: 293/609 (48.1%)\n\nSPARQL 1.1 per-category:\n- syntax-query: 80/94 (85%)\n- subquery: 8/14 (57%) — issue #52\n- exists: 3/6 (50%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — issue #47\n- aggregates: 20/46 (43%) — issues #61, #62\n- functions: 27/75 (36%) — issue #48\n- negation: 4/12 (33%) — issue #54\n- project-expression: 2/7 (29%)\n- bindings: 3/11 (27%) — issue #51\n- bind: 1/10 (10%) — issue #51\n- cast: 0/6 (0%) — issue #46\n- construct: 0/7 (0%) — issue #53\n\n1.1 failure breakdown (160 total):\n- 61 RESULT MISMATCH, 35 PARSE/LOWERING ERROR, 28 INTERNAL ERROR, 14 EMPTY RESULTS, 14 NOT IMPLEMENTED, 4 PANIC, 4 UNCATEGORIZED\n\nClosed: #43 (ASK/PR#57), #44 (CONSTRUCT harness/PR#56), #45 (RDF-XML/PR#58), #49 (aggregation/PR#63), parser timeouts (PR#60)\nOpen: #46 (XSD casts), #47 (property paths), #48 (built-in functions), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #54 (negation), #61 (aggregate expr input), #62 (numeric type promotion)" ;
+    mem:tag "compliance" ;
+    mem:tag "issue-55" ;
+    mem:tag "sparql" ;
+    mem:tag "status" ;
+    mem:tag "test-counts" ;
+    mem:tag "tracking" ;
+    mem:tag "w3c" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:05:55.178506+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01kjte1yw4jyrqvnpq27mr2m9v a mem:Fact ;
+    mem:content "SPARQL ↔ JSON-LD Query Shared Execution Architecture\n\nBoth SPARQL and JSON-LD queries compile to the same IR and execute on the same engine:\n\nCompilation paths:\n- SPARQL: `fluree-db-sparql/src/lower/` → `lower_sparql()` → IR (`fluree-db-query/src/ir.rs`)\n- JSON-LD: `fluree-db-query/src/parse/` → `parse_query_ast()` + `lower_query()` → same IR\n\nConvergence point:\n- `fluree-db-api/src/view/query.rs::query()` → `build_executable_for_view()` → `execute_view_internal()`\n- Both languages produce identical `ParsedQuery` structures for equivalent queries\n\nShared constructs:\n- `Expression` enum (ir.rs): 66+ built-in functions — both languages use same eval in `fluree-db-query/src/expression/`\n- `AggregateFn` enum (aggregate.rs): COUNT, SUM, AVG, MIN, MAX, MEDIAN, VARIANCE, STDDEV, GROUP_CONCAT, SAMPLE\n- `Pattern` enum (ir.rs): Triple, Optional, Minus, Union, Filter, Bind, Values, PropertyPath, Subquery, IndexSearch, VectorSearch, GeoSearch, S2Search, Service, Graph, Exists, NotExists\n- `IriEncoder` trait: abstracts SID assignment so both frontends share the execution engine\n\nSPARQL-only paths (not shared with JSON-LD):\n- Property path lowering (`fluree-db-sparql/src/lower/path.rs`)\n- RDF-star quoted triples (`rdf_star.rs`)\n- ASK query form (`ask.rs`)\n- SPARQL Update (INSERT/DELETE)\n- Dataset clause validation" ;
+    mem:tag "architecture" ;
+    mem:tag "ir" ;
+    mem:tag "jsonld" ;
+    mem:tag "parity" ;
+    mem:tag "query" ;
+    mem:tag "shared-execution" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:artifactRef "fluree-db-query/src/aggregate.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:artifactRef "fluree-db-query/src/parse/lower.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:06:09.284115+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:constraint-01kjte29y3cp8mae56xy6yfv2n a mem:Constraint ;
+    mem:content "SPARQL↔JSON-LD Parity: Must-Check When Adding SPARQL Features\n\nWhen implementing a new SPARQL feature from W3C compliance work (#55 sub-issues):\n\n1. **Shared IR change?** If adding a new Expression/Pattern/AggregateFn variant or modifying execution operators, it ALREADY affects JSON-LD query — ensure JSON-LD tests still pass.\n\n2. **Expressible in JSON-LD?** If the feature can be expressed in JSON-LD query syntax (new function, filter operator, aggregation mode), add JSON-LD query tests too — don't leave a parity gap.\n\n3. **Execution path missing entirely?** (e.g., VALUES, certain property path modes) — SPARQL lowering adds the IR pattern but JSON-LD lowering (`fluree-db-query/src/parse/lower.rs`) may not produce it yet. Track as a follow-up issue.\n\n4. **Test locations:**\n   - SPARQL integration: `fluree-db-api/tests/it_query_sparql.rs`\n   - JSON-LD integration: `fluree-db-api/tests/it_query.rs`, `it_query_analytical.rs`, `it_query_grouping.rs`\n   - Shared expression/execution unit tests: `fluree-db-query/src/` modules\n\n5. **Validation after shared-code changes:**\n   ```\n   cd testsuite-sparql &amp;&amp; make test-eval-cat CAT=&lt;category&gt;   # SPARQL W3C\n   cd .. &amp;&amp; cargo test -p fluree-db-api --test it_query        # JSON-LD\n   ```\n\nRationale: Both query languages compile to the same IR (fluree-db-query/src/ir.rs) and share the entire execution engine. A change to shared code that fixes SPARQL but breaks JSON-LD query is unacceptable." ;
+    mem:tag "compliance" ;
+    mem:tag "constraint" ;
+    mem:tag "jsonld" ;
+    mem:tag "must-check" ;
+    mem:tag "parity" ;
+    mem:tag "sparql" ;
+    mem:tag "testing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "must" ;
+    mem:artifactRef "fluree-db-api/tests/it_query.rs" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_sparql.rs" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:06:20.611062+00:00"^^xsd:dateTime .
+
+mem:fact-01kjte2qeekkgz4dryv84sqq8e a mem:Fact ;
+    mem:content "SPARQL Compliance Workflow: Failure → Fix → Validate (dry-run validated 2026-03-03)\n\nStep 1 — Assess current state (must cd first!):\n  cd testsuite-sparql\n  make count-eval                     # quick summary\n  make test-eval-cat CAT=functions    # focus on one category\n  make report-eval-json               # full JSON for analysis\n  make summary                        # per-category breakdown table\n  make classify                       # group failures by error type\n\nStep 2 — Classify failures from JSON report:\n  Use `make classify` or Python error classification to group into: PARSE/LOWERING, INTERNAL, RESULT MISMATCH, EMPTY RESULTS, NOT IMPLEMENTED, PANIC, TIMEOUT\n\nStep 3 — Read the W3C test files:\n  make show-query TEST=strdt01.rq                          # print the .rq query\n  cat rdf-tests/sparql/sparql11/functions/data.ttl          # shared test data\n  cat rdf-tests/sparql/sparql11/functions/strdt01.srx       # expected results\n  Note: some tests have per-test .ttl, others share data.ttl in the category dir.\n\nStep 4 — Root cause mapping:\n  PARSE/LOWERING → fluree-db-sparql/src/parser/ (parsing) or src/lower/ (IR lowering)\n  INTERNAL ERROR → fluree-db-query/src/execute.rs, src/expression/\n  RESULT MISMATCH → Execution produces wrong values — check eval logic\n  EMPTY RESULTS → Data not loaded or query returns no matches — check testsuite-sparql/src/query_handler.rs\n  PANIC → Unwrap/index bug — full stack trace in JSON report error field\n  NOT IMPLEMENTED → Handler returns early — search \"not yet implemented\" in testsuite-sparql/src/\n\nStep 5 — Fix and validate:\n  make test-eval-cat CAT=&lt;category&gt;     # category-level check\n  make count-eval                        # regression check\n  cd .. &amp;&amp; cargo clippy -p fluree-db-sparql -p fluree-db-query --all-features -- -D warnings\n  cargo test -p fluree-db-sparql &amp;&amp; cargo test -p fluree-db-query\n\nStep 6 — Check JSON-LD parity (per constraint):\n  If shared code changed: cargo test -p fluree-db-api --test it_query\n  If feature is expressible in JSON-LD: add a parallel JSON-LD test" ;
+    mem:tag "compliance" ;
+    mem:tag "debugging" ;
+    mem:tag "dry-run" ;
+    mem:tag "sparql" ;
+    mem:tag "testsuite-sparql" ;
+    mem:tag "workflow" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/contributing/sparql-compliance.md" ;
+    mem:artifactRef "testsuite-sparql/Makefile" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:06:34.446036+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:artifact-01kjte32vm4nfdfmxwvka0nqze a mem:Artifact ;
+    mem:content "SPARQL Compliance Key Files Quick Reference\n\nTest infrastructure:\n- testsuite-sparql/tests/w3c_sparql.rs — Test entry points (all test functions)\n- testsuite-sparql/src/lib.rs — check_testsuite() harness entry point\n- testsuite-sparql/src/manifest.rs — W3C manifest.ttl parsing (TestManifest iterator)\n- testsuite-sparql/src/query_handler.rs — Eval test handler: data load, query exec, result compare\n- testsuite-sparql/src/result_comparison.rs — Isomorphic result comparison (blank node mapping)\n- testsuite-sparql/src/result_format.rs — Parse .srx/.srj/.ttl/.rdf expected results\n- testsuite-sparql/src/report.rs — JSON report generation\n- testsuite-sparql/src/subprocess.rs — Subprocess isolation with timeout enforcement\n- testsuite-sparql/src/bin/run_w3c_test.rs — Subprocess worker binary\n- testsuite-sparql/Makefile — Developer convenience targets\n\nSPARQL pipeline:\n- fluree-db-sparql/src/parser/ — SPARQL parser (grammar rules)\n- fluree-db-sparql/src/lower/ — SPARQL→IR lowering (expression.rs, aggregate.rs, pattern.rs, path.rs, ask.rs, construct.rs, select.rs)\n\nJSON-LD pipeline:\n- fluree-db-query/src/parse/lower.rs — JSON-LD→IR lowering\n\nShared execution:\n- fluree-db-query/src/ir.rs — Shared IR types (Query, Pattern, Expression, etc.)\n- fluree-db-query/src/expression/ — Expression evaluation (string.rs, numeric.rs, etc.)\n- fluree-db-query/src/aggregate.rs — Aggregate function execution\n- fluree-db-query/src/execute.rs — Query execution engine\n\nIntegration tests:\n- fluree-db-api/tests/it_query_sparql.rs — SPARQL integration tests\n- fluree-db-api/tests/it_query.rs — JSON-LD query integration tests\n- fluree-db-api/tests/it_query_analytical.rs — Analytical/grouping JSON-LD tests\n- fluree-db-api/tests/it_query_grouping.rs — GROUP BY JSON-LD tests\n\nDocumentation:\n- docs/contributing/sparql-compliance.md — Full compliance testing guide\n- Cargo.toml line 41-42 — workspace exclude for testsuite-sparql" ;
+    mem:tag "compliance" ;
+    mem:tag "files" ;
+    mem:tag "key-files" ;
+    mem:tag "reference" ;
+    mem:tag "sparql" ;
+    mem:tag "testsuite-sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/contributing/sparql-compliance.md" ;
+    mem:artifactRef "fluree-db-query/src/expression/" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/" ;
+    mem:artifactRef "testsuite-sparql/" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-03T18:06:46.132479+00:00"^^xsd:dateTime ;
+    mem:artifactKind "file" .
+
+mem:artifact-01kjtmmwxeeczkxyzjt4bn84sy a mem:Artifact ;
+    mem:content "Issue #48 Implementation Plan (fix/sparql/builtin-functions branch)\n\nPlan file: /Users/ajohnson/.claude/plans/modular-inventing-dragon.md\nGitHub comment: https://github.com/fluree/db-r/issues/48#issuecomment-3993219418\n\n8 phases covering 43/48 failing function tests:\n1. STRDT/STRLANG parser wiring (6 tests) — SPARQL-only\n2. BNode/IRI/Rand lowering (5 tests) — SPARQL + minor shared\n3. SUBSTR/STRLEN char indexing (4-6 tests) — Shared\n4. Error semantics: type-mismatch→Ok(None), COALESCE/IF (9 tests) — Shared\n5. Decimal/BigInt in isNumeric + numeric fns (3+ tests) — Shared\n6. xsd:integer return type + SECONDS decimal (8-10 tests) — Shared\n7. TZ/TIMEZONE split + UUID→IRI (3-5 tests) — Mixed\n8. Language tag preservation (5 tests, optional) — Shared\n\n5 tests deferred: plus-1/2 (→#50/#62), in01/notin01/now01 (→new issue: ASK without triple patterns)\n\nUse `/rewind` checkpoint at plan-approved state if context runs out. Plan file tracks progress per phase with checkboxes." ;
+    mem:tag "builtin-functions" ;
+    mem:tag "checkpoint" ;
+    mem:tag "implementation-plan" ;
+    mem:tag "issue-48" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "/Users/ajohnson/.claude/plans/modular-inventing-dragon.md" ;
+    mem:artifactRef "fluree-db-query/src/expression/" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/expression.rs" ;
+    mem:branch "fix/sparql/builtin-functions" ;
+    mem:createdAt "2026-03-03T20:01:21.326479+00:00"^^xsd:dateTime ;
+    mem:artifactKind "file" .
