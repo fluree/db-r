@@ -47,6 +47,10 @@ pub enum QueryError {
     #[error("Invalid filter: {0}")]
     InvalidFilter(String),
 
+    /// Invalid expression (function/BIND evaluation error)
+    #[error("Invalid expression: {0}")]
+    InvalidExpression(String),
+
     /// Resource limit exceeded
     #[error("Resource limit exceeded: {0}")]
     ResourceLimit(String),

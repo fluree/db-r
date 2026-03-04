@@ -163,12 +163,6 @@ pub async fn run(
                 } else {
                     "text/csv"
                 };
-                let fmt_name = if output_format == OutputFormatKind::Tsv {
-                    "tsv"
-                } else {
-                    "csv"
-                };
-
                 let timer = Instant::now();
                 let bytes = match at {
                     Some(at_str) => {
@@ -213,7 +207,7 @@ pub async fn run(
 
                 use std::io::Write;
                 std::io::stdout().write_all(&bytes)?;
-                eprintln!("({}, {})", fmt_name, format_duration(elapsed));
+                eprintln!("({output_format}, {})", format_duration(elapsed));
                 return Ok(());
             }
 
@@ -357,11 +351,6 @@ pub async fn run(
                 }
             } else if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
                 // Delimited fast path: write bytes directly to stdout (no JSON intermediate).
-                let fmt_name = if output_format == OutputFormatKind::Tsv {
-                    "tsv"
-                } else {
-                    "csv"
-                };
                 let total_rows = result.row_count();
                 let fmt_timer = Instant::now();
                 let bytes = if output_format == OutputFormatKind::Tsv {
@@ -373,10 +362,9 @@ pub async fn run(
                 use std::io::Write;
                 std::io::stdout().write_all(&bytes)?;
                 eprintln!(
-                    "({} rows, query: {}, {}: {})",
+                    "({} rows, query: {}, {output_format}: {})",
                     format_count(total_rows),
                     format_duration(elapsed),
-                    fmt_name,
                     format_duration(fmt_elapsed),
                 );
             } else {

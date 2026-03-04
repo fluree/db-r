@@ -1400,16 +1400,11 @@ pub struct IndexingBuilderConfig {
     pub index_config: IndexConfig,
 }
 
-fn cache_mb_to_bytes(mb: usize) -> u64 {
-    (mb as u64).saturating_mul(1024 * 1024)
-}
-
 fn make_leaflet_cache(
     config: &fluree_db_connection::ConnectionConfig,
 ) -> std::sync::Arc<fluree_db_binary_index::LeafletCache> {
-    let max_bytes = cache_mb_to_bytes(config.cache.max_mb);
-    std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_bytes(
-        max_bytes,
+    std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(
+        config.cache.max_mb as u64,
     ))
 }
 

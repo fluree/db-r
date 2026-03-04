@@ -442,7 +442,7 @@ impl AppState {
         // Keep logging lightweight and periodic: one line per minute.
         let cache = Arc::clone(fluree.leaflet_cache());
         let budget_mb = fluree.cache_budget_mb();
-        let budget_bytes = (budget_mb as u64) * 1024 * 1024;
+        let budget_bytes = (budget_mb as u64).saturating_mul(1024 * 1024);
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));

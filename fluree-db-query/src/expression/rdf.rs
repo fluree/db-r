@@ -55,7 +55,7 @@ pub fn eval_datatype<R: RowAccess>(
                     }
 
                     let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
-                        return Err(QueryError::InvalidFilter(
+                        return Err(QueryError::InvalidExpression(
                             "DATATYPE requires a literal or IRI argument".to_string(),
                         ));
                     };
@@ -64,7 +64,7 @@ pub fn eval_datatype<R: RowAccess>(
                         .get(dt_id.as_u16() as usize)
                         .cloned()
                         .ok_or_else(|| {
-                            QueryError::InvalidFilter(format!(
+                            QueryError::InvalidExpression(format!(
                                 "DATATYPE could not resolve datatype id {}",
                                 dt_id.as_u16()
                             ))
@@ -75,14 +75,14 @@ pub fn eval_datatype<R: RowAccess>(
                     Ok(Some(ComparableValue::String(Arc::from("@id"))))
                 }
                 Binding::Unbound | Binding::Poisoned => Ok(None),
-                _ => Err(QueryError::InvalidFilter(
+                _ => Err(QueryError::InvalidExpression(
                     "DATATYPE requires a literal or IRI argument".to_string(),
                 )),
             },
             None => Ok(None), // unbound variable
         }
     } else {
-        Err(QueryError::InvalidFilter(
+        Err(QueryError::InvalidExpression(
             "DATATYPE requires a variable argument".to_string(),
         ))
     }
@@ -110,7 +110,7 @@ pub fn eval_lang_matches<R: RowAccess>(
             Ok(Some(ComparableValue::Bool(result)))
         }
         (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
+        _ => Err(QueryError::InvalidExpression(
             "LANGMATCHES requires string arguments".to_string(),
         )),
     }
@@ -137,7 +137,7 @@ pub fn eval_iri<R: RowAccess>(
     match args[0].eval_to_comparable(row, ctx)? {
         Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
         Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
-        Some(_) => Err(QueryError::InvalidFilter(
+        Some(_) => Err(QueryError::InvalidExpression(
             "IRI requires a string or IRI argument".to_string(),
         )),
         None => Ok(None),
@@ -146,7 +146,7 @@ pub fn eval_iri<R: RowAccess>(
 
 pub fn eval_bnode(args: &[Expression]) -> Result<Option<ComparableValue>> {
     if !args.is_empty() {
-        return Err(QueryError::InvalidFilter(
+        return Err(QueryError::InvalidExpression(
             "BNODE requires no arguments".to_string(),
         ));
     }
