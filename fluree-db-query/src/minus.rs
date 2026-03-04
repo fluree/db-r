@@ -21,17 +21,45 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::StatsView;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+/// Hash key for MINUS rows where ALL shared variables are matchable (bound).
+///
+/// Wraps the ordered shared-var bindings for O(1) hash-probe lookup.
+/// Only used for fully-bound minus rows; rows with unbound shared vars go
+/// into the wildcard fallback list.
+#[derive(Clone)]
+struct MinusKey(Vec<Binding>);
+
+impl PartialEq for MinusKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for MinusKey {}
+
+impl Hash for MinusKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for b in &self.0 {
+            b.hash(state);
+        }
+    }
+}
 
 /// MINUS operator - anti-join semantics (set difference)
 ///
 /// Executes the MINUS patterns once with an empty seed (fresh scope), materializes
-/// all results, then filters input rows that match on shared variables.
+/// all results into a hash set for O(1) lookup, then filters input rows.
 ///
-/// The MINUS subtree is always uncorrelated (empty seed, no outer variable access),
-/// so its results are invariant across input rows. Materializing once converts the
-/// cost from O(N * subtree_execution) to O(subtree_execution + N * M) where
-/// M = materialized MINUS rows.
+/// Uses a partitioned approach:
+/// - `minus_hash`: HashSet of MinusKey for minus rows where ALL shared vars are
+///   matchable — enables O(1) per-input-row lookup in the common case.
+/// - `minus_wildcards`: Vec for minus rows with >= 1 unbound shared var (rare,
+///   from OPTIONAL inside MINUS) — checked via linear scan.
+///
+/// Complexity: O(N + M) in the common case (all bound), vs O(N * M) before.
 pub struct MinusOperator {
     /// Child operator providing input solutions
     child: BoxedOperator,
@@ -45,8 +73,11 @@ pub struct MinusOperator {
     state: OperatorState,
     /// Optional stats for nested query optimization (Arc for cheap cloning in nested operators)
     stats: Option<Arc<StatsView>>,
-    /// Materialized MINUS results (populated in open(), used in next_batch())
-    materialized_minus: Vec<Batch>,
+    /// Hash set of minus rows where ALL shared vars are matchable (common case)
+    minus_hash: HashSet<MinusKey>,
+    /// Minus rows with >= 1 unbound shared var (wildcard rows, rare)
+    /// Each entry is a Vec of Option<Binding>: Some(b) for matchable, None for unbound
+    minus_wildcards: Vec<Vec<Option<Binding>>>,
 }
 
 impl MinusOperator {
@@ -79,11 +110,48 @@ impl MinusOperator {
             schema,
             state: OperatorState::Created,
             stats,
-            materialized_minus: Vec::new(),
+            minus_hash: HashSet::new(),
+            minus_wildcards: Vec::new(),
         }
     }
 
-    /// Check if an input row matches a MINUS result row on shared variables.
+    /// Build the hash set and wildcard list from materialized minus batches.
+    fn build_hash_index(&mut self, batches: Vec<Batch>) {
+        for batch in &batches {
+            for row_idx in 0..batch.len() {
+                let mut key_bindings = Vec::with_capacity(self.shared_vars.len());
+                let mut has_wildcard = false;
+
+                for &var in &self.shared_vars {
+                    let binding = batch.column(var).map(|col| &col[row_idx]);
+                    match binding {
+                        Some(b) if b.is_matchable() => {
+                            key_bindings.push(Some(b.clone()));
+                        }
+                        _ => {
+                            key_bindings.push(None);
+                            has_wildcard = true;
+                        }
+                    }
+                }
+
+                if has_wildcard {
+                    self.minus_wildcards.push(key_bindings);
+                } else {
+                    // All shared vars are matchable — unwrap the Options into a MinusKey
+                    let key = MinusKey(
+                        key_bindings
+                            .into_iter()
+                            .map(|opt| opt.expect("checked: no wildcard"))
+                            .collect(),
+                    );
+                    self.minus_hash.insert(key);
+                }
+            }
+        }
+    }
+
+    /// Check if an input row is eliminated by the MINUS.
     ///
     /// Per W3C SPARQL §8.3, MINUS removes an input row µ when there exists a
     /// MINUS row µ' such that:
@@ -91,37 +159,140 @@ impl MinusOperator {
     ///      µ(v) = µ'(v).
     ///   2. dom(µ) ∩ dom(µ') ≠ ∅: at least one shared variable is bound in both.
     ///
-    /// A variable that is Unbound (e.g. from an unsatisfied OPTIONAL) is NOT in
-    /// the solution's domain, so it is trivially compatible — it must not block
-    /// the match.
-    fn rows_match(
-        &self,
-        input_batch: &Batch,
-        input_row_idx: usize,
-        minus_batch: &Batch,
-        minus_row_idx: usize,
-    ) -> bool {
-        let mut has_shared_bound = false;
+    /// Uses hash probe for the common case (all shared vars matchable on both sides),
+    /// with linear scan fallback for wildcard rows.
+    fn input_row_eliminated(&self, input_batch: &Batch, row_idx: usize) -> bool {
+        // Extract input shared-var bindings
+        let mut input_bindings = Vec::with_capacity(self.shared_vars.len());
+        let mut input_has_wildcard = false;
 
-        let compatible = self.shared_vars.iter().all(|&var| {
-            let input_binding = input_batch.column(var).map(|col| &col[input_row_idx]);
-            let minus_binding = minus_batch.column(var).map(|col| &col[minus_row_idx]);
-
-            match (input_binding, minus_binding) {
-                // Both matchable (not Unbound/Poisoned): check equality
-                (Some(i), Some(m)) if i.is_matchable() && m.is_matchable() => {
-                    has_shared_bound = true;
-                    i == m
+        for &var in &self.shared_vars {
+            let binding = input_batch.column(var).map(|col| &col[row_idx]);
+            match binding {
+                Some(b) if b.is_matchable() => {
+                    input_bindings.push(Some(b.clone()));
                 }
-                // One or both absent/Unbound/Poisoned: not in dom intersection,
-                // trivially compatible
-                _ => true,
+                _ => {
+                    input_bindings.push(None);
+                    input_has_wildcard = true;
+                }
             }
-        });
+        }
 
-        // MINUS fires only if compatible AND at least one shared variable is bound in both
-        compatible && has_shared_bound
+        if !input_has_wildcard {
+            // Common case: all input shared vars are matchable.
+            // Hash probe against minus_hash — O(1).
+            let probe = MinusKey(
+                input_bindings
+                    .iter()
+                    .map(|opt| opt.clone().expect("checked: no wildcard"))
+                    .collect(),
+            );
+            if self.minus_hash.contains(&probe) {
+                return true;
+            }
+
+            // Check wildcard minus rows — O(W), W typically 0.
+            // A wildcard minus row matches if every matchable position equals the input.
+            for wc_row in &self.minus_wildcards {
+                if wildcard_matches(&input_bindings, wc_row) {
+                    return true;
+                }
+            }
+        } else {
+            // Rare: input has unbound shared var(s).
+            // Must linear-scan both sets for partial matching.
+
+            // Check minus_hash entries
+            for entry in &self.minus_hash {
+                if matches_partial(&input_bindings, &entry.0) {
+                    return true;
+                }
+            }
+
+            // Check wildcard minus rows
+            for wc_row in &self.minus_wildcards {
+                if wildcard_matches(&input_bindings, wc_row) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
+}
+
+/// Check if a fully-bound input matches a wildcard minus row.
+///
+/// Both vecs are ordered by shared_vars. `minus_row` has `None` for unbound positions.
+/// Match fires if: compatible on all positions AND at least one position is bound on both sides.
+fn wildcard_matches(input: &[Option<Binding>], minus_row: &[Option<Binding>]) -> bool {
+    let mut has_shared_bound = false;
+
+    for (i_opt, m_opt) in input.iter().zip(minus_row.iter()) {
+        if let (Some(i), Some(m)) = (i_opt, m_opt) {
+            // Both bound: must be equal
+            if i != m {
+                return false;
+            }
+            has_shared_bound = true;
+        }
+        // One or both unbound: trivially compatible, doesn't count as shared bound
+    }
+
+    has_shared_bound
+}
+
+/// Check if a partially-bound input matches a fully-bound minus entry.
+///
+/// `input` has `None` for unbound positions, `minus_bindings` are all matchable.
+fn matches_partial(input: &[Option<Binding>], minus_bindings: &[Binding]) -> bool {
+    let mut has_shared_bound = false;
+
+    for (i_opt, m) in input.iter().zip(minus_bindings.iter()) {
+        match i_opt {
+            Some(i) => {
+                if i != m {
+                    return false;
+                }
+                has_shared_bound = true;
+            }
+            None => {
+                // Input unbound: trivially compatible
+            }
+        }
+    }
+
+    has_shared_bound
+}
+
+/// Check if two rows match on shared variables (free function for testing).
+///
+/// Preserves the original `rows_match` semantics for unit tests.
+#[cfg(test)]
+fn rows_match(
+    shared_vars: &[VarId],
+    input_batch: &Batch,
+    input_row_idx: usize,
+    minus_batch: &Batch,
+    minus_row_idx: usize,
+) -> bool {
+    let mut has_shared_bound = false;
+
+    let compatible = shared_vars.iter().all(|&var| {
+        let input_binding = input_batch.column(var).map(|col| &col[input_row_idx]);
+        let minus_binding = minus_batch.column(var).map(|col| &col[minus_row_idx]);
+
+        match (input_binding, minus_binding) {
+            (Some(i), Some(m)) if i.is_matchable() && m.is_matchable() => {
+                has_shared_bound = true;
+                i == m
+            }
+            _ => true,
+        }
+    });
+
+    compatible && has_shared_bound
 }
 
 #[async_trait]
@@ -145,13 +316,17 @@ impl Operator for MinusOperator {
 
             minus_op.open(ctx).await?;
 
+            let mut batches = Vec::new();
             while let Some(batch) = minus_op.next_batch(ctx).await? {
                 if !batch.is_empty() {
-                    self.materialized_minus.push(batch);
+                    batches.push(batch);
                 }
             }
 
             minus_op.close();
+
+            // Build hash index from materialized batches
+            self.build_hash_index(batches);
         }
 
         self.child.open(ctx).await?;
@@ -181,22 +356,16 @@ impl Operator for MinusOperator {
             }
 
             // If MINUS subtree produced no results, nothing can be removed
-            if self.materialized_minus.is_empty() {
+            if self.minus_hash.is_empty() && self.minus_wildcards.is_empty() {
                 return Ok(Some(input_batch));
             }
 
-            // For each input row, check against materialized MINUS results
+            // For each input row, hash-probe against materialized MINUS results
             let mut keep_rows: Vec<bool> = vec![true; input_batch.len()];
 
-            #[allow(clippy::needless_range_loop)]
-            for row_idx in 0..input_batch.len() {
-                'outer: for minus_batch in &self.materialized_minus {
-                    for minus_row_idx in 0..minus_batch.len() {
-                        if self.rows_match(&input_batch, row_idx, minus_batch, minus_row_idx) {
-                            keep_rows[row_idx] = false;
-                            break 'outer;
-                        }
-                    }
+            for (row_idx, keep) in keep_rows.iter_mut().enumerate() {
+                if self.input_row_eliminated(&input_batch, row_idx) {
+                    *keep = false;
                 }
             }
 
@@ -327,7 +496,8 @@ mod tests {
             schema: child_schema,
             state: OperatorState::Created,
             stats: None,
-            materialized_minus: Vec::new(),
+            minus_hash: HashSet::new(),
+            minus_wildcards: Vec::new(),
         }
     }
 
@@ -340,30 +510,30 @@ mod tests {
 
     #[test]
     fn rows_match_both_bound_equal() {
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let sid = Sid::new(100, "x");
         let input = batch_1row(&[VarId(0)], vec![Binding::Sid(sid.clone())]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(sid)]);
-        assert!(op.rows_match(&input, 0, &minus, 0));
+        assert!(rows_match(&shared, &input, 0, &minus, 0));
     }
 
     #[test]
     fn rows_match_both_bound_unequal() {
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let input = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(200, "y"))]);
-        assert!(!op.rows_match(&input, 0, &minus, 0));
+        assert!(!rows_match(&shared, &input, 0, &minus, 0));
     }
 
     #[test]
     fn rows_match_input_unbound_trivially_compatible() {
         // Input has Unbound, MINUS has a value — trivially compatible
         // but no shared bound variables → match should NOT fire
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let input = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
         assert!(
-            !op.rows_match(&input, 0, &minus, 0),
+            !rows_match(&shared, &input, 0, &minus, 0),
             "no shared bound var → match must not fire"
         );
     }
@@ -372,22 +542,22 @@ mod tests {
     fn rows_match_minus_unbound_trivially_compatible() {
         // MINUS has Unbound, input has a value — trivially compatible
         // but no shared bound variables → match should NOT fire
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let input = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
         assert!(
-            !op.rows_match(&input, 0, &minus, 0),
+            !rows_match(&shared, &input, 0, &minus, 0),
             "no shared bound var → match must not fire"
         );
     }
 
     #[test]
     fn rows_match_both_unbound() {
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let input = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
         assert!(
-            !op.rows_match(&input, 0, &minus, 0),
+            !rows_match(&shared, &input, 0, &minus, 0),
             "both unbound → no shared bound var → no match"
         );
     }
@@ -395,11 +565,11 @@ mod tests {
     #[test]
     fn rows_match_poisoned_trivially_compatible() {
         // Poisoned (from failed OPTIONAL) is not in domain
-        let op = make_minus_with_shared(vec![VarId(0)]);
+        let shared = vec![VarId(0)];
         let input = batch_1row(&[VarId(0)], vec![Binding::Poisoned]);
         let minus = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
         assert!(
-            !op.rows_match(&input, 0, &minus, 0),
+            !rows_match(&shared, &input, 0, &minus, 0),
             "poisoned is not matchable → no shared bound var"
         );
     }
@@ -408,7 +578,7 @@ mod tests {
     fn rows_match_multi_var_one_unbound_one_equal() {
         // Two shared vars: var0 is bound+equal, var1 has input Unbound
         // Compatible (unbound is trivially ok) AND has shared bound (var0)
-        let op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let shared = vec![VarId(0), VarId(1)];
         let sid = Sid::new(100, "x");
         let input = batch_1row(
             &[VarId(0), VarId(1)],
@@ -419,7 +589,7 @@ mod tests {
             vec![Binding::Sid(sid), Binding::Sid(Sid::new(200, "y"))],
         );
         assert!(
-            op.rows_match(&input, 0, &minus, 0),
+            rows_match(&shared, &input, 0, &minus, 0),
             "var0 is shared+equal, var1 unbound in input → compatible + has_shared_bound"
         );
     }
@@ -427,7 +597,7 @@ mod tests {
     #[test]
     fn rows_match_multi_var_one_equal_one_unequal() {
         // Two shared vars: var0 bound+equal, var1 bound+unequal → NOT compatible
-        let op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let shared = vec![VarId(0), VarId(1)];
         let sid = Sid::new(100, "x");
         let input = batch_1row(
             &[VarId(0), VarId(1)],
@@ -438,8 +608,118 @@ mod tests {
             vec![Binding::Sid(sid), Binding::Sid(Sid::new(400, "b"))],
         );
         assert!(
-            !op.rows_match(&input, 0, &minus, 0),
+            !rows_match(&shared, &input, 0, &minus, 0),
             "var1 disagrees → incompatible"
+        );
+    }
+
+    // === Hash-probe specific tests ===
+
+    #[test]
+    fn hash_index_fully_bound_rows_go_to_hash() {
+        let mut op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let batch = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![
+                Binding::Sid(Sid::new(100, "x")),
+                Binding::Sid(Sid::new(200, "y")),
+            ],
+        );
+        op.build_hash_index(vec![batch]);
+        assert_eq!(op.minus_hash.len(), 1);
+        assert!(op.minus_wildcards.is_empty());
+    }
+
+    #[test]
+    fn hash_index_unbound_rows_go_to_wildcards() {
+        let mut op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let batch = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(Sid::new(100, "x")), Binding::Unbound],
+        );
+        op.build_hash_index(vec![batch]);
+        assert!(op.minus_hash.is_empty());
+        assert_eq!(op.minus_wildcards.len(), 1);
+    }
+
+    #[test]
+    fn input_row_eliminated_hash_hit() {
+        let mut op = make_minus_with_shared(vec![VarId(0)]);
+        let sid = Sid::new(100, "x");
+        let minus_batch = batch_1row(&[VarId(0)], vec![Binding::Sid(sid.clone())]);
+        op.build_hash_index(vec![minus_batch]);
+
+        let input = batch_1row(&[VarId(0)], vec![Binding::Sid(sid)]);
+        assert!(op.input_row_eliminated(&input, 0));
+    }
+
+    #[test]
+    fn input_row_eliminated_hash_miss() {
+        let mut op = make_minus_with_shared(vec![VarId(0)]);
+        let minus_batch = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(100, "x"))]);
+        op.build_hash_index(vec![minus_batch]);
+
+        let input = batch_1row(&[VarId(0)], vec![Binding::Sid(Sid::new(200, "y"))]);
+        assert!(!op.input_row_eliminated(&input, 0));
+    }
+
+    #[test]
+    fn input_row_eliminated_wildcard_minus_match() {
+        // Minus row has unbound var1, input is fully bound.
+        // Shared vars: [var0, var1]. Minus has var0=x, var1=unbound.
+        // Input has var0=x, var1=anything → should match (var0 equal, var1 wildcard).
+        let mut op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let sid = Sid::new(100, "x");
+        let minus_batch = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid.clone()), Binding::Unbound],
+        );
+        op.build_hash_index(vec![minus_batch]);
+
+        let input = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid), Binding::Sid(Sid::new(200, "y"))],
+        );
+        assert!(
+            op.input_row_eliminated(&input, 0),
+            "wildcard minus row should match fully-bound input"
+        );
+    }
+
+    #[test]
+    fn input_row_eliminated_input_unbound_vs_hash() {
+        // Input has unbound var, minus is fully bound.
+        // var0: input=x, minus=x (match). var1: input=unbound → compatible.
+        // Has shared bound (var0) → eliminated.
+        let mut op = make_minus_with_shared(vec![VarId(0), VarId(1)]);
+        let sid = Sid::new(100, "x");
+        let minus_batch = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid.clone()), Binding::Sid(Sid::new(200, "y"))],
+        );
+        op.build_hash_index(vec![minus_batch]);
+
+        let input = batch_1row(
+            &[VarId(0), VarId(1)],
+            vec![Binding::Sid(sid), Binding::Unbound],
+        );
+        assert!(
+            op.input_row_eliminated(&input, 0),
+            "input unbound var → partial match should work"
+        );
+    }
+
+    #[test]
+    fn input_row_eliminated_all_unbound_no_match() {
+        // Both sides all unbound → no shared bound var → no elimination.
+        let mut op = make_minus_with_shared(vec![VarId(0)]);
+        let minus_batch = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        op.build_hash_index(vec![minus_batch]);
+
+        let input = batch_1row(&[VarId(0)], vec![Binding::Unbound]);
+        assert!(
+            !op.input_row_eliminated(&input, 0),
+            "both unbound → no shared bound var → no elimination"
         );
     }
 }
