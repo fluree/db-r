@@ -13,7 +13,7 @@ use crate::bind::BindOperator;
 use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
-use crate::filter::FilterOperator;
+use crate::filter::{contains_exists, FilterOperator};
 use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
@@ -233,7 +233,10 @@ fn partition_eligible_filters(
         if filter_idxs_consumed.contains(&pf.original_idx) {
             continue;
         }
-        if pf.required_vars.is_subset(bound) {
+        // Filters containing EXISTS subexpressions cannot be inlined because
+        // inline evaluation is synchronous. EXISTS requires async evaluation
+        // via FilterOperator's filter_batch_with_exists path.
+        if pf.required_vars.is_subset(bound) && !contains_exists(&pf.expr) {
             ready.push(pf.expr);
         } else {
             pending.push(pf);

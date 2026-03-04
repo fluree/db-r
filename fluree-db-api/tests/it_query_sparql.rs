@@ -2210,3 +2210,284 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
         "BIND+OPTIONAL should propagate IRI into OPTIONAL"
     );
 }
+
+/// W3C negation test: MINUS with FILTER in subtree (subset-by-exclusion-minus-1)
+///
+/// Reproduces the W3C test where MINUS subtree patterns are executed with
+/// empty seed (fresh scope) and must produce results from a full scan.
+#[tokio::test]
+async fn sparql_minus_with_filter_in_subtree() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:minus");
+
+    // Seed data equivalent to subsetByExcl.ttl
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:lifeForm1", "@type": ["ex:Mammal", "ex:Animal"]},
+            {"@id": "ex:lifeForm2", "@type": ["ex:Reptile", "ex:Animal"]},
+            {"@id": "ex:lifeForm3", "@type": ["ex:Insect", "ex:Animal"]}
+        ]
+    });
+
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert lifeforms");
+
+    // Query: keep animals that are NOT Reptile or Insect (via MINUS)
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?animal WHERE {
+            ?animal a ex:Animal
+            MINUS {
+                ?animal a ?type
+                FILTER(?type = ex:Reptile || ?type = ex:Insect)
+            }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("MINUS query should succeed");
+    let jsonld = result
+        .to_jsonld(&ledger.ledger.snapshot)
+        .expect("to_jsonld");
+
+    // Only lifeForm1 (Mammal) should remain
+    let rows = normalize_rows(&jsonld);
+    assert_eq!(rows.len(), 1, "Expected 1 result, got: {rows:?}");
+    let row_str = serde_json::to_string(&rows[0]).unwrap();
+    assert!(
+        row_str.contains("lifeForm1"),
+        "Expected lifeForm1 (Mammal), got: {rows:?}",
+    );
+}
+
+/// Simpler MINUS test: basic anti-join without FILTER in subtree
+#[tokio::test]
+async fn sparql_minus_basic_anti_join() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:basic");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:lifeForm1", "@type": ["ex:Mammal", "ex:Animal"]},
+            {"@id": "ex:lifeForm2", "@type": ["ex:Reptile", "ex:Animal"]},
+            {"@id": "ex:lifeForm3", "@type": ["ex:Insect", "ex:Animal"]}
+        ]
+    });
+
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert lifeforms");
+
+    // Simple MINUS: remove animals that are insects
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?animal WHERE {
+            ?animal a ex:Animal
+            MINUS { ?animal a ex:Insect }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("basic MINUS query should succeed");
+    let jsonld = result
+        .to_jsonld(&ledger.ledger.snapshot)
+        .expect("to_jsonld");
+
+    // lifeForm1 and lifeForm2 should remain (lifeForm3 is Insect, removed)
+    let rows = normalize_rows(&jsonld);
+    assert_eq!(rows.len(), 2, "Expected 2 results, got: {:?}", rows);
+}
+
+/// Test compound FILTER NOT EXISTS inside MINUS subtree (subset-02 pattern).
+///
+/// Verifies that NOT EXISTS inside an OR expression works correctly when
+/// used within a MINUS block. The MINUS should remove set pairs where s1
+/// has a member that s2 doesn't.
+#[tokio::test]
+async fn sparql_minus_compound_not_exists() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-nex");
+
+    // Minimal set data: two sets with overlapping members
+    // set_a = {1, 2}, set_b = {1}
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // MINUS with compound FILTER: remove pairs where s1 has a member not in s2
+    // (OR with NOT EXISTS), also removing self-pairs via s1=s2 clause.
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 WHERE {
+            ?s1 a ex:Set .
+            ?s2 a ex:Set .
+            MINUS {
+                ?s1 a ex:Set .
+                ?s2 a ex:Set .
+                ?s1 ex:member ?x .
+                FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
+            }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("compound NOT EXISTS MINUS query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    // Expected: only (set_b, set_a) should remain.
+    // - (set_a, set_a): removed by MINUS (s1=s2 with member)
+    // - (set_a, set_b): removed (a has member 2 which b doesn't → NOT EXISTS true)
+    // - (set_b, set_a): set_b only has {1}, a has {1,2} ⊃ {1} → all b's members in a
+    //   FILTER: b≠a → check NOT EXISTS {a member 1} → a has 1 → false → OR = false
+    //   No MINUS row passes → pair NOT removed → KEPT
+    // - (set_b, set_b): removed by MINUS (s1=s2 with member)
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    assert_eq!(
+        bindings.len(),
+        1,
+        "Expected 1 result (set_b subset of set_a), got: {bindings:?}"
+    );
+}
+
+/// Test that compound FILTER NOT EXISTS evaluates correctly (no MINUS wrapper).
+///
+/// Isolates whether Expression::Exists evaluation works in compound expressions.
+#[tokio::test]
+async fn sparql_compound_filter_not_exists_standalone() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-nex-standalone");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // This is the MINUS subtree from subset-02, run as a standalone query.
+    // Should return rows where s1=s2 OR s2 doesn't have member x.
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set .
+            ?s2 a ex:Set .
+            ?s1 ex:member ?x .
+            FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("compound filter query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    // Expected rows (s1, s2, x):
+    // (a, a, 1) — s1=s2 → true
+    // (a, a, 2) — s1=s2 → true
+    // (a, b, 2) — a≠b, NOT EXISTS {b :member 2} → true → true
+    // (b, a, 1) — b≠a, NOT EXISTS {a :member 1} → false → false (skip)
+    // (b, b, 1) — s1=s2 → true
+    // Total: 4 rows
+    assert_eq!(
+        bindings.len(),
+        4,
+        "Expected 4 results from compound NOT EXISTS filter, got: {bindings:?}"
+    );
+}
+
+/// Compound FILTER NOT EXISTS — exercises the async EXISTS pre-evaluation path.
+///
+/// Verifies that `FILTER(false || NOT EXISTS { ... })` produces the same
+/// result as standalone `FILTER NOT EXISTS { ... }`.
+#[tokio::test]
+async fn sparql_compound_filter_not_exists_equals_standalone() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-vs-standalone");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/ns/" },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // Standalone NOT EXISTS: s2 does NOT have member x
+    let standalone = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
+            FILTER NOT EXISTS { ?s2 ex:member ?x }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, standalone)
+        .await
+        .expect("standalone NOT EXISTS");
+    let json = result.to_sparql_json(&ledger.ledger.snapshot).unwrap();
+    let standalone_count = json["results"]["bindings"].as_array().unwrap().len();
+    // Only (set_a, set_b, 2) — set_b doesn't have member 2
+    assert_eq!(standalone_count, 1, "standalone NOT EXISTS");
+
+    // Compound: false || NOT EXISTS should produce the same result
+    let compound = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
+            FILTER ( false || NOT EXISTS { ?s2 ex:member ?x } )
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, compound)
+        .await
+        .expect("compound NOT EXISTS");
+    let json = result.to_sparql_json(&ledger.ledger.snapshot).unwrap();
+    let compound_count = json["results"]["bindings"].as_array().unwrap().len();
+    assert_eq!(
+        compound_count, standalone_count,
+        "compound (false || NOT EXISTS) should equal standalone NOT EXISTS"
+    );
+}

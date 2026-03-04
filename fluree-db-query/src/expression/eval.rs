@@ -44,6 +44,14 @@ impl Expression {
             }
 
             Expression::Call { func, args } => func.eval_to_bool(args, row, ctx),
+
+            // EXISTS subexpressions in compound filters are pre-evaluated by the
+            // FilterOperator and replaced with Const(Bool) before this is called.
+            // If we reach here, it means the EXISTS was not pre-evaluated (bug).
+            Expression::Exists { .. } => {
+                tracing::warn!("EXISTS subexpression not pre-evaluated; treating as false");
+                Ok(false)
+            }
         }
     }
 
@@ -113,6 +121,12 @@ impl Expression {
             Expression::Const(val) => Ok(Some(val.into())),
 
             Expression::Call { func, args } => func.eval(args, row, ctx),
+
+            // EXISTS: pre-evaluated by FilterOperator; shouldn't reach here
+            Expression::Exists { .. } => {
+                tracing::warn!("EXISTS subexpression not pre-evaluated; returning false");
+                Ok(Some(ComparableValue::Bool(false)))
+            }
         }
     }
 

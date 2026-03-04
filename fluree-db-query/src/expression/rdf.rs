@@ -84,7 +84,17 @@ pub fn eval_iri<R: RowAccess>(
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "IRI")?;
     match args[0].eval_to_comparable(row, ctx)? {
-        Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
+        Some(ComparableValue::String(s)) => {
+            // Try to resolve the IRI string to a Sid using the execution context.
+            // This is critical for FILTER comparisons like `?type = ex:Reptile`
+            // where the variable binding is a Sid but the constant IRI would
+            // otherwise become ComparableValue::Iri — an incomparable type pair.
+            if let Some(sid) = ctx.and_then(|c| c.encode_iri(&s)) {
+                Ok(Some(ComparableValue::Sid(sid)))
+            } else {
+                Ok(Some(ComparableValue::Iri(s)))
+            }
+        }
         Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
         Some(_) => Err(QueryError::InvalidFilter(
             "IRI requires a string or IRI argument".to_string(),

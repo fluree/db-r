@@ -101,13 +101,19 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 ))
             }
 
-            AstExpression::Exists { span, .. } | AstExpression::NotExists { span, .. } => {
-                // EXISTS/NOT EXISTS as part of compound expressions (e.g., EXISTS && ?x > 5)
-                // is not supported. Use standalone FILTER EXISTS { ... } instead.
-                Err(LowerError::not_implemented(
-                    "EXISTS/NOT EXISTS in compound expressions (use standalone FILTER EXISTS)",
-                    *span,
-                ))
+            AstExpression::Exists { pattern, .. } => {
+                let inner_patterns = self.lower_graph_pattern(pattern)?;
+                Ok(Expression::Exists {
+                    patterns: inner_patterns,
+                    negated: false,
+                })
+            }
+            AstExpression::NotExists { pattern, .. } => {
+                let inner_patterns = self.lower_graph_pattern(pattern)?;
+                Ok(Expression::Exists {
+                    patterns: inner_patterns,
+                    negated: true,
+                })
             }
 
             AstExpression::In {

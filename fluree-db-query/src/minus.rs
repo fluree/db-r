@@ -75,7 +75,17 @@ impl MinusOperator {
         }
     }
 
-    /// Check if an input row matches a MINUS result row on shared variables
+    /// Check if an input row matches a MINUS result row on shared variables.
+    ///
+    /// Per W3C SPARQL §8.3, MINUS removes an input row µ when there exists a
+    /// MINUS row µ' such that:
+    ///   1. µ and µ' are **compatible**: for every variable in dom(µ) ∩ dom(µ'),
+    ///      µ(v) = µ'(v).
+    ///   2. dom(µ) ∩ dom(µ') ≠ ∅: at least one shared variable is bound in both.
+    ///
+    /// A variable that is Unbound (e.g. from an unsatisfied OPTIONAL) is NOT in
+    /// the solution's domain, so it is trivially compatible — it must not block
+    /// the match.
     fn rows_match(
         &self,
         input_batch: &Batch,
@@ -83,18 +93,26 @@ impl MinusOperator {
         minus_batch: &Batch,
         minus_row_idx: usize,
     ) -> bool {
-        self.shared_vars.iter().all(|&var| {
+        let mut has_shared_bound = false;
+
+        let compatible = self.shared_vars.iter().all(|&var| {
             let input_binding = input_batch.column(var).map(|col| &col[input_row_idx]);
             let minus_binding = minus_batch.column(var).map(|col| &col[minus_row_idx]);
 
-            // Both must be bound, non-Unbound, and equal for a match (SPARQL semantics)
-            matches!(
-                (input_binding, minus_binding),
-                (Some(i), Some(m)) if !matches!(i, Binding::Unbound)
-                                   && !matches!(m, Binding::Unbound)
-                                   && i == m
-            )
-        })
+            match (input_binding, minus_binding) {
+                // Both matchable (not Unbound/Poisoned): check equality
+                (Some(i), Some(m)) if i.is_matchable() && m.is_matchable() => {
+                    has_shared_bound = true;
+                    i == m
+                }
+                // One or both absent/Unbound/Poisoned: not in dom intersection,
+                // trivially compatible
+                _ => true,
+            }
+        });
+
+        // MINUS fires only if compatible AND at least one shared variable is bound in both
+        compatible && has_shared_bound
     }
 }
 

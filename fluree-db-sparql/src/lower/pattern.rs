@@ -136,9 +136,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     /// Lower FILTER pattern, handling EXISTS/NOT EXISTS specially
     fn lower_filter_pattern(&mut self, expr: &Expression) -> Result<Vec<Pattern>> {
-        // Handle standalone EXISTS/NOT EXISTS as patterns
-        // (combined expressions like "EXISTS {...} && ?x > 5" are not supported)
-        match expr {
+        // Unwrap brackets before checking for standalone EXISTS/NOT EXISTS.
+        // FILTER (NOT EXISTS { ... }) parses as Bracketed { inner: NotExists { ... } }.
+        let unwrapped = expr.unwrap_bracketed();
+        match unwrapped {
             Expression::Exists { pattern, .. } => {
                 let inner = self.lower_graph_pattern(pattern)?;
                 Ok(vec![Pattern::Exists(inner)])

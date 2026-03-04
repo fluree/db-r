@@ -1362,7 +1362,7 @@ impl Pattern {
 ///
 /// Represents expressions that can be evaluated against solution bindings.
 /// All operations are represented as function calls for uniform dispatch.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Expression {
     /// Variable reference
     Var(VarId),
@@ -1373,6 +1373,35 @@ pub enum Expression {
         func: Function,
         args: Vec<Expression>,
     },
+    /// EXISTS / NOT EXISTS subquery inside a compound filter expression.
+    ///
+    /// Used when EXISTS/NOT EXISTS appears as part of a larger expression
+    /// (e.g., `FILTER(?x = ?y || NOT EXISTS { ... })`). Standalone
+    /// `FILTER EXISTS { ... }` is handled at the pattern level instead.
+    ///
+    /// Evaluated asynchronously by the FilterOperator before the main
+    /// expression: the result is pre-computed per row and substituted
+    /// as a boolean constant.
+    Exists {
+        patterns: Vec<Pattern>,
+        negated: bool,
+    },
+}
+
+// Manual PartialEq: Pattern doesn't implement PartialEq, so we can't derive.
+// EXISTS subqueries are evaluated at runtime, never structurally compared.
+impl PartialEq for Expression {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Expression::Var(a), Expression::Var(b)) => a == b,
+            (Expression::Const(a), Expression::Const(b)) => a == b,
+            (Expression::Call { func: f1, args: a1 }, Expression::Call { func: f2, args: a2 }) => {
+                f1 == f2 && a1 == a2
+            }
+            (Expression::Exists { .. }, Expression::Exists { .. }) => false,
+            _ => false,
+        }
+    }
 }
 
 impl Expression {
@@ -1530,6 +1559,9 @@ impl Expression {
             Expression::Var(v) => vec![*v],
             Expression::Const(_) => vec![],
             Expression::Call { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
+            Expression::Exists { patterns, .. } => {
+                patterns.iter().flat_map(|p| p.variables()).collect()
+            }
         }
     }
 
@@ -1606,8 +1638,8 @@ impl Expression {
                 // Everything else is NOT range-safe
                 _ => false,
             },
-            // Var, Const are not range-safe on their own
-            Expression::Var(_) | Expression::Const(_) => false,
+            // Var, Const, Exists are not range-safe on their own
+            Expression::Var(_) | Expression::Const(_) | Expression::Exists { .. } => false,
         }
     }
 
