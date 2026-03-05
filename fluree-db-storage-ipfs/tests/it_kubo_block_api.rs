@@ -19,16 +19,21 @@ use fluree_db_storage_ipfs::{IpfsConfig, IpfsStorage, KuboClient};
 const KUBO_URL: &str = "http://127.0.0.1:5001";
 
 /// Helper: skip test if Kubo is not available.
-async fn require_kubo() -> KuboClient {
+///
+/// Returns `None` when no Kubo daemon is reachable, allowing tests to
+/// silently return early (same pattern as `it_file_backed.rs`).
+async fn require_kubo() -> Option<KuboClient> {
     let client = KuboClient::new(KUBO_URL);
     if !client.is_available().await {
-        panic!(
-            "Kubo node not available at {}. Start with `ipfs daemon` or \
+        eprintln!(
+            "Kubo node not available at {} — skipping test. \
+             Start with `ipfs daemon` or \
              `docker run -d -p 5001:5001 ipfs/kubo:latest`",
             KUBO_URL
         );
+        return None;
     }
-    client
+    Some(client)
 }
 
 // ============================================================================
@@ -37,7 +42,9 @@ async fn require_kubo() -> KuboClient {
 
 #[tokio::test]
 async fn test_block_put_get_raw_codec() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
     let data = b"hello fluree ipfs test";
 
     // Put with default raw codec
@@ -56,7 +63,9 @@ async fn test_block_put_get_raw_codec() {
 
 #[tokio::test]
 async fn test_block_put_custom_codec_numeric() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
     let data = b"fluree commit test payload";
 
     // Try putting with Fluree's commit codec (0x300001) as a numeric string.
@@ -91,7 +100,9 @@ async fn test_block_put_custom_codec_numeric() {
 
 #[tokio::test]
 async fn test_cross_codec_retrieval() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
     let data = b"cross-codec retrieval test";
 
     // 1. Compute Fluree's CID (custom codec + SHA256)
@@ -135,7 +146,8 @@ async fn test_content_store_roundtrip() {
     });
 
     if !store.is_available().await {
-        panic!("Kubo not available at {}", KUBO_URL);
+        eprintln!("Kubo not available at {} — skipping test", KUBO_URL);
+        return;
     }
 
     let test_data = b"ContentStore round-trip test payload";
@@ -178,7 +190,9 @@ async fn test_content_store_roundtrip() {
 
 #[tokio::test]
 async fn test_multiple_content_kinds() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
 
     let kinds = [
         ("Commit", ContentKind::Commit, 0x300001u64),
@@ -239,7 +253,8 @@ async fn test_put_with_id() {
     });
 
     if !store.is_available().await {
-        panic!("Kubo not available at {}", KUBO_URL);
+        eprintln!("Kubo not available at {} — skipping test", KUBO_URL);
+        return;
     }
 
     let data = b"put_with_id verification test";
@@ -277,7 +292,9 @@ async fn test_put_with_id() {
 
 #[tokio::test]
 async fn test_pin_lifecycle_raw_codec() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
     let data = b"pin lifecycle test payload";
 
     // 1. Put with Fluree custom codec
@@ -334,7 +351,9 @@ async fn test_pin_lifecycle_raw_codec() {
 
 #[tokio::test]
 async fn test_sha256_digest_matches() {
-    let kubo = require_kubo().await;
+    let Some(kubo) = require_kubo().await else {
+        return;
+    };
     let data = b"SHA-256 interop verification";
 
     // Compute locally
