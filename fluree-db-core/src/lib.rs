@@ -136,6 +136,7 @@ pub use storage::{
     StorageRead,
     StorageWrite,
     STORAGE_METHOD_FILE,
+    STORAGE_METHOD_IPFS,
     STORAGE_METHOD_MEMORY,
     STORAGE_METHOD_S3,
 };

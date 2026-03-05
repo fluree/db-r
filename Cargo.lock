@@ -2949,6 +2949,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluree-db-storage-ipfs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cid",
+ "fluree-db-core",
+ "hex",
+ "multihash",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "fluree-db-tabular"
 version = "0.1.0"
 dependencies = [
@@ -5317,6 +5335,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
