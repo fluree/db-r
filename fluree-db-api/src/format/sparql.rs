@@ -35,6 +35,7 @@ pub fn format(
 ) -> Result<JsonValue> {
     // Build head.vars from select list (without ? prefix).
     // For wildcard, use the operator schema (all variables).
+    // Fall back to VarRegistry when batches are empty (W3C: exists-02 etc.).
     let head_vars: Vec<fluree_db_query::VarId> = if result.output.is_wildcard() {
         result
             .batches
@@ -47,7 +48,15 @@ pub fn format(
                     .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // Empty result set: derive vars from the registry (all user-visible variables).
+                result
+                    .vars
+                    .iter()
+                    .filter(|(name, _)| !name.starts_with("?__"))
+                    .map(|(_, id)| id)
+                    .collect()
+            })
     } else {
         result.output.select_vars_or_empty().to_vec()
     };

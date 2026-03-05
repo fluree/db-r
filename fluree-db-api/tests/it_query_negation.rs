@@ -389,3 +389,88 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
         normalize_rows(&json!([["ex:a", 1], ["ex:b", 3.0]]))
     );
 }
+
+/// Compound filter expression with NOT EXISTS inside an OR.
+///
+/// Tests the new Expression::Exists path for JSON-LD queries.
+/// Equivalent to SPARQL: `FILTER(?name = "Alice" || NOT EXISTS { ?person ex:nickname ?nick })`
+#[tokio::test]
+async fn compound_filter_not_exists_in_or() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "negation:compound-filter").await;
+    let ctx = ctx_ex();
+
+    // Keep people whose name is "Alice" OR who don't have a nickname.
+    // Data: alice has nickname "Ali" + name "Alice"; bob and carol don't have nicknames.
+    // alice passes the =Alice check; bob and carol pass NOT EXISTS.
+    let q = json!({
+        "@context": ctx,
+        "select": ["?person"],
+        "where": [
+            {"@id": "?person", "ex:givenName": "?name"},
+            ["filter", ["or",
+                ["=", "?name", "Alice"],
+                ["not-exists", {"@id": "?person", "ex:nickname": "?nick"}]
+            ]]
+        ]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .expect("compound filter NOT EXISTS should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).unwrap();
+    let rows = normalize_rows(&jsonld);
+
+    // All 3 should pass: alice via name="Alice", bob and carol via NOT EXISTS
+    assert_eq!(
+        rows.len(),
+        3,
+        "Expected 3 results (alice via name check, bob+carol via NOT EXISTS), got: {rows:?}"
+    );
+}
+
+/// Standalone NOT EXISTS in filter expression (non-compound).
+///
+/// Tests that `["filter", ["or", false, ["not-exists", {...}]]]` produces
+/// the same result as pattern-level `["not-exists", {...}]`.
+#[tokio::test]
+async fn filter_not_exists_expression_equals_pattern_level() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "negation:expr-vs-pattern").await;
+    let ctx = ctx_ex();
+
+    // Pattern-level NOT EXISTS
+    let q_pattern = json!({
+        "@context": ctx,
+        "select": ["?person"],
+        "where": [
+            {"@id": "?person", "ex:givenName": "?name"},
+            ["not-exists", {"@id": "?person", "ex:nickname": "?nick"}]
+        ]
+    });
+
+    let r_pattern = support::query_jsonld(&fluree, &ledger, &q_pattern)
+        .await
+        .expect("pattern-level NOT EXISTS");
+    let pattern_rows = normalize_rows(&r_pattern.to_jsonld(&ledger.snapshot).unwrap());
+
+    // Expression-level: FILTER(false || NOT EXISTS { ... }) should equal pattern-level
+    let q_expr = json!({
+        "@context": ctx,
+        "select": ["?person"],
+        "where": [
+            {"@id": "?person", "ex:givenName": "?name"},
+            ["filter", ["or", false, ["not-exists", {"@id": "?person", "ex:nickname": "?nick"}]]]
+        ]
+    });
+
+    let r_expr = support::query_jsonld(&fluree, &ledger, &q_expr)
+        .await
+        .expect("expression-level NOT EXISTS");
+    let expr_rows = normalize_rows(&r_expr.to_jsonld(&ledger.snapshot).unwrap());
+
+    assert_eq!(
+        pattern_rows, expr_rows,
+        "expression-level NOT EXISTS should equal pattern-level NOT EXISTS"
+    );
+}

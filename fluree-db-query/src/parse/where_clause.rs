@@ -210,10 +210,42 @@ pub fn parse_where_array_element(
                 ));
             }
 
+            // Build a pattern parser closure for EXISTS/NOT EXISTS inside filters.
+            // This allows compound filter expressions like:
+            //   ["filter", ["or", ["=", "?x", "?y"], ["not-exists", {...}]]]
+            // Use Cell for interior mutability so the closure is Fn (not FnMut).
+            let subj_cell = std::cell::Cell::new(*subject_counter);
+            let nest_cell = std::cell::Cell::new(*nested_counter);
+            let pattern_parser = |items: &[JsonValue]| -> Result<Vec<UnresolvedPattern>> {
+                let mut sc = subj_cell.get();
+                let mut nc = nest_cell.get();
+                let result = parse_subquery_patterns(
+                    items,
+                    context,
+                    path_aliases,
+                    &mut sc,
+                    &mut nc,
+                    object_var_parsing,
+                );
+                subj_cell.set(sc);
+                nest_cell.set(nc);
+                result
+            };
+
             for expr_val in &arr[1..] {
-                let filter_expr = parse_filter_value(expr_val)?;
+                let filter_expr = match expr_val {
+                    // Array expressions may contain EXISTS/NOT EXISTS
+                    JsonValue::Array(_) => {
+                        super::filter_data::parse_filter_expr_ctx(expr_val, &pattern_parser)?
+                    }
+                    // Non-array values (strings, etc.) use the standard parser
+                    _ => parse_filter_value(expr_val)?,
+                };
                 query.add_filter(filter_expr);
             }
+            // Propagate counter updates back
+            *subject_counter = subj_cell.get();
+            *nested_counter = nest_cell.get();
             Ok(())
         }
         "optional" => parse_optional_patterns(

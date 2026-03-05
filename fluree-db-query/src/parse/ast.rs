@@ -469,7 +469,7 @@ impl UnresolvedFilterValue {
 /// Unresolved filter expression - before variable resolution
 ///
 /// Uses string variable names instead of VarIds.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum UnresolvedExpression {
     /// Variable reference (e.g., "?age")
     Var(Arc<str>),
@@ -492,6 +492,45 @@ pub enum UnresolvedExpression {
         func: Arc<str>,
         args: Vec<UnresolvedExpression>,
     },
+    /// EXISTS subquery inside a compound filter expression.
+    ///
+    /// Stores pre-parsed patterns from the WHERE-clause parser.
+    /// Example JSON-LD: `["filter", ["or", ["=", "?x", "?y"], ["not-exists", {":p": "?z"}]]]`
+    Exists {
+        patterns: Vec<UnresolvedPattern>,
+        negated: bool,
+    },
+}
+
+// Manual PartialEq: UnresolvedPattern doesn't implement PartialEq,
+// so we can't derive. Exists variants are never structurally compared.
+impl PartialEq for UnresolvedExpression {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Var(a), Self::Var(b)) => a == b,
+            (Self::Const(a), Self::Const(b)) => a == b,
+            (Self::And(a), Self::And(b)) => a == b,
+            (Self::Or(a), Self::Or(b)) => a == b,
+            (Self::Not(a), Self::Not(b)) => a == b,
+            (
+                Self::In {
+                    expr: e1,
+                    values: v1,
+                    negated: n1,
+                },
+                Self::In {
+                    expr: e2,
+                    values: v2,
+                    negated: n2,
+                },
+            ) => e1 == e2 && v1 == v2 && n1 == n2,
+            (Self::Call { func: f1, args: a1 }, Self::Call { func: f2, args: a2 }) => {
+                f1 == f2 && a1 == a2
+            }
+            (Self::Exists { .. }, Self::Exists { .. }) => false,
+            _ => false,
+        }
+    }
 }
 
 impl UnresolvedExpression {

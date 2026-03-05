@@ -669,13 +669,6 @@ impl PatternEstimate {
     }
 }
 
-/// Default multiplier for MINUS (assumes 10% of rows removed).
-const DEFAULT_MINUS_MULTIPLIER: f64 = 0.9;
-/// Default multiplier for EXISTS (assumes 50% of rows match).
-const DEFAULT_EXISTS_MULTIPLIER: f64 = 0.5;
-/// Default multiplier for NOT EXISTS (assumes 50% of rows match).
-const DEFAULT_NOT_EXISTS_MULTIPLIER: f64 = 0.5;
-
 /// Estimate cardinality for any pattern type.
 ///
 /// The `bound_vars` parameter indicates which variables are already bound from
@@ -712,17 +705,11 @@ pub fn estimate_pattern(
 
         Pattern::Optional(_) => PatternEstimate::Expander { multiplier: 1.0 },
 
-        Pattern::Minus(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_MINUS_MULTIPLIER,
-        },
-
-        Pattern::Exists(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_EXISTS_MULTIPLIER,
-        },
-
-        Pattern::NotExists(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_NOT_EXISTS_MULTIPLIER,
-        },
+        // MINUS, EXISTS, and NOT EXISTS are order-sensitive: they must run
+        // after all preceding patterns. The planner intercepts them before
+        // calling estimate_pattern (see reorder_patterns), so in practice
+        // these arms are only reached by direct callers like explain.rs.
+        Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_) => PatternEstimate::Deferred,
 
         Pattern::Filter(_) | Pattern::Bind { .. } => PatternEstimate::Deferred,
 
@@ -946,6 +933,30 @@ pub fn reorder_patterns(
     let mut deferred: Vec<DeferredPattern> = Vec::new();
 
     for (i, pattern) in patterns.iter().enumerate() {
+        // MINUS, EXISTS, and NOT EXISTS are order-sensitive: they operate on
+        // the solution produced by ALL preceding patterns. Treat them as
+        // deferred with required_vars = variables from all preceding patterns
+        // so the reorder cannot hoist them above sources that feed them.
+        if matches!(
+            pattern,
+            Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_)
+        ) {
+            // Require all variables from preceding patterns (order preservation)
+            let mut required: HashSet<VarId> =
+                patterns[..i].iter().flat_map(|p| p.variables()).collect();
+            // If no preceding patterns, require the pattern's own variables
+            // so it cannot execute before any sources provide bindings.
+            if required.is_empty() {
+                required = pattern.variables().into_iter().collect();
+            }
+            deferred.push(DeferredPattern {
+                orig_index: i,
+                required_vars: required,
+                pattern: pattern.clone(),
+            });
+            continue;
+        }
+
         match estimate_pattern(pattern, &bound_vars, stats) {
             PatternEstimate::Source { .. } => sources.push(RankedPattern {
                 orig_index: i,
@@ -2122,13 +2133,13 @@ mod tests {
         ))]);
         assert!(matches!(
             estimate_pattern(&minus, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let exists = Pattern::Exists(vec![Pattern::Triple(make_pattern(VarId(0), "e", VarId(5)))]);
         assert!(matches!(
             estimate_pattern(&exists, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let not_exists = Pattern::NotExists(vec![Pattern::Triple(make_pattern(
@@ -2138,7 +2149,7 @@ mod tests {
         ))]);
         assert!(matches!(
             estimate_pattern(&not_exists, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let filter = Pattern::Filter(Expression::gt(
@@ -2231,22 +2242,6 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_minus_multiplier() {
-        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(
-            VarId(0),
-            "del",
-            VarId(1),
-        ))]);
-
-        let card = estimate_pattern(&minus, &HashSet::new(), None);
-        let PatternEstimate::Reducer { multiplier } = card else {
-            panic!("expected Reducer")
-        };
-        assert!(multiplier < 1.0);
-        assert!((multiplier - 0.9).abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn test_reorder_all_triple_only_passes_through() {
         // When zone contains only Triple/Filter/Bind patterns, reorder_patterns
         // passes them through unchanged (the existing collect_inner_join_block path
@@ -2265,37 +2260,36 @@ mod tests {
     }
 
     #[test]
-    fn test_reorder_reducer_before_source() {
-        // When a MINUS is eligible (shares a variable with bound set),
-        // it has priority over sources and should be placed first.
+    fn test_reorder_minus_after_sources() {
+        // MINUS is order-dependent (W3C §8.3): it operates on the solution
+        // produced by ALL preceding patterns. Even when its correlation
+        // variables are pre-bound, it should be placed after its preceding
+        // source patterns to preserve left-hand-side semantics.
         let s = VarId(0);
         let o1 = VarId(1);
         let o2 = VarId(2);
         let d = VarId(3);
 
-        // Both triples share ?s
         let triple1 = Pattern::Triple(make_pattern(s, "selective", o1));
         let triple2 = Pattern::Triple(make_pattern(s, "wide", o2));
-        // MINUS shares ?s (eligible when ?s is bound)
         let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(s, "deleted", d))]);
 
         let patterns = vec![triple1, triple2, minus];
 
         let mut bound = HashSet::new();
-        bound.insert(s); // Pre-seed with ?s so MINUS is eligible from start
+        bound.insert(s);
 
         let reordered = reorder_patterns(&patterns, None, &bound);
 
-        // Reducers have priority 1 (over sources at priority 2).
-        // With ?s already bound, MINUS is eligible and gets placed first.
-        assert!(
-            matches!(&reordered[0], Pattern::Minus(_)),
-            "Eligible reducer should be placed before sources, got: {:?}",
-            &reordered[0]
-        );
-        // Then the two triples
+        // MINUS requires all variables from preceding patterns (s, o1, o2).
+        // Sources come first, MINUS is placed last.
+        assert!(matches!(&reordered[0], Pattern::Triple(_)));
         assert!(matches!(&reordered[1], Pattern::Triple(_)));
-        assert!(matches!(&reordered[2], Pattern::Triple(_)));
+        assert!(
+            matches!(&reordered[2], Pattern::Minus(_)),
+            "MINUS should be placed after sources, got: {:?}",
+            &reordered[2]
+        );
     }
 
     #[test]

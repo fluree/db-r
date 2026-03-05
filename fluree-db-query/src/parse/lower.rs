@@ -10,7 +10,7 @@ use super::ast::{
     UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
     UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
 };
-use super::encode::IriEncoder;
+use super::encode::{IriEncoder, NoEncoder};
 use super::error::{ParseError, Result};
 use crate::aggregate::{AggregateFn, AggregateSpec};
 use crate::binding::Binding;
@@ -344,7 +344,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
             Ok(vec![Pattern::Triple(lowered)])
         }
         UnresolvedPattern::Filter(expr) => {
-            let lowered = lower_filter_expr(expr, vars)?;
+            let lowered = lower_filter_expr_with_encoder(expr, vars, encoder, pp_counter)?;
             Ok(vec![Pattern::Filter(lowered)])
         }
         UnresolvedPattern::Optional(inner) => {
@@ -360,7 +360,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
         }
         UnresolvedPattern::Bind { var, expr } => {
             let var_id = vars.get_or_insert(var);
-            let lowered_expr = lower_filter_expr(expr, vars)?;
+            let lowered_expr = lower_filter_expr_with_encoder(expr, vars, encoder, pp_counter)?;
             Ok(vec![Pattern::Bind {
                 var: var_id,
                 expr: lowered_expr,
@@ -1371,6 +1371,26 @@ pub(crate) fn lower_filter_expr(
     expr: &UnresolvedExpression,
     vars: &mut VarRegistry,
 ) -> Result<Expression> {
+    lower_filter_expr_inner::<NoEncoder>(expr, vars, None, &mut 0)
+}
+
+/// Lower a filter expression with encoder access for EXISTS pattern lowering.
+pub(crate) fn lower_filter_expr_with_encoder<E: IriEncoder>(
+    expr: &UnresolvedExpression,
+    vars: &mut VarRegistry,
+    encoder: &E,
+    pp_counter: &mut u32,
+) -> Result<Expression> {
+    lower_filter_expr_inner(expr, vars, Some(encoder), pp_counter)
+}
+
+/// Inner filter expression lowering, optionally encoder-aware for EXISTS.
+fn lower_filter_expr_inner<E: IriEncoder>(
+    expr: &UnresolvedExpression,
+    vars: &mut VarRegistry,
+    encoder: Option<&E>,
+    pp_counter: &mut u32,
+) -> Result<Expression> {
     match expr {
         UnresolvedExpression::Var(name) => {
             let var_id = vars.get_or_insert(name);
@@ -1378,17 +1398,21 @@ pub(crate) fn lower_filter_expr(
         }
         UnresolvedExpression::Const(val) => Ok(Expression::Const(val.into())),
         UnresolvedExpression::And(exprs) => {
-            let lowered: Result<Vec<Expression>> =
-                exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
+            let lowered: Result<Vec<Expression>> = exprs
+                .iter()
+                .map(|e| lower_filter_expr_inner(e, vars, encoder, pp_counter))
+                .collect();
             Ok(Expression::and(lowered?))
         }
         UnresolvedExpression::Or(exprs) => {
-            let lowered: Result<Vec<Expression>> =
-                exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
+            let lowered: Result<Vec<Expression>> = exprs
+                .iter()
+                .map(|e| lower_filter_expr_inner(e, vars, encoder, pp_counter))
+                .collect();
             Ok(Expression::or(lowered?))
         }
         UnresolvedExpression::Not(inner) => {
-            let lowered = lower_filter_expr(inner, vars)?;
+            let lowered = lower_filter_expr_inner(inner, vars, encoder, pp_counter)?;
             Ok(Expression::not(lowered))
         }
         UnresolvedExpression::In {
@@ -1396,9 +1420,11 @@ pub(crate) fn lower_filter_expr(
             values,
             negated,
         } => {
-            let lowered_expr = lower_filter_expr(expr, vars)?;
-            let lowered_values: Result<Vec<Expression>> =
-                values.iter().map(|v| lower_filter_expr(v, vars)).collect();
+            let lowered_expr = lower_filter_expr_inner(expr, vars, encoder, pp_counter)?;
+            let lowered_values: Result<Vec<Expression>> = values
+                .iter()
+                .map(|v| lower_filter_expr_inner(v, vars, encoder, pp_counter))
+                .collect();
             if *negated {
                 Ok(Expression::not_in_list(lowered_expr, lowered_values?))
             } else {
@@ -1406,8 +1432,10 @@ pub(crate) fn lower_filter_expr(
             }
         }
         UnresolvedExpression::Call { func, args } => {
-            let lowered_args: Result<Vec<Expression>> =
-                args.iter().map(|a| lower_filter_expr(a, vars)).collect();
+            let lowered_args: Result<Vec<Expression>> = args
+                .iter()
+                .map(|a| lower_filter_expr_inner(a, vars, encoder, pp_counter))
+                .collect();
             let func_name = lower_function_name(func);
             if let Function::Custom(unknown) = &func_name {
                 return Err(ParseError::InvalidFilter(format!(
@@ -1418,6 +1446,18 @@ pub(crate) fn lower_filter_expr(
             Ok(Expression::Call {
                 func: func_name,
                 args: lowered_args?,
+            })
+        }
+        UnresolvedExpression::Exists { patterns, negated } => {
+            let enc = encoder.ok_or_else(|| {
+                ParseError::InvalidFilter(
+                    "EXISTS in filter expression requires an IRI encoder context".to_string(),
+                )
+            })?;
+            let lowered_patterns = lower_unresolved_patterns(patterns, enc, vars, pp_counter)?;
+            Ok(Expression::Exists {
+                patterns: lowered_patterns,
+                negated: *negated,
             })
         }
     }

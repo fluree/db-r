@@ -270,7 +270,18 @@ fn resolve_select_vars(result: &QueryResult) -> Vec<VarId> {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                // Empty result set: derive vars from the registry.
+                result
+                    .vars
+                    .iter()
+                    .filter(|(name, _)| !name.starts_with("?__"))
+                    .map(|(name, vid)| {
+                        let stripped = name.strip_prefix('?').unwrap_or(name).to_string();
+                        (stripped, vid)
+                    })
+                    .collect()
+            });
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
         pairs.into_iter().map(|(_, vid)| vid).collect()
     } else {

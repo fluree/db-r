@@ -29,6 +29,7 @@
 
 mod build;
 pub mod config;
+pub mod drop;
 pub mod error;
 pub mod fulltext_hook;
 pub mod gc;
@@ -41,6 +42,7 @@ pub mod stats;
 
 // Re-export main types
 pub use config::IndexerConfig;
+pub use drop::collect_ledger_cids;
 pub use error::{IndexerError, Result};
 pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
