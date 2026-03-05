@@ -17,10 +17,10 @@
 //!   Sids during parsing. This is appropriate because templates generate flakes,
 //!   not match patterns.
 
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
-use fluree_db_query::triple::DatatypeConstraint;
 use fluree_db_query::{VarId, VarRegistry};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};

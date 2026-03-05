@@ -14,6 +14,7 @@ use crate::{TrackedErrorResponse, Tracker, TrackingOptions, TrackingTally};
 use fluree_db_core::ledger_config::LedgerConfig;
 #[cfg(feature = "shacl")]
 use fluree_db_core::ledger_config::ValidationMode;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentId, ContentKind, FlakeValue, GraphId,
     IndexType, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
@@ -22,7 +23,6 @@ use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::TxnMetaEntry;
-use fluree_db_query::triple::DatatypeConstraint;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
 use fluree_db_transact::stage as stage_txn;

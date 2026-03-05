@@ -32,11 +32,12 @@ pub mod values;
 pub mod where_clause;
 
 pub use ast::{
-    LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedDatatypeConstraint, UnresolvedExpression, UnresolvedFilterValue,
-    UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern,
-    UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
-    UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
+    encode_datatype_constraint, LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec,
+    UnresolvedConstructTemplate, UnresolvedDatatypeConstraint, UnresolvedExpression,
+    UnresolvedFilterValue, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec,
+    UnresolvedOptions, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec,
+    UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern,
+    UnresolvedValue,
 };
 pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};

@@ -34,9 +34,9 @@ use crate::ir::{GraphName, Pattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::r2rml::rewrite_patterns_for_r2rml;
 use crate::seed::SeedOperator;
-use crate::triple::DatatypeConstraint;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::FlakeValue;
 use std::sync::Arc;
 // Note: tracing::debug removed to fix compilation - add tracing dependency if needed

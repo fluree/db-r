@@ -6,8 +6,8 @@
 use crate::generate::infer_datatype;
 use crate::namespace::{NamespaceRegistry, NsAllocator};
 use crate::value_convert::{convert_native_literal, convert_string_literal};
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-use fluree_db_query::triple::DatatypeConstraint;
 use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
 use std::collections::HashMap;
 use std::sync::Arc;

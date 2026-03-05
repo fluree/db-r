@@ -27,9 +27,9 @@ use crate::execute::build_where_operators_seeded;
 use crate::ir::{ServiceEndpoint, ServicePattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
-use crate::triple::DatatypeConstraint;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{format_ledger_id, split_ledger_id, FlakeValue};
 use std::sync::Arc;
 

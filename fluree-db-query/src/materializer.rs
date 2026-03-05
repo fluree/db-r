@@ -22,9 +22,9 @@
 //! - **Multi-ledger**: Join keys use canonical IRI strings for correct cross-ledger semantics.
 
 use crate::binding::Binding;
-use crate::triple::DatatypeConstraint;
 use chrono::{Datelike, Timelike};
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeValue, Sid};
 use std::borrow::Cow;
 use std::collections::HashMap;

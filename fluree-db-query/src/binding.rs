@@ -6,8 +6,8 @@
 //! - `BatchView`: Zero-copy view of selected columns
 //! - `RowView`: Zero-copy view of a single row
 
-use crate::triple::DatatypeConstraint;
 use crate::var_registry::VarId;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
 use std::sync::Arc;
 

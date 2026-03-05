@@ -9,10 +9,10 @@ use crate::error::Result;
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
-use crate::triple::DatatypeConstraint;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeValue, Sid};
 use std::cmp::Ordering;
 use std::sync::Arc;

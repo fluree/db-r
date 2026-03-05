@@ -39,7 +39,7 @@ use crate::aggregate::AggregateFn;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::triple::DatatypeConstraint;
+use fluree_db_core::DatatypeConstraint;
 // Note: JoinKey and Materializer would be used for multi-ledger/dataset mode
 // but for now we use GroupKeyOwned for single-ledger simplicity
 use crate::operator::{

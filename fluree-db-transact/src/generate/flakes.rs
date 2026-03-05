@@ -426,7 +426,7 @@ pub fn infer_datatype(val: &FlakeValue) -> Sid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_query::triple::DatatypeConstraint;
+    use fluree_db_core::DatatypeConstraint;
     use fluree_db_query::VarId;
     use std::sync::Arc;
 

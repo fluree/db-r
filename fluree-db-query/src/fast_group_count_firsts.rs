@@ -3,7 +3,7 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::BoxedOperator;
 use crate::operator::{Operator, OperatorState};
-use crate::triple::{DatatypeConstraint, Term};
+use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{
@@ -14,6 +14,7 @@ use fluree_db_binary_index::{
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::value_id::ValueTypeTag;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::StatsView;
 use std::collections::HashMap;
 use std::sync::Arc;

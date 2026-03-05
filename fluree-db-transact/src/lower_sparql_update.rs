@@ -38,12 +38,12 @@
 use std::mem;
 use std::sync::Arc;
 
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::parse::{
     LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedTerm,
     UnresolvedTriplePattern,
 };
-use fluree_db_query::triple::DatatypeConstraint;
 use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
     BlankNodeValue, Iri, IriValue, Literal, LiteralValue as SparqlLiteralValue, Modify,

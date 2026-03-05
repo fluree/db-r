@@ -7,7 +7,7 @@
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_binary_index::BinaryGraphView;
-use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_core::{DatatypeConstraint, FlakeValue, Sid};
 use fluree_db_query::binding::Binding;
 
 /// Materialize an encoded binding to a concrete `Binding` (Sid/Lit/etc).
@@ -84,8 +84,8 @@ fn materialize_encoded_lit(binding: &Binding, gv: &BinaryGraphView) -> std::io::
                 .unwrap_or_else(|| Sid::new(0, ""));
             let meta = store.decode_meta(*lang_id, *i_val);
             let dtc = match meta.and_then(|m| m.lang.map(std::sync::Arc::from)) {
-                Some(lang) => fluree_db_query::triple::DatatypeConstraint::LangTag(lang),
-                None => fluree_db_query::triple::DatatypeConstraint::Explicit(dt_sid),
+                Some(lang) => DatatypeConstraint::LangTag(lang),
+                None => DatatypeConstraint::Explicit(dt_sid),
             };
             Ok(Binding::Lit {
                 val: other,

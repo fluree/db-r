@@ -29,7 +29,6 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::triple::DatatypeConstraint;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -39,6 +38,7 @@ use fluree_db_binary_index::{
 };
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,

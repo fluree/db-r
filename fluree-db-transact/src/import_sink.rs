@@ -31,13 +31,13 @@ mod inner {
     use fluree_db_binary_index::RunRecord;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeConstraint;
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GraphId, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
     use fluree_db_indexer::run_index::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
     use fluree_db_indexer::run_index::spool::{SpoolFileInfo, SpoolWriter};
     use fluree_db_novelty::commit_v2::CommitV2Error;
-    use fluree_db_query::triple::DatatypeConstraint;
     use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
     use rustc_hash::FxHashMap;
     use std::collections::HashMap;
