@@ -2494,7 +2494,7 @@ impl BinaryGraphView {
     /// Convert a decoded leaflet row into a Flake (graph-scoped decode).
     ///
     /// This is the public API for row → Flake conversion. All external callers
-    /// (SpotCursor, BinaryScanOperator, block_fetch, etc.) should use this method.
+    /// (BinaryScanOperator, block_fetch, etc.) should use this method.
     pub fn row_to_flake(&self, row: &DecodedRow) -> io::Result<Flake> {
         self.store.row_to_flake_impl(row, self.g_id)
     }

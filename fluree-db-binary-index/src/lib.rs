@@ -21,7 +21,6 @@ pub use read::binary_index_store::{BinaryGraphView, BinaryIndexStore};
 pub use read::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};
 pub use read::query::{FactRow, SpotQuery};
 pub use read::replay::{replay_leaflet, ReplayedLeaflet};
-pub use read::spot_cursor::SpotCursor;
 
 // ── Format types ─────────────────────────────────────────────────────────────
 pub use format::branch::{BranchManifest, LeafEntry};
