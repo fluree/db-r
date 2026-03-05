@@ -661,12 +661,6 @@ impl PatternEstimate {
     }
 }
 
-/// Default multiplier for MINUS (assumes 10% of rows removed).
-const DEFAULT_MINUS_MULTIPLIER: f64 = 0.9;
-/// Default multiplier for EXISTS (assumes 50% of rows match).
-const DEFAULT_EXISTS_MULTIPLIER: f64 = 0.5;
-/// Default multiplier for NOT EXISTS (assumes 50% of rows match).
-const DEFAULT_NOT_EXISTS_MULTIPLIER: f64 = 0.5;
 
 /// Estimate cardinality for any pattern type.
 ///
@@ -704,17 +698,13 @@ pub fn estimate_pattern(
 
         Pattern::Optional(_) => PatternEstimate::Expander { multiplier: 1.0 },
 
-        Pattern::Minus(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_MINUS_MULTIPLIER,
-        },
-
-        Pattern::Exists(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_EXISTS_MULTIPLIER,
-        },
-
-        Pattern::NotExists(_) => PatternEstimate::Reducer {
-            multiplier: DEFAULT_NOT_EXISTS_MULTIPLIER,
-        },
+        // MINUS, EXISTS, and NOT EXISTS are order-sensitive: they must run
+        // after all preceding patterns. The planner intercepts them before
+        // calling estimate_pattern (see reorder_patterns), so in practice
+        // these arms are only reached by direct callers like explain.rs.
+        Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_) => {
+            PatternEstimate::Deferred
+        }
 
         Pattern::Filter(_) | Pattern::Bind { .. } => PatternEstimate::Deferred,
 
@@ -2138,13 +2128,13 @@ mod tests {
         ))]);
         assert!(matches!(
             estimate_pattern(&minus, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let exists = Pattern::Exists(vec![Pattern::Triple(make_pattern(VarId(0), "e", VarId(5)))]);
         assert!(matches!(
             estimate_pattern(&exists, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let not_exists = Pattern::NotExists(vec![Pattern::Triple(make_pattern(
@@ -2154,7 +2144,7 @@ mod tests {
         ))]);
         assert!(matches!(
             estimate_pattern(&not_exists, &empty, None),
-            PatternEstimate::Reducer { .. }
+            PatternEstimate::Deferred
         ));
 
         let filter = Pattern::Filter(Expression::gt(
@@ -2246,21 +2236,6 @@ mod tests {
         assert!(multiplier >= 1.0);
     }
 
-    #[test]
-    fn test_estimate_minus_multiplier() {
-        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(
-            VarId(0),
-            "del",
-            VarId(1),
-        ))]);
-
-        let card = estimate_pattern(&minus, &HashSet::new(), None);
-        let PatternEstimate::Reducer { multiplier } = card else {
-            panic!("expected Reducer")
-        };
-        assert!(multiplier < 1.0);
-        assert!((multiplier - 0.9).abs() < f64::EPSILON);
-    }
 
     #[test]
     fn test_reorder_all_triple_only_passes_through() {
