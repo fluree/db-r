@@ -723,16 +723,25 @@ fn parse_property(
         if obj.contains_key("@value") || obj.contains_key("@language") {
             let parsed = parse_value_object(obj, ctx.context, ctx.object_var_parsing)?;
             let object = parsed.term;
-            let pattern_dt = parsed.dt_iri.or(dt_iri);
 
-            // Build the triple pattern using helper
-            let mut pattern = build_triple_pattern(
-                subject,
-                predicate,
-                object.clone(),
-                is_reverse,
-                pattern_dt.as_deref(),
-            );
+            // Determine the datatype constraint for the triple pattern.
+            // parsed.dtc (from explicit @type or @language) takes precedence
+            // over the context-level dt_iri.
+            let pattern_dtc = parsed.dtc.or_else(|| {
+                dt_iri
+                    .as_deref()
+                    .map(|iri| UnresolvedDatatypeConstraint::Explicit(Arc::from(iri)))
+            });
+
+            // Build the triple pattern
+            let pattern = if is_reverse {
+                UnresolvedTriplePattern::new(object.clone(), predicate, subject.clone())
+            } else {
+                let mut p =
+                    UnresolvedTriplePattern::new(subject.clone(), predicate, object.clone());
+                p.dtc = pattern_dtc;
+                p
+            };
 
             // Track whether we've added the pattern (to avoid double-adding)
             let mut pattern_added = false;
@@ -790,23 +799,18 @@ fn parse_property(
                 }
             }
 
-            // Handle @language: variable creates BIND, constant adds constraint
-            if let Some(lang) = parsed.lang {
-                if is_variable(&lang) {
-                    // BIND(LANG(?val) AS ?lang)
-                    add_metadata_bind_pattern(
-                        "lang",
-                        lang,
-                        &object,
-                        query,
-                        &pattern,
-                        &mut pattern_added,
-                        "@language variable binding",
-                    )?;
-                } else {
-                    // Constant language constraint
-                    pattern.dtc = Some(UnresolvedDatatypeConstraint::LangTag(lang));
-                }
+            // Handle @language variable: BIND(LANG(?val) AS ?lang)
+            // (constant @language is already folded into pattern.dtc above)
+            if let Some(lang_var) = parsed.lang_var {
+                add_metadata_bind_pattern(
+                    "lang",
+                    lang_var,
+                    &object,
+                    query,
+                    &pattern,
+                    &mut pattern_added,
+                    "@language variable binding",
+                )?;
             }
 
             // Add pattern if not already added by any of the above
@@ -887,10 +891,10 @@ fn normalize_numeric_datatype(expanded_dt_iri: &str) -> &str {
 struct ParsedValueObject {
     /// The parsed term (value or variable)
     term: UnresolvedTerm,
-    /// Explicit datatype IRI (constant)
-    dt_iri: Option<Arc<str>>,
-    /// Language tag or variable
-    lang: Option<Arc<str>>,
+    /// Constant datatype or language-tag constraint (mutually exclusive by construction)
+    dtc: Option<UnresolvedDatatypeConstraint>,
+    /// Language variable (if @language is "?var")
+    lang_var: Option<Arc<str>>,
     /// Datatype variable (if @type is "?var")
     dt_var: Option<Arc<str>>,
     /// Transaction time variable (if @t is "?var")
@@ -935,6 +939,34 @@ fn parse_value_object(
     // Optional @language (can be a constant string or a variable like "?lang")
     let explicit_lang: Option<Arc<str>> =
         obj.get("@language").and_then(|l| l.as_str()).map(Arc::from);
+
+    // Split @language into constant vs variable
+    let (constant_lang, lang_var): (Option<Arc<str>>, Option<Arc<str>>) =
+        match explicit_lang {
+            Some(ref l) if is_variable(l) => (None, Some(l.clone())),
+            other => (other, None),
+        };
+
+    // Validate: a value object cannot have both a constant non-langString @type and
+    // any @language (constant or variable). Per JSON-LD spec §9.5 / RDF 1.1, @type
+    // and @language are mutually exclusive. A constant @type of rdf:langString is
+    // allowed with @language since it's redundant but not contradictory.
+    if let Some(ref dt) = explicit_dt {
+        let has_any_lang = constant_lang.is_some() || lang_var.is_some();
+        if has_any_lang && dt.as_ref() != fluree_vocab::rdf::LANG_STRING {
+            return Err(ParseError::InvalidWhere(
+                "a value object cannot have both @type and @language; \
+                 use @type for typed literals or @language for language-tagged strings"
+                    .to_string(),
+            ));
+        }
+    }
+
+    // Build the combined datatype constraint from constant @type / @language.
+    // @language takes precedence (LangTag implies rdf:langString).
+    let dtc = constant_lang
+        .map(UnresolvedDatatypeConstraint::LangTag)
+        .or_else(|| explicit_dt.clone().map(UnresolvedDatatypeConstraint::Explicit));
 
     // Optional @t - Fluree-specific transaction time binding (must be a variable like "?t")
     let explicit_t_var: Option<Arc<str>> = if let Some(t_val) = obj.get("@t") {
@@ -996,8 +1028,8 @@ fn parse_value_object(
         })?;
         return Ok(ParsedValueObject {
             term: parse_object_value(s, context, object_var_parsing)?,
-            dt_iri: None,
-            lang: None,
+            dtc: None,
+            lang_var: None,
             dt_var: None,
             t_var: None,
             op_var: None,
@@ -1035,8 +1067,8 @@ fn parse_value_object(
 
     Ok(ParsedValueObject {
         term,
-        dt_iri: explicit_dt,
-        lang: explicit_lang,
+        dtc,
+        lang_var,
         dt_var: explicit_dt_var,
         t_var: explicit_t_var,
         op_var: explicit_op_var,
