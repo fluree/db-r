@@ -661,7 +661,6 @@ impl PatternEstimate {
     }
 }
 
-
 /// Estimate cardinality for any pattern type.
 ///
 /// The `bound_vars` parameter indicates which variables are already bound from
@@ -702,9 +701,7 @@ pub fn estimate_pattern(
         // after all preceding patterns. The planner intercepts them before
         // calling estimate_pattern (see reorder_patterns), so in practice
         // these arms are only reached by direct callers like explain.rs.
-        Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_) => {
-            PatternEstimate::Deferred
-        }
+        Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_) => PatternEstimate::Deferred,
 
         Pattern::Filter(_) | Pattern::Bind { .. } => PatternEstimate::Deferred,
 
@@ -2235,7 +2232,6 @@ mod tests {
         };
         assert!(multiplier >= 1.0);
     }
-
 
     #[test]
     fn test_reorder_all_triple_only_passes_through() {
