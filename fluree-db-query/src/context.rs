@@ -518,8 +518,7 @@ impl<'a> ExecutionContext<'a> {
     /// single-ledger mode. Individual call sites may layer additional
     /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
     pub fn has_binary_store(&self) -> bool {
-        !self.is_multi_ledger()
-            && (self.binary_store.is_some() || self.binary_store_v6.is_some())
+        !self.is_multi_ledger() && (self.binary_store.is_some() || self.binary_store_v6.is_some())
     }
 
     /// Check whether the V6 binary store is available.

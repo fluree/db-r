@@ -47,7 +47,7 @@ const BRANCH_V3_HEADER_LEN: usize = 16;
 // ============================================================================
 
 /// In-memory V3 branch manifest for query routing.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BranchManifestV3 {
     pub leaves: Vec<LeafEntryV3>,
 }

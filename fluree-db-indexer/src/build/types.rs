@@ -23,9 +23,10 @@ pub struct UploadedIndexes {
 /// Default graph uses inline `LeafEntryV3`; named graphs use branch CIDs.
 pub struct UploadedV3Indexes {
     /// Default graph (g_id=0): inline leaf entries per sort order.
-    pub default_graph_orders:
-        Vec<(fluree_db_binary_index::format::run_record::RunSortOrder,
-             Vec<fluree_db_binary_index::format::branch_v3::LeafEntryV3>)>,
+    pub default_graph_orders: Vec<(
+        fluree_db_binary_index::format::run_record::RunSortOrder,
+        Vec<fluree_db_binary_index::format::branch_v3::LeafEntryV3>,
+    )>,
     /// Named graphs (g_id!=0): branch CIDs per sort order per graph.
     pub named_graphs: Vec<fluree_db_binary_index::format::index_root_v6::NamedGraphRoutingV3>,
 }

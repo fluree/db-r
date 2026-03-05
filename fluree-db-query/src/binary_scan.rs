@@ -116,7 +116,7 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
 ///
 /// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where each position
 /// is the column index of that variable in the schema (None if bound).
-fn schema_from_pattern_with_emit(
+pub(crate) fn schema_from_pattern_with_emit(
     pattern: &TriplePattern,
     emit: EmitMask,
 ) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
@@ -1728,13 +1728,43 @@ impl Operator for ScanOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
+        // ── V6 (V3 format) fast path ──────────────────────────────────
+        // Check V6 store first. When present, use the V3 columnar scan
+        // operator exclusively — V5 paths must never touch V3 leaf bytes.
+        let use_binary_v6 = ctx.binary_store_v6.is_some() && {
+            let s = ctx.binary_store_v6.as_ref().unwrap();
+            ctx.to_t >= s.base_t()
+                && !ctx.history_mode
+                && ctx.from_t.is_none()
+                && ctx.policy_enforcer.as_ref().is_none_or(|enf| enf.is_root())
+        };
+
+        if use_binary_v6 {
+            let store = ctx.binary_store_v6.as_ref().unwrap().clone();
+            let mut inner: BoxedOperator =
+                Box::new(crate::binary_scan_v3::BinaryScanOperatorV3::new(
+                    self.pattern.clone(),
+                    store,
+                    ctx.binary_g_id,
+                    self.object_bounds.clone(),
+                    std::mem::take(&mut self.inline_ops),
+                    self.emit,
+                    self.index_hint,
+                ));
+            inner.open(ctx).await?;
+            self.inner = Some(inner);
+            self.state = OperatorState::Open;
+            return Ok(());
+        }
+
+        // ── V5 fast path ─────────────────────────────────────────────
         // Determine whether the binary cursor path can handle this query.
         // Binary cursors require: store present, single-ledger, time within
         // coverage, no history mode, no time-range queries.  Everything else
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.has_binary_store() && {
+        let use_binary = ctx.has_binary_store() && ctx.binary_store.is_some() && {
             let s = ctx.binary_store.as_ref().unwrap();
             ctx.to_t >= s.base_t()
                 && !ctx.history_mode

@@ -7,10 +7,12 @@
 use std::io;
 use std::sync::Arc;
 
-use crate::format::column_block::{decode_column_u16, decode_column_u32, decode_column_u64, ColumnBlockRef, ColumnId};
+use super::column_types::{ColumnBatch, ColumnData, ColumnProjection};
+use crate::format::column_block::{
+    decode_column_u16, decode_column_u32, decode_column_u64, ColumnBlockRef, ColumnId,
+};
 use crate::format::leaf_v3::LeafletDirEntryV3;
 use crate::format::run_record::RunSortOrder;
-use super::column_types::{ColumnBatch, ColumnData, ColumnProjection};
 
 /// Leaflet flag: at least one row has `o_i != u32::MAX`.
 const FLAG_HAS_O_I: u32 = 1;
@@ -43,10 +45,7 @@ pub fn load_leaflet_columns(
 
     // Helper: find a column block ref by column ID.
     let find_ref = |col_id: ColumnId| -> Option<&ColumnBlockRef> {
-        entry
-            .column_refs
-            .iter()
-            .find(|r| r.col_id == col_id as u16)
+        entry.column_refs.iter().find(|r| r.col_id == col_id as u16)
     };
 
     // Adjust a block ref's offset to be absolute within leaf_bytes, then decode.
@@ -66,7 +65,9 @@ pub fn load_leaflet_columns(
                 io::ErrorKind::InvalidData,
                 format!(
                     "{:?} column: decoded {} values but leaflet has {} rows",
-                    col_id, decoded.len(), row_count
+                    col_id,
+                    decoded.len(),
+                    row_count
                 ),
             ));
         }
@@ -88,7 +89,9 @@ pub fn load_leaflet_columns(
                 io::ErrorKind::InvalidData,
                 format!(
                     "{:?} column: decoded {} values but leaflet has {} rows",
-                    col_id, decoded.len(), row_count
+                    col_id,
+                    decoded.len(),
+                    row_count
                 ),
             ));
         }
@@ -110,7 +113,9 @@ pub fn load_leaflet_columns(
                 io::ErrorKind::InvalidData,
                 format!(
                     "{:?} column: decoded {} values but leaflet has {} rows",
-                    col_id, decoded.len(), row_count
+                    col_id,
+                    decoded.len(),
+                    row_count
                 ),
             ));
         }
@@ -224,7 +229,9 @@ mod tests {
 
         let ot = OType::XSD_INTEGER.as_u16();
         for i in 0..5u64 {
-            writer.push_record(make_rec(i + 1, 1, ot, i * 10, 1)).unwrap();
+            writer
+                .push_record(make_rec(i + 1, 1, ot, i * 10, 1))
+                .unwrap();
         }
         let infos = writer.finish().unwrap();
         assert_eq!(infos.len(), 1);
@@ -344,7 +351,9 @@ mod tests {
 
         let ot = OType::XSD_INTEGER.as_u16();
         for i in 0..3u64 {
-            writer.push_record(make_rec(i + 1, 1, ot, i * 5, 1)).unwrap();
+            writer
+                .push_record(make_rec(i + 1, 1, ot, i * 5, 1))
+                .unwrap();
         }
         let infos = writer.finish().unwrap();
         let leaf_bytes = &infos[0].leaf_bytes;

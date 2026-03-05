@@ -1,14 +1,16 @@
 //! Integration tests for V3 (FLI3) index format via the bulk import pipeline.
 //!
 //! Exercises: `fluree.create("db").import(path).index_format_version(3).execute()`
-//! Verifies: V3 artifacts (FLI3 leaves) are produced with correct magic bytes
-//! and segmentation properties.
+//! Verifies:
+//! - V3 artifacts (FLI3 leaves) are produced with correct magic bytes
+//! - Full E2E: import → FIR6 root → load → V3 cursor → SPARQL query → results
 
 #![cfg(feature = "native")]
 
 mod support;
 
 use fluree_db_api::FlureeBuilder;
+use serde_json::json;
 use std::io::Write;
 use std::path::Path;
 
@@ -155,4 +157,268 @@ ex:cam a ex:User ;
     // the branch is embedded inline in the root. FBR3 files would only appear
     // for named graphs (g_id != 0). For this single-graph test, we verify that
     // FLI3 leaves were produced and are structurally valid (above assertions).
+}
+
+// ============================================================================
+// E2E: import V3 → load → query → verify results
+// ============================================================================
+
+/// Full end-to-end: import TTL with V3 format → load ledger → run queries → verify.
+///
+/// Validates the complete V3 read path: FIR6 root decode → BinaryIndexStoreV6 load →
+/// BinaryCursorV3 scan → decode_value_v3 → query results.
+///
+/// Covers:
+/// - Plain xsd:string (schema:name "Alice")
+/// - rdf:langString (schema:description "A user"@en)
+/// - IRI reference / @id (rdf:type → ex:User)
+/// - Integer literal (schema:age 42)
+#[tokio::test]
+async fn import_v3_and_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    // TTL with diverse value types for decode_value_v3 coverage.
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:alice a ex:User ;
+    schema:name "Alice" ;
+    schema:description "A user"@en ;
+    schema:age 42 ;
+    ex:friend ex:bob .
+
+ex:bob a ex:User ;
+    schema:name "Bob" ;
+    schema:description "Another user"@de ;
+    schema:age 22 .
+"#;
+
+    let ttl_path = write_ttl(data_dir.path(), "typed.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Import with V3 format.
+    let result = fluree
+        .create("test/v3-query:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("V3 import should succeed");
+
+    assert!(result.t > 0, "should have at least one commit");
+    assert!(result.root_id.is_some(), "index should have been built");
+
+    // Verify FIR6 root was produced (not IRB1).
+    let fir6_files = find_files_with_magic(db_dir.path(), b"FIR6");
+    assert!(
+        !fir6_files.is_empty(),
+        "expected FIR6 root file, found none under {}",
+        db_dir.path().display()
+    );
+
+    // Load the ledger (this triggers FIR6 → BinaryIndexStoreV6 loading).
+    let ledger = fluree
+        .ledger("test/v3-query:main")
+        .await
+        .expect("load V3 ledger");
+
+    // ── Query 1: plain xsd:string ──
+    let names_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name WHERE { ?s schema:name ?name }
+        ORDER BY ?name
+        "#,
+    )
+    .await
+    .expect("string query");
+    let names_json = names_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let bindings = names_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Alice", "Bob"], "xsd:string query failed");
+
+    // ── Query 1b: bound xsd:string object (must filter correctly) ──
+    let alice_subject_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?s WHERE { ?s schema:name "Alice" }
+        "#,
+    )
+    .await
+    .expect("bound string object query");
+    let alice_subject_json = alice_subject_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let alice_subject_bindings = alice_subject_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(
+        alice_subject_bindings.len(),
+        1,
+        "expected exactly one subject for name=\"Alice\""
+    );
+    let alice_s = alice_subject_bindings[0]["s"]["value"].as_str().unwrap();
+    assert!(
+        alice_s == "http://example.org/ns/alice" || alice_s == "ex:alice",
+        "bound string object scan mismatch: {alice_s}"
+    );
+
+    // ── Query 2: rdf:langString ──
+    let desc_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?desc WHERE { ?s schema:description ?desc }
+        ORDER BY ?desc
+        "#,
+    )
+    .await
+    .expect("langString query");
+    let desc_json = desc_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let desc_bindings = desc_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    let descs: Vec<&str> = desc_bindings
+        .iter()
+        .map(|b| b["desc"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        descs,
+        vec!["A user", "Another user"],
+        "rdf:langString query failed"
+    );
+    // Verify language tags are preserved.
+    let langs: Vec<&str> = desc_bindings
+        .iter()
+        .filter_map(|b| b["desc"]["xml:lang"].as_str())
+        .collect();
+    assert_eq!(langs, vec!["en", "de"], "language tags not preserved");
+
+    // ── Query 2b: bound rdf:langString object + lang constraint ──
+    let alice_desc_subject_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?s WHERE { ?s schema:description "A user"@en }
+        "#,
+    )
+    .await
+    .expect("bound langString query");
+    let alice_desc_subject_json = alice_desc_subject_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let alice_desc_subject_bindings = alice_desc_subject_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(
+        alice_desc_subject_bindings.len(),
+        1,
+        "expected exactly one subject for description=\"A user\"@en"
+    );
+    let alice_s2 = alice_desc_subject_bindings[0]["s"]["value"].as_str().unwrap();
+    assert!(
+        alice_s2 == "http://example.org/ns/alice" || alice_s2 == "ex:alice",
+        "bound langString object scan mismatch: {alice_s2}"
+    );
+
+    // ── Query 3: IRI reference (rdf:type) ──
+    let type_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s WHERE { ?s a ex:User }
+        ORDER BY ?s
+        "#,
+    )
+    .await
+    .expect("IRI ref query");
+    let type_json = type_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let type_bindings = type_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(type_bindings.len(), 2, "expected 2 ex:User instances");
+    // Subjects should be IRIs.
+    for b in type_bindings {
+        assert_eq!(
+            b["s"]["type"].as_str().unwrap(),
+            "uri",
+            "subject should be URI type"
+        );
+    }
+
+    // ── Query 4: integer literal ──
+    let age_result = support::query_sparql(
+        &fluree,
+        &ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?age WHERE { ex:alice schema:age ?age }
+        "#,
+    )
+    .await
+    .expect("integer query");
+    let age_json = age_result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("format sparql json");
+    let age_bindings = age_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(age_bindings.len(), 1, "expected 1 age result");
+    let age_val = age_bindings[0]["age"]["value"].as_str().expect("age value");
+    assert_eq!(age_val, "42", "integer literal value mismatch");
+
+    // ── Query 5: JSON-LD query (cross-check scan path) ──
+    let jld_result = support::query_jsonld(
+        &fluree,
+        &ledger,
+        &json!({
+            "@context": {
+                "ex": "http://example.org/ns/",
+                "schema": "http://schema.org/"
+            },
+            "select": ["?name"],
+            "where": { "schema:name": "?name" }
+        }),
+    )
+    .await
+    .expect("JSON-LD query");
+    let jld_json = jld_result
+        .to_jsonld(&ledger.snapshot)
+        .expect("format jsonld");
+    let mut jld_names: Vec<String> = jld_json
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    jld_names.sort();
+    assert_eq!(jld_names, vec!["Alice", "Bob"], "JSON-LD query failed");
 }

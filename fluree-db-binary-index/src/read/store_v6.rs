@@ -91,13 +91,8 @@ impl BinaryIndexStoreV6 {
         std::fs::create_dir_all(cache_dir)?;
 
         // ── Dict loading (same as V5) ──────────────────────────────
-        let dicts = build_dictionary_set(
-            Arc::clone(&cs),
-            root,
-            cache_dir,
-            leaflet_cache.as_ref(),
-        )
-        .await?;
+        let dicts =
+            build_dictionary_set(Arc::clone(&cs), root, cache_dir, leaflet_cache.as_ref()).await?;
 
         // ── Per-graph specialty arenas (same as V5) ────────────────
         let mut per_graph_arenas = load_per_graph_arenas(
@@ -132,13 +127,15 @@ impl BinaryIndexStoreV6 {
                 let branch_bytes =
                     fetch_cached_bytes_cid(cs.as_ref(), branch_cid, cache_dir).await?;
                 let branch = read_branch_v3_from_bytes(&branch_bytes)?;
-                let gi = graph_indexes.entry(ng.g_id).or_insert_with(|| GraphIndexV3 {
-                    orders: HashMap::new(),
-                    numbig: HashMap::new(),
-                    vectors: HashMap::new(),
-                    spatial: HashMap::new(),
-                    fulltext: HashMap::new(),
-                });
+                let gi = graph_indexes
+                    .entry(ng.g_id)
+                    .or_insert_with(|| GraphIndexV3 {
+                        orders: HashMap::new(),
+                        numbig: HashMap::new(),
+                        vectors: HashMap::new(),
+                        spatial: HashMap::new(),
+                        fulltext: HashMap::new(),
+                    });
                 gi.orders.insert(*order, branch);
             }
         }
@@ -244,9 +241,10 @@ impl BinaryIndexStoreV6 {
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
         std::thread::spawn(move || {
             let result = handle.block_on(async {
-                let data = cs.get(&cid).await.map_err(|e| {
-                    io::Error::other(format!("CAS fetch failed: {e}"))
-                })?;
+                let data = cs
+                    .get(&cid)
+                    .await
+                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?;
                 cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
                 Ok(data)
             });
@@ -295,11 +293,9 @@ impl BinaryIndexStoreV6 {
                 let micros = key.decode_time();
                 let secs = (micros / 1_000_000) as u32;
                 let frac_micros = (micros % 1_000_000) as u32;
-                let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(
-                    secs,
-                    frac_micros * 1000,
-                )
-                .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                let time =
+                    chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
+                        .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
                 let iso = time.format("%H:%M:%S%.6f").to_string();
                 match fluree_db_core::temporal::Time::parse(&iso) {
                     Ok(t) => Ok(FlakeValue::Time(Box::new(t))),
@@ -308,8 +304,7 @@ impl BinaryIndexStoreV6 {
             }
             DecodeKind::DateTime => {
                 let epoch_micros = key.decode_datetime();
-                let dt =
-                    chrono::DateTime::from_timestamp_micros(epoch_micros).unwrap_or_default();
+                let dt = chrono::DateTime::from_timestamp_micros(epoch_micros).unwrap_or_default();
                 let iso = dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
                 match fluree_db_core::temporal::DateTime::parse(&iso) {
                     Ok(d) => Ok(FlakeValue::DateTime(Box::new(d))),
@@ -441,16 +436,12 @@ impl BinaryIndexStoreV6 {
                 format!("subject local_id {} not found in ns {}", local_id, ns_code),
             )
         })?;
-        let prefix = self
-            .dicts
-            .namespace_codes
-            .get(&ns_code)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no namespace prefix for code={ns_code}"),
-                )
-            })?;
+        let prefix = self.dicts.namespace_codes.get(&ns_code).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no namespace prefix for code={ns_code}"),
+            )
+        })?;
 
         Ok(format!("{}{}", prefix, suffix))
     }
@@ -519,11 +510,51 @@ impl BinaryIndexStoreV6 {
             .map(|&idx| &self.o_type_table[idx])
     }
 
+    /// Reconstruct the full IRI string from a `Sid`.
+    pub fn sid_to_iri(&self, sid: &Sid) -> String {
+        let prefix = self
+            .dicts
+            .namespace_codes
+            .get(&sid.namespace_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        format!("{}{}", prefix, sid.name)
+    }
+
+    /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+        match &self.dicts.subject_reverse_tree {
+            Some(tree) => {
+                let (ns_code, prefix_len) =
+                    self.dicts.prefix_trie.longest_match(iri).unwrap_or((0, 0));
+                let suffix = &iri[prefix_len..];
+                let key =
+                    crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix.as_bytes());
+                tree.reverse_lookup(&key)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Translate a `Sid` to `s_id` via the reverse subject dictionary.
+    pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u64>> {
+        let iri = self.sid_to_iri(sid);
+        self.find_subject_id(&iri)
+    }
+
+    /// Translate a `Sid` to `p_id` via the predicate reverse map.
+    pub fn sid_to_p_id(&self, sid: &Sid) -> Option<u32> {
+        let iri = self.sid_to_iri(sid);
+        self.find_predicate_id(&iri)
+    }
+
+    /// Access the datatype SIDs vector.
+    pub fn dt_sids(&self) -> &[Sid] {
+        &self.dicts.dt_sids
+    }
+
     /// Augment namespace codes with entries from novelty commits.
-    pub fn augment_namespace_codes(
-        &mut self,
-        codes: &std::collections::HashMap<u16, String>,
-    ) {
+    pub fn augment_namespace_codes(&mut self, codes: &std::collections::HashMap<u16, String>) {
         for (&code, prefix) in codes {
             self.dicts
                 .namespace_codes
@@ -841,20 +872,18 @@ async fn load_per_graph_arenas(
             }
             let blob_cache = Arc::new(blob_cache);
 
-            let snapshot = fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(
-                spatial_root,
-                move |hash| {
+            let snapshot =
+                fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(spatial_root, move |hash| {
                     blob_cache.get(hash).cloned().ok_or_else(|| {
                         fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
                     })
-                },
-            )
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("spatial snapshot load: {e}"),
-                )
-            })?;
+                })
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("spatial snapshot load: {e}"),
+                    )
+                })?;
             let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
                 Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
             spatial.insert(sp_ref.p_id, provider);

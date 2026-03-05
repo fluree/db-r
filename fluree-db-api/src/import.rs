@@ -2932,9 +2932,7 @@ where
         use fluree_db_binary_index::format::index_root::{
             DictRefsV5, GraphArenaRefsV5, VectorDictRefV5,
         };
-        use fluree_db_binary_index::format::index_root_v6::{
-            DefaultGraphOrderV3, IndexRootV6,
-        };
+        use fluree_db_binary_index::format::index_root_v6::{DefaultGraphOrderV3, IndexRootV6};
 
         tracing::info!("V3 path: assembling FIR6 root");
 

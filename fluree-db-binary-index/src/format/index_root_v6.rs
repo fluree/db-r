@@ -18,10 +18,10 @@ use std::io;
 use super::branch_v3::LeafEntryV3;
 use super::index_root::{
     ensure_bytes, io_err, read_cid, read_dict_pack_refs, read_dict_tree_refs, read_i64_at,
-    read_string, read_string_array, read_u16_at, read_u32_at, read_u64_at, read_u8_at,
-    write_cid, write_dict_pack_refs, write_dict_tree_refs, write_str, write_string_array,
-    BinaryGarbageRef, BinaryPrevIndexRef, DictRefsV5, FulltextArenaRefV5, GraphArenaRefsV5,
-    SpatialArenaRefV5, VectorDictRefV5,
+    read_string, read_string_array, read_u16_at, read_u32_at, read_u64_at, read_u8_at, write_cid,
+    write_dict_pack_refs, write_dict_tree_refs, write_str, write_string_array, BinaryGarbageRef,
+    BinaryPrevIndexRef, DictRefsV5, FulltextArenaRefV5, GraphArenaRefsV5, SpatialArenaRefV5,
+    VectorDictRefV5,
 };
 use super::run_record::RunSortOrder;
 use super::run_record_v2::{RunRecordV2, RECORD_V2_WIRE_SIZE};
@@ -474,11 +474,27 @@ impl IndexRootV6 {
         // ---- Header (24 bytes) ----
         buf.extend_from_slice(ROOT_V6_MAGIC);
         buf.push(ROOT_V6_VERSION);
-        let flags = (if self.stats.is_some() { Self::FLAG_HAS_STATS } else { 0 })
-            | (if self.schema.is_some() { Self::FLAG_HAS_SCHEMA } else { 0 })
-            | (if self.prev_index.is_some() { Self::FLAG_HAS_PREV_INDEX } else { 0 })
-            | (if self.garbage.is_some() { Self::FLAG_HAS_GARBAGE } else { 0 })
-            | (if self.sketch_ref.is_some() { Self::FLAG_HAS_SKETCH } else { 0 });
+        let flags = (if self.stats.is_some() {
+            Self::FLAG_HAS_STATS
+        } else {
+            0
+        }) | (if self.schema.is_some() {
+            Self::FLAG_HAS_SCHEMA
+        } else {
+            0
+        }) | (if self.prev_index.is_some() {
+            Self::FLAG_HAS_PREV_INDEX
+        } else {
+            0
+        }) | (if self.garbage.is_some() {
+            Self::FLAG_HAS_GARBAGE
+        } else {
+            0
+        }) | (if self.sketch_ref.is_some() {
+            Self::FLAG_HAS_SKETCH
+        } else {
+            0
+        });
         buf.push(flags);
         buf.extend_from_slice(&0u16.to_le_bytes()); // pad
         buf.extend_from_slice(&self.index_t.to_le_bytes());
@@ -640,9 +656,7 @@ impl IndexRootV6 {
         }
         let version = data[4];
         if version != ROOT_V6_VERSION {
-            return Err(io_err(&format!(
-                "root v6: unsupported version {version}"
-            )));
+            return Err(io_err(&format!("root v6: unsupported version {version}")));
         }
 
         let flags = data[5];
@@ -728,14 +742,15 @@ impl IndexRootV6 {
             } else {
                 None
             };
-            let dict_family = if entry_flags & 2 != 0 {
-                let df_byte = read_u8_at(data, &mut pos)?;
-                Some(DictFamily::from_u8(df_byte).ok_or_else(|| {
-                    io_err(&format!("root v6: unknown dict_family {df_byte}"))
-                })?)
-            } else {
-                None
-            };
+            let dict_family =
+                if entry_flags & 2 != 0 {
+                    let df_byte = read_u8_at(data, &mut pos)?;
+                    Some(DictFamily::from_u8(df_byte).ok_or_else(|| {
+                        io_err(&format!("root v6: unknown dict_family {df_byte}"))
+                    })?)
+                } else {
+                    None
+                };
             o_type_table.push(OTypeTableEntry {
                 o_type,
                 decode_kind,
@@ -784,8 +799,9 @@ impl IndexRootV6 {
             let mut orders = Vec::with_capacity(ng_order_count);
             for _ in 0..ng_order_count {
                 let oid = read_u8_at(data, &mut pos)?;
-                let order = RunSortOrder::from_wire_id(oid)
-                    .ok_or_else(|| io_err(&format!("root v6: invalid named graph order_id {oid}")))?;
+                let order = RunSortOrder::from_wire_id(oid).ok_or_else(|| {
+                    io_err(&format!("root v6: invalid named graph order_id {oid}"))
+                })?;
                 let branch_cid = read_cid(data, &mut pos)?;
                 orders.push((order, branch_cid));
             }
@@ -980,19 +996,15 @@ fn read_graph_arenas_v5(data: &[u8], pos: &mut usize) -> io::Result<GraphArenaRe
 /// Read a V2 run record (30 bytes) at the current position.
 fn read_run_record_v2(data: &[u8], pos: &mut usize) -> io::Result<RunRecordV2> {
     ensure_bytes(data, *pos, RECORD_V2_WIRE_SIZE, "RunRecordV2")?;
-    let rec = RunRecordV2::read_run_le(
-        data[*pos..*pos + RECORD_V2_WIRE_SIZE]
-            .try_into()
-            .unwrap(),
-    );
+    let rec = RunRecordV2::read_run_le(data[*pos..*pos + RECORD_V2_WIRE_SIZE].try_into().unwrap());
     *pos += RECORD_V2_WIRE_SIZE;
     Ok(rec)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::index_root::{DictPackRefs, DictRefsV5, DictTreeRefs, PackBranchEntry};
+    use super::*;
     use fluree_db_core::subject_id::SubjectId;
 
     /// Build a minimal IndexRootV6 for testing.
@@ -1016,10 +1028,7 @@ mod tests {
             },
             predicate_sids: vec![(0, "name".to_string()), (0, "age".to_string())],
             graph_iris: vec![],
-            datatype_iris: vec![
-                "xsd:string".to_string(),
-                "xsd:integer".to_string(),
-            ],
+            datatype_iris: vec!["xsd:string".to_string(), "xsd:integer".to_string()],
             language_tags: vec!["en".to_string()],
             dict_refs: DictRefsV5 {
                 forward_packs: DictPackRefs {
@@ -1028,11 +1037,14 @@ mod tests {
                         last_id: 100,
                         pack_cid: dummy_cid.clone(),
                     }],
-                    subject_fwd_ns_packs: vec![(0u16, vec![PackBranchEntry {
-                        first_id: 0,
-                        last_id: 50,
-                        pack_cid: dummy_cid.clone(),
-                    }])],
+                    subject_fwd_ns_packs: vec![(
+                        0u16,
+                        vec![PackBranchEntry {
+                            first_id: 0,
+                            last_id: 50,
+                            pack_cid: dummy_cid.clone(),
+                        }],
+                    )],
                 },
                 subject_reverse: DictTreeRefs {
                     branch: dummy_cid.clone(),
@@ -1146,7 +1158,9 @@ mod tests {
             decoded.default_graph_orders[0].leaves[0].first_key.s_id,
             SubjectId(1)
         );
-        assert!(decoded.default_graph_orders[0].leaves[0].sidecar_cid.is_some());
+        assert!(decoded.default_graph_orders[0].leaves[0]
+            .sidecar_cid
+            .is_some());
     }
 
     #[test]

@@ -37,6 +37,13 @@ pub use format::run_record::{cmp_for_order, cmp_psot, cmp_spot, RunRecord, RunSo
 // ── Arena ────────────────────────────────────────────────────────────────────
 pub use arena::fulltext::FulltextArena;
 
+// ── V3 read-side types ────────────────────────────────────────────────────────
+pub use read::binary_cursor_v3::BinaryCursorV3;
+pub use read::column_types::{
+    BinaryFilterV3, ColumnBatch, ColumnData, ColumnProjection, ColumnSet,
+};
+pub use read::store_v6::{BinaryGraphViewV3, BinaryIndexStoreV6};
+
 // ── Types ────────────────────────────────────────────────────────────────────
 pub use types::{sort_overlay_ops, DecodedRow, NumericShape, OverlayOp, RowColumnSlice};
 

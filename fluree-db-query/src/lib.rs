@@ -15,6 +15,7 @@
 pub mod aggregate;
 pub mod binary_range;
 pub mod binary_scan;
+mod binary_scan_v3;
 pub mod bind;
 pub mod binding;
 pub mod bm25;

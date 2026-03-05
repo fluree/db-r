@@ -11,7 +11,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::format::branch_v3::BranchManifestV3;
-use crate::format::leaf_v3::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3, DecodedLeafDirV3};
+use crate::format::leaf_v3::{
+    decode_leaf_dir_v3_with_base, decode_leaf_header_v3, DecodedLeafDirV3,
+};
 use crate::format::run_record::RunSortOrder;
 use crate::format::run_record_v2::cmp_v2_for_order;
 
