@@ -70,7 +70,15 @@ pub fn format_sparql_table_from_result(
                     .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // Empty result set: derive vars from the registry (all user-visible variables).
+                result
+                    .vars
+                    .iter()
+                    .filter(|(name, _)| !name.starts_with("?__"))
+                    .map(|(_, id)| id)
+                    .collect()
+            })
     } else {
         result.output.select_vars_or_empty().to_vec()
     };

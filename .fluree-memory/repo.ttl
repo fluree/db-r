@@ -755,7 +755,26 @@ mem:artifact-01kjte32vm4nfdfmxwvka0nqze a mem:Artifact ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:46.132479+00:00"^^xsd:dateTime ;
     mem:artifactKind "file" .
-
+mem:decision-01kjvvt8ca8v562z9tmwmcfv3z a mem:Decision ;
+    mem:content "PR #76 SPARQL Negation (MINUS/EXISTS) - JSON-LD Parity Analysis\n\n## Status: ALREADY COMPLIANT - Comprehensive JSON-LD tests added with PR\n\nThe PR adds full JSON-LD parity tests for MINUS and EXISTS/NOT EXISTS negation features. 10 integration tests in `fluree-db-api/tests/it_query_negation.rs` comprehensively cover both query languages:\n\n### JSON-LD Tests Added (10 total, all passing):\n1. `exists_when_pattern_present_returns_subjects()` — EXISTS pattern matching\n2. `exists_when_pattern_absent_returns_no_subjects()` — EXISTS negative case\n3. `not_exists_filters_subjects_without_nickname()` — NOT EXISTS filtering\n4. `not_exists_when_everyone_has_family_name_returns_none()` — NOT EXISTS universal case\n5. `not_exists_all_variables_filters_everything()` — NOT EXISTS with disjoint variables\n6. `not_exists_all_literals_filters_everything_when_match_exists()` — NOT EXISTS with ground goals\n7. `minus_removes_bound_solutions()` — MINUS basic anti-join\n8. `minus_all_variables_has_no_common_bindings_removes_nothing()` — MINUS with disjoint variables\n9. `minus_all_literals_no_common_bindings_removes_nothing()` — MINUS with ground goals\n10. `inner_filter_not_exists_vs_minus_behavior_matches_clojure()` — NOT EXISTS vs MINUS behavior difference\n\n### JSON-LD Negation Syntax Support (already implemented):\n- `[\"minus\", pattern1, pattern2, ...]` — Pattern-level anti-join\n- `[\"exists\", pattern1, pattern2, ...]` — Pattern-level existential filter\n- `[\"not-exists\", pattern1, pattern2, ...]` — Pattern-level negated existential\n\nImplemented in `fluree-db-query/src/parse/where_clause.rs` with lowering in `fluree-db-query/src/parse/lower.rs`.\n\n### Shared IR Changes (Expression::Exists):\nThe PR adds `Expression::Exists { patterns, negated }` to `fluree-db-query/src/ir.rs` for supporting EXISTS in compound FILTER expressions (e.g., `FILTER(?x = ?y || NOT EXISTS { ... })`).\n\n**Key finding**: JSON-LD expressions (`UnresolvedExpression`) do NOT have an EXISTS variant — JSON-LD compound filters cannot embed EXISTS subqueries. This is a limitation not addressed in this PR, but acceptable per parity constraint.\n\n### No Regressions:\n- fluree-db-api: it_query_jsonld (37 tests) — all pass\n- fluree-db-api: it_query_aggregates (13 tests) — all pass\n- All shared expression evaluation code path tested in both languages" ;
+    mem:tag "exists" ;
+    mem:tag "json-ld" ;
+    mem:tag "minus" ;
+    mem:tag "negation" ;
+    mem:tag "parity" ;
+    mem:tag "pr-76" ;
+    mem:tag "sparql" ;
+    mem:tag "testing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "must" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_negation.rs" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:artifactRef "fluree-db-query/src/parse/where_clause.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/expression.rs" ;
+    mem:branch "fix/sparql/negation" ;
+    mem:createdAt "2026-03-04T07:25:51.370758+00:00"^^xsd:dateTime ;
+    mem:rationale "Documented parity status for PR #76 review. JSON-LD tests are complete for negation features at pattern level; known limitation for compound expression EXISTS" .
 mem:artifact-01kjtmmwxeeczkxyzjt4bn84sy a mem:Artifact ;
     mem:content "Issue #48 Implementation Plan (fix/sparql/builtin-functions branch)\n\nPlan file: /Users/ajohnson/.claude/plans/modular-inventing-dragon.md\nGitHub comment: https://github.com/fluree/db-r/issues/48#issuecomment-3993219418\n\n8 phases covering 43/48 failing function tests:\n1. STRDT/STRLANG parser wiring (6 tests) — SPARQL-only\n2. BNode/IRI/Rand lowering (5 tests) — SPARQL + minor shared\n3. SUBSTR/STRLEN char indexing (4-6 tests) — Shared\n4. Error semantics: type-mismatch→Ok(None), COALESCE/IF (9 tests) — Shared\n5. Decimal/BigInt in isNumeric + numeric fns (3+ tests) — Shared\n6. xsd:integer return type + SECONDS decimal (8-10 tests) — Shared\n7. TZ/TIMEZONE split + UUID→IRI (3-5 tests) — Mixed\n8. Language tag preservation (5 tests, optional) — Shared\n\n5 tests deferred: plus-1/2 (→#50/#62), in01/notin01/now01 (→new issue: ASK without triple patterns)\n\nUse `/rewind` checkpoint at plan-approved state if context runs out. Plan file tracks progress per phase with checkboxes." ;
     mem:tag "builtin-functions" ;
