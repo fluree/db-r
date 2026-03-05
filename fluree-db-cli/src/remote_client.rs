@@ -706,6 +706,30 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
+    // Drop ledger
+    // =========================================================================
+
+    /// Drop (delete) a ledger on the remote server.
+    ///
+    /// Calls `POST {base_url}/drop` with `{ "ledger": ..., "hard": ... }`.
+    /// Requires admin-level authentication on the remote.
+    pub async fn drop_ledger(
+        &self,
+        ledger: &str,
+        hard: bool,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("drop");
+        let body = serde_json::json!({ "ledger": ledger, "hard": hard });
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    // =========================================================================
     // List ledgers
     // =========================================================================
 

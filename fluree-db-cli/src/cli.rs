@@ -123,6 +123,10 @@ pub enum Commands {
         /// Required flag to confirm deletion
         #[arg(long)]
         force: bool,
+
+        /// Drop on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Insert data into a ledger
