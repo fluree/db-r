@@ -907,11 +907,11 @@ impl IndexRootV5 {
 // Wire format helpers
 // ============================================================================
 
-fn io_err(msg: &str) -> io::Error {
+pub(crate) fn io_err(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
 }
 
-fn ensure_bytes(data: &[u8], pos: usize, need: usize, ctx: &str) -> io::Result<()> {
+pub(crate) fn ensure_bytes(data: &[u8], pos: usize, need: usize, ctx: &str) -> io::Result<()> {
     if pos + need > data.len() {
         Err(io_err(&format!(
             "root: truncated at {ctx} (need {need} at offset {pos}, have {})",
@@ -922,35 +922,35 @@ fn ensure_bytes(data: &[u8], pos: usize, need: usize, ctx: &str) -> io::Result<(
     }
 }
 
-fn read_u8_at(data: &[u8], pos: &mut usize) -> io::Result<u8> {
+pub(crate) fn read_u8_at(data: &[u8], pos: &mut usize) -> io::Result<u8> {
     ensure_bytes(data, *pos, 1, "u8")?;
     let v = data[*pos];
     *pos += 1;
     Ok(v)
 }
 
-fn read_u16_at(data: &[u8], pos: &mut usize) -> io::Result<u16> {
+pub(crate) fn read_u16_at(data: &[u8], pos: &mut usize) -> io::Result<u16> {
     ensure_bytes(data, *pos, 2, "u16")?;
     let v = u16::from_le_bytes(data[*pos..*pos + 2].try_into().unwrap());
     *pos += 2;
     Ok(v)
 }
 
-fn read_u32_at(data: &[u8], pos: &mut usize) -> io::Result<u32> {
+pub(crate) fn read_u32_at(data: &[u8], pos: &mut usize) -> io::Result<u32> {
     ensure_bytes(data, *pos, 4, "u32")?;
     let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
     Ok(v)
 }
 
-fn read_u64_at(data: &[u8], pos: &mut usize) -> io::Result<u64> {
+pub(crate) fn read_u64_at(data: &[u8], pos: &mut usize) -> io::Result<u64> {
     ensure_bytes(data, *pos, 8, "u64")?;
     let v = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
     Ok(v)
 }
 
-fn read_i64_at(data: &[u8], pos: &mut usize) -> io::Result<i64> {
+pub(crate) fn read_i64_at(data: &[u8], pos: &mut usize) -> io::Result<i64> {
     ensure_bytes(data, *pos, 8, "i64")?;
     let v = i64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
@@ -958,14 +958,14 @@ fn read_i64_at(data: &[u8], pos: &mut usize) -> io::Result<i64> {
 }
 
 /// Write a CID as `cid_len:u16(LE) + cid_bytes`.
-fn write_cid(buf: &mut Vec<u8>, cid: &ContentId) {
+pub(crate) fn write_cid(buf: &mut Vec<u8>, cid: &ContentId) {
     let cid_bytes = cid.to_bytes();
     buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(&cid_bytes);
 }
 
 /// Read a CID from `cid_len:u16(LE) + cid_bytes`.
-fn read_cid(data: &[u8], pos: &mut usize) -> io::Result<ContentId> {
+pub(crate) fn read_cid(data: &[u8], pos: &mut usize) -> io::Result<ContentId> {
     let cid_len = read_u16_at(data, pos)? as usize;
     ensure_bytes(data, *pos, cid_len, "cid bytes")?;
     let cid = ContentId::from_bytes(&data[*pos..*pos + cid_len])
@@ -975,14 +975,14 @@ fn read_cid(data: &[u8], pos: &mut usize) -> io::Result<ContentId> {
 }
 
 /// Write a length-prefixed UTF-8 string as `len:u16(LE) + bytes`.
-fn write_str(buf: &mut Vec<u8>, s: &str) {
+pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
     buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(bytes);
 }
 
 /// Read a length-prefixed UTF-8 string.
-fn read_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
+pub(crate) fn read_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
     let len = read_u16_at(data, pos)? as usize;
     ensure_bytes(data, *pos, len, "string bytes")?;
     let s = std::str::from_utf8(&data[*pos..*pos + len])
@@ -993,7 +993,7 @@ fn read_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
 }
 
 /// Write a string array as `count:u16(LE) + [len:u16 + bytes]...`.
-fn write_string_array(buf: &mut Vec<u8>, strings: &[String]) {
+pub(crate) fn write_string_array(buf: &mut Vec<u8>, strings: &[String]) {
     buf.extend_from_slice(&(strings.len() as u16).to_le_bytes());
     for s in strings {
         write_str(buf, s);
@@ -1001,7 +1001,7 @@ fn write_string_array(buf: &mut Vec<u8>, strings: &[String]) {
 }
 
 /// Read a string array.
-fn read_string_array(data: &[u8], pos: &mut usize) -> io::Result<Vec<String>> {
+pub(crate) fn read_string_array(data: &[u8], pos: &mut usize) -> io::Result<Vec<String>> {
     let count = read_u16_at(data, pos)? as usize;
     let mut result = Vec::with_capacity(count);
     for _ in 0..count {
@@ -1020,7 +1020,7 @@ fn read_string_array(data: &[u8], pos: &mut usize) -> io::Result<Vec<String>> {
 ///   For each ns: [ns_code: u16] [pack_count: u16]
 ///     For each: [first_id: u64] [last_id: u64] [pack_cid: len_prefixed]
 /// ```
-fn write_dict_pack_refs(buf: &mut Vec<u8>, packs: &DictPackRefs) {
+pub(crate) fn write_dict_pack_refs(buf: &mut Vec<u8>, packs: &DictPackRefs) {
     // String forward packs
     buf.extend_from_slice(&(packs.string_fwd_packs.len() as u16).to_le_bytes());
     for entry in &packs.string_fwd_packs {
@@ -1045,7 +1045,7 @@ fn write_dict_pack_refs(buf: &mut Vec<u8>, packs: &DictPackRefs) {
 }
 
 /// Read forward dictionary pack refs.
-fn read_dict_pack_refs(data: &[u8], pos: &mut usize) -> io::Result<DictPackRefs> {
+pub(crate) fn read_dict_pack_refs(data: &[u8], pos: &mut usize) -> io::Result<DictPackRefs> {
     // String forward packs
     let str_count = read_u16_at(data, pos)? as usize;
     let mut string_fwd_packs = Vec::with_capacity(str_count);
@@ -1087,7 +1087,7 @@ fn read_dict_pack_refs(data: &[u8], pos: &mut usize) -> io::Result<DictPackRefs>
 }
 
 /// Write dict tree refs: branch CID + leaf_count:u32 + leaf CIDs.
-fn write_dict_tree_refs(buf: &mut Vec<u8>, tree: &DictTreeRefs) {
+pub(crate) fn write_dict_tree_refs(buf: &mut Vec<u8>, tree: &DictTreeRefs) {
     write_cid(buf, &tree.branch);
     buf.extend_from_slice(&(tree.leaves.len() as u32).to_le_bytes());
     for leaf_cid in &tree.leaves {
@@ -1096,7 +1096,7 @@ fn write_dict_tree_refs(buf: &mut Vec<u8>, tree: &DictTreeRefs) {
 }
 
 /// Read dict tree refs: branch CID + leaf_count:u32 + leaf CIDs.
-fn read_dict_tree_refs(data: &[u8], pos: &mut usize) -> io::Result<DictTreeRefs> {
+pub(crate) fn read_dict_tree_refs(data: &[u8], pos: &mut usize) -> io::Result<DictTreeRefs> {
     let branch = read_cid(data, pos)?;
     let leaf_count = read_u32_at(data, pos)? as usize;
     let mut leaves = Vec::with_capacity(leaf_count);

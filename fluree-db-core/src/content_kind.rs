@@ -58,6 +58,9 @@ pub const CODEC_FLUREE_INDEX_BRANCH_V3: u64 = FLUREE_CODEC_BASE + 13;
 /// Multicodec for Fluree V3 index leaf files (FLI3).
 pub const CODEC_FLUREE_INDEX_LEAF_V3: u64 = FLUREE_CODEC_BASE + 14;
 
+/// Multicodec for Fluree V6 index root descriptors (FIR6).
+pub const CODEC_FLUREE_INDEX_ROOT_V6: u64 = FLUREE_CODEC_BASE + 15;
+
 // ============================================================================
 // DictKind
 // ============================================================================
@@ -135,6 +138,8 @@ pub enum ContentKind {
     IndexBranchV3,
     /// V3 index leaf file (FLI3)
     IndexLeafV3,
+    /// V6 index root descriptor (FIR6)
+    IndexRootV6,
 }
 
 // ============================================================================
@@ -161,6 +166,7 @@ impl ContentKind {
             ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
             ContentKind::IndexBranchV3 => CODEC_FLUREE_INDEX_BRANCH_V3,
             ContentKind::IndexLeafV3 => CODEC_FLUREE_INDEX_LEAF_V3,
+            ContentKind::IndexRootV6 => CODEC_FLUREE_INDEX_ROOT_V6,
         }
     }
 
@@ -187,6 +193,7 @@ impl ContentKind {
             CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
             CODEC_FLUREE_INDEX_BRANCH_V3 => Some(ContentKind::IndexBranchV3),
             CODEC_FLUREE_INDEX_LEAF_V3 => Some(ContentKind::IndexLeafV3),
+            CODEC_FLUREE_INDEX_ROOT_V6 => Some(ContentKind::IndexRootV6),
             _ => None,
         }
     }
@@ -208,6 +215,7 @@ impl ContentKind {
             ContentKind::HistorySidecar => "history-sidecar",
             ContentKind::IndexBranchV3 => "index-branch",
             ContentKind::IndexLeafV3 => "index-leaf",
+            ContentKind::IndexRootV6 => "index-root",
         }
     }
 }

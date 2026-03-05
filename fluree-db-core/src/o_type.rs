@@ -363,6 +363,7 @@ impl OType {
 /// Decode routing kind — tells the reader which deserialization path to use
 /// for an `o_key` value.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[repr(u8)]
 pub enum DecodeKind {
     /// Sentinel / reserved (not a real value).
     Sentinel,
@@ -413,6 +414,39 @@ pub enum DecodeKind {
     NumBigArena,
     /// Spatial arena handle (per-predicate).
     SpatialArena,
+}
+
+impl DecodeKind {
+    /// Attempt to convert a `u8` discriminant back to a `DecodeKind`.
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Sentinel),
+            1 => Some(Self::Null),
+            2 => Some(Self::Bool),
+            3 => Some(Self::I64),
+            4 => Some(Self::F64),
+            5 => Some(Self::Date),
+            6 => Some(Self::Time),
+            7 => Some(Self::DateTime),
+            8 => Some(Self::GYear),
+            9 => Some(Self::GYearMonth),
+            10 => Some(Self::GMonth),
+            11 => Some(Self::GDay),
+            12 => Some(Self::GMonthDay),
+            13 => Some(Self::YearMonthDuration),
+            14 => Some(Self::DayTimeDuration),
+            15 => Some(Self::Duration),
+            16 => Some(Self::GeoPoint),
+            17 => Some(Self::BlankNode),
+            18 => Some(Self::IriRef),
+            19 => Some(Self::StringDict),
+            20 => Some(Self::JsonArena),
+            21 => Some(Self::VectorArena),
+            22 => Some(Self::NumBigArena),
+            23 => Some(Self::SpatialArena),
+            _ => None,
+        }
+    }
 }
 
 // ── Display + Debug ────────────────────────────────────────────────────
