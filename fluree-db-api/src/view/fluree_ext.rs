@@ -175,10 +175,14 @@ where
                     storage.clone(),
                     &snapshot.snapshot.ledger_id,
                 ));
-                let mut store =
-                    BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
-                        .await
-                        .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
+                let mut store = BinaryIndexStore::load_from_root_bytes(
+                    cs,
+                    &bytes,
+                    &cache_dir,
+                    Some(Arc::clone(&self.leaflet_cache)),
+                )
+                .await
+                .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
                 // Augment namespace codes with entries from novelty commits.
                 store.augment_namespace_codes(&snapshot.snapshot.namespace_codes);
@@ -277,15 +281,19 @@ where
                         storage.clone(),
                         &record.ledger_id,
                     ));
-                    let mut store =
-                        BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
-                            .await
-                            .map_err(|e| {
-                                ApiError::internal(format!(
-                                    "load binary index store from {}: {}",
-                                    index_cid, e
-                                ))
-                            })?;
+                    let mut store = BinaryIndexStore::load_from_root_bytes(
+                        cs,
+                        &bytes,
+                        &cache_dir,
+                        Some(Arc::clone(&self.leaflet_cache)),
+                    )
+                    .await
+                    .map_err(|e| {
+                        ApiError::internal(format!(
+                            "load binary index store from {}: {}",
+                            index_cid, e
+                        ))
+                    })?;
 
                     // Augment namespace codes with entries from novelty commits.
                     store.augment_namespace_codes(&view.snapshot.namespace_codes);

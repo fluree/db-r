@@ -132,7 +132,7 @@ const jws = encodedHeader + "." + encodedPayload + "." + encodedSignature;
 Send the JWS to Fluree:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/jose" \
   -d '{
     "payload": "eyJmcm9tIjoibXlkYjptYWluIn0...",
@@ -211,7 +211,7 @@ const verifiableCredential = await issue({
 Send the VC to Fluree:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/vc+ld+json" \
   -d '{
     "@context": ["https://www.w3.org/2018/credentials/v1"],
@@ -400,7 +400,7 @@ async function signQuery(query: object, privateKey: Uint8Array) {
 
 // Send signed request
 const signedQuery = await signQuery(query, privateKey);
-const response = await fetch('http://localhost:8090/query', {
+const response = await fetch('http://localhost:8090/v1/fluree/query', {
   method: 'POST',
   headers: { 'Content-Type': 'application/jose' },
   body: signedQuery
@@ -427,7 +427,7 @@ def sign_query(query, private_key):
 
 # Send signed request
 signed_query = sign_query(query, private_key)
-response = requests.post('http://localhost:8090/query',
+response = requests.post('http://localhost:8090/v1/fluree/query',
                         headers={'Content-Type': 'application/jose'},
                         data=signed_query)
 ```

@@ -15,7 +15,7 @@ Replace mode makes writes **idempotent**—submitting the same transaction multi
 Add `mode=replace` query parameter:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main&mode=replace" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {

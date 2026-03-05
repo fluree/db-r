@@ -517,6 +517,54 @@ mem:fact-01kjp8g2s9pfh64sbx1crx42d8 a mem:Fact ;
     mem:createdAt "2026-03-02T03:12:02.857222+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
 
+mem:fact-01kjt5bpzz5aqvv93syafs18m1 a mem:Fact ;
+    mem:content "Fast GROUP BY ?o COUNT(?s) top-k optimization is now generic for any bound predicate in POST: `PredicateGroupCountFirstsOperator` scans leaflets using uncompressed per-leaflet FIRST (p,o) metadata and uses boundary-equality (FIRST(i)==FIRST(i+1)) to add `row_count` without decoding. It consults `StatsView::get_graph_property(g_id,p_id)` at open-time: if exactly one datatype and it maps to a reserved dt_id (and is not langString), it avoids decoding Region2 entirely and emits `EncodedLit` with constant dt_id/lang_id=0; otherwise it falls back to decoding Region2 and groups by (o_kind,o_key,dt_id,lang_id) for correctness." ;
+    mem:tag "count" ;
+    mem:tag "datatype" ;
+    mem:tag "group-by" ;
+    mem:tag "leaflet" ;
+    mem:tag "optimization" ;
+    mem:tag "post-index" ;
+    mem:tag "region2" ;
+    mem:tag "sparql" ;
+    mem:tag "statsview" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T15:34:11.711499+00:00"^^xsd:dateTime .
+
+mem:fact-01kjtbbfnpgec8tk0zqjeg7sb8 a mem:Fact ;
+    mem:content "Added POST leaflet-skipping fast path for bound-object COUNT queries: `PredicateObjectCountFirstsOperator` answers `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` (single triple, bound predicate+object, no dt/lang constraint, no GROUP BY) by scanning POST leaflets using uncompressed FIRST (p,o) metadata and boundary-equality to add `row_count` without decoding; falls back to decoding Region1 for partial leaflets. Wired via `detect_predicate_object_count` in `execute/operator_tree.rs`, and preserves existing loose semantics when `tp.dtc` is None (ignores dt/lang)." ;
+    mem:tag "count" ;
+    mem:tag "fast-path" ;
+    mem:tag "leaflet" ;
+    mem:tag "optimization" ;
+    mem:tag "post-index" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T17:18:55.670244+00:00"^^xsd:dateTime .
+
+mem:decision-01kjtd4ddbk45wadcafd8tfea7 a mem:Decision ;
+    mem:content "When a novelty overlay is present, the fast POST leaflet-skipping operators (`PredicateGroupCountFirstsOperator`, `PredicateObjectCountFirstsOperator`) can stay on the fast base path and apply an exact overlay delta by translating overlay flakes to `OverlayOp` IDs and simulating per-fact state transitions in time order. We infer initial presence from the first op (first retract => existed pre-overlay) and adjust counts on assert/retract transitions; this avoids falling back to `range_with_overlay` for overlays." ;
+    mem:tag "count" ;
+    mem:tag "leaflet" ;
+    mem:tag "novelty" ;
+    mem:tag "overlay" ;
+    mem:tag "performance" ;
+    mem:tag "post" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:createdAt "2026-03-03T17:50:01.131764+00:00"^^xsd:dateTime ;
+    mem:rationale "Preserve the leaflet FIRST-skipping performance while still producing correct results under novelty, given the invariant that overlay retractions only target facts that existed at the time." ;
+    mem:alternatives "Always fall back when overlay/policy/history is active; use BinaryCursor merge for overlay even in fast-path; do per-assert base existence checks." .
+
 mem:fact-01kjte0r70p5ppv4cjkfyyedpe a mem:Fact ;
     mem:content "SPARQL Testsuite: Critical Gotchas & How to Run\n\n- **MUST `cd testsuite-sparql/` first** — it's in workspace `exclude = []` (root Cargo.toml line 41-42), so `cargo test -p testsuite-sparql` from workspace root FAILS with \"did not match any packages\"\n- Syntax tests run by default (`cargo test`); eval tests are `#[ignore]` and need `--include-ignored`\n- Each test runs in a subprocess (`run-w3c-test` binary) with 5s (syntax) / 10s (eval) timeouts — panics/hangs show as \"Subprocess error\"\n- W3C test data lives in git submodule `testsuite-sparql/rdf-tests/` (from github.com/w3c/rdf-tests)\n- W3C URL→local path: strip `https://w3c.github.io/rdf-tests/`, prepend `testsuite-sparql/rdf-tests/`\n- Tests declared in `tests/w3c_sparql.rs` — each function calls `check_testsuite(manifest_url, ignored_tests)`\n- Result comparison is isomorphic (order-independent, blank-node-relabeling-tolerant)\n- Key commands (from testsuite-sparql/):\n  - `make test-eval-cat CAT=functions` — single eval category\n  - `make count-eval` — quick pass/fail summary\n  - `make report-eval-json` — JSON report (best for analysis) → report-eval.json\n  - `make show-query TEST=strdt01.rq` — read test query file\n  - `make report-10-json` — SPARQL 1.0 JSON report → report-10.json\n- `make investigate` only searches syntax `report.txt`, NOT eval `report-eval.txt` — use `make investigate-eval` or grep manually for eval failures\n- JSON report format: `{ total, passed, failed, pass_rate, tests: [{ test_id, status, error, timeout }] }`\n- SPARQL 1.1 eval categories: aggregates, bind, bindings, cast, construct, exists, functions, grouping, negation, project_expression, property_path, subquery" ;
     mem:tag "commands" ;

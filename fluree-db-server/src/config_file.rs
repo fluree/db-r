@@ -60,7 +60,7 @@ pub struct ServerFileConfig {
     pub log_level: Option<String>,
     pub cors_enabled: Option<bool>,
     pub body_limit: Option<usize>,
-    pub cache_max_entries: Option<usize>,
+    pub cache_max_mb: Option<usize>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -369,7 +369,7 @@ pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
     "log_level",
     "cors_enabled",
     "body_limit",
-    "cache_max_entries",
+    "cache_max_mb",
     "indexing_enabled",
     "reindex_min_bytes",
     "reindex_max_bytes",
@@ -466,9 +466,9 @@ pub fn apply_to_server_config(
             config.body_limit = v;
         }
     }
-    if is_default("cache_max_entries") {
-        if let Some(v) = file.cache_max_entries {
-            config.cache_max_entries = v;
+    if is_default("cache_max_mb") {
+        if let Some(v) = file.cache_max_mb {
+            config.cache_max_mb = Some(v);
         }
     }
 
@@ -860,7 +860,7 @@ listen_addr = "127.0.0.1:9090"
 storage_path = "/var/lib/fluree"
 log_level = "debug"
 cors_enabled = false
-cache_max_entries = 5000
+cache_max_mb = 5000
 
 [server.indexing]
 enabled = true
@@ -882,7 +882,7 @@ default_policy_class = "ex:DefaultPolicy"
         assert_eq!(server.storage_path.as_deref(), Some("/var/lib/fluree"));
         assert_eq!(server.log_level.as_deref(), Some("debug"));
         assert_eq!(server.cors_enabled, Some(false));
-        assert_eq!(server.cache_max_entries, Some(5000));
+        assert_eq!(server.cache_max_mb, Some(5000));
 
         let idx = server.indexing.unwrap();
         assert_eq!(idx.enabled, Some(true));

@@ -40,12 +40,12 @@ Submit Turtle data via HTTP API:
 
 ```bash
 # Insert (pure insert, fast path)
-curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   --data-binary '@data.ttl'
 
 # Or upsert (replace existing values)
-curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   --data-binary '@data.ttl'
 ```
@@ -192,7 +192,7 @@ Equivalent to linked list structure in RDF.
 ### From File
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   --data-binary '@large-dataset.ttl'
 ```
@@ -200,7 +200,7 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
 ### From URL
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   -d "@https://example.org/data.ttl"
 ```
@@ -215,7 +215,7 @@ split -l 10000 large-dataset.ttl batch-
 
 # Import batches
 for file in batch-*; do
-  curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+  curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
     -H "Content-Type: text/turtle" \
     --data-binary "@$file"
   sleep 1  # Allow indexing time
@@ -514,7 +514,7 @@ TriG is only supported on the **upsert** endpoint (or transact). Use the `applic
 
 ```bash
 # TriG requires upsert (for named graph support)
-curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   --data-binary '@data.trig'
 ```

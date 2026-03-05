@@ -492,12 +492,6 @@ where
     S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
-    /// Get the shared leaflet cache from LedgerManager (if caching is enabled).
-    fn leaflet_cache(&self) -> Option<Arc<fluree_db_binary_index::LeafletCache>> {
-        self.ledger_manager()
-            .and_then(|lm| lm.leaflet_cache().cloned())
-    }
-
     /// Select the best BM25 snapshot for a given `as_of_t`.
     ///
     /// Loads the BM25 manifest from CAS and selects the snapshot with the
@@ -596,7 +590,7 @@ where
 
             for lr in &leaflet_refs {
                 let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
-                if let Some(cached) = cache.as_ref().and_then(|c| c.get_bm25_leaflet(key)) {
+                if let Some(cached) = cache.get_bm25_leaflet(key) {
                     hits.push((lr.clone(), cached));
                 } else {
                     misses.push(lr.clone());
@@ -620,10 +614,8 @@ where
             // Cache + deserialize fetched leaflets (zero-copy Vec → Arc)
             for (lr, raw) in fetched {
                 let bytes: Arc<[u8]> = raw.into_boxed_slice().into();
-                if let Some(c) = &cache {
-                    let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
-                    c.insert_bm25_leaflet(key, Arc::clone(&bytes));
-                }
+                let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+                cache.insert_bm25_leaflet(key, Arc::clone(&bytes));
                 let (first_idx, lists) = deserialize_posting_leaflet(&bytes)?;
                 for (i, pl) in lists.into_iter().enumerate() {
                     posting_lists[first_idx as usize + i] = pl;
@@ -731,7 +723,7 @@ where
 
         for lr in &needed_leaflets {
             let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
-            if let Some(cached) = cache.as_ref().and_then(|c| c.get_bm25_leaflet(key)) {
+            if let Some(cached) = cache.get_bm25_leaflet(key) {
                 hits.push((lr.clone(), cached));
             } else {
                 misses.push(lr.clone());
@@ -755,10 +747,8 @@ where
         // Cache + deserialize fetched leaflets (zero-copy Vec → Arc)
         for (lr, raw) in fetched {
             let bytes: Arc<[u8]> = raw.into_boxed_slice().into();
-            if let Some(c) = &cache {
-                let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
-                c.insert_bm25_leaflet(key, Arc::clone(&bytes));
-            }
+            let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+            cache.insert_bm25_leaflet(key, Arc::clone(&bytes));
             let (first_idx, lists) = deserialize_posting_leaflet(&bytes)?;
             for (i, pl) in lists.into_iter().enumerate() {
                 posting_lists[first_idx as usize + i] = pl;

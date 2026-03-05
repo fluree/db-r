@@ -576,7 +576,7 @@ Managers can access data of their reports.
 Enable policy tracing to see evaluation:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```

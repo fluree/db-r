@@ -15,8 +15,9 @@
 //!   total_rows: u64
 //!   first_key: SortKey (28 bytes)
 //!   last_key:  SortKey (28 bytes)
-//!   [LeafletDirectory: leaflet_count × 28 bytes]
-//!     offset: u64, compressed_len: u32, row_count: u32, first_s_id: u64, first_p_id: u32
+//!   [LeafletDirectory: leaflet_count × 40 bytes]
+//!     offset: u64, compressed_len: u32, row_count: u32,
+//!     first_s_id: u64, first_p_id: u32, first_o_kind: u8, _pad: [u8;3], first_o_key: u64
 //! [Leaflet data: concatenated encoded leaflets]
 //! ```
 
@@ -32,13 +33,17 @@ use std::{fs, io::Write};
 pub const LEAF_MAGIC: [u8; 4] = *b"FLI2";
 
 /// Current leaf file format version.
-pub const LEAF_VERSION: u8 = 2;
+pub const LEAF_VERSION: u8 = 3;
+/// Previous supported leaf file format version (directory lacks first_o_*).
+pub const LEAF_VERSION_V2: u8 = 2;
 
 /// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(26) + last_key(26) = 68.
 pub const LEAF_HEADER_FIXED: usize = 68;
 
 /// Per-leaflet directory entry: offset(8) + compressed_len(4) + row_count(4) + first_s_id(8) + first_p_id(4) = 28.
-pub const LEAFLET_DIR_ENTRY: usize = 28;
+pub const LEAFLET_DIR_ENTRY_V2: usize = 28;
+/// Per-leaflet directory entry (v3): adds first_o_kind (u8) + pad(3) + first_o_key (u64) = 40 bytes.
+pub const LEAFLET_DIR_ENTRY: usize = 40;
 
 // ============================================================================
 // SortKey: compact key for leaf routing
@@ -110,6 +115,8 @@ struct EncodedLeaflet {
     row_count: u32,
     first_s_id: u64,
     first_p_id: u32,
+    first_o_kind: u8,
+    first_o_key: u64,
 }
 
 // ============================================================================
@@ -411,6 +418,8 @@ impl LeafWriter {
         let row_count = self.record_buf.len() as u32;
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
+        let first_o_kind = self.record_buf[0].o_kind;
+        let first_o_key = self.record_buf[0].o_key;
 
         // Build R3 from externally-provided history entries (non-winning
         // duplicates from merge dedup). Only facts with multi-version history
@@ -441,6 +450,8 @@ impl LeafWriter {
             row_count,
             first_s_id,
             first_p_id,
+            first_o_kind,
+            first_o_key,
         });
 
         if self.current_leaflets.len() >= self.leaflets_per_leaf {
@@ -515,6 +526,9 @@ impl LeafWriter {
             write_hashed(&l.row_count.to_le_bytes())?;
             write_hashed(&l.first_s_id.to_le_bytes())?;
             write_hashed(&l.first_p_id.to_le_bytes())?;
+            write_hashed(&[l.first_o_kind])?;
+            write_hashed(&[0u8; 3])?;
+            write_hashed(&l.first_o_key.to_le_bytes())?;
             offset += l.data.len() as u64;
         }
 
@@ -625,6 +639,10 @@ pub struct LeafletDirEntry {
     pub row_count: u32,
     pub first_s_id: u64,
     pub first_p_id: u32,
+    /// Present for leaf version >= 3. `None` for v2 leaves.
+    pub first_o_kind: Option<u8>,
+    /// Present for leaf version >= 3. `None` for v2 leaves.
+    pub first_o_key: Option<u64>,
 }
 
 /// Read a leaf file header + leaflet directory (no leaflet data).
@@ -642,7 +660,7 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
         ));
     }
     let version = data[4];
-    if version != LEAF_VERSION {
+    if version != LEAF_VERSION && version != LEAF_VERSION_V2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("leaf file: unsupported version {}", version),
@@ -669,7 +687,12 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
     let last_key = SortKey::read_from(&data[44..72]);
 
     let dir_start = LEAF_HEADER_FIXED;
-    let dir_end = dir_start + leaflet_count as usize * LEAFLET_DIR_ENTRY;
+    let entry_size = if version >= 3 {
+        LEAFLET_DIR_ENTRY
+    } else {
+        LEAFLET_DIR_ENTRY_V2
+    };
+    let dir_end = dir_start + leaflet_count as usize * entry_size;
     if dir_end > data.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -680,14 +703,23 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
     let mut leaflet_dir = Vec::with_capacity(leaflet_count as usize);
     let mut pos = dir_start;
     for _ in 0..leaflet_count {
+        let (first_o_kind, first_o_key) = if version >= 3 {
+            let k = data[pos + 28];
+            let o = u64::from_le_bytes(data[pos + 32..pos + 40].try_into().unwrap());
+            (Some(k), Some(o))
+        } else {
+            (None, None)
+        };
         leaflet_dir.push(LeafletDirEntry {
             offset: u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()),
             compressed_len: u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap()),
             row_count: u32::from_le_bytes(data[pos + 12..pos + 16].try_into().unwrap()),
             first_s_id: u64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap()),
             first_p_id: u32::from_le_bytes(data[pos + 24..pos + 28].try_into().unwrap()),
+            first_o_kind,
+            first_o_key,
         });
-        pos += LEAFLET_DIR_ENTRY;
+        pos += entry_size;
     }
 
     Ok(LeafFileHeader {

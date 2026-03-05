@@ -16,6 +16,17 @@ pub enum OutputFormatKind {
     Tsv,
 }
 
+impl std::fmt::Display for OutputFormatKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json => f.write_str("json"),
+            Self::Table => f.write_str("table"),
+            Self::Csv => f.write_str("csv"),
+            Self::Tsv => f.write_str("tsv"),
+        }
+    }
+}
+
 /// Result of formatting: the rendered string plus the total row count.
 pub struct FormatOutput {
     pub text: String,
@@ -230,8 +241,7 @@ pub fn format_result(
             // TSV/CSV should be handled before reaching this function (via QueryResult methods).
             // If we get here, the caller didn't have access to the raw QueryResult.
             Err(crate::error::CliError::Usage(format!(
-                "{} format requires direct access to query results (not available for remote queries)",
-                if matches!(format, OutputFormatKind::Csv) { "CSV" } else { "TSV" }
+                "{format} format requires direct access to query results (not available for remote queries)",
             )))
         }
     }

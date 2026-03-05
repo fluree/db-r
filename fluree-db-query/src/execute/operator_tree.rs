@@ -7,6 +7,9 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::fast_group_count_firsts::{
+    PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
+};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
@@ -15,7 +18,7 @@ use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
-use crate::parse::ParsedQuery;
+use crate::parse::{ParsedQuery, QueryOutput};
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
@@ -26,7 +29,173 @@ use fluree_db_core::StatsView;
 use std::sync::Arc;
 
 use super::dependency::compute_variable_deps;
-use super::where_plan::build_where_operators;
+use super::where_plan::build_where_operators_with_needed;
+use super::where_plan::collect_var_stats;
+
+fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> bool {
+    if options.group_by.len() != 1 {
+        return false;
+    }
+    let gb = options.group_by[0];
+
+    // Strict: only a single triple pattern plus order-preserving operators (FILTER/BIND).
+    let mut triple: Option<&crate::triple::TriplePattern> = None;
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => {
+                if triple.is_some() {
+                    return false;
+                }
+                triple = Some(tp);
+            }
+            Pattern::Filter(_) | Pattern::Bind { .. } => {}
+            _ => return false,
+        }
+    }
+    let Some(tp) = triple else {
+        return false;
+    };
+
+    // Must be ?s <p> ?o and group key must be either ?s or ?o.
+    if !tp.p_bound() {
+        return false;
+    }
+    let Ref::Var(sv) = &tp.s else {
+        return false;
+    };
+    let Term::Var(ov) = &tp.o else {
+        return false;
+    };
+    gb == *sv || gb == *ov
+}
+
+fn detect_predicate_group_by_object_count_topk(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId, VarId, VarId, usize)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if tp.dtc.is_some() {
+        return None;
+    }
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
+
+    // GROUP BY ?object
+    if options.group_by.len() != 1 || options.group_by[0] != *o_var {
+        return None;
+    }
+    // Exactly one COUNT aggregate on ?subject (or COUNT(*) which is equivalent here).
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+    // ORDER BY DESC(?count) and LIMIT k required so we can do top-k directly.
+    let limit = options.limit?;
+    if options.order_by.len() != 1 {
+        return None;
+    }
+    let ob = &options.order_by[0];
+    if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
+        return None;
+    }
+    Some((pred, *s_var, *o_var, agg.output_var, limit))
+}
+
+fn detect_predicate_object_count(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId, crate::triple::Term, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+
+    // Must be ?s <p> <o> (subject var, predicate bound, object bound).
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if matches!(&tp.o, crate::triple::Term::Var(_)) {
+        return None;
+    }
+    // Loose semantics only (no explicit dt/lang constraint).
+    if tp.dtc.is_some() {
+        return None;
+    }
+    // No GROUP BY.
+    if !options.group_by.is_empty() {
+        return None;
+    }
+    // Exactly one COUNT aggregate on ?s (or COUNT(*) which is equivalent here).
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+
+    // SELECT must be exactly the count output var.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((pred, *s_var, tp.o.clone(), agg.output_var))
+}
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
@@ -186,6 +355,64 @@ pub fn build_operator_tree(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
+    // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
+    //
+    // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.
+    if let Some((pred, s_var, o_var, count_var, limit)) =
+        detect_predicate_group_by_object_count_topk(query, options)
+    {
+        return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
+            s_var,
+            o_var,
+            count_var,
+            pred,
+            limit,
+            stats.clone(),
+        )));
+    }
+
+    // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
+    if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
+        let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
+            pred,
+            s_var,
+            obj,
+            count_var,
+            stats.clone(),
+        ));
+
+        // ORDER BY
+        if !options.order_by.is_empty() {
+            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        }
+
+        // PROJECT
+        if let Some(vars) = query.output.select_vars() {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
+        }
+
+        // DISTINCT
+        if options.distinct {
+            operator = Box::new(DistinctOperator::new(operator));
+        }
+
+        // OFFSET
+        if let Some(offset) = options.offset {
+            if offset > 0 {
+                operator = Box::new(OffsetOperator::new(operator, offset));
+            }
+        }
+
+        // LIMIT
+        if let Some(limit) = options.limit {
+            operator = Box::new(LimitOperator::new(operator, limit));
+        }
+
+        return Ok(operator);
+    }
+
     // Fast-path: stats-based count-by-predicate query
     // This avoids scanning all triples when we can answer directly from IndexStats.
     if let Some(ref stats_view) = stats {
@@ -278,7 +505,26 @@ pub fn build_operator_tree(
     let required_where_vars = variable_deps
         .as_ref()
         .map(|d| d.required_where_vars.as_slice());
-    let mut operator = build_where_operators(&query.patterns, stats, required_where_vars)?;
+    // needed-vars for WHERE planning: derived from variable_deps when available,
+    // otherwise treat all WHERE-bound vars as needed (wildcard/boolean/construct cases).
+    let mut needed_where_vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    if let Some(req) = required_where_vars {
+        needed_where_vars.extend(req.iter().copied());
+    } else {
+        let mut counts: std::collections::HashMap<VarId, usize> = std::collections::HashMap::new();
+        let mut vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+        collect_var_stats(&query.patterns, &mut counts, &mut vars);
+        vars.extend(counts.keys().copied());
+        needed_where_vars = vars;
+    }
+
+    let mut operator = build_where_operators_with_needed(
+        &query.patterns,
+        stats,
+        &needed_where_vars,
+        &options.group_by,
+        required_where_vars,
+    )?;
 
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
@@ -374,9 +620,11 @@ pub fn build_operator_tree(
 
         if use_streaming {
             // Streaming path: O(groups) memory
+            let partitioned = detect_partitioned_group_by(query, options);
             tracing::debug!(
                 group_by_count = options.group_by.len(),
                 agg_count = streaming_specs.len(),
+                partitioned,
                 "using streaming GroupAggregateOperator"
             );
             // GroupAggregateOperator replaces both GroupBy and Aggregate,
@@ -387,6 +635,7 @@ pub fn build_operator_tree(
                     options.group_by.clone(),
                     streaming_specs,
                     None, // graph_view - will be set from context if needed
+                    partitioned,
                 )
                 .with_out_schema(
                     variable_deps

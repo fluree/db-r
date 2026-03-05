@@ -2391,6 +2391,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bs58",
+ "bytes",
  "clap",
  "clap_complete",
  "colored",

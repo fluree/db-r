@@ -6,7 +6,6 @@
 
 use crate::ast::expr::{AggregateFunction, Expression};
 use crate::ast::query::{SelectClause, SelectVariable, SelectVariables};
-use crate::span::SourceSpan;
 
 use fluree_db_query::aggregate::{AggregateFn, AggregateSpec};
 use fluree_db_query::parse::encode::IriEncoder;
@@ -18,21 +17,27 @@ use std::sync::Arc;
 use super::{LowerError, LoweringContext, Result};
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
-    pub(super) fn aggregate_key(
-        &self,
-        function: &AggregateFunction,
-        expr: &Option<Box<Expression>>,
-        distinct: bool,
-        separator: &Option<Arc<str>>,
-        span: SourceSpan,
-    ) -> Result<String> {
+    pub(super) fn aggregate_key(&self, agg: &Expression) -> Result<String> {
+        let Expression::Aggregate {
+            function,
+            expr,
+            distinct,
+            separator,
+            span,
+        } = agg
+        else {
+            return Err(LowerError::not_implemented(
+                "aggregate_key called on non-Aggregate expression",
+                agg.span(),
+            ));
+        };
         let input = match expr {
             Some(inner) => match inner.unwrap_bracketed() {
                 Expression::Var(var) => format!("?{}", var.name),
                 _ => {
                     return Err(LowerError::not_implemented(
                         "Aggregate with expression input",
-                        span,
+                        *span,
                     ))
                 }
             },
@@ -57,20 +62,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if let SelectVariables::Explicit(vars) = &select.variables {
             for var in vars {
                 if let SelectVariable::Expr {
-                    expr:
-                        Expression::Aggregate {
-                            function,
-                            expr: agg_expr,
-                            distinct,
-                            separator,
-                            span,
-                        },
+                    expr: expr @ Expression::Aggregate { .. },
                     alias,
                     ..
                 } = var
                 {
-                    let key =
-                        self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
+                    let key = self.aggregate_key(expr)?;
                     let var_id = self.register_var(alias);
                     aliases.insert(key, var_id);
                 }
@@ -82,20 +79,30 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     pub(super) fn aggregate_spec_from_expr(
         &mut self,
-        function: &AggregateFunction,
-        expr: &Option<Box<Expression>>,
-        distinct: bool,
-        separator: &Option<Arc<str>>,
-        span: SourceSpan,
+        agg: &Expression,
         output_var: VarId,
     ) -> Result<AggregateSpec> {
+        let Expression::Aggregate {
+            function,
+            expr,
+            distinct,
+            separator,
+            span,
+        } = agg
+        else {
+            return Err(LowerError::not_implemented(
+                "aggregate_spec_from_expr called on non-Aggregate expression",
+                agg.span(),
+            ));
+        };
+
         let (input_var, agg_fn) = match expr {
             Some(inner) => match inner.unwrap_bracketed() {
                 Expression::Var(v) => {
                     let var_id = self.register_var(v);
                     let fn_kind = self.map_aggregate_function(
                         function,
-                        distinct,
+                        *distinct,
                         separator.as_ref().map(|s| s.as_ref()),
                     );
                     (Some(var_id), fn_kind)
@@ -103,7 +110,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 _ => {
                     return Err(LowerError::not_implemented(
                         "Aggregate with expression input",
-                        span,
+                        *span,
                     ))
                 }
             },
@@ -114,7 +121,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         // variant (with its own streaming HashSet state), so clear the distinct flag
         // to avoid a redundant double-dedup in AggregateOperator. All other functions
         // (SUM, AVG, MIN, MAX, etc.) use the flag for dedup at execution time.
-        let distinct = distinct && !matches!(agg_fn, AggregateFn::CountDistinct);
+        let distinct = *distinct && !matches!(agg_fn, AggregateFn::CountDistinct);
 
         Ok(AggregateSpec {
             function: agg_fn,
@@ -131,21 +138,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         aggregates: &mut Vec<AggregateSpec>,
     ) -> Result<()> {
         match expr.unwrap_bracketed() {
-            Expression::Aggregate {
-                function,
-                expr: agg_expr,
-                distinct,
-                separator,
-                span,
-            } => {
-                let key = self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
+            agg @ Expression::Aggregate { .. } => {
+                let key = self.aggregate_key(agg)?;
                 if !aliases.contains_key(&key) {
                     let output_var = self
                         .vars
                         .get_or_insert(&format!("?__having_agg_{}", aliases.len()));
-                    let spec = self.aggregate_spec_from_expr(
-                        function, agg_expr, *distinct, separator, *span, output_var,
-                    )?;
+                    let spec = self.aggregate_spec_from_expr(agg, output_var)?;
                     aliases.insert(key, output_var);
                     aggregates.push(spec);
                 }
@@ -242,22 +241,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if let SelectVariables::Explicit(vars) = &select.variables {
             for var in vars {
                 if let SelectVariable::Expr {
-                    expr:
-                        Expression::Aggregate {
-                            function,
-                            expr: agg_expr,
-                            distinct,
-                            separator,
-                            span,
-                        },
+                    expr: expr @ Expression::Aggregate { .. },
                     alias,
                     ..
                 } = var
                 {
                     let output_var = self.register_var(alias);
-                    let spec = self.aggregate_spec_from_expr(
-                        function, agg_expr, *distinct, separator, *span, output_var,
-                    )?;
+                    let spec = self.aggregate_spec_from_expr(expr, output_var)?;
                     aggregates.push(spec);
                 }
             }
