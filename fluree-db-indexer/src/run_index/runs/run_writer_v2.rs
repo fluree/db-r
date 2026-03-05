@@ -272,7 +272,7 @@ mod tests {
 
         let result = writer.finish().unwrap();
         assert_eq!(result.total_records, 100);
-        assert!(result.run_files.len() >= 1);
+        assert!(!result.run_files.is_empty());
         assert_eq!(result.min_t, 1);
         assert_eq!(result.max_t, 100);
 

@@ -167,7 +167,7 @@ mod tests {
     use crate::run_index::runs::spool::SpoolWriter;
     use fluree_db_binary_index::format::leaf_v3::{decode_leaf_dir_v3, decode_leaf_header_v3};
     use fluree_db_binary_index::format::run_record::RunRecord;
-    use fluree_db_core::o_type::OType;
+
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
 

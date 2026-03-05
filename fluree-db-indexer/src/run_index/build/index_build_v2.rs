@@ -382,7 +382,7 @@ mod tests {
         ];
         // Already sorted for POST.
         use fluree_db_binary_index::format::run_record_v2::cmp_v2_post;
-        records.sort_by(|a, b| cmp_v2_post(a, b));
+        records.sort_by(cmp_v2_post);
 
         write_run_file_v2(
             &run_dir.join("run_00000.frn"),
@@ -451,7 +451,7 @@ mod tests {
             make_rec(0, 4, 2, OType::XSD_STRING.as_u16(), 20, 4),
         ];
         use fluree_db_binary_index::format::run_record_v2::cmp_v2_opst;
-        records.sort_by(|a, b| cmp_v2_opst(a, b));
+        records.sort_by(cmp_v2_opst);
 
         write_run_file_v2(
             &run_dir.join("run_00000.frn"),

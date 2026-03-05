@@ -184,7 +184,7 @@ mod tests {
             make_rec(1, 1, OType::XSD_INTEGER.as_u16(), 10, 1),
             make_rec(2, 1, OType::XSD_STRING.as_u16(), 20, 2),
         ];
-        records.sort_by(|a, b| cmp_v2_spot(a, b));
+        records.sort_by(cmp_v2_spot);
 
         write_run_file_v2(&path, &records, RunSortOrder::Spot, 1, 3).unwrap();
 

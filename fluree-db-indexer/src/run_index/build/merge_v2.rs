@@ -224,7 +224,7 @@ mod tests {
 
         // Sort them.
         let mut recs = vec![r1, r2];
-        recs.sort_by(|a, b| cmp_v2_spot(a, b));
+        recs.sort_by(cmp_v2_spot);
 
         let s = VecSource::new(recs);
         let mut merge = KWayMergeV2::new(vec![s], cmp_v2_spot).unwrap();
