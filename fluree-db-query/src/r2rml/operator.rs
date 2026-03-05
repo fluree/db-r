@@ -42,7 +42,7 @@ use fluree_db_r2rml::materialize::{
     get_join_key_from_batch, materialize_object_from_batch, materialize_subject_from_batch, RdfTerm,
 };
 use fluree_db_tabular::ColumnBatch;
-use fluree_vocab::{rdf, xsd};
+use fluree_vocab::xsd;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -140,44 +140,33 @@ impl R2rmlScanOperator {
                 let blank_iri = format!("_:{}", id);
                 Ok(Binding::iri(blank_iri))
             }
-            RdfTerm::Literal {
-                value,
-                datatype,
-                language,
-            } => {
-                // Convert to FlakeValue and create Lit binding
+            RdfTerm::Literal { value, dtc } => {
                 use fluree_db_core::FlakeValue;
+                use fluree_vocab::UnresolvedDatatypeConstraint;
 
                 let val = FlakeValue::String(value.clone());
 
-                // Fallback Sid for xsd:string (namespace 2 is xsd in Fluree)
-                let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
-
-                // Determine datatype Sid
-                let dt_sid = if let Some(dt_iri) = datatype {
-                    ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
-                        // Default to xsd:string if datatype not found
-                        ctx.snapshot
+                match dtc {
+                    Some(UnresolvedDatatypeConstraint::LangTag(lang)) => {
+                        Ok(Binding::lit_lang(val, lang.as_ref()))
+                    }
+                    Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
+                        let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
+                        let dt_sid = ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
+                            ctx.snapshot
+                                .encode_iri(xsd::STRING)
+                                .unwrap_or(xsd_string_fallback)
+                        });
+                        Ok(Binding::lit(val, dt_sid))
+                    }
+                    None => {
+                        let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
+                        let dt_sid = ctx
+                            .snapshot
                             .encode_iri(xsd::STRING)
-                            .unwrap_or(xsd_string_fallback)
-                    })
-                } else if language.is_some() {
-                    // Language-tagged strings use rdf:langString
-                    ctx.snapshot
-                        .encode_iri(rdf::LANG_STRING)
-                        .unwrap_or(xsd_string_fallback)
-                } else {
-                    // Plain literal defaults to xsd:string
-                    ctx.snapshot
-                        .encode_iri(xsd::STRING)
-                        .unwrap_or(xsd_string_fallback)
-                };
-
-                // Create literal binding with optional language tag
-                if let Some(lang) = language {
-                    Ok(Binding::lit_lang(val, lang.as_str()))
-                } else {
-                    Ok(Binding::lit(val, dt_sid))
+                            .unwrap_or(xsd_string_fallback);
+                        Ok(Binding::lit(val, dt_sid))
+                    }
                 }
             }
         }
