@@ -47,40 +47,25 @@ fn is_variable(s: &str) -> bool {
 /// - Arithmetic: ["+", "?x", 1], ["-", "?a", "?b"]
 /// - Functions: ["strlen", "?name"], ["contains", "?str", "foo"]
 pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedExpression> {
-    match value {
-        // String: variable or string constant
-        JsonValue::String(s) => {
-            if is_variable(s) {
-                Ok(UnresolvedExpression::var(s))
-            } else {
-                Ok(UnresolvedExpression::string(s))
-            }
-        }
-        // Numbers
-        JsonValue::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(UnresolvedExpression::long(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(UnresolvedExpression::double(f))
-            } else {
-                Err(ParseError::InvalidFilter(format!(
-                    "unsupported number in filter: {}",
-                    n
-                )))
-            }
-        }
-        // Booleans
-        JsonValue::Bool(b) => Ok(UnresolvedExpression::boolean(*b)),
-        // Arrays: operations
-        JsonValue::Array(arr) => parse_filter_array(arr),
-        // Null and objects are not supported
-        JsonValue::Null => Err(ParseError::InvalidFilter(
-            "null not supported in filter expressions".to_string(),
-        )),
-        JsonValue::Object(_) => Err(ParseError::InvalidFilter(
-            "objects not supported in filter expressions".to_string(),
-        )),
-    }
+    parse_filter_expr_inner(value, parse_filter_array)
+}
+
+/// Parse a filter expression with EXISTS/NOT EXISTS support.
+///
+/// Like `parse_filter_expr` but recognizes `["exists", ...]` and `["not-exists", ...]`
+/// inside compound expressions (e.g., `["or", ["=", "?x", "?y"], ["not-exists", {...}]]`).
+/// The `pattern_parser` callback handles parsing the node-map patterns inside EXISTS.
+pub fn parse_filter_expr_ctx<'a>(
+    value: &JsonValue,
+    pattern_parser: PatternParserFn<'a>,
+) -> Result<UnresolvedExpression> {
+    parse_filter_expr_inner(value, |arr| {
+        dispatch_filter_op(
+            arr,
+            |v| parse_filter_expr_ctx(v, pattern_parser),
+            Some(pattern_parser),
+        )
+    })
 }
 
 /// Parse a filter expression array (operation)
@@ -100,91 +85,13 @@ pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedExpression> {
 /// ["strlen", "?name"]
 /// ```
 pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
-    if arr.is_empty() {
-        return Err(ParseError::InvalidFilter(
-            "empty array in filter expression".to_string(),
-        ));
-    }
-
-    // First element must be the operator/function name
-    let op_name = arr[0]
-        .as_str()
-        .ok_or_else(|| ParseError::InvalidFilter("filter operator must be a string".to_string()))?;
-
-    let op_lower = op_name.to_lowercase();
-    let args = &arr[1..];
-
-    // Handle based on operator type
-    match op_lower.as_str() {
-        // Comparison operators
-        op @ ("=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">="
-        | "ge") => {
-            let canonical = filter_common::normalize_op(op);
-            filter_common::build_call(args, canonical, parse_filter_expr, 1, "comparison operator")
-        }
-
-        // Logical operators
-        "and" => filter_common::build_and(args, parse_filter_expr),
-        "or" => filter_common::build_or(args, parse_filter_expr),
-        "not" => filter_common::build_not(args, parse_filter_expr),
-
-        "in" | "not-in" | "notin" => {
-            if args.len() < 2 {
-                return Err(ParseError::InvalidFilter(
-                    "'in' requires at least 2 arguments".to_string(),
-                ));
-            }
-            let expr = parse_filter_expr(&args[0])?;
-            let negated = matches!(op_lower.as_str(), "not-in" | "notin");
-            let values: Result<Vec<_>> = if args.len() == 2 {
-                if let JsonValue::Array(list) = &args[1] {
-                    list.iter().map(parse_filter_expr).collect()
-                } else {
-                    vec![parse_filter_expr(&args[1])].into_iter().collect()
-                }
-            } else {
-                args[1..].iter().map(parse_filter_expr).collect()
-            };
-            Ok(UnresolvedExpression::In {
-                expr: Box::new(expr),
-                values: values?,
-                negated,
-            })
-        }
-
-        // Arithmetic operators
-        op @ ("+" | "add" | "*" | "mul" | "/" | "div") => {
-            let canonical = filter_common::normalize_op(op);
-            filter_common::build_call(args, canonical, parse_filter_expr, 1, "arithmetic operator")
-        }
-        "-" | "sub" => {
-            if args.len() == 1 {
-                // Unary negation
-                filter_common::build_call(args, "negate", parse_filter_expr, 1, "unary negation")
-            } else {
-                filter_common::build_call(args, "-", parse_filter_expr, 1, "arithmetic operator")
-            }
-        }
-
-        // Everything else is a function call
-        _ => {
-            let fn_args: Result<Vec<_>> = args.iter().map(parse_filter_expr).collect();
-            Ok(UnresolvedExpression::Call {
-                func: Arc::from(op_name),
-                args: fn_args?,
-            })
-        }
-    }
+    dispatch_filter_op(arr, parse_filter_expr, None)
 }
 
-/// Parse a filter expression with EXISTS/NOT EXISTS support.
-///
-/// Like `parse_filter_expr` but recognizes `["exists", ...]` and `["not-exists", ...]`
-/// inside compound expressions (e.g., `["or", ["=", "?x", "?y"], ["not-exists", {...}]]`).
-/// The `pattern_parser` callback handles parsing the node-map patterns inside EXISTS.
-pub fn parse_filter_expr_ctx<'a>(
+/// Shared expression parser — dispatches array values to `parse_array`, handles all other types.
+fn parse_filter_expr_inner(
     value: &JsonValue,
-    pattern_parser: PatternParserFn<'a>,
+    parse_array: impl Fn(&[JsonValue]) -> Result<UnresolvedExpression>,
 ) -> Result<UnresolvedExpression> {
     match value {
         JsonValue::String(s) => {
@@ -207,7 +114,7 @@ pub fn parse_filter_expr_ctx<'a>(
             }
         }
         JsonValue::Bool(b) => Ok(UnresolvedExpression::boolean(*b)),
-        JsonValue::Array(arr) => parse_filter_array_ctx(arr, pattern_parser),
+        JsonValue::Array(arr) => parse_array(arr),
         JsonValue::Null => Err(ParseError::InvalidFilter(
             "null not supported in filter expressions".to_string(),
         )),
@@ -217,10 +124,15 @@ pub fn parse_filter_expr_ctx<'a>(
     }
 }
 
-/// Context-aware variant of `parse_filter_array` that handles EXISTS/NOT EXISTS.
-fn parse_filter_array_ctx<'a>(
+/// Shared operator dispatch for filter array expressions.
+///
+/// When `pattern_parser` is `Some`, handles `exists`/`not-exists`/`notexists` operators
+/// by delegating to the pattern parser callback. Otherwise those keywords fall through
+/// to the generic function-call arm.
+fn dispatch_filter_op(
     arr: &[JsonValue],
-    pattern_parser: PatternParserFn<'a>,
+    recurse: impl Fn(&JsonValue) -> Result<UnresolvedExpression>,
+    pattern_parser: Option<PatternParserFn<'_>>,
 ) -> Result<UnresolvedExpression> {
     if arr.is_empty() {
         return Err(ParseError::InvalidFilter(
@@ -235,33 +147,31 @@ fn parse_filter_array_ctx<'a>(
     let op_lower = op_name.to_lowercase();
     let args = &arr[1..];
 
-    // Wrap the recursive parser as a closure for filter_common helpers
-    let recurse = |v: &JsonValue| -> Result<UnresolvedExpression> {
-        parse_filter_expr_ctx(v, pattern_parser)
-    };
-
     match op_lower.as_str() {
-        // EXISTS / NOT EXISTS — delegate to pattern parser
-        "exists" | "not-exists" | "notexists" => {
+        // EXISTS / NOT EXISTS — only when pattern_parser is provided
+        "exists" | "not-exists" | "notexists" if pattern_parser.is_some() => {
             if args.is_empty() {
                 return Err(ParseError::InvalidFilter(
                     "exists/not-exists requires at least one pattern".to_string(),
                 ));
             }
             let negated = op_lower != "exists";
-            let patterns = pattern_parser(args)?;
+            let patterns = pattern_parser.unwrap()(args)?;
             Ok(UnresolvedExpression::Exists { patterns, negated })
         }
 
-        // Same operator handling as parse_filter_array, using context-aware recursion
+        // Comparison operators
         op @ ("=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">="
         | "ge") => {
             let canonical = filter_common::normalize_op(op);
-            filter_common::build_call(args, canonical, recurse, 1, "comparison operator")
+            filter_common::build_call(args, canonical, &recurse, 1, "comparison operator")
         }
-        "and" => filter_common::build_and(args, recurse),
-        "or" => filter_common::build_or(args, recurse),
-        "not" => filter_common::build_not(args, recurse),
+
+        // Logical operators
+        "and" => filter_common::build_and(args, &recurse),
+        "or" => filter_common::build_or(args, &recurse),
+        "not" => filter_common::build_not(args, &recurse),
+
         "in" | "not-in" | "notin" => {
             if args.len() < 2 {
                 return Err(ParseError::InvalidFilter(
@@ -272,12 +182,12 @@ fn parse_filter_array_ctx<'a>(
             let negated = matches!(op_lower.as_str(), "not-in" | "notin");
             let values: Result<Vec<_>> = if args.len() == 2 {
                 if let JsonValue::Array(list) = &args[1] {
-                    list.iter().map(recurse).collect()
+                    list.iter().map(&recurse).collect()
                 } else {
                     vec![recurse(&args[1])].into_iter().collect()
                 }
             } else {
-                args[1..].iter().map(recurse).collect()
+                args[1..].iter().map(&recurse).collect()
             };
             Ok(UnresolvedExpression::In {
                 expr: Box::new(expr),
@@ -285,19 +195,23 @@ fn parse_filter_array_ctx<'a>(
                 negated,
             })
         }
+
+        // Arithmetic operators
         op @ ("+" | "add" | "*" | "mul" | "/" | "div") => {
             let canonical = filter_common::normalize_op(op);
-            filter_common::build_call(args, canonical, recurse, 1, "arithmetic operator")
+            filter_common::build_call(args, canonical, &recurse, 1, "arithmetic operator")
         }
         "-" | "sub" => {
             if args.len() == 1 {
-                filter_common::build_call(args, "negate", recurse, 1, "unary negation")
+                filter_common::build_call(args, "negate", &recurse, 1, "unary negation")
             } else {
-                filter_common::build_call(args, "-", recurse, 1, "arithmetic operator")
+                filter_common::build_call(args, "-", &recurse, 1, "arithmetic operator")
             }
         }
+
+        // Everything else is a function call
         _ => {
-            let fn_args: Result<Vec<_>> = args.iter().map(recurse).collect();
+            let fn_args: Result<Vec<_>> = args.iter().map(&recurse).collect();
             Ok(UnresolvedExpression::Call {
                 func: Arc::from(op_name),
                 args: fn_args?,
