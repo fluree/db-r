@@ -389,9 +389,8 @@ fn run_record_v2_to_v1_key(
         }
     } else if ot.is_iri_ref() {
         fluree_db_core::ObjKind::REF_ID
-    } else if ot.is_lang_string() || ot.is_string_dict() || ot.is_customer_datatype() {
-        fluree_db_core::ObjKind::LEX_ID
     } else {
+        // langString, string-dict, customer datatype, or unknown — all LEX_ID.
         fluree_db_core::ObjKind::LEX_ID
     };
 

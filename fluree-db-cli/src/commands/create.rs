@@ -13,6 +13,7 @@ pub struct ImportOpts {
     pub chunk_size_mb: usize,
     pub leaflet_rows: usize,
     pub leaflets_per_leaf: usize,
+    pub index_format_version: u8,
 }
 
 pub async fn run(
@@ -167,6 +168,9 @@ where
     }
     if import_opts.leaflets_per_leaf != 10 {
         builder = builder.leaflets_per_leaf(import_opts.leaflets_per_leaf);
+    }
+    if import_opts.index_format_version != 2 {
+        builder = builder.index_format_version(import_opts.index_format_version);
     }
     let settings = builder.effective_import_settings();
     let mem_auto = import_opts.memory_budget_mb == 0;

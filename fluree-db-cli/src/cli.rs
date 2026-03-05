@@ -90,6 +90,11 @@ pub enum Commands {
         /// Larger values produce fewer leaf files (shallower tree, bigger reads).
         #[arg(long, default_value_t = 10)]
         leaflets_per_leaf: usize,
+
+        /// Index format version: 2 = FLI2 (legacy), 3 = FLI3 (columnar).
+        /// V3 builds columnar indexes but does not yet publish a queryable root.
+        #[arg(long, default_value_t = 2)]
+        index_format: u8,
     },
 
     /// Set the active ledger

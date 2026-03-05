@@ -2843,18 +2843,15 @@ where
         let v3_sorted_commit_infos = input.sorted_commit_infos;
         let v3_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
         let v3_counter = merge_counter.clone();
-        // Read custom datatype IRIs from the on-disk datatypes.dict (JSON array).
+        // Read custom datatype IRIs from the on-disk datatypes.dict (binary predicate dict).
         // Skip the first RESERVED_COUNT entries (well-known types).
         let v3_datatype_iris = {
             let dt_path = input.run_dir.join("datatypes.dict");
             if dt_path.exists() {
-                let bytes = std::fs::read(&dt_path)?;
-                let all_iris: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
-                    ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-                })?;
-                all_iris
-                    .into_iter()
-                    .skip(fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize)
+                let dict = fluree_db_indexer::run_index::dict_io::read_predicate_dict(&dt_path)?;
+                let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as u32;
+                (reserved..dict.len())
+                    .filter_map(|id| dict.resolve(id).map(String::from))
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
