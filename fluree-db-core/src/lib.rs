@@ -45,6 +45,8 @@ pub mod ledger_config;
 pub mod ledger_id;
 pub mod namespaces;
 pub mod ns_vec_bi_dict;
+pub mod o_type;
+pub mod o_type_registry;
 pub mod overlay;
 pub mod pack;
 pub mod prefix_trie;
@@ -74,9 +76,9 @@ pub use comparator::IndexType;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
 pub use content_kind::{
     ContentKind, DictKind, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB, CODEC_FLUREE_GARBAGE,
-    CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT, CODEC_FLUREE_INDEX_BRANCH, CODEC_FLUREE_INDEX_LEAF,
-    CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_LEDGER_CONFIG, CODEC_FLUREE_STATS_SKETCH,
-    CODEC_FLUREE_TXN,
+    CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT, CODEC_FLUREE_HISTORY_SIDECAR, CODEC_FLUREE_INDEX_BRANCH,
+    CODEC_FLUREE_INDEX_LEAF, CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_LEDGER_CONFIG,
+    CODEC_FLUREE_STATS_SKETCH, CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
 pub use db::{load_ledger_snapshot, LedgerSnapshot, LedgerSnapshotMetadata};
@@ -104,6 +106,8 @@ pub use namespaces::{
     is_rdf_first, is_rdf_nil, is_rdf_rest, is_rdf_type, is_rdfs_domain, is_rdfs_range,
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
 };
+pub use o_type::{DecodeKind, OType};
+pub use o_type_registry::OTypeRegistry;
 pub use overlay::{NoOverlay, OverlayProvider};
 pub use prefix_trie::PrefixTrie;
 pub use range::{

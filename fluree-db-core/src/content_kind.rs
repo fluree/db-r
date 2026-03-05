@@ -49,6 +49,9 @@ pub const CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT: u64 = FLUREE_CODEC_BASE + 10;
 /// Multicodec for Fluree spatial index artifacts (S2 cell index, geometry arena, root manifest).
 pub const CODEC_FLUREE_SPATIAL_INDEX: u64 = FLUREE_CODEC_BASE + 11;
 
+/// Multicodec for Fluree history sidecar blobs (FHS1, per-leaf time-travel data).
+pub const CODEC_FLUREE_HISTORY_SIDECAR: u64 = FLUREE_CODEC_BASE + 12;
+
 // ============================================================================
 // DictKind
 // ============================================================================
@@ -120,6 +123,8 @@ pub enum ContentKind {
     GraphSourceSnapshot,
     /// Spatial index artifact (S2 cell index, geometry arena, root manifest)
     SpatialIndex,
+    /// History sidecar blob (FHS1, per-leaf time-travel data)
+    HistorySidecar,
 }
 
 // ============================================================================
@@ -143,6 +148,7 @@ impl ContentKind {
             ContentKind::StatsSketch => CODEC_FLUREE_STATS_SKETCH,
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
             ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
+            ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
         }
     }
 
@@ -166,6 +172,7 @@ impl ContentKind {
             CODEC_FLUREE_STATS_SKETCH => Some(ContentKind::StatsSketch),
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
+            CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
             _ => None,
         }
     }
@@ -184,6 +191,7 @@ impl ContentKind {
             ContentKind::StatsSketch => "stats-sketch",
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
             ContentKind::SpatialIndex => "spatial-index",
+            ContentKind::HistorySidecar => "history-sidecar",
         }
     }
 }

@@ -4,5 +4,6 @@ pub mod incremental_resolve;
 pub mod incremental_root;
 pub mod index_build;
 pub mod merge;
+pub mod merge_v2;
 pub mod novelty_merge;
 pub mod shared_pool;
