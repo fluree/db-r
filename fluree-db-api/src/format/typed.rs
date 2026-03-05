@@ -66,7 +66,7 @@ pub fn format(
 }
 
 /// Format a single binding to TypedJson
-fn format_binding(
+pub(crate) fn format_binding(
     result: &QueryResult,
     binding: &Binding,
     compactor: &IriCompactor,
@@ -244,6 +244,19 @@ fn format_binding(
 }
 
 // NOTE: encoded binding materialization is centralized in `format::materialize`.
+
+/// Format a single binding to TypedJson, materializing encoded bindings first.
+pub(crate) fn format_binding_with_result(
+    result: &QueryResult,
+    binding: &Binding,
+    compactor: &IriCompactor,
+) -> Result<JsonValue> {
+    if binding.is_encoded() {
+        let materialized = super::materialize::materialize_binding(result, binding)?;
+        return format_binding_with_result(result, &materialized, compactor);
+    }
+    format_binding(result, binding, compactor)
+}
 
 /// Format a single row as object {var: typed_value}
 fn format_row(

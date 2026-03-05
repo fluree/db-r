@@ -328,6 +328,16 @@ impl QueryResult {
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 
+    /// Format as TypedJson with async DB access
+    ///
+    /// Async version of `to_typed_json()`. Required for graph crawl queries
+    /// which need to fetch additional data from the database during formatting.
+    /// Every literal value includes explicit `@type` annotation.
+    pub async fn to_typed_json_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
+        let config = FormatterConfig::typed_json();
+        format::format_results_async(self, &self.context, db, &config, None, None).await
+    }
+
     /// Format with custom configuration (async version)
     ///
     /// Async version of `format()`. Required for graph crawl queries.
