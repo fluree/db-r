@@ -57,8 +57,27 @@ use crate::policy::QueryPolicyEnforcer;
 /// Controls which triple-pattern variables are emitted into the operator schema.
 ///
 /// This enables plan-time pruning of unused variables so scans can avoid decoding
-/// and materializing values that do not affect query results (e.g., COUNT(*) queries
-/// with unused object vars).
+/// and materializing values that do not affect query results.
+///
+/// # Planner usage
+///
+/// The query planner sets mask fields to `false` for positions that are not
+/// referenced downstream. Typical scenarios:
+///
+/// - **`COUNT(*)` / `COUNT(?x)` with unused positions:** If a query only counts
+///   results and never reads the object, `o` can be `false` to skip object
+///   decoding (Region 2 zstd decompression, string/lang resolution, etc.).
+///
+/// - **Existence-only sub-patterns:** In `FILTER EXISTS { ?s <p> ?o }` the
+///   engine only needs to know whether rows exist, not their values, so all
+///   positions can be masked off and the scan becomes a pure count.
+///
+/// - **Projection push-down:** When SELECT names only `?s`, the planner can
+///   set `p: false, o: false` on scans where `?p` and `?o` are not used in
+///   filters, joins, or ORDER BY.
+///
+/// The default (`EmitMask::ALL`) emits all positions and is always safe.
+/// Non-ALL masks are an optimisation — correctness must never depend on them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitMask {
     pub s: bool,
@@ -142,6 +161,30 @@ fn schema_from_pattern_with_emit(
         s_var_pos,
         p_var_pos,
         o_var_pos,
+    )
+}
+
+/// Pre-compute which repeated-variable equality checks are needed for a pattern.
+///
+/// Returns `(s==o, s==p, p==o)` flags. When all three are false (the common case),
+/// `within_row_var_equality_ok` can short-circuit without inspecting the pattern.
+fn repeated_var_flags(pattern: &TriplePattern) -> (bool, bool, bool) {
+    let s_var = match &pattern.s {
+        Ref::Var(v) => Some(*v),
+        _ => None,
+    };
+    let p_var = match &pattern.p {
+        Ref::Var(v) => Some(*v),
+        _ => None,
+    };
+    let o_var = match &pattern.o {
+        Term::Var(v) => Some(*v),
+        _ => None,
+    };
+    (
+        s_var.is_some_and(|v| o_var == Some(v)),
+        s_var.is_some_and(|v| p_var == Some(v)),
+        p_var.is_some_and(|v| o_var == Some(v)),
     )
 }
 
@@ -235,6 +278,12 @@ pub struct BinaryScanOperator {
     /// Inline operators evaluated per-row during batch processing.
     /// Applied after building triple bindings, before adding to output columns.
     inline_ops: Vec<InlineOperator>,
+    /// Pre-computed repeated-variable flags from the triple pattern.
+    /// When all are false (the common case), `within_row_var_equality_ok`
+    /// short-circuits without inspecting the pattern on every row.
+    check_s_eq_o: bool,
+    check_s_eq_p: bool,
+    check_p_eq_o: bool,
 }
 
 impl BinaryScanOperator {
@@ -255,22 +304,17 @@ impl BinaryScanOperator {
     /// SPARQL allows the same variable to appear in multiple positions of a triple pattern,
     /// e.g. `?x <p> ?x` or `?x ?x ?o`. These are equality constraints that must be applied
     /// even when emission pruning omits one of the positions.
+    ///
+    /// Uses pre-computed `check_s_eq_o`, `check_s_eq_p`, `check_p_eq_o` flags to
+    /// short-circuit the common case where no variables are repeated.
     fn within_row_var_equality_ok(&mut self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
-        let s_var = match &self.pattern.s {
-            Ref::Var(v) => Some(*v),
-            _ => None,
-        };
-        let p_var = match &self.pattern.p {
-            Ref::Var(v) => Some(*v),
-            _ => None,
-        };
-        let o_var = match &self.pattern.o {
-            Term::Var(v) => Some(*v),
-            _ => None,
-        };
+        // Fast path: no repeated variables in this pattern (the common case).
+        if !self.check_s_eq_o && !self.check_s_eq_p && !self.check_p_eq_o {
+            return Ok(true);
+        }
 
         // s == o is only possible when o is a ref pointing to s_id.
-        if s_var.is_some_and(|v| o_var == Some(v)) {
+        if self.check_s_eq_o {
             if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
                 return Ok(false);
             }
@@ -280,14 +324,14 @@ impl BinaryScanOperator {
         }
 
         // For comparisons involving predicate IDs, decode to Sid (different ID domains).
-        if s_var.is_some_and(|v| p_var == Some(v)) {
+        if self.check_s_eq_p {
             let s = self.resolve_s_id(decoded.s_ids[row])?;
             let p = self.resolve_p_id(decoded.p_ids[row]);
             if s != p {
                 return Ok(false);
             }
         }
-        if p_var.is_some_and(|v| o_var == Some(v)) {
+        if self.check_p_eq_o {
             if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
                 return Ok(false);
             }
@@ -379,6 +423,7 @@ impl BinaryScanOperator {
         let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
             schema_from_pattern_with_emit(&pattern, emit);
         let p_is_var = pattern.p.is_var();
+        let (check_s_eq_o, check_s_eq_p, check_p_eq_o) = repeated_var_flags(&pattern);
 
         // Extend schema with new bind variables from inline operators.
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
@@ -402,6 +447,9 @@ impl BinaryScanOperator {
             overlay_epoch: 0,
             dict_overlay: None,
             inline_ops,
+            check_s_eq_o,
+            check_s_eq_p,
+            check_p_eq_o,
         }
     }
 

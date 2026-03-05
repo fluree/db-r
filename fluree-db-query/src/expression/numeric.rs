@@ -183,3 +183,131 @@ pub fn eval_xsd_integer<R: RowAccess>(
 
     Ok(Some(ComparableValue::Long(n)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::BindingRow;
+    use crate::ir::FilterValue;
+
+    fn long(v: i64) -> Expression {
+        Expression::Const(FilterValue::Long(v))
+    }
+
+    fn double(v: f64) -> Expression {
+        Expression::Const(FilterValue::Double(v))
+    }
+
+    fn bool_expr(v: bool) -> Expression {
+        Expression::Const(FilterValue::Bool(v))
+    }
+
+    fn string(s: &str) -> Expression {
+        Expression::Const(FilterValue::String(s.to_string()))
+    }
+
+    fn empty_row() -> BindingRow<'static> {
+        BindingRow::new(&[], &[])
+    }
+
+    // -- identity / passthrough --
+
+    #[test]
+    fn xsd_integer_from_long() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[long(42)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(42)));
+    }
+
+    #[test]
+    fn xsd_integer_from_negative_long() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[long(-7)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(-7)));
+    }
+
+    // -- bool → 0/1 --
+
+    #[test]
+    fn xsd_integer_from_true() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[bool_expr(true)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(1)));
+    }
+
+    #[test]
+    fn xsd_integer_from_false() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[bool_expr(false)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(0)));
+    }
+
+    // -- double truncation --
+
+    #[test]
+    fn xsd_integer_from_double_truncates() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[double(3.9)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(3)));
+    }
+
+    #[test]
+    fn xsd_integer_from_negative_double_truncates() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[double(-2.7)], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(-2)));
+    }
+
+    #[test]
+    fn xsd_integer_from_nan_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[double(f64::NAN)], &row, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn xsd_integer_from_infinity_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[double(f64::INFINITY)], &row, None);
+        assert!(result.is_err());
+    }
+
+    // -- string parsing --
+
+    #[test]
+    fn xsd_integer_from_string() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[string("123")], &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Long(123)));
+    }
+
+    #[test]
+    fn xsd_integer_from_non_numeric_string_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[string("abc")], &row, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn xsd_integer_from_float_string_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[string("3.14")], &row, None);
+        assert!(result.is_err());
+    }
+
+    // -- arity --
+
+    #[test]
+    fn xsd_integer_wrong_arity_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[long(1), long(2)], &row, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn xsd_integer_zero_args_errors() {
+        let row = empty_row();
+        let result = eval_xsd_integer(&[], &row, None);
+        assert!(result.is_err());
+    }
+}
