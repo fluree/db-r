@@ -1308,13 +1308,12 @@ mod tests {
         match &rows[0][0] {
             UnresolvedValue::Literal {
                 value: LiteralValue::Vector(v),
-                dt_iri,
-                ..
+                dtc,
             } => {
                 assert_eq!(v.as_slice(), &[0.7, 0.6]);
-                assert!(dt_iri
+                assert!(dtc
                     .as_ref()
-                    .is_some_and(|dt| dt.as_ref() == "https://ns.flur.ee/db#embeddingVector"));
+                    .is_some_and(|d| d.datatype_iri() == "https://ns.flur.ee/db#embeddingVector"));
             }
             other => panic!("unexpected cell: {:?}", other),
         }

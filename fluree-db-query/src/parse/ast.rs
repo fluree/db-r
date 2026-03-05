@@ -10,6 +10,8 @@
 //! - Bind expressions (computed values)
 //! - Values blocks (inline data)
 
+use crate::parse::IriEncoder;
+use crate::triple::DatatypeConstraint;
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
@@ -121,7 +123,7 @@ impl UnresolvedTerm {
 ///
 /// Mirrors [`DatatypeConstraint`](crate::triple::DatatypeConstraint) but uses
 /// IRI strings instead of resolved Sids.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UnresolvedDatatypeConstraint {
     /// Datatype IRI (not yet resolved to Sid)
     Explicit(Arc<str>),
@@ -146,6 +148,17 @@ impl UnresolvedDatatypeConstraint {
         match self {
             UnresolvedDatatypeConstraint::LangTag(tag) => Some(tag),
             UnresolvedDatatypeConstraint::Explicit(_) => None,
+        }
+    }
+
+    /// Encode to a Sid-based constraint by resolving the IRI to a [`Sid`](fluree_db_core::Sid).
+    ///
+    /// Returns `None` if the [`Explicit`](Self::Explicit) IRI's namespace is
+    /// not registered in the encoder. [`LangTag`](Self::LangTag) always succeeds.
+    pub fn encode(self, encoder: &impl IriEncoder) -> Option<DatatypeConstraint> {
+        match self {
+            Self::Explicit(iri) => encoder.encode_iri(&iri).map(DatatypeConstraint::Explicit),
+            Self::LangTag(tag) => Some(DatatypeConstraint::LangTag(tag)),
         }
     }
 }

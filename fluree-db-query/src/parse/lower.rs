@@ -513,16 +513,7 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
                 .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
             Ok(Binding::Sid(sid))
         }
-        UnresolvedValue::Literal {
-            value,
-            dt_iri,
-            lang,
-        } => {
-            // Language-tagged literals always use rdf:langString (Clojure/JSON-LD semantics).
-            //
-            // NOTE: Even if a datatype is provided, rdf:langString is the correct datatype
-            // for language-tagged strings. We preserve the lang tag in the Binding.
-
+        UnresolvedValue::Literal { value, dtc } => {
             // Build initial FlakeValue from the literal
             let initial_fv = match value {
                 LiteralValue::String(s) => FlakeValue::String(s.as_ref().to_string()),
@@ -532,35 +523,34 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
                 LiteralValue::Vector(v) => FlakeValue::Vector(v.clone()),
             };
 
-            let (dt_sid, fv) = if let Some(dt) = dt_iri {
-                let sid = encoder
-                    .encode_iri(dt)
-                    .ok_or_else(|| ParseError::UnknownNamespace(dt.to_string()))?;
-                // Apply typed literal coercion for VALUES cells (same as WHERE patterns)
-                let coerced = coerce_value_by_datatype(initial_fv, dt)?;
-                (sid, coerced)
-            } else {
-                let sid = match value {
-                    LiteralValue::String(_) => dts.xsd_string,
-                    LiteralValue::Long(_) => dts.xsd_long,
-                    LiteralValue::Double(_) => dts.xsd_double,
-                    LiteralValue::Boolean(_) => dts.xsd_boolean,
-                    LiteralValue::Vector(_) => dts.fluree_vector,
-                };
-                (sid, initial_fv)
-            };
-
-            Ok(if let Some(lang) = lang {
-                // rdf:langString requires a string lexical form
-                if !matches!(fv, FlakeValue::String(_)) {
-                    return Err(ParseError::InvalidWhere(
-                        "Language-tagged VALUES literals must be strings".to_string(),
-                    ));
+            match dtc {
+                Some(UnresolvedDatatypeConstraint::LangTag(lang)) => {
+                    // rdf:langString requires a string lexical form
+                    if !matches!(initial_fv, FlakeValue::String(_)) {
+                        return Err(ParseError::InvalidWhere(
+                            "Language-tagged VALUES literals must be strings".to_string(),
+                        ));
+                    }
+                    Ok(Binding::lit_lang(initial_fv, lang.as_ref()))
                 }
-                Binding::lit_lang(fv, lang.as_ref())
-            } else {
-                Binding::lit(fv, dt_sid)
-            })
+                Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
+                    let sid = encoder
+                        .encode_iri(dt_iri)
+                        .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
+                    let coerced = coerce_value_by_datatype(initial_fv, dt_iri)?;
+                    Ok(Binding::lit(coerced, sid))
+                }
+                None => {
+                    let sid = match value {
+                        LiteralValue::String(_) => dts.xsd_string,
+                        LiteralValue::Long(_) => dts.xsd_long,
+                        LiteralValue::Double(_) => dts.xsd_double,
+                        LiteralValue::Boolean(_) => dts.xsd_boolean,
+                        LiteralValue::Vector(_) => dts.fluree_vector,
+                    };
+                    Ok(Binding::lit(initial_fv, sid))
+                }
+            }
         }
     }
 }

@@ -61,10 +61,8 @@ use fluree_vocab::xsd;
 struct UnresolvedTermWithMeta {
     /// The unresolved term
     term: UnresolvedTerm,
-    /// Optional datatype IRI
-    datatype: Option<Arc<str>>,
-    /// Optional language tag
-    lang: Option<Arc<str>>,
+    /// Optional datatype or language-tag constraint
+    dtc: Option<UnresolvedDatatypeConstraint>,
 }
 
 /// Errors that can occur during SPARQL UPDATE lowering.
@@ -364,16 +362,11 @@ fn lower_triple_to_where(
     let p = predicate_to_unresolved(&triple.predicate, prologue)?;
     let obj = object_to_unresolved(&triple.object, prologue)?;
 
-    let constraint = obj
-        .lang
-        .map(UnresolvedDatatypeConstraint::LangTag)
-        .or_else(|| obj.datatype.map(UnresolvedDatatypeConstraint::Explicit));
-
     let pattern = UnresolvedTriplePattern {
         s,
         p,
         o: obj.term,
-        dtc: constraint,
+        dtc: obj.dtc,
     };
 
     Ok(UnresolvedPattern::Triple(pattern))
@@ -462,13 +455,11 @@ fn object_to_unresolved(
     match term {
         Term::Var(v) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Var(Arc::from(format!("?{}", v.name))),
-            datatype: None,
-            lang: None,
+            dtc: None,
         }),
         Term::Iri(iri) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Iri(Arc::from(expand_iri(iri, prologue)?)),
-            datatype: None,
-            lang: None,
+            dtc: None,
         }),
         Term::Literal(lit) => literal_to_unresolved(lit, prologue),
         Term::BlankNode(bn) => Err(LowerError::BlankNodeInWhere { span: bn.span }),
@@ -483,32 +474,33 @@ fn literal_to_unresolved(
     match &lit.value {
         SparqlLiteralValue::Simple(s) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::String(Arc::from(s.as_ref()))),
-            datatype: None,
-            lang: None,
+            dtc: None,
         }),
         SparqlLiteralValue::LangTagged { value, lang } => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::String(Arc::from(value.as_ref()))),
-            datatype: None,
-            lang: Some(Arc::from(lang.as_ref())),
+            dtc: Some(UnresolvedDatatypeConstraint::LangTag(Arc::from(
+                lang.as_ref(),
+            ))),
         }),
         SparqlLiteralValue::Typed { value, datatype } => {
             let dt_iri = expand_iri(datatype, prologue)?;
             let coerced = coerce_typed_value(value, &dt_iri);
             Ok(UnresolvedTermWithMeta {
                 term: coerced,
-                datatype: Some(Arc::from(dt_iri)),
-                lang: None,
+                dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(dt_iri))),
             })
         }
         SparqlLiteralValue::Integer(i) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Long(*i)),
-            datatype: Some(Arc::from(xsd::INTEGER)),
-            lang: None,
+            dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
+                xsd::INTEGER,
+            ))),
         }),
         SparqlLiteralValue::Double(d) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Double(*d)),
-            datatype: Some(Arc::from(xsd::DOUBLE)),
-            lang: None,
+            dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
+                xsd::DOUBLE,
+            ))),
         }),
         SparqlLiteralValue::Decimal(s) => {
             // Try to parse as f64; on failure, keep as string with datatype
@@ -518,14 +510,16 @@ fn literal_to_unresolved(
             };
             Ok(UnresolvedTermWithMeta {
                 term,
-                datatype: Some(Arc::from(xsd::DECIMAL)),
-                lang: None,
+                dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
+                    xsd::DECIMAL,
+                ))),
             })
         }
         SparqlLiteralValue::Boolean(b) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Boolean(*b)),
-            datatype: Some(Arc::from(xsd::BOOLEAN)),
-            lang: None,
+            dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
+                xsd::BOOLEAN,
+            ))),
         }),
     }
 }
