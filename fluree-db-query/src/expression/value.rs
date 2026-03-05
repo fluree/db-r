@@ -18,7 +18,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::helpers::WELL_KNOWN_DATATYPES;
-use crate::triple::DatatypeIriConstraint;
+use crate::parse::UnresolvedDatatypeConstraint;
 
 /// Errors that can occur during arithmetic operations
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -223,7 +223,7 @@ pub enum ComparableValue {
     // Typed literal with optional datatype IRI constraint
     TypedLiteral {
         val: FlakeValue,
-        dtc: Option<DatatypeIriConstraint>,
+        dtc: Option<UnresolvedDatatypeConstraint>,
     },
 }
 
@@ -415,8 +415,10 @@ impl ComparableValue {
                 Ok(Binding::Iri(iri))
             }
             ComparableValue::TypedLiteral { val, dtc } => match dtc {
-                Some(DatatypeIriConstraint::LangTag(lang)) => Ok(Binding::lit_lang(val, lang)),
-                Some(DatatypeIriConstraint::Explicit(dt_iri)) => {
+                Some(UnresolvedDatatypeConstraint::LangTag(lang)) => {
+                    Ok(Binding::lit_lang(val, lang))
+                }
+                Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
                     let ctx = ctx.ok_or_else(|| {
                         QueryError::InvalidFilter(
                             "bind evaluation requires database context for str-dt/str-lang"

@@ -4,7 +4,7 @@
 //! constant for subject/predicate positions where literal values are invalid), and
 //! [`TriplePattern`] (subject–predicate–object) used to match flakes in the database index.
 
-use crate::parse::IriEncoder;
+use crate::parse::ast::UnresolvedDatatypeConstraint;
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 use fluree_vocab::{namespaces, rdf, rdf_names};
@@ -52,64 +52,14 @@ impl DatatypeConstraint {
     ///
     /// Returns `None` if the [`Explicit`](Self::Explicit) Sid's namespace is
     /// not registered in the snapshot. [`LangTag`](Self::LangTag) always succeeds.
-    pub fn to_iri_constraint(&self, snapshot: &LedgerSnapshot) -> Option<DatatypeIriConstraint> {
+    pub fn to_unresolved(&self, snapshot: &LedgerSnapshot) -> Option<UnresolvedDatatypeConstraint> {
         match self {
             DatatypeConstraint::Explicit(sid) => snapshot
                 .decode_sid(sid)
-                .map(|iri| DatatypeIriConstraint::Explicit(Arc::from(iri.as_str()))),
-            DatatypeConstraint::LangTag(tag) => Some(DatatypeIriConstraint::LangTag(tag.clone())),
-        }
-    }
-}
-
-/// IRI-based constraint on the datatype of a literal.
-///
-/// Mirrors [`DatatypeConstraint`] but holds a full IRI string instead of a
-/// [`Sid`]. Useful in contexts where namespace resolution is deferred or
-/// where the constraint must be portable across ledgers with different
-/// namespace tables (e.g. cross-ledger joins, SPARQL parsing).
-///
-/// As with `DatatypeConstraint`, the sum type makes the illegal state of
-/// having both a non-`rdf:langString` datatype and a language tag
-/// unrepresentable.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DatatypeIriConstraint {
-    /// Explicitly specified datatype IRI (e.g. `"http://www.w3.org/2001/XMLSchema#integer"`)
-    Explicit(Arc<str>),
-    /// Language tag (implies the datatype IRI is `rdf:langString`)
-    LangTag(Arc<str>),
-}
-
-impl DatatypeIriConstraint {
-    /// The effective datatype IRI string.
-    ///
-    /// Returns the explicit IRI for [`Explicit`](Self::Explicit), or the
-    /// canonical `rdf:langString` IRI for [`LangTag`](Self::LangTag).
-    pub fn datatype_iri(&self) -> &str {
-        match self {
-            DatatypeIriConstraint::Explicit(iri) => iri,
-            DatatypeIriConstraint::LangTag(_) => rdf::LANG_STRING,
-        }
-    }
-
-    /// The language tag, if this is a [`LangTag`](Self::LangTag) constraint.
-    pub fn lang_tag(&self) -> Option<&str> {
-        match self {
-            DatatypeIriConstraint::LangTag(tag) => Some(tag),
-            DatatypeIriConstraint::Explicit(_) => None,
-        }
-    }
-
-    /// Encode to a Sid-based constraint by resolving the IRI to a [`Sid`].
-    ///
-    /// Returns `None` if the [`Explicit`](Self::Explicit) IRI's namespace is
-    /// not registered in the encoder. [`LangTag`](Self::LangTag) always succeeds.
-    pub fn encode(self, encoder: &impl IriEncoder) -> Option<DatatypeConstraint> {
-        match self {
-            DatatypeIriConstraint::Explicit(iri) => {
-                encoder.encode_iri(&iri).map(DatatypeConstraint::Explicit)
+                .map(|iri| UnresolvedDatatypeConstraint::Explicit(Arc::from(iri.as_str()))),
+            DatatypeConstraint::LangTag(tag) => {
+                Some(UnresolvedDatatypeConstraint::LangTag(tag.clone()))
             }
-            DatatypeIriConstraint::LangTag(tag) => Some(DatatypeConstraint::LangTag(tag)),
         }
     }
 }

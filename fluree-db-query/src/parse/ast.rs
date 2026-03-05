@@ -47,13 +47,11 @@ pub enum UnresolvedValue {
     Unbound,
     /// IRI value (e.g. {"@id": "..."} or {"@value":"...","@type":"@id"})
     Iri(Arc<str>),
-    /// Literal value with optional explicit datatype and language
+    /// Literal value with optional datatype or language-tag constraint
     Literal {
         value: LiteralValue,
-        /// Expanded datatype IRI (e.g. "http://www.w3.org/2001/XMLSchema#string")
-        dt_iri: Option<Arc<str>>,
-        /// Language tag (e.g. "en")
-        lang: Option<Arc<str>>,
+        /// Datatype IRI or language tag constraint
+        dtc: Option<UnresolvedDatatypeConstraint>,
     },
 }
 

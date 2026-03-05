@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
-use crate::triple::DatatypeIriConstraint;
+use crate::parse::UnresolvedDatatypeConstraint;
 
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
@@ -49,7 +49,7 @@ fn string_with_lang(s: &str, lang: Option<Arc<str>>) -> ComparableValue {
     match lang {
         Some(tag) => ComparableValue::TypedLiteral {
             val: FlakeValue::String(s.to_string()),
-            dtc: Some(DatatypeIriConstraint::LangTag(tag)),
+            dtc: Some(UnresolvedDatatypeConstraint::LangTag(tag)),
         },
         None => ComparableValue::String(Arc::from(s)),
     }
@@ -496,7 +496,7 @@ pub fn eval_str_dt<R: RowAccess>(
                 val: FlakeValue::String(s.to_string()),
                 dtc: dt_val
                     .as_str()
-                    .map(|s| DatatypeIriConstraint::Explicit(Arc::from(s))),
+                    .map(|s| UnresolvedDatatypeConstraint::Explicit(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),
@@ -526,7 +526,7 @@ pub fn eval_str_lang<R: RowAccess>(
                 val: FlakeValue::String(s.to_string()),
                 dtc: lang_val
                     .as_str()
-                    .map(|s| DatatypeIriConstraint::LangTag(Arc::from(s))),
+                    .map(|s| UnresolvedDatatypeConstraint::LangTag(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),
