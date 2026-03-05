@@ -421,8 +421,11 @@ impl IndexRootV6 {
         }
 
         // LangString entries (tag 11).
+        // LanguageTagDict is 1-based: lang_id=1 is the first tag, lang_id=0 means "no tag".
+        // language_tags[0] → lang_id=1, language_tags[1] → lang_id=2, etc.
         for (i, tag) in language_tags.iter().enumerate() {
-            let ot = OType::lang_string(i as u16);
+            let lang_id = (i as u16) + 1; // 1-based
+            let ot = OType::lang_string(lang_id);
             table.push(OTypeTableEntry {
                 o_type: ot.as_u16(),
                 decode_kind: DecodeKind::StringDict,
@@ -1233,9 +1236,10 @@ mod tests {
         // 44 built-in + 2 langString = 46.
         assert_eq!(table.len(), 46);
 
+        // lang_id is 1-based: first tag "en" gets lang_id=1
         let en_entry = table
             .iter()
-            .find(|e| e.o_type == OType::lang_string(0).as_u16())
+            .find(|e| e.o_type == OType::lang_string(1).as_u16())
             .unwrap();
         assert_eq!(en_entry.decode_kind, DecodeKind::StringDict);
         assert!(en_entry.datatype_iri.as_ref().unwrap().contains("en"));

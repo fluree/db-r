@@ -110,6 +110,11 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
+    /// Type-erased V6 binary index store (concrete type: `Arc<BinaryIndexStoreV6>`).
+    ///
+    /// Set by `Fluree::ledger()` when a V6 (FIR6) binary index is available.
+    /// Takes priority over `binary_store` (V5) for query execution.
+    pub binary_store_v6: Option<TypeErasedStore>,
     /// Default JSON-LD @context for this ledger.
     ///
     /// Captured from turtle @prefix declarations during import and augmented
@@ -177,6 +182,7 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
+                    binary_store_v6: None,
                     default_context: None,
                     spatial_indexes: None,
                 });
@@ -194,6 +200,7 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
+            binary_store_v6: None,
             default_context: None,
             spatial_indexes: None,
         })
@@ -283,6 +290,7 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
+            binary_store_v6: None,
             default_context: None,
             spatial_indexes: None,
         }

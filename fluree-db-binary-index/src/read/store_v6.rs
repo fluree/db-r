@@ -233,14 +233,17 @@ impl BinaryIndexStoreV6 {
             return std::fs::read(&cache_path);
         }
 
-        // Fetch from CAS via sync bridge: spawn a dedicated thread to avoid
-        // blocking the tokio runtime (same pattern as V5 ensure_index_leaf_cached).
+        // Fetch from CAS via sync bridge: capture the Tokio handle on the caller's
+        // thread (which has a runtime context), then spawn a dedicated OS thread that
+        // uses it to block_on the async fetch. Same pattern as V5 ensure_index_leaf_cached.
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| io::Error::other("leaf fetch requires a Tokio runtime"))?;
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
         std::thread::spawn(move || {
-            let result = tokio::runtime::Handle::current().block_on(async {
+            let result = handle.block_on(async {
                 let data = cs.get(&cid).await.map_err(|e| {
                     io::Error::other(format!("CAS fetch failed: {e}"))
                 })?;
@@ -484,11 +487,17 @@ impl BinaryIndexStoreV6 {
     }
 
     /// Resolve language ID to BCP 47 tag string.
+    ///
+    /// `lang_id` in the OType payload is 1-based (lang_id=1 is the first tag).
+    /// `language_tags` is a 0-based Vec, so we subtract 1.
     pub fn resolve_lang_tag(&self, o_type: u16) -> Option<&str> {
         let ot = OType::from_u16(o_type);
         if ot.is_lang_string() {
             let lang_id = ot.lang_id()? as usize;
-            self.language_tags.get(lang_id).map(|s| s.as_str())
+            if lang_id == 0 {
+                return None; // lang_id=0 means "no tag"
+            }
+            self.language_tags.get(lang_id - 1).map(|s| s.as_str())
         } else {
             None
         }

@@ -38,7 +38,9 @@ where
             .and_then(|r| r.index_head_id.as_ref())
             .cloned()
         {
-            if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
+            if state.snapshot.range_provider.is_none()
+                || (state.binary_store.is_none() && state.binary_store_v6.is_none())
+            {
                 let storage = self.connection.storage();
                 let cs = fluree_db_core::content_store_for(
                     storage.clone(),
@@ -53,39 +55,63 @@ where
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(cs);
-                let mut store = BinaryIndexStore::load_from_root_bytes(
-                    cs,
-                    &bytes,
-                    &cache_dir,
-                    Some(Arc::clone(&self.leaflet_cache)),
-                )
-                .await
-                .map_err(|e| {
-                    ApiError::internal(format!(
-                        "failed to load binary index store for {}: {}",
-                        index_cid, e
-                    ))
-                })?;
 
-                // Vector shards are truly lazy — loaded on demand per-shard
-                // when decode_value hits a VECTOR_ID, using the same sync→async
-                // bridge as index leaflets (thread + block_on).
+                // Dispatch by root magic bytes: FIR6 → V6, IRB1 → V5.
+                let is_v6 = bytes.len() >= 4 && &bytes[0..4] == b"FIR6";
 
-                // Augment namespace codes with entries from novelty commits.
-                // The index root only contains namespaces known at index time, but
-                // subsequent transactions may introduce new namespace prefixes.
-                // LedgerSnapshot.namespace_codes already has the merged set (index + novelty).
-                store.augment_namespace_codes(&state.snapshot.namespace_codes);
+                if is_v6 {
+                    // V6 (FIR6) path: load BinaryIndexStoreV6.
+                    let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
+                    let mut store_v6 =
+                        fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6::load_from_root_bytes(
+                            cs_dyn,
+                            &bytes,
+                            &cache_dir,
+                            Some(Arc::clone(&self.leaflet_cache)),
+                        )
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal(format!(
+                                "failed to load V6 binary index store for {}: {}",
+                                index_cid, e
+                            ))
+                        })?;
 
-                let arc_store = Arc::new(store);
-                if state.snapshot.range_provider.is_none() {
-                    let provider = BinaryRangeProvider::new(
-                        Arc::clone(&arc_store),
-                        state.dict_novelty.clone(),
-                    );
-                    state.snapshot.range_provider = Some(Arc::new(provider));
+                    store_v6.augment_namespace_codes(&state.snapshot.namespace_codes);
+
+                    let arc_store_v6 = Arc::new(store_v6);
+                    // V6 store: set binary_store_v6. Do NOT set binary_store (V5)
+                    // so that the query engine uses V3 operators exclusively.
+                    state.binary_store_v6 = Some(TypeErasedStore(arc_store_v6));
+                    tracing::info!("loaded V6 (FIR6) binary index store");
+                } else {
+                    // V5 (IRB1) path: existing BinaryIndexStore.
+                    let mut store = BinaryIndexStore::load_from_root_bytes(
+                        cs,
+                        &bytes,
+                        &cache_dir,
+                        Some(Arc::clone(&self.leaflet_cache)),
+                    )
+                    .await
+                    .map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to load binary index store for {}: {}",
+                            index_cid, e
+                        ))
+                    })?;
+
+                    store.augment_namespace_codes(&state.snapshot.namespace_codes);
+
+                    let arc_store = Arc::new(store);
+                    if state.snapshot.range_provider.is_none() {
+                        let provider = BinaryRangeProvider::new(
+                            Arc::clone(&arc_store),
+                            state.dict_novelty.clone(),
+                        );
+                        state.snapshot.range_provider = Some(Arc::new(provider));
+                    }
+                    state.binary_store = Some(TypeErasedStore(arc_store));
                 }
-                state.binary_store = Some(TypeErasedStore(arc_store));
             }
         }
 

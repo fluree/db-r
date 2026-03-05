@@ -2922,8 +2922,181 @@ where
             .await
             .map_err(|e| ImportError::Upload(e.to_string()))?;
 
-        // V3 path does not produce ID stats or class stats (deferred to future milestone).
-        (v3_uploaded, None, None)
+        // Wait for dict upload to complete (shared with V2 path).
+        let uploaded_dicts = dict_upload_handle
+            .await
+            .map_err(|e| ImportError::Upload(format!("dict upload join: {e}")))?
+            .map_err(|e| ImportError::Upload(e.to_string()))?;
+
+        // ── V3 FIR6 root assembly ──────────────────────────────────
+        use fluree_db_binary_index::format::index_root::{
+            DictRefsV5, GraphArenaRefsV5, VectorDictRefV5,
+        };
+        use fluree_db_binary_index::format::index_root_v6::{
+            DefaultGraphOrderV3, IndexRootV6,
+        };
+
+        tracing::info!("V3 path: assembling FIR6 root");
+
+        // Convert DictRefs → DictRefsV5 + GraphArenaRefsV5 (same logic as V5).
+        let dr = uploaded_dicts.dict_refs;
+        let dict_refs_v6 = DictRefsV5 {
+            forward_packs: dr.forward_packs,
+            subject_reverse: dr.subject_reverse,
+            string_reverse: dr.string_reverse,
+        };
+
+        let mut graph_ids = std::collections::BTreeSet::new();
+        for g_id_str in dr.numbig.keys() {
+            if let Ok(g_id) = g_id_str.parse::<u16>() {
+                graph_ids.insert(g_id);
+            }
+        }
+        for g_id_str in dr.vectors.keys() {
+            if let Ok(g_id) = g_id_str.parse::<u16>() {
+                graph_ids.insert(g_id);
+            }
+        }
+        let graph_arenas_v6: Vec<GraphArenaRefsV5> = graph_ids
+            .into_iter()
+            .map(|g_id| {
+                let g_id_str = g_id.to_string();
+                let numbig: Vec<(u32, ContentId)> = dr
+                    .numbig
+                    .get(&g_id_str)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let vectors: Vec<VectorDictRefV5> = dr
+                    .vectors
+                    .get(&g_id_str)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| VectorDictRefV5 {
+                                p_id: k.parse::<u32>().unwrap_or(0),
+                                manifest: v.manifest.clone(),
+                                shards: v.shards.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                GraphArenaRefsV5 {
+                    g_id,
+                    numbig,
+                    vectors,
+                    spatial: Vec::new(),
+                    fulltext: vec![],
+                }
+            })
+            .collect();
+
+        let ns_codes_v6: std::collections::BTreeMap<u16, String> = input
+            .namespace_codes
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
+
+        // Build predicate_sids (same as V5 path, but done inline here since
+        // the shared code runs after V3 would have already returned).
+        let trie_v6 = fluree_db_core::PrefixTrie::from_namespace_codes(input.namespace_codes);
+        let pred_path = input.run_dir.join("predicates.json");
+        let predicate_sids_v6: Vec<(u16, String)> = if pred_path.exists() {
+            let bytes = std::fs::read(&pred_path)?;
+            let by_id: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
+                ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
+            by_id
+                .iter()
+                .map(|iri| match trie_v6.longest_match(iri) {
+                    Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                    None => (0u16, iri.clone()),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Build default_graph_orders from V3 upload result.
+        let default_graph_orders: Vec<DefaultGraphOrderV3> = v3_uploaded
+            .default_graph_orders
+            .into_iter()
+            .map(|(order, leaves)| DefaultGraphOrderV3 { order, leaves })
+            .collect();
+
+        // Custom datatype IRIs (non-reserved only, for o_type table).
+        let custom_dt_iris: Vec<String> = uploaded_dicts
+            .datatype_iris
+            .iter()
+            .skip(fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize)
+            .cloned()
+            .collect();
+
+        let root_v6 = IndexRootV6 {
+            ledger_id: alias.to_string(),
+            index_t: input.final_t,
+            base_t: 0,
+            subject_id_encoding: uploaded_dicts.subject_id_encoding,
+            namespace_codes: ns_codes_v6,
+            predicate_sids: predicate_sids_v6,
+            graph_iris: uploaded_dicts.graph_iris,
+            datatype_iris: uploaded_dicts.datatype_iris,
+            language_tags: uploaded_dicts.language_tags.clone(),
+            dict_refs: dict_refs_v6,
+            subject_watermarks: uploaded_dicts.subject_watermarks,
+            string_watermark: uploaded_dicts.string_watermark,
+            total_commit_size,
+            total_asserts,
+            total_retracts,
+            graph_arenas: graph_arenas_v6,
+            o_type_table: IndexRootV6::build_o_type_table(
+                &custom_dt_iris,
+                &uploaded_dicts.language_tags,
+            ),
+            default_graph_orders,
+            named_graphs: v3_uploaded.named_graphs,
+            stats: None,
+            schema: None,
+            prev_index: None,
+            garbage: None,
+            sketch_ref: None,
+        };
+
+        // Encode and upload FIR6 root.
+        let root_bytes = root_v6.encode();
+        let root_digest = fluree_db_core::sha256_hex(&root_bytes);
+        let root_cid = fluree_db_core::ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT_V6,
+            &root_digest,
+        )
+        .expect("valid SHA-256 hex digest");
+
+        storage
+            .content_write_bytes_with_hash(
+                fluree_db_core::ContentKind::IndexRootV6,
+                alias,
+                &root_digest,
+                &root_bytes,
+            )
+            .await
+            .map_err(|e| ImportError::Upload(format!("FIR6 root upload: {e}")))?;
+
+        tracing::info!(
+            root_cid = %root_cid,
+            root_bytes = root_bytes.len(),
+            o_type_entries = root_v6.o_type_table.len(),
+            default_orders = root_v6.default_graph_orders.len(),
+            named_graphs = root_v6.named_graphs.len(),
+            "FIR6 root assembled and uploaded"
+        );
+
+        return Ok(IndexUploadResult {
+            root_id: root_cid,
+            index_t: input.final_t,
+            summary: None, // Stats deferred for V3 milestone.
+        });
     } else {
         // V2 (legacy) path: original Phase C + D + E pipeline.
 
@@ -3397,25 +3570,8 @@ where
         (stats, None, None)
     };
 
-    // ---- V3 early return: root assembly and publish are deferred until read-side exists ----
-    if config.index_format_version == 3 {
-        tracing::warn!(
-            "V3 index format: artifacts built and uploaded to CAS, but IndexRootV6 \
-             encoding and nameservice publish are not yet implemented. \
-             The index is not queryable until the V3 read-side is complete."
-        );
-        // Return a placeholder result. The caller should not publish this.
-        let placeholder_cid = fluree_db_core::ContentId::from_hex_digest(
-            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
-            &fluree_db_core::sha256_hex(b"v3-placeholder"),
-        )
-        .expect("valid placeholder CID");
-        return Ok(IndexUploadResult {
-            root_id: placeholder_cid,
-            index_t: input.final_t,
-            summary: None, // No class/property stats in V3 milestone.
-        });
-    }
+    // V3 early return is handled in the format branch above — the V3 if-branch
+    // returns early from the function with a fully assembled FIR6 root.
 
     // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
     tracing::info!("post-upload: stats built, constructing IRB1 root");

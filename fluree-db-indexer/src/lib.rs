@@ -57,7 +57,7 @@ pub use orchestrator::{
 pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
 // Re-export build pipeline types
-pub use build::types::{UploadedDicts, UploadedIndexes};
+pub use build::types::{UploadedDicts, UploadedIndexes, UploadedV3Indexes};
 
 // Re-export V3 build pipeline types
 pub use run_index::build::build_v3_from_commits::{
@@ -239,11 +239,13 @@ pub async fn upload_indexes_to_cas<S: Storage>(
 ///
 /// V3 artifacts are in-memory (from `V3BuildResult`), so this writes bytes
 /// directly to CAS rather than reading from disk paths.
+///
+/// Returns V3-native `UploadedV3Indexes` (not the V1 `UploadedIndexes`).
 pub async fn upload_v3_indexes_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
     build_result: &V3BuildResult,
-) -> Result<UploadedIndexes> {
+) -> Result<UploadedV3Indexes> {
     build::upload::upload_v3_indexes_to_cas(storage, ledger_id, build_result).await
 }
 

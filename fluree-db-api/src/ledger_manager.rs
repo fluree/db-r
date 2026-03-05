@@ -144,6 +144,7 @@ impl CachedLedgerState {
             head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
+            binary_store_v6: None,
             default_context: self.default_context,
             spatial_indexes: None,
         }
