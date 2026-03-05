@@ -40,7 +40,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tracing::Instrument;
 
-use crate::binary_scan::ScanOperator;
+use crate::binary_scan::{EmitMask, ScanOperator};
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -443,6 +443,7 @@ impl Operator for PropertyJoinOperator {
                                     right_pattern,
                                     None, // bounds already applied in driver; keep probe unconstrained
                                     Vec::new(),
+                                    EmitMask::ALL,
                                 );
                                 join.open(ctx).await?;
                                 while let Some(batch) = join.next_batch(ctx).await? {

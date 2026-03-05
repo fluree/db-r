@@ -715,14 +715,14 @@ fn lower_path_to_patterns<E: IriEncoder>(
         UnresolvedPathExpr::Alternative(alts) => {
             let branches: Vec<Vec<Pattern>> = alts
                 .iter()
-                .map(|alt| lower_alternative_branch(alt, &s, &o, vars, pp_counter))
+                .map(|alt| lower_alternative_branch(alt, &s, &o, encoder, vars, pp_counter))
                 .collect::<Result<_>>()?;
             Ok(vec![Pattern::Union(branches)])
         }
 
         // Sequence: compile to chain of triple patterns with join variables
         UnresolvedPathExpr::Sequence(steps) => {
-            lower_sequence_chain(&s, steps, &o, vars, pp_counter)
+            lower_sequence_chain(&s, steps, &o, encoder, vars, pp_counter)
         }
 
         // Unsupported operators
@@ -804,10 +804,11 @@ const MAX_SEQUENCE_EXPANSION: usize = 64;
 /// Steps can be forward (`Iri(p)`) or inverse (`Inverse(Iri(p))`).
 /// Alternative steps (`(a|b)`) are distributed into a `Union` of simple chains.
 /// All other step types are rejected with a clear error.
-fn lower_sequence_chain(
+fn lower_sequence_chain<E: IriEncoder>(
     s: &Ref,
     steps: &[UnresolvedPathExpr],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -818,7 +819,7 @@ fn lower_sequence_chain(
 
     // Degenerate single-step sequence (parser should collapse, but guard)
     if steps.len() == 1 {
-        return lower_sequence_step(&steps[0], s, o);
+        return lower_sequence_step(&steps[0], s, o, encoder);
     }
 
     // Build step choices: each step → vec of simple alternatives.
@@ -842,10 +843,10 @@ fn lower_sequence_chain(
     }
 
     if has_alt {
-        return lower_distributed_sequence(s, &step_choices, o, vars, pp_counter);
+        return lower_distributed_sequence(s, &step_choices, o, encoder, vars, pp_counter);
     }
 
-    // Fast path: no alternatives — generate simple triple chain
+    // Fast path: no alternatives — generate simple chain
     let mut patterns = Vec::with_capacity(steps.len());
     let mut prev = s.clone();
 
@@ -859,8 +860,8 @@ fn lower_sequence_chain(
             Ref::Var(vars.get_or_insert(&var_name))
         };
 
-        let triple = lower_sequence_step_triple(step, &prev, &next)?;
-        patterns.push(Pattern::Triple(triple));
+        let pat = lower_sequence_step_pattern(step, &prev, &next, encoder)?;
+        patterns.push(pat);
 
         prev = next;
     }
@@ -868,13 +869,32 @@ fn lower_sequence_chain(
     Ok(patterns)
 }
 
-/// Validate that a step inside an Alternative (within a sequence) is a simple
-/// step: `Iri(p)` or `Inverse(Iri(p))`.
+/// Validate that a step inside an Alternative (within a sequence) is a "simple"
+/// step: `Iri(p)`, `Inverse(Iri(p))`, transitive `p+`/`p*` on a simple predicate,
+/// or inverse of a transitive simple predicate.
 fn validate_simple_step(step: &UnresolvedPathExpr) -> Result<()> {
     match step {
         UnresolvedPathExpr::Iri(_) => Ok(()),
+        UnresolvedPathExpr::OneOrMore(inner) | UnresolvedPathExpr::ZeroOrMore(inner) => {
+            match inner.as_ref() {
+                UnresolvedPathExpr::Iri(_) => Ok(()),
+                other => Err(ParseError::InvalidWhere(format!(
+                    "Transitive steps within a sequence must apply +/* to a simple predicate; got {}",
+                    path_expr_name(other),
+                ))),
+            }
+        }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(_) => Ok(()),
+            UnresolvedPathExpr::OneOrMore(tp_inner) | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+                match tp_inner.as_ref() {
+                    UnresolvedPathExpr::Iri(_) => Ok(()),
+                    other => Err(ParseError::InvalidWhere(format!(
+                        "Transitive inverse steps within a sequence must apply +/* to a simple predicate; got inverse of {}",
+                        path_expr_name(other),
+                    ))),
+                }
+            }
             other => Err(ParseError::InvalidWhere(format!(
                 "Alternative steps within a sequence must be simple predicates or \
                  inverse simple predicates (^ex:p); got inverse of {}",
@@ -915,10 +935,11 @@ fn cartesian_product<'a>(
 ///
 /// Expands the Cartesian product of step choices into individual simple chains,
 /// each becoming a branch of a `Pattern::Union`.
-fn lower_distributed_sequence(
+fn lower_distributed_sequence<E: IriEncoder>(
     s: &Ref,
     step_choices: &[Vec<&UnresolvedPathExpr>],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -933,7 +954,7 @@ fn lower_distributed_sequence(
 
     let branches: Vec<Vec<Pattern>> = combos
         .into_iter()
-        .map(|combo| lower_simple_sequence_chain(s, &combo, o, vars, pp_counter))
+        .map(|combo| lower_simple_sequence_chain(s, &combo, o, encoder, vars, pp_counter))
         .collect::<Result<_>>()?;
 
     Ok(vec![Pattern::Union(branches)])
@@ -943,10 +964,11 @@ fn lower_distributed_sequence(
 ///
 /// Each step must be `Iri(p)` or `Inverse(Iri(p))`. Adjacent steps are joined
 /// by generated intermediate variables (`?__pp{n}`).
-fn lower_simple_sequence_chain(
+fn lower_simple_sequence_chain<E: IriEncoder>(
     s: &Ref,
     steps: &[&UnresolvedPathExpr],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -963,8 +985,8 @@ fn lower_simple_sequence_chain(
             Ref::Var(vars.get_or_insert(&var_name))
         };
 
-        let triple = lower_sequence_step_triple(step, &prev, &next)?;
-        patterns.push(Pattern::Triple(triple));
+        let pat = lower_sequence_step_pattern(step, &prev, &next, encoder)?;
+        patterns.push(pat);
 
         prev = next;
     }
@@ -972,38 +994,93 @@ fn lower_simple_sequence_chain(
     Ok(patterns)
 }
 
-/// Lower a single step of a sequence path to a triple pattern.
+/// Lower a single step of a sequence path to a Pattern.
 ///
 /// Forward step `p`: `Triple(prev, p, next)`
 /// Inverse step `^p`: `Triple(next, p, prev)` (swapped)
+/// Transitive step `p+`/`p*`: `PropertyPath(prev, p, next)`
+/// Inverse-transitive step `^p+`/`^p*`: `PropertyPath(next, p, prev)` (swapped)
 ///
 /// Note: Alternative steps (`(a|b)`) are handled by distribution in
 /// `lower_sequence_chain` before this function is called.
-fn lower_sequence_step_triple(
+fn lower_sequence_step_pattern<E: IriEncoder>(
     step: &UnresolvedPathExpr,
     prev: &Ref,
     next: &Ref,
-) -> Result<TriplePattern> {
+    encoder: &E,
+) -> Result<Pattern> {
     match step {
         UnresolvedPathExpr::Iri(iri) => {
             let p = Ref::Iri(iri.clone());
-            Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
+            Ok(Pattern::Triple(TriplePattern::new(
+                prev.clone(),
+                p,
+                next.clone().into(),
+            )))
+        }
+        UnresolvedPathExpr::OneOrMore(inner) | UnresolvedPathExpr::ZeroOrMore(inner) => {
+            if prev.is_bound() && next.is_bound() {
+                return Err(ParseError::InvalidWhere(
+                    "Property path requires at least one variable (cannot have both subject and object as constants)"
+                        .to_string(),
+                ));
+            }
+            let iri = expect_simple_iri(inner)?;
+            let modifier = match step {
+                UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                _ => PathModifier::ZeroOrMore,
+            };
+            let predicate = encoder
+                .encode_iri(iri)
+                .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+            Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                prev.clone(),
+                predicate,
+                modifier,
+                next.clone(),
+            )))
         }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(iri) => {
                 let p = Ref::Iri(iri.clone());
-                Ok(TriplePattern::new(next.clone(), p, prev.clone().into()))
+                Ok(Pattern::Triple(TriplePattern::new(
+                    next.clone(),
+                    p,
+                    prev.clone().into(),
+                )))
+            }
+            UnresolvedPathExpr::OneOrMore(tp_inner) | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+                if prev.is_bound() && next.is_bound() {
+                    return Err(ParseError::InvalidWhere(
+                        "Property path requires at least one variable (cannot have both subject and object as constants)"
+                            .to_string(),
+                    ));
+                }
+                let iri = expect_simple_iri(tp_inner)?;
+                let modifier = match inner.as_ref() {
+                    UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                    _ => PathModifier::ZeroOrMore,
+                };
+                let predicate = encoder
+                    .encode_iri(iri)
+                    .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+                Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                    next.clone(),
+                    predicate,
+                    modifier,
+                    prev.clone(),
+                )))
             }
             other => Err(ParseError::InvalidWhere(format!(
-                "Sequence (/) steps must be simple predicates, inverse simple \
-                 predicates (^ex:p), or alternatives of simple predicates \
+                "Sequence (/) steps must be simple predicates, inverse simple predicates (^ex:p), \
+                 transitive predicates (ex:p+ or ex:p*), or alternatives of simple predicates \
                  ((ex:a|ex:b)); got inverse of {}",
                 path_expr_name(other),
             ))),
         },
         other => Err(ParseError::InvalidWhere(format!(
-            "Sequence (/) steps must be simple predicates, inverse simple \
-             predicates (^ex:p), or alternatives of simple predicates \
+            "Sequence (/) steps must be simple predicates, inverse simple predicates (^ex:p), \
+             transitive predicates (ex:p+ or ex:p*), or alternatives of simple predicates \
              ((ex:a|ex:b)); got {}",
             path_expr_name(other),
         ))),
@@ -1011,9 +1088,14 @@ fn lower_sequence_step_triple(
 }
 
 /// Lower a degenerate single-step sequence to a pattern list.
-fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Ref, o: &Ref) -> Result<Vec<Pattern>> {
-    let triple = lower_sequence_step_triple(step, s, o)?;
-    Ok(vec![Pattern::Triple(triple)])
+fn lower_sequence_step<E: IriEncoder>(
+    step: &UnresolvedPathExpr,
+    s: &Ref,
+    o: &Ref,
+    encoder: &E,
+) -> Result<Vec<Pattern>> {
+    let pat = lower_sequence_step_pattern(step, s, o, encoder)?;
+    Ok(vec![pat])
 }
 
 /// Lower a single branch of an Alternative path to a pattern list.
@@ -1026,6 +1108,7 @@ fn lower_alternative_branch(
     alt: &UnresolvedPathExpr,
     s: &Ref,
     o: &Ref,
+    encoder: &impl IriEncoder,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -1053,7 +1136,9 @@ fn lower_alternative_branch(
                 path_expr_name(other),
             ))),
         },
-        UnresolvedPathExpr::Sequence(steps) => lower_sequence_chain(s, steps, o, vars, pp_counter),
+        UnresolvedPathExpr::Sequence(steps) => {
+            lower_sequence_chain(s, steps, o, encoder, vars, pp_counter)
+        }
         other => Err(ParseError::InvalidWhere(format!(
             "Alternative (|) branches support simple predicates, inverse simple \
              predicates (^ex:p), or sequence chains (ex:a/ex:b); got {}",
@@ -2168,12 +2253,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sequence_transitive_step_errors() {
+    fn test_sequence_transitive_step_allowed() {
         let encoder = test_encoder();
         let mut vars = VarRegistry::new();
         let mut pp_counter: u32 = 0;
 
-        // ex:a+ / ex:b — transitive modifier inside sequence is invalid
+        // ex:a+ / ex:b — transitive modifier inside sequence is allowed
         let path = UnresolvedPathExpr::Sequence(vec![
             UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(
                 "http://example.org/a",
@@ -2182,15 +2267,27 @@ mod tests {
         ]);
         let pattern = make_path_pattern("?s", path, "?o");
 
-        let result = lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Sequence (/) steps must be simple predicates"),
-            "Unexpected error: {}",
-            err,
-        );
+        assert_eq!(results.len(), 2);
+
+        // Step 0: PropertyPath(?s, a, +, ?__pp0)
+        match &results[0] {
+            Pattern::PropertyPath(pp) => {
+                assert!(matches!(pp.modifier, PathModifier::OneOrMore));
+                assert_eq!(pp.subject.as_var().map(|v| vars.name(v)), Some("?s"));
+                assert_eq!(pp.predicate.name_str(), "a");
+                assert_eq!(pp.object.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+            }
+            other => panic!("Expected PropertyPath, got {:?}", other),
+        }
+
+        // Step 1: Triple(?__pp0, b, ?o)
+        let t1 = extract_triple(&results[1]);
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+        assert_eq!(t1.p.as_iri(), Some("http://example.org/b"));
+        assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?o"));
     }
 
     #[test]

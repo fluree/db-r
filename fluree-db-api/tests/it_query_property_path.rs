@@ -794,26 +794,27 @@ async fn property_path_sequence_wildcard_hides_internal_vars() {
 }
 
 #[tokio::test]
-async fn property_path_sequence_transitive_step_errors() {
-    // ex:friend+/ex:name — transitive modifier inside sequence should error
+async fn property_path_sequence_transitive_step_allowed() {
+    // ex:friend+/ex:name — transitive modifier inside sequence should work
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_chain_data(&fluree, "property/path-seq-trans-err:main").await;
 
     let q = json!({
         "@context": {
             "ex": "http://example.org/",
-            "bad": {"@path": "ex:friend+/ex:name"}
+            "friendNamePlus": {"@path": "ex:friend+/ex:name"}
         },
-        "where": [{"@id":"ex:alice","bad":"?name"}],
+        "where": [{"@id":"ex:alice","friendNamePlus":"?name"}],
         "select": ["?name"]
     });
-    let err = support::query_jsonld(&fluree, &ledger, &q).await;
-    assert!(err.is_err(), "Transitive step in sequence should error");
-    let msg = format!("{}", err.unwrap_err());
-    assert!(
-        msg.contains("Sequence (/) steps must be simple predicates"),
-        "Error should mention sequence step constraint, got: {}",
-        msg
+    let result = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.snapshot)
+        .unwrap();
+    assert_eq!(
+        normalize_rows(&result),
+        normalize_rows(&json!(["Bob", "Carol"]))
     );
 }
 
