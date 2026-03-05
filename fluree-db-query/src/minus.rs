@@ -143,6 +143,7 @@ impl Operator for MinusOperator {
                     Some(seed),
                     &self.minus_patterns,
                     self.stats.clone(),
+                    None,
                 )?;
 
                 minus_op.open(ctx).await?;

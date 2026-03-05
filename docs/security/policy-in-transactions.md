@@ -447,7 +447,7 @@ const transaction = {
 
 const signedTxn = await signTransaction(transaction, privateKey);
 
-await fetch('http://localhost:8090/transact?ledger=mydb:main', {
+await fetch('http://localhost:8090/v1/fluree/transact?ledger=mydb:main', {
   method: 'POST',
   headers: { 'Content-Type': 'application/jose' },
   body: signedTxn
@@ -555,7 +555,7 @@ Audit logs cannot be modified or deleted.
 ### Policy Trace
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```
@@ -587,7 +587,7 @@ Response (on error):
 Test transaction without committing:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main&dryRun=true" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&dryRun=true" \
   -d '{...}'
 ```
 

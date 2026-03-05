@@ -28,6 +28,7 @@ pub mod execute;
 pub mod exists;
 pub mod explain;
 pub mod expression;
+pub mod fast_group_count_firsts;
 pub mod filter;
 pub mod geo_rewrite;
 pub mod geo_search;
@@ -137,7 +138,7 @@ pub use fluree_db_core::ObjectBounds;
 pub use var_registry::{VarId, VarRegistry};
 
 // Re-export parse types for query parsing
-pub use parse::{parse_query, ParsedQuery, SelectMode};
+pub use parse::{parse_query, ParsedQuery, QueryOutput};
 
 use execute::build_where_operators_seeded;
 use fluree_db_core::GraphDbRef;
@@ -309,7 +310,7 @@ pub async fn execute_where_with_overlay_at(
     }
 
     let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
-    let mut operator = build_where_operators_seeded(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();
@@ -335,7 +336,7 @@ pub async fn execute_where_with_overlay_at_strict(
 
     let ctx =
         ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
-    let mut operator = build_where_operators_seeded(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();

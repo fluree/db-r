@@ -28,7 +28,9 @@ use crate::bm25::{Analyzer, Bm25Index, Bm25Scorer};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{IndexSearchPattern, IndexSearchTarget};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::FlakeValue;
@@ -156,7 +158,7 @@ pub struct Bm25SearchOperator {
     /// Search pattern
     pattern: IndexSearchPattern,
     /// Output schema (child schema + any new vars from the search result)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Mapping from variables to output column positions
     out_pos: HashMap<VarId, usize>,
     /// Cached BM25 index (loaded once in open) - used in legacy index provider mode
@@ -171,6 +173,8 @@ pub struct Bm25SearchOperator {
     datatypes: WellKnownDatatypes,
     /// State
     state: OperatorState,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl Bm25SearchOperator {
@@ -203,7 +207,7 @@ impl Bm25SearchOperator {
         Self {
             child,
             pattern,
-            schema,
+            in_schema: schema,
             out_pos,
             index: None,
             cached_search_result: None,
@@ -211,11 +215,14 @@ impl Bm25SearchOperator {
             analyzer: Analyzer::english_default(),
             datatypes: WellKnownDatatypes::new(),
             state: OperatorState::Created,
+            out_schema: None,
         }
     }
 
-    fn schema(&self) -> &[VarId] {
-        &self.schema
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 
     fn resolve_target_from_row(
@@ -304,7 +311,7 @@ impl Bm25SearchOperator {
 #[async_trait]
 impl Operator for Bm25SearchOperator {
     fn schema(&self) -> &[VarId] {
-        self.schema()
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -400,11 +407,11 @@ impl Operator for Bm25SearchOperator {
         };
 
         if input_batch.is_empty() {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
         // Output columns
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols)
             .map(|_| Vec::with_capacity(input_batch.len()))
             .collect();
@@ -591,10 +598,11 @@ impl Operator for Bm25SearchOperator {
         }
 
         if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
+            return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.in_schema.clone(), columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {
@@ -690,8 +698,8 @@ mod tests {
         // Build operator with explicit seed (EmptyOperator) to mimic runner behavior.
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
@@ -731,8 +739,8 @@ mod tests {
 
         let empty = EmptyOperator::new();
         let seed: BoxedOperator = Box::new(empty);
-        let mut op =
-            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
+        let mut op = build_where_operators_seeded(Some(seed), &patterns, None, None)
+            .expect("build operators");
 
         let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);

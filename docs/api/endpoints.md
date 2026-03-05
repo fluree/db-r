@@ -4,10 +4,10 @@ Complete reference for all Fluree HTTP API endpoints.
 
 ## Base URL / versioning
 
-All endpoints listed below are relative to the server’s **API base URL** (`api_base_url` from `GET /.well-known/fluree.json`).
+All endpoints listed below are under the server’s **API base URL** (`api_base_url` from `GET /.well-known/fluree.json`).
 
 - Standalone `fluree-server` default: `api_base_url = "/v1/fluree"`
-- Example full URL: `http://localhost:8090/v1/fluree/query/<ledger...>`
+- All curl examples in this document use the full URL including the base path (e.g., `http://localhost:8090/v1/fluree/query/<ledger...>`)
 
 ## Discovery and diagnostics
 
@@ -170,7 +170,7 @@ WHERE {
 
 JSON-LD transaction:
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -198,7 +198,7 @@ curl -X POST http://localhost:8090/fluree/transact \
 
 Turtle transaction:
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   -d '@prefix ex: <http://example.org/ns/> .
       ex:alice ex:name "Alice" ; ex:age 30 .'
@@ -206,7 +206,7 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
 
 TriG transaction with named graphs:
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   -d '@prefix ex: <http://example.org/ns/> .
 
@@ -239,7 +239,7 @@ POST /fluree/insert
 
 **Example (JSON-LD):**
 ```bash
-curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -249,7 +249,7 @@ curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
 
 **Example (Turtle):**
 ```bash
-curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   -d '@prefix ex: <http://example.org/ns/> .
       ex:alice ex:name "Alice" ; ex:age 30 .'
@@ -273,7 +273,7 @@ POST /fluree/upsert
 
 **Example (JSON-LD):**
 ```bash
-curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -284,7 +284,7 @@ curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
 
 **Example (TriG with named graphs):**
 ```bash
-curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   -d '@prefix ex: <http://example.org/ns/> .
 
@@ -777,7 +777,7 @@ LIMIT 100
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "from": "mydb:main",
@@ -824,7 +824,7 @@ If the body includes a ledger reference that targets a different ledger than `{l
 JSON-LD (query txn-meta):
 
 ```bash
-curl -X POST "http://localhost:8090/query/mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/query/mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "from": "txn-meta",
@@ -836,7 +836,7 @@ curl -X POST "http://localhost:8090/query/mydb:main" \
 JSON-LD (query a user-defined named graph by IRI):
 
 ```bash
-curl -X POST "http://localhost:8090/query/mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/query/mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "from": "http://example.org/graphs/products",
@@ -848,7 +848,7 @@ curl -X POST "http://localhost:8090/query/mydb:main" \
 SPARQL (select txn-meta as default graph):
 
 ```bash
-curl -X POST "http://localhost:8090/query/mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/query/mydb:main" \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX f: <https://ns.flur.ee/db#>
 SELECT ?commit ?t
@@ -895,7 +895,7 @@ The `@t` and `@op` annotations capture transaction metadata:
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -912,7 +912,7 @@ curl -X POST http://localhost:8090/query \
 **SPARQL History Query:**
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX ex: <http://example.org/ns/>
 PREFIX f: <https://ns.flur.ee/db#>

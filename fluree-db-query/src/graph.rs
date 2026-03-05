@@ -173,7 +173,7 @@ impl GraphOperator {
         // Build seed operator from parent row (like EXISTS/Subquery)
         let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
         let mut inner =
-            build_where_operators_seeded(Some(Box::new(seed)), &patterns_to_execute, None)?;
+            build_where_operators_seeded(Some(Box::new(seed)), &patterns_to_execute, None, None)?;
 
         inner.open(&graph_ctx).await?;
 

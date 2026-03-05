@@ -265,7 +265,7 @@ Test your changes:
 # In another terminal
 curl http://localhost:8090/health
 
-curl -X POST http://localhost:8090/query -d '{...}'
+curl -X POST http://localhost:8090/v1/fluree/query -d '{...}'
 ```
 
 ## Debugging

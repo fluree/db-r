@@ -6,7 +6,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
+};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
@@ -283,7 +285,7 @@ pub struct SortOperator {
     /// Sort specifications
     sort_specs: Vec<SortSpec>,
     /// Output schema (same as child)
-    schema: Arc<[VarId]>,
+    in_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
     /// Buffered rows (collected during first next_batch call)
@@ -292,6 +294,8 @@ pub struct SortOperator {
     emit_idx: usize,
     /// Column indices for sort keys (resolved from schema)
     sort_col_indices: Vec<usize>,
+    /// Variables required by downstream operators; if set, emitted output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl SortOperator {
@@ -318,12 +322,19 @@ impl SortOperator {
         Self {
             child,
             sort_specs,
-            schema,
+            in_schema: schema,
             state: OperatorState::Created,
             buffer: None,
             emit_idx: 0,
             sort_col_indices,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.in_schema, downstream_vars);
+        self
     }
 
     /// Get the sort specifications
@@ -350,7 +361,7 @@ impl SortOperator {
 #[async_trait]
 impl Operator for SortOperator {
     fn schema(&self) -> &[VarId] {
-        &self.schema
+        effective_schema(&self.out_schema, &self.in_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -381,7 +392,7 @@ impl Operator for SortOperator {
             let span = tracing::debug_span!(
                 "sort_blocking",
                 sort_keys = self.sort_col_indices.len(),
-                schema_cols = self.schema.len(),
+                schema_cols = self.in_schema.len(),
                 input_batches = tracing::field::Empty,
                 input_rows = tracing::field::Empty,
                 drain_ms = tracing::field::Empty,
@@ -421,7 +432,7 @@ impl Operator for SortOperator {
                     let _bg = build_span.enter();
                     for row_idx in 0..batch.len() {
                         input_rows += 1;
-                        let row: Vec<Binding> = (0..self.schema.len())
+                        let row: Vec<Binding> = (0..self.in_schema.len())
                             .map(|col| batch.get_by_col(row_idx, col).clone())
                             .collect();
                         all_rows.push(row);
@@ -475,7 +486,7 @@ impl Operator for SortOperator {
         let batch_size = ctx.batch_size;
         let end_idx = (self.emit_idx + batch_size).min(rows.len());
 
-        let num_cols = self.schema.len();
+        let num_cols = self.in_schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_cols)
             .map(|_| Vec::with_capacity(end_idx - self.emit_idx))
             .collect();
@@ -488,7 +499,8 @@ impl Operator for SortOperator {
 
         self.emit_idx = end_idx;
 
-        Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        let batch = Batch::new(self.in_schema.clone(), columns)?;
+        Ok(trim_batch(&self.out_schema, batch))
     }
 
     fn close(&mut self) {

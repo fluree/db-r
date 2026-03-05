@@ -91,19 +91,9 @@ where
         let novelty = dataset.composite_overlay();
         let max_t = dataset.max_t();
 
-        Ok(QueryResult {
-            vars,
-            t: max_t,
-            novelty,
-            context: parsed.context,
-            orig_context: parsed.orig_context,
-            batches,
-            select: parsed.select,
-            select_mode: parsed.select_mode,
-            construct_template: parsed.construct_template,
-            graph_select: parsed.graph_select,
-            binary_graph: None,
-        })
+        Ok(super::helpers::build_query_result(
+            vars, parsed, batches, max_t, novelty, None,
+        ))
     }
 
     /// Execute a connection query with index provider support (BM25 + Vector).

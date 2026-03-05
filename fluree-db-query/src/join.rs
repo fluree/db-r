@@ -4,12 +4,15 @@
 //! where left results drive right scans. It enforces var unification - shared
 //! vars between left and right must match exactly.
 
+use crate::binary_scan::EmitMask;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
-use crate::operator::{Operator, OperatorState};
+use crate::operator::{
+    compute_trimmed_vars, effective_schema, trim_batch, Operator, OperatorState,
+};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -30,12 +33,14 @@ use tracing::Instrument;
 fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: &Option<ObjectBounds>,
+    emit: EmitMask,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
-    Box::new(crate::binary_scan::ScanOperator::new(
+    Box::new(crate::binary_scan::ScanOperator::new_with_emit(
         pattern,
         object_bounds.clone(),
         Vec::new(),
+        emit,
     ))
 }
 
@@ -133,6 +138,11 @@ pub struct NestedLoopJoinOperator {
     right_pattern: TriplePattern,
     /// Schema from left operator
     left_schema: Arc<[VarId]>,
+    /// Which right-pattern variables to emit into the right scan schema.
+    ///
+    /// This enables pruning of unused right-side variables so the scan can avoid
+    /// decoding and materializing values that do not affect the query result.
+    right_emit: EmitMask,
     /// New variables introduced by right pattern (not in left schema)
     right_new_vars: Vec<VarId>,
     /// Combined output schema: left vars + new right vars
@@ -176,6 +186,8 @@ pub struct NestedLoopJoinOperator {
     /// schema, so they can be evaluated immediately on each combined row rather than
     /// requiring separate Operator wrappers.
     inline_ops: Vec<InlineOperator>,
+    /// Variables required by downstream operators; if set, output is trimmed.
+    out_schema: Option<Arc<[VarId]>>,
 }
 
 impl NestedLoopJoinOperator {
@@ -194,6 +206,7 @@ impl NestedLoopJoinOperator {
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        right_emit: EmitMask,
     ) -> Self {
         // Build bind instructions: which left columns bind which right pattern positions
         let mut bind_instructions = Vec::new();
@@ -233,12 +246,30 @@ impl NestedLoopJoinOperator {
             }
         }
 
-        // Determine right pattern output vars (vars that are still unbound after substitution)
-        let right_output_vars: Vec<VarId> = right_pattern
-            .variables()
-            .into_iter()
-            .filter(|v| !left_var_positions.contains_key(v))
-            .collect();
+        // Determine right pattern output vars (vars that are still unbound after substitution),
+        // filtered by the emission mask. This allows plan-time pruning of unused vars.
+        let mut right_output_vars: Vec<VarId> = Vec::new();
+        if right_emit.s {
+            if let Ref::Var(v) = &right_pattern.s {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
+        if right_emit.p {
+            if let Ref::Var(v) = &right_pattern.p {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
+        if right_emit.o {
+            if let Term::Var(v) = &right_pattern.o {
+                if !left_var_positions.contains_key(v) {
+                    right_output_vars.push(*v);
+                }
+            }
+        }
 
         // Build combined schema: left schema + new right vars + inline bind vars
         let mut combined = left_schema.to_vec();
@@ -317,6 +348,7 @@ impl NestedLoopJoinOperator {
             left,
             right_pattern,
             left_schema,
+            right_emit,
             right_new_vars: right_output_vars,
             combined_schema,
             bind_instructions,
@@ -335,7 +367,14 @@ impl NestedLoopJoinOperator {
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
             inline_ops,
+            out_schema: None,
         }
+    }
+
+    /// Trim output to only the specified downstream variables.
+    pub fn with_out_schema(mut self, downstream_vars: Option<&[VarId]>) -> Self {
+        self.out_schema = compute_trimmed_vars(&self.combined_schema, downstream_vars);
+        self
     }
 
     /// Check if any binding used in bind instructions is Poisoned
@@ -420,6 +459,15 @@ impl NestedLoopJoinOperator {
                             }
                             // Otherwise leave as variable
                         }
+                        Binding::EncodedPid { p_id } => {
+                            // Predicates are IRIs; allow using an encoded predicate as a subject.
+                            if let Some(store) = store {
+                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                                    pattern.s = Ref::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
+                        }
                         _ => {
                             // Leave as variable
                         }
@@ -433,6 +481,16 @@ impl NestedLoopJoinOperator {
                         Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.p = Ref::Iri(iri.clone());
+                        }
+                        Binding::EncodedSid { s_id } => {
+                            // Allow cross-position reuse: an IRI bound as a subject/object can
+                            // be used to bind a predicate position. Resolve via subject dict.
+                            if let Some(store) = store {
+                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                                    pattern.p = Ref::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
                         }
                         Binding::EncodedPid { p_id } => {
                             // Resolve encoded p_id to IRI if store available
@@ -478,8 +536,14 @@ impl NestedLoopJoinOperator {
                             }
                             // Otherwise leave as variable
                         }
-                        Binding::EncodedPid { .. } => {
-                            // Predicate as object is unusual - leave as variable
+                        Binding::EncodedPid { p_id } => {
+                            // Allow using an encoded predicate IRI as an object IRI.
+                            if let Some(store) = store {
+                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                                    pattern.o = Term::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
                         }
                         Binding::Unbound | Binding::Poisoned => {
                             // Leave as variable (Poisoned vars from OPTIONAL also remain unbound)
@@ -544,7 +608,7 @@ impl NestedLoopJoinOperator {
 #[async_trait]
 impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
-        &self.combined_schema
+        effective_schema(&self.out_schema, &self.combined_schema)
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -591,13 +655,13 @@ impl Operator for NestedLoopJoinOperator {
         loop {
             // 1. Pre-built output from batched flush
             if let Some(batch) = self.batched_output.pop_front() {
-                return Ok(Some(batch));
+                return Ok(trim_batch(&self.out_schema, batch));
             }
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
                 if let Some(batch) = self.build_output_batch(ctx).await? {
-                    return Ok(Some(batch));
+                    return Ok(trim_batch(&self.out_schema, batch));
                 }
                 // All pending rows were filtered out — continue to process more left rows
                 continue;
@@ -715,7 +779,8 @@ impl Operator for NestedLoopJoinOperator {
                         left_row,
                         ctx.binary_store.as_deref(),
                     );
-                    let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+                    let mut right_scan =
+                        make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
@@ -736,7 +801,8 @@ impl Operator for NestedLoopJoinOperator {
                     left_row,
                     ctx.binary_store.as_deref(),
                 );
-                let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+                let mut right_scan =
+                    make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
@@ -906,7 +972,8 @@ impl NestedLoopJoinOperator {
                     ctx.binary_store.as_deref(),
                 )
             };
-            let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+            let mut right_scan =
+                make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
             right_scan.open(ctx).await?;
             right_scans += 1;
             while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -1697,6 +1764,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
@@ -1785,6 +1853,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // Verify that ?v is NOT in unify_instructions (it's substituted, not unified)
@@ -1887,6 +1956,7 @@ mod tests {
             right_pattern,
             None, // No object bounds
             Vec::new(),
+            EmitMask::ALL,
         );
 
         // No unify_instructions since no shared vars between left [?s] and right [?x, ?y]
@@ -2182,7 +2252,9 @@ mod tests {
         )
         .unwrap();
 
-        let store = std::sync::Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
+        let cache = std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(64));
+        let store =
+            std::sync::Arc::new(BinaryIndexStore::load(&run_dir, &index_dir, cache).unwrap());
 
         // --- Build query: (unbounded triple) JOIN (bounded triple) + FILTER ---
         let mut vars = VarRegistry::new();

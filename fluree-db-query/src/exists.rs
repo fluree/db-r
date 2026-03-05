@@ -112,6 +112,7 @@ impl ExistsOperator {
             Some(Box::new(seed)),
             &self.exists_patterns,
             self.stats.clone(),
+            None,
         )?;
 
         exists_op.open(ctx).await?;
@@ -145,6 +146,7 @@ impl Operator for ExistsOperator {
                 Some(seed),
                 &self.exists_patterns,
                 self.stats.clone(),
+                None,
             )?;
             exists_op.open(ctx).await?;
             let has_result = loop {

@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     ApiError, Batch, DatasetSpec, ExecutableQuery, OverlayProvider, QueryConnectionOptions, Result,
-    SelectMode, Tracker, TrackingOptions, VarRegistry,
+    Tracker, TrackingOptions, VarRegistry,
 };
 
 use fluree_db_binary_index::BinaryGraphView;
@@ -100,19 +100,9 @@ pub(crate) fn parse_sparql_to_ir(
     Ok((vars, parsed))
 }
 
-/// Prepare a parsed query for execution, handling graph crawl mode.
-///
-/// Graph-crawl queries need to run in wildcard mode to preserve all bindings,
-/// but we keep the original parsed query for formatting.
+/// Prepare a parsed query for execution.
 pub(crate) fn prepare_for_execution(parsed: &ParsedQuery) -> ExecutableQuery {
-    if parsed.graph_select.is_some() {
-        let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.select_mode = SelectMode::Wildcard;
-        parsed_for_exec.select.clear();
-        ExecutableQuery::simple(parsed_for_exec)
-    } else {
-        ExecutableQuery::simple(parsed.clone())
-    }
+    ExecutableQuery::simple(parsed.clone())
 }
 
 // =============================================================================
@@ -137,11 +127,9 @@ pub(crate) fn build_query_result(
         novelty,
         context: parsed.context,
         orig_context: parsed.orig_context,
-        select: parsed.select,
-        select_mode: parsed.select_mode,
+        output: parsed.output,
         batches,
         binary_graph,
-        construct_template: parsed.construct_template,
         graph_select: parsed.graph_select,
     }
 }
@@ -257,6 +245,7 @@ pub(crate) fn status_for_query_error(err: &fluree_db_query::QueryError) -> u16 {
         fluree_db_query::QueryError::FuelLimitExceeded(_) => 400,
         fluree_db_query::QueryError::InvalidQuery(_) => 400,
         fluree_db_query::QueryError::InvalidFilter(_) => 400,
+        fluree_db_query::QueryError::InvalidExpression(_) => 400,
         _ => 500,
     }
 }

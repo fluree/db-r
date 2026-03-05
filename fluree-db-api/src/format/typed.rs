@@ -15,7 +15,7 @@
 //! - Language-tagged strings use `{"@value": ..., "@language": "..."}`
 //! - IRIs are compacted using @context
 
-use super::config::{FormatterConfig, SelectMode};
+use super::config::FormatterConfig;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
@@ -27,42 +27,41 @@ use serde_json::{json, Map, Value as JsonValue};
 pub fn format(
     result: &QueryResult,
     compactor: &IriCompactor,
-    config: &FormatterConfig,
+    _config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let select_one = result.output.is_select_one();
     let mut rows = Vec::new();
 
     for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            let row = match config.select_mode {
-                SelectMode::Wildcard => {
-                    // Wildcard: use batch schema, return all bound vars as object
-                    format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
-                }
-                _ => format_row(
+            let row = if result.output.is_wildcard() {
+                // Wildcard: use batch schema, return all bound vars as object
+                format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
+            } else {
+                format_row(
                     batch,
                     row_idx,
-                    &result.select,
+                    result.output.select_vars_or_empty(),
                     &result.vars,
                     compactor,
                     result,
-                )?,
+                )?
             };
             rows.push(row);
 
-            // For SelectOne, stop after first row
-            if config.select_mode == SelectMode::One {
+            if select_one {
                 break;
             }
         }
-        if config.select_mode == SelectMode::One && !rows.is_empty() {
+        if select_one && !rows.is_empty() {
             break;
         }
     }
 
-    // Return based on select mode
-    match config.select_mode {
-        SelectMode::One => Ok(rows.into_iter().next().unwrap_or(JsonValue::Null)),
-        _ => Ok(JsonValue::Array(rows)),
+    if select_one {
+        Ok(rows.into_iter().next().unwrap_or(JsonValue::Null))
+    } else {
+        Ok(JsonValue::Array(rows))
     }
 }
 
@@ -325,11 +324,9 @@ mod tests {
             novelty: None,
             context: crate::ParsedContext::default(),
             orig_context: None,
-            select: vec![],
-            select_mode: SelectMode::Many,
+            output: crate::QueryOutput::Select(vec![]),
             batches: vec![],
             binary_graph: None,
-            construct_template: None,
             graph_select: None,
         }
     }

@@ -357,6 +357,21 @@ impl LeafletCache {
         Self { inner }
     }
 
+    /// Create a new cache with the given maximum megabyte budget.
+    pub fn with_max_mb(mb: u64) -> Self {
+        Self::with_max_bytes(mb.saturating_mul(1024 * 1024))
+    }
+
+    /// Approximate total size of entries in bytes (moka weighted size).
+    pub fn weighted_size_bytes(&self) -> u64 {
+        self.inner.weighted_size()
+    }
+
+    /// Number of cached entries across all entry types.
+    pub fn entry_count(&self) -> u64 {
+        self.inner.entry_count()
+    }
+
     // ========================================================================
     // Region 1
     // ========================================================================
@@ -497,10 +512,8 @@ impl LeafletCache {
         self.inner.invalidate_all();
     }
 
-    /// Approximate total number of entries in cache (all types).
-    pub fn entry_count(&self) -> u64 {
-        self.inner.entry_count()
-    }
+    // Note: `entry_count()` is provided near cache construction for reuse in
+    // operational logging alongside `weighted_size_bytes()`.
 }
 
 // ============================================================================

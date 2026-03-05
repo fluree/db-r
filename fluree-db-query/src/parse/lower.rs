@@ -28,6 +28,7 @@ use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Select mode determines result shape
@@ -35,7 +36,7 @@ use std::sync::Arc;
 /// This is derived from the parsed query (select vs selectOne vs construct) and controls
 /// whether the formatter returns an array, single value, or JSON-LD graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SelectMode {
+pub(crate) enum SelectMode {
     /// Normal select: return array of rows
     #[default]
     Many,
@@ -79,6 +80,92 @@ impl ConstructTemplate {
     pub fn new(patterns: Vec<TriplePattern>) -> Self {
         Self { patterns }
     }
+
+    /// Collect all variables referenced in the template patterns.
+    pub fn variables(&self) -> HashSet<VarId> {
+        self.patterns.iter().flat_map(|tp| tp.variables()).collect()
+    }
+}
+
+/// Describes what the query produces.
+///
+/// Combines the select mode, selected variables, and construct template into a
+/// single enum so that invalid combinations (e.g. `Construct` without a
+/// template, or `Many` with an empty variable list) are unrepresentable.
+#[derive(Debug, Clone)]
+pub enum QueryOutput {
+    /// Normal SELECT with explicit variable list.
+    Select(Vec<VarId>),
+    /// selectOne — same as Select but formatters return first row or null.
+    SelectOne(Vec<VarId>),
+    /// SELECT * — all bound variables from WHERE.
+    Wildcard,
+    /// CONSTRUCT — template patterns instantiated with bindings.
+    Construct(ConstructTemplate),
+    /// ASK — boolean result.
+    Boolean,
+}
+
+impl QueryOutput {
+    /// Get select vars for Select/SelectOne, `None` otherwise.
+    pub fn select_vars(&self) -> Option<&[VarId]> {
+        match self {
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => Some(vars),
+            _ => None,
+        }
+    }
+
+    /// Get select vars, or an empty slice for non-select outputs.
+    pub fn select_vars_or_empty(&self) -> &[VarId] {
+        self.select_vars().unwrap_or(&[])
+    }
+
+    /// Get the construct template for Construct, `None` otherwise.
+    pub fn construct_template(&self) -> Option<&ConstructTemplate> {
+        match self {
+            QueryOutput::Construct(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` for `SelectOne` output.
+    pub fn is_select_one(&self) -> bool {
+        matches!(self, Self::SelectOne(_))
+    }
+
+    /// Returns `true` for `Wildcard` output.
+    pub fn is_wildcard(&self) -> bool {
+        matches!(self, Self::Wildcard)
+    }
+
+    /// Returns `true` for `Boolean` (ASK) output.
+    pub fn is_boolean(&self) -> bool {
+        matches!(self, Self::Boolean)
+    }
+
+    /// Returns `true` for `Construct` output.
+    pub fn is_construct(&self) -> bool {
+        matches!(self, Self::Construct(_))
+    }
+
+    /// Variables the output depends on.
+    ///
+    /// Returns `None` when dependency trimming is not applicable:
+    /// - `Wildcard`: all WHERE vars are needed
+    /// - `Boolean`: all WHERE vars needed for solvability checking
+    /// - Empty `Select`/`SelectOne`: no explicit projection
+    /// - `Construct` with no template patterns
+    pub fn variables(&self) -> Option<HashSet<VarId>> {
+        match self {
+            QueryOutput::Wildcard | QueryOutput::Boolean => None,
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) if vars.is_empty() => None,
+            QueryOutput::Select(vars) | QueryOutput::SelectOne(vars) => {
+                Some(vars.iter().copied().collect())
+            }
+            QueryOutput::Construct(t) if t.patterns.is_empty() => None,
+            QueryOutput::Construct(t) => Some(t.variables()),
+        }
+    }
 }
 
 /// Resolved query ready for execution
@@ -88,21 +175,12 @@ pub struct ParsedQuery {
     pub context: ParsedContext,
     /// Original JSON context from the query (for CONSTRUCT output)
     pub orig_context: Option<serde_json::Value>,
-    /// Selected variable IDs
-    pub select: Vec<VarId>,
+    /// Query output specification (replaces select, select_mode, construct_template)
+    pub output: QueryOutput,
     /// Resolved patterns (triples, filters, optionals, etc.)
     pub patterns: Vec<Pattern>,
     /// Query options (limit, offset, order by, group by, etc.)
     pub options: QueryOptions,
-    /// Select mode (from parsed query)
-    ///
-    /// Controls whether result is an array, single value, or JSON-LD graph.
-    pub select_mode: SelectMode,
-    /// CONSTRUCT template (None for SELECT queries)
-    ///
-    /// Contains the resolved template patterns that will be instantiated
-    /// with query bindings to produce output triples.
-    pub construct_template: Option<ConstructTemplate>,
     /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
     ///
     /// When present, controls nested JSON-LD object expansion during formatting.
@@ -110,30 +188,14 @@ pub struct ParsedQuery {
 }
 
 impl ParsedQuery {
-    /// Create a new parsed query
+    /// Create a new parsed query with default Wildcard output.
     pub fn new(context: ParsedContext) -> Self {
         Self {
             context,
             orig_context: None,
-            select: Vec::new(),
+            output: QueryOutput::Wildcard,
             patterns: Vec::new(),
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
-            graph_select: None,
-        }
-    }
-
-    /// Create a new parsed query with a specific select mode
-    pub fn with_select_mode(context: ParsedContext, select_mode: SelectMode) -> Self {
-        Self {
-            context,
-            orig_context: None,
-            select: Vec::new(),
-            patterns: Vec::new(),
-            options: QueryOptions::default(),
-            select_mode,
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -184,11 +246,9 @@ impl ParsedQuery {
         Self {
             context: self.context.clone(),
             orig_context: self.orig_context.clone(),
-            select: self.select.clone(),
+            output: self.output.clone(),
             patterns,
             options: self.options.clone(),
-            select_mode: self.select_mode,
-            construct_template: self.construct_template.clone(),
             graph_select: self.graph_select.clone(),
         }
     }
@@ -206,45 +266,62 @@ impl ParsedQuery {
 /// # Returns
 ///
 /// A resolved `ParsedQuery` with Sids and VarIds
-pub fn lower_query<E: IriEncoder>(
+pub(crate) fn lower_query<E: IriEncoder>(
     ast: UnresolvedQuery,
     encoder: &E,
     vars: &mut VarRegistry,
     select_mode: SelectMode,
 ) -> Result<ParsedQuery> {
-    let mut query = ParsedQuery::with_select_mode(ast.context, select_mode);
     let mut pp_counter: u32 = 0;
 
-    // Copy original context JSON for CONSTRUCT output
-    query.orig_context = ast.orig_context;
-
     // Lower select variables
-    for var_name in &ast.select {
-        let var_id = vars.get_or_insert(var_name);
-        query.select.push(var_id);
-    }
+    let select_vars: Vec<VarId> = ast
+        .select
+        .iter()
+        .map(|name| vars.get_or_insert(name))
+        .collect();
 
     // Lower patterns
+    let mut patterns = Vec::new();
     for unresolved_pattern in ast.patterns {
-        let patterns =
+        let lowered =
             lower_unresolved_pattern(&unresolved_pattern, encoder, vars, &mut pp_counter)?;
-        query.patterns.extend(patterns);
+        patterns.extend(lowered);
     }
 
     // Lower options
-    query.options = lower_options(&ast.options, vars)?;
+    let options = lower_options(&ast.options, vars)?;
 
-    // Lower construct template if present
-    if let Some(ref template) = ast.construct_template {
-        query.construct_template = Some(lower_construct_template(template, encoder, vars)?);
-    }
+    // Build QueryOutput from mode + lowered components
+    let output = match select_mode {
+        SelectMode::Many => QueryOutput::Select(select_vars),
+        SelectMode::One => QueryOutput::SelectOne(select_vars),
+        SelectMode::Wildcard => QueryOutput::Wildcard,
+        SelectMode::Construct => {
+            let template = match ast.construct_template {
+                Some(ref t) => lower_construct_template(t, encoder, vars)?,
+                None => ConstructTemplate::new(Vec::new()),
+            };
+            QueryOutput::Construct(template)
+        }
+        SelectMode::Boolean => QueryOutput::Boolean,
+    };
 
     // Lower graph select if present
-    if let Some(ref graph_select) = ast.graph_select {
-        query.graph_select = Some(lower_graph_select(graph_select, encoder, vars)?);
-    }
+    let graph_select = ast
+        .graph_select
+        .as_ref()
+        .map(|gs| lower_graph_select(gs, encoder, vars))
+        .transpose()?;
 
-    Ok(query)
+    Ok(ParsedQuery {
+        context: ast.context,
+        orig_context: ast.orig_context,
+        output,
+        patterns,
+        options,
+        graph_select,
+    })
 }
 
 /// Lower an unresolved pattern to resolved Pattern(s).
@@ -638,14 +715,14 @@ fn lower_path_to_patterns<E: IriEncoder>(
         UnresolvedPathExpr::Alternative(alts) => {
             let branches: Vec<Vec<Pattern>> = alts
                 .iter()
-                .map(|alt| lower_alternative_branch(alt, &s, &o, vars, pp_counter))
+                .map(|alt| lower_alternative_branch(alt, &s, &o, encoder, vars, pp_counter))
                 .collect::<Result<_>>()?;
             Ok(vec![Pattern::Union(branches)])
         }
 
         // Sequence: compile to chain of triple patterns with join variables
         UnresolvedPathExpr::Sequence(steps) => {
-            lower_sequence_chain(&s, steps, &o, vars, pp_counter)
+            lower_sequence_chain(&s, steps, &o, encoder, vars, pp_counter)
         }
 
         // Unsupported operators
@@ -727,10 +804,11 @@ const MAX_SEQUENCE_EXPANSION: usize = 64;
 /// Steps can be forward (`Iri(p)`) or inverse (`Inverse(Iri(p))`).
 /// Alternative steps (`(a|b)`) are distributed into a `Union` of simple chains.
 /// All other step types are rejected with a clear error.
-fn lower_sequence_chain(
+fn lower_sequence_chain<E: IriEncoder>(
     s: &Ref,
     steps: &[UnresolvedPathExpr],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -741,7 +819,7 @@ fn lower_sequence_chain(
 
     // Degenerate single-step sequence (parser should collapse, but guard)
     if steps.len() == 1 {
-        return lower_sequence_step(&steps[0], s, o);
+        return lower_sequence_step(&steps[0], s, o, encoder);
     }
 
     // Build step choices: each step → vec of simple alternatives.
@@ -765,10 +843,10 @@ fn lower_sequence_chain(
     }
 
     if has_alt {
-        return lower_distributed_sequence(s, &step_choices, o, vars, pp_counter);
+        return lower_distributed_sequence(s, &step_choices, o, encoder, vars, pp_counter);
     }
 
-    // Fast path: no alternatives — generate simple triple chain
+    // Fast path: no alternatives — generate simple chain
     let mut patterns = Vec::with_capacity(steps.len());
     let mut prev = s.clone();
 
@@ -782,8 +860,8 @@ fn lower_sequence_chain(
             Ref::Var(vars.get_or_insert(&var_name))
         };
 
-        let triple = lower_sequence_step_triple(step, &prev, &next)?;
-        patterns.push(Pattern::Triple(triple));
+        let pat = lower_sequence_step_pattern(step, &prev, &next, encoder)?;
+        patterns.push(pat);
 
         prev = next;
     }
@@ -791,13 +869,32 @@ fn lower_sequence_chain(
     Ok(patterns)
 }
 
-/// Validate that a step inside an Alternative (within a sequence) is a simple
-/// step: `Iri(p)` or `Inverse(Iri(p))`.
+/// Validate that a step inside an Alternative (within a sequence) is a "simple"
+/// step: `Iri(p)`, `Inverse(Iri(p))`, transitive `p+`/`p*` on a simple predicate,
+/// or inverse of a transitive simple predicate.
 fn validate_simple_step(step: &UnresolvedPathExpr) -> Result<()> {
     match step {
         UnresolvedPathExpr::Iri(_) => Ok(()),
+        UnresolvedPathExpr::OneOrMore(inner) | UnresolvedPathExpr::ZeroOrMore(inner) => {
+            match inner.as_ref() {
+                UnresolvedPathExpr::Iri(_) => Ok(()),
+                other => Err(ParseError::InvalidWhere(format!(
+                    "Transitive steps within a sequence must apply +/* to a simple predicate; got {}",
+                    path_expr_name(other),
+                ))),
+            }
+        }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(_) => Ok(()),
+            UnresolvedPathExpr::OneOrMore(tp_inner) | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+                match tp_inner.as_ref() {
+                    UnresolvedPathExpr::Iri(_) => Ok(()),
+                    other => Err(ParseError::InvalidWhere(format!(
+                        "Transitive inverse steps within a sequence must apply +/* to a simple predicate; got inverse of {}",
+                        path_expr_name(other),
+                    ))),
+                }
+            }
             other => Err(ParseError::InvalidWhere(format!(
                 "Alternative steps within a sequence must be simple predicates or \
                  inverse simple predicates (^ex:p); got inverse of {}",
@@ -838,10 +935,11 @@ fn cartesian_product<'a>(
 ///
 /// Expands the Cartesian product of step choices into individual simple chains,
 /// each becoming a branch of a `Pattern::Union`.
-fn lower_distributed_sequence(
+fn lower_distributed_sequence<E: IriEncoder>(
     s: &Ref,
     step_choices: &[Vec<&UnresolvedPathExpr>],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -856,7 +954,7 @@ fn lower_distributed_sequence(
 
     let branches: Vec<Vec<Pattern>> = combos
         .into_iter()
-        .map(|combo| lower_simple_sequence_chain(s, &combo, o, vars, pp_counter))
+        .map(|combo| lower_simple_sequence_chain(s, &combo, o, encoder, vars, pp_counter))
         .collect::<Result<_>>()?;
 
     Ok(vec![Pattern::Union(branches)])
@@ -866,10 +964,11 @@ fn lower_distributed_sequence(
 ///
 /// Each step must be `Iri(p)` or `Inverse(Iri(p))`. Adjacent steps are joined
 /// by generated intermediate variables (`?__pp{n}`).
-fn lower_simple_sequence_chain(
+fn lower_simple_sequence_chain<E: IriEncoder>(
     s: &Ref,
     steps: &[&UnresolvedPathExpr],
     o: &Ref,
+    encoder: &E,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -886,8 +985,8 @@ fn lower_simple_sequence_chain(
             Ref::Var(vars.get_or_insert(&var_name))
         };
 
-        let triple = lower_sequence_step_triple(step, &prev, &next)?;
-        patterns.push(Pattern::Triple(triple));
+        let pat = lower_sequence_step_pattern(step, &prev, &next, encoder)?;
+        patterns.push(pat);
 
         prev = next;
     }
@@ -895,38 +994,93 @@ fn lower_simple_sequence_chain(
     Ok(patterns)
 }
 
-/// Lower a single step of a sequence path to a triple pattern.
+/// Lower a single step of a sequence path to a Pattern.
 ///
 /// Forward step `p`: `Triple(prev, p, next)`
 /// Inverse step `^p`: `Triple(next, p, prev)` (swapped)
+/// Transitive step `p+`/`p*`: `PropertyPath(prev, p, next)`
+/// Inverse-transitive step `^p+`/`^p*`: `PropertyPath(next, p, prev)` (swapped)
 ///
 /// Note: Alternative steps (`(a|b)`) are handled by distribution in
 /// `lower_sequence_chain` before this function is called.
-fn lower_sequence_step_triple(
+fn lower_sequence_step_pattern<E: IriEncoder>(
     step: &UnresolvedPathExpr,
     prev: &Ref,
     next: &Ref,
-) -> Result<TriplePattern> {
+    encoder: &E,
+) -> Result<Pattern> {
     match step {
         UnresolvedPathExpr::Iri(iri) => {
             let p = Ref::Iri(iri.clone());
-            Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
+            Ok(Pattern::Triple(TriplePattern::new(
+                prev.clone(),
+                p,
+                next.clone().into(),
+            )))
+        }
+        UnresolvedPathExpr::OneOrMore(inner) | UnresolvedPathExpr::ZeroOrMore(inner) => {
+            if prev.is_bound() && next.is_bound() {
+                return Err(ParseError::InvalidWhere(
+                    "Property path requires at least one variable (cannot have both subject and object as constants)"
+                        .to_string(),
+                ));
+            }
+            let iri = expect_simple_iri(inner)?;
+            let modifier = match step {
+                UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                _ => PathModifier::ZeroOrMore,
+            };
+            let predicate = encoder
+                .encode_iri(iri)
+                .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+            Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                prev.clone(),
+                predicate,
+                modifier,
+                next.clone(),
+            )))
         }
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             UnresolvedPathExpr::Iri(iri) => {
                 let p = Ref::Iri(iri.clone());
-                Ok(TriplePattern::new(next.clone(), p, prev.clone().into()))
+                Ok(Pattern::Triple(TriplePattern::new(
+                    next.clone(),
+                    p,
+                    prev.clone().into(),
+                )))
+            }
+            UnresolvedPathExpr::OneOrMore(tp_inner) | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+                if prev.is_bound() && next.is_bound() {
+                    return Err(ParseError::InvalidWhere(
+                        "Property path requires at least one variable (cannot have both subject and object as constants)"
+                            .to_string(),
+                    ));
+                }
+                let iri = expect_simple_iri(tp_inner)?;
+                let modifier = match inner.as_ref() {
+                    UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                    _ => PathModifier::ZeroOrMore,
+                };
+                let predicate = encoder
+                    .encode_iri(iri)
+                    .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+                Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                    next.clone(),
+                    predicate,
+                    modifier,
+                    prev.clone(),
+                )))
             }
             other => Err(ParseError::InvalidWhere(format!(
-                "Sequence (/) steps must be simple predicates, inverse simple \
-                 predicates (^ex:p), or alternatives of simple predicates \
+                "Sequence (/) steps must be simple predicates, inverse simple predicates (^ex:p), \
+                 transitive predicates (ex:p+ or ex:p*), or alternatives of simple predicates \
                  ((ex:a|ex:b)); got inverse of {}",
                 path_expr_name(other),
             ))),
         },
         other => Err(ParseError::InvalidWhere(format!(
-            "Sequence (/) steps must be simple predicates, inverse simple \
-             predicates (^ex:p), or alternatives of simple predicates \
+            "Sequence (/) steps must be simple predicates, inverse simple predicates (^ex:p), \
+             transitive predicates (ex:p+ or ex:p*), or alternatives of simple predicates \
              ((ex:a|ex:b)); got {}",
             path_expr_name(other),
         ))),
@@ -934,9 +1088,14 @@ fn lower_sequence_step_triple(
 }
 
 /// Lower a degenerate single-step sequence to a pattern list.
-fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Ref, o: &Ref) -> Result<Vec<Pattern>> {
-    let triple = lower_sequence_step_triple(step, s, o)?;
-    Ok(vec![Pattern::Triple(triple)])
+fn lower_sequence_step<E: IriEncoder>(
+    step: &UnresolvedPathExpr,
+    s: &Ref,
+    o: &Ref,
+    encoder: &E,
+) -> Result<Vec<Pattern>> {
+    let pat = lower_sequence_step_pattern(step, s, o, encoder)?;
+    Ok(vec![pat])
 }
 
 /// Lower a single branch of an Alternative path to a pattern list.
@@ -949,6 +1108,7 @@ fn lower_alternative_branch(
     alt: &UnresolvedPathExpr,
     s: &Ref,
     o: &Ref,
+    encoder: &impl IriEncoder,
     vars: &mut VarRegistry,
     pp_counter: &mut u32,
 ) -> Result<Vec<Pattern>> {
@@ -976,7 +1136,9 @@ fn lower_alternative_branch(
                 path_expr_name(other),
             ))),
         },
-        UnresolvedPathExpr::Sequence(steps) => lower_sequence_chain(s, steps, o, vars, pp_counter),
+        UnresolvedPathExpr::Sequence(steps) => {
+            lower_sequence_chain(s, steps, o, encoder, vars, pp_counter)
+        }
         other => Err(ParseError::InvalidWhere(format!(
             "Alternative (|) branches support simple predicates, inverse simple \
              predicates (^ex:p), or sequence chains (ex:a/ex:b); got {}",
@@ -1320,7 +1482,8 @@ fn lower_function_name(name: &str) -> Function {
         "hours" => Function::Hours,
         "minutes" => Function::Minutes,
         "seconds" => Function::Seconds,
-        "tz" | "timezone" => Function::Tz,
+        "tz" => Function::Tz,
+        "timezone" => Function::Timezone,
         // Type functions
         "isiri" | "isuri" | "is-iri" | "is-uri" => Function::IsIri,
         "isblank" | "is-blank" => Function::IsBlank,
@@ -1643,10 +1806,10 @@ mod tests {
 
         let query = lower_query(ast, &encoder, &mut vars, SelectMode::Many).unwrap();
 
-        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
         assert_eq!(vars.len(), 2);
-        assert_eq!(query.select_mode, SelectMode::Many);
+        assert!(matches!(query.output, QueryOutput::Select(_)));
     }
 
     #[test]
@@ -2090,12 +2253,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sequence_transitive_step_errors() {
+    fn test_sequence_transitive_step_allowed() {
         let encoder = test_encoder();
         let mut vars = VarRegistry::new();
         let mut pp_counter: u32 = 0;
 
-        // ex:a+ / ex:b — transitive modifier inside sequence is invalid
+        // ex:a+ / ex:b — transitive modifier inside sequence is allowed
         let path = UnresolvedPathExpr::Sequence(vec![
             UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(
                 "http://example.org/a",
@@ -2104,15 +2267,27 @@ mod tests {
         ]);
         let pattern = make_path_pattern("?s", path, "?o");
 
-        let result = lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Sequence (/) steps must be simple predicates"),
-            "Unexpected error: {}",
-            err,
-        );
+        assert_eq!(results.len(), 2);
+
+        // Step 0: PropertyPath(?s, a, +, ?__pp0)
+        match &results[0] {
+            Pattern::PropertyPath(pp) => {
+                assert!(matches!(pp.modifier, PathModifier::OneOrMore));
+                assert_eq!(pp.subject.as_var().map(|v| vars.name(v)), Some("?s"));
+                assert_eq!(pp.predicate.name_str(), "a");
+                assert_eq!(pp.object.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+            }
+            other => panic!("Expected PropertyPath, got {:?}", other),
+        }
+
+        // Step 1: Triple(?__pp0, b, ?o)
+        let t1 = extract_triple(&results[1]);
+        assert_eq!(t1.s.as_var().map(|v| vars.name(v)), Some("?__pp0"));
+        assert_eq!(t1.p.as_iri(), Some("http://example.org/b"));
+        assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?o"));
     }
 
     #[test]

@@ -1582,25 +1582,22 @@ async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
 }
 
 #[tokio::test]
-async fn sparql_property_path_sequence_transitive_step_errors() {
+async fn sparql_property_path_sequence_transitive_step_allowed() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-err:main").await;
 
-    // ex:friend+/ex:name — transitive inside sequence is not supported
+    // ex:friend+/ex:name — transitive modifier inside sequence should work
     let query = "\
         PREFIX ex: <http://example.org/>
         SELECT ?name WHERE { ex:alice ex:friend+/ex:name ?name }";
 
-    let result = support::query_sparql(&fluree, &ledger, query).await;
-    assert!(
-        result.is_err(),
-        "Transitive step inside sequence should error"
-    );
-    let msg = format!("{}", result.unwrap_err());
-    assert!(
-        msg.contains("simple predicates") || msg.contains("Sequence"),
-        "Error should mention sequence step constraints, got: {}",
-        msg
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("transitive step inside sequence should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Bob", "Carol"]))
     );
 }
 
@@ -2208,5 +2205,345 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
         jsonld,
         json!(["Hello"]),
         "BIND+OPTIONAL should propagate IRI into OPTIONAL"
+    );
+}
+
+// =========================================================================
+// Built-in Function Coverage: multi-byte chars, TIMEZONE, UUID, isNumeric,
+// language-tag preservation
+// =========================================================================
+
+/// Seed dataset with multi-byte strings, datetime, and decimal values for
+/// built-in function tests.
+async fn seed_builtin_fn_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:sushi",
+                "ex:label": "食べ物",
+                "ex:note": {"@value": "Hola mundo", "@language": "es"},
+                "ex:price": {"@value": "12.50", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-06-15T10:30:00Z", "@type": "xsd:dateTime"}
+            },
+            {
+                "@id": "ex:beer",
+                "ex:label": "Ölympics",
+                "ex:note": {"@value": "Good stuff", "@language": "en"},
+                "ex:price": {"@value": "7.99", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-01-20T14:00:00+05:30", "@type": "xsd:dateTime"}
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("seed builtin fn data")
+        .ledger
+}
+
+#[tokio::test]
+async fn sparql_strlen_multibyte_characters() {
+    // STRLEN must count Unicode characters, not bytes.
+    // "食べ物" is 3 characters but 9 bytes in UTF-8.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:strlen-mb").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label (STRLEN(?label) AS ?len)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("STRLEN query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    // "食べ物" → 3 characters
+    assert_eq!(jsonld, json!([["食べ物", 3]]));
+}
+
+#[tokio::test]
+async fn sparql_substr_multibyte_characters() {
+    // SUBSTR must use character-based indexing (1-based per W3C fn:substring).
+    // SUBSTR("食べ物", 2, 2) should return "べ物" (chars 2 and 3).
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (SUBSTR(?label, 2, 2) AS ?sub)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SUBSTR query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["べ物"]));
+}
+
+#[tokio::test]
+async fn sparql_substr_multibyte_no_length() {
+    // SUBSTR("食べ物", 2) without length → rest of the string from position 2.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb-nolen").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (SUBSTR(?label, 2) AS ?sub)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SUBSTR no-length query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["べ物"]));
+}
+
+#[tokio::test]
+async fn sparql_timezone_returns_day_time_duration() {
+    // TIMEZONE() must return xsd:dayTimeDuration, not a plain string.
+    // For UTC ("Z"), should return "PT0S".
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:timezone").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TIMEZONE(?dt) AS ?tz)
+        WHERE { ex:sushi ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TIMEZONE query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let tz = &bindings[0]["tz"];
+    assert_eq!(
+        tz["value"].as_str().unwrap(),
+        "PT0S",
+        "UTC timezone should be PT0S"
+    );
+    assert_eq!(
+        tz["datatype"].as_str().unwrap(),
+        "http://www.w3.org/2001/XMLSchema#dayTimeDuration",
+        "TIMEZONE must return xsd:dayTimeDuration"
+    );
+}
+
+#[tokio::test]
+async fn sparql_timezone_positive_offset() {
+    // TIMEZONE for +05:30 → "PT5H30M"
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:timezone-pos").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TIMEZONE(?dt) AS ?tz)
+        WHERE { ex:beer ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TIMEZONE +offset query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let tz = &bindings[0]["tz"];
+    assert_eq!(tz["value"].as_str().unwrap(), "PT5H30M");
+}
+
+#[tokio::test]
+async fn sparql_tz_returns_string() {
+    // TZ() returns a plain string ("Z", "+05:30", etc.), not a typed literal.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:tz-string").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (TZ(?dt) AS ?tz)
+        WHERE { ex:sushi ex:created ?dt }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("TZ query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!(["Z"]));
+}
+
+#[tokio::test]
+async fn sparql_uuid_returns_iri() {
+    // UUID() must return an IRI of the form urn:uuid:..., not a plain string.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:uuid-iri").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (UUID() AS ?id)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("UUID query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let id = &bindings[0]["id"];
+    assert_eq!(
+        id["type"].as_str().unwrap(),
+        "uri",
+        "UUID() must return an IRI (type=uri), not a literal"
+    );
+    assert!(
+        id["value"].as_str().unwrap().starts_with("urn:uuid:"),
+        "UUID() value must start with urn:uuid:"
+    );
+}
+
+#[tokio::test]
+async fn sparql_struuid_returns_string() {
+    // STRUUID() returns a plain string (no urn:uuid: prefix), type=literal.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:struuid-str").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (STRUUID() AS ?id)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("STRUUID query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let id = &bindings[0]["id"];
+    assert_eq!(
+        id["type"].as_str().unwrap(),
+        "literal",
+        "STRUUID() must return a literal, not a URI"
+    );
+    assert!(
+        !id["value"].as_str().unwrap().starts_with("urn:uuid:"),
+        "STRUUID() value must NOT have urn:uuid: prefix"
+    );
+    // Should be a valid UUID format (8-4-4-4-12 hex)
+    assert_eq!(
+        id["value"].as_str().unwrap().len(),
+        36,
+        "STRUUID() should be 36 chars (UUID format)"
+    );
+}
+
+#[tokio::test]
+async fn sparql_isnumeric_decimal() {
+    // isNumeric must recognize xsd:decimal values as numeric.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:isnumeric-dec").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?label (isNumeric(?price) AS ?numP) (isNumeric(?label) AS ?numL)
+        WHERE {
+            ex:sushi ex:price ?price .
+            ex:sushi ex:label ?label .
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("isNumeric query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    // price is decimal → true, label is string → false
+    assert_eq!(jsonld, json!([["食べ物", true, false]]));
+}
+
+#[tokio::test]
+async fn sparql_ucase_preserves_language_tag() {
+    // W3C: UCASE must preserve language tags from the input.
+    // SPARQL JSON output should include xml:lang on the result.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:ucase-lang").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (UCASE(?note) AS ?upper)
+        WHERE { ex:sushi ex:note ?note }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("UCASE lang query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let upper = &bindings[0]["upper"];
+    assert_eq!(upper["value"].as_str().unwrap(), "HOLA MUNDO");
+    assert_eq!(
+        upper["xml:lang"].as_str().unwrap(),
+        "es",
+        "UCASE must preserve the language tag"
+    );
+}
+
+#[tokio::test]
+async fn sparql_lcase_preserves_language_tag() {
+    // W3C: LCASE must preserve language tags from the input.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "fn:lcase-lang").await;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (LCASE(?note) AS ?lower)
+        WHERE { ex:beer ex:note ?note }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("LCASE lang query");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = normalize_sparql_bindings(&sparql_json);
+    assert_eq!(bindings.len(), 1);
+    let lower = &bindings[0]["lower"];
+    assert_eq!(lower["value"].as_str().unwrap(), "good stuff");
+    assert_eq!(
+        lower["xml:lang"].as_str().unwrap(),
+        "en",
+        "LCASE must preserve the language tag"
     );
 }

@@ -7,6 +7,9 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::fast_group_count_firsts::{
+    PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
+};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
@@ -15,7 +18,7 @@ use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
-use crate::parse::{ParsedQuery, SelectMode};
+use crate::parse::{ParsedQuery, QueryOutput};
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
@@ -25,7 +28,174 @@ use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
 
-use super::where_plan::build_where_operators;
+use super::dependency::compute_variable_deps;
+use super::where_plan::build_where_operators_with_needed;
+use super::where_plan::collect_var_stats;
+
+fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> bool {
+    if options.group_by.len() != 1 {
+        return false;
+    }
+    let gb = options.group_by[0];
+
+    // Strict: only a single triple pattern plus order-preserving operators (FILTER/BIND).
+    let mut triple: Option<&crate::triple::TriplePattern> = None;
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => {
+                if triple.is_some() {
+                    return false;
+                }
+                triple = Some(tp);
+            }
+            Pattern::Filter(_) | Pattern::Bind { .. } => {}
+            _ => return false,
+        }
+    }
+    let Some(tp) = triple else {
+        return false;
+    };
+
+    // Must be ?s <p> ?o and group key must be either ?s or ?o.
+    if !tp.p_bound() {
+        return false;
+    }
+    let Ref::Var(sv) = &tp.s else {
+        return false;
+    };
+    let Term::Var(ov) = &tp.o else {
+        return false;
+    };
+    gb == *sv || gb == *ov
+}
+
+fn detect_predicate_group_by_object_count_topk(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId, VarId, VarId, usize)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if tp.dtc.is_some() {
+        return None;
+    }
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
+
+    // GROUP BY ?object
+    if options.group_by.len() != 1 || options.group_by[0] != *o_var {
+        return None;
+    }
+    // Exactly one COUNT aggregate on ?subject (or COUNT(*) which is equivalent here).
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+    // ORDER BY DESC(?count) and LIMIT k required so we can do top-k directly.
+    let limit = options.limit?;
+    if options.order_by.len() != 1 {
+        return None;
+    }
+    let ob = &options.order_by[0];
+    if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
+        return None;
+    }
+    Some((pred, *s_var, *o_var, agg.output_var, limit))
+}
+
+fn detect_predicate_object_count(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId, crate::triple::Term, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+
+    // Must be ?s <p> <o> (subject var, predicate bound, object bound).
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    if matches!(&tp.o, crate::triple::Term::Var(_)) {
+        return None;
+    }
+    // Loose semantics only (no explicit dt/lang constraint).
+    if tp.dtc.is_some() {
+        return None;
+    }
+    // No GROUP BY.
+    if !options.group_by.is_empty() {
+        return None;
+    }
+    // Exactly one COUNT aggregate on ?s (or COUNT(*) which is equivalent here).
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+
+    // SELECT must be exactly the count output var.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((pred, *s_var, tp.o.clone(), agg.output_var))
+}
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
@@ -110,9 +280,7 @@ fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(VarId, Vec<(crate::triple::Ref, VarId)>, VarId)> {
-    if query.select_mode == SelectMode::Construct {
-        return None;
-    }
+    let select_vars = query.output.select_vars()?;
     if query.patterns.len() < 2 {
         return None;
     }
@@ -130,7 +298,7 @@ fn detect_property_join_count_all(
     }
 
     // SELECT must be exactly the aggregate output var (avoid surprising projections).
-    if query.select.len() != 1 || query.select[0] != agg.output_var {
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
         return None;
     }
 
@@ -187,6 +355,64 @@ pub fn build_operator_tree(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
+    // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
+    //
+    // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.
+    if let Some((pred, s_var, o_var, count_var, limit)) =
+        detect_predicate_group_by_object_count_topk(query, options)
+    {
+        return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
+            s_var,
+            o_var,
+            count_var,
+            pred,
+            limit,
+            stats.clone(),
+        )));
+    }
+
+    // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
+    if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
+        let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
+            pred,
+            s_var,
+            obj,
+            count_var,
+            stats.clone(),
+        ));
+
+        // ORDER BY
+        if !options.order_by.is_empty() {
+            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        }
+
+        // PROJECT
+        if let Some(vars) = query.output.select_vars() {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
+        }
+
+        // DISTINCT
+        if options.distinct {
+            operator = Box::new(DistinctOperator::new(operator));
+        }
+
+        // OFFSET
+        if let Some(offset) = options.offset {
+            if offset > 0 {
+                operator = Box::new(OffsetOperator::new(operator, offset));
+            }
+        }
+
+        // LIMIT
+        if let Some(limit) = options.limit {
+            operator = Box::new(LimitOperator::new(operator, limit));
+        }
+
+        return Ok(operator);
+    }
+
     // Fast-path: stats-based count-by-predicate query
     // This avoids scanning all triples when we can answer directly from IndexStats.
     if let Some(ref stats_view) = stats {
@@ -203,8 +429,10 @@ pub fn build_operator_tree(
             }
 
             // PROJECT (select specific columns)
-            if query.select_mode != SelectMode::Construct && !query.select.is_empty() {
-                operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+            if let Some(vars) = query.output.select_vars() {
+                if !vars.is_empty() {
+                    operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+                }
             }
 
             // DISTINCT
@@ -243,8 +471,10 @@ pub fn build_operator_tree(
         }
 
         // PROJECT
-        if !query.select.is_empty() {
-            operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+        if let Some(vars) = query.output.select_vars() {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
         }
 
         // DISTINCT
@@ -267,8 +497,34 @@ pub fn build_operator_tree(
         return Ok(operator);
     }
 
-    // Build WHERE clause operators
-    let mut operator = build_where_operators(&query.patterns, stats)?;
+    // Compute per-operator downstream dependency sets for trimming.
+    // Done before building WHERE operators so we can push projection into the WHERE clause.
+    let variable_deps = compute_variable_deps(query, options);
+
+    // Build WHERE clause operators with projection pushdown
+    let required_where_vars = variable_deps
+        .as_ref()
+        .map(|d| d.required_where_vars.as_slice());
+    // needed-vars for WHERE planning: derived from variable_deps when available,
+    // otherwise treat all WHERE-bound vars as needed (wildcard/boolean/construct cases).
+    let mut needed_where_vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    if let Some(req) = required_where_vars {
+        needed_where_vars.extend(req.iter().copied());
+    } else {
+        let mut counts: std::collections::HashMap<VarId, usize> = std::collections::HashMap::new();
+        let mut vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+        collect_var_stats(&query.patterns, &mut counts, &mut vars);
+        vars.extend(counts.keys().copied());
+        needed_where_vars = vars;
+    }
+
+    let mut operator = build_where_operators_with_needed(
+        &query.patterns,
+        stats,
+        &needed_where_vars,
+        &options.group_by,
+        required_where_vars,
+    )?;
 
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
@@ -351,11 +607,12 @@ pub fn build_operator_tree(
         // If the SELECT projects any *grouped* variables (non-key, non-aggregate),
         // we must use the traditional GroupByOperator path so those vars become
         // `Binding::Grouped(Vec<Binding>)` and remain selectable.
-        let select_needs_grouped_vars = query.select_mode != SelectMode::Construct
-            && query.select.iter().any(|v| {
+        let select_needs_grouped_vars = query.output.select_vars().is_some_and(|vars| {
+            vars.iter().any(|v| {
                 !options.group_by.contains(v)
                     && !options.aggregates.iter().any(|a| a.output_var == *v)
-            });
+            })
+        });
 
         let use_streaming = !options.aggregates.is_empty()
             && GroupAggregateOperator::all_streamable(&streaming_specs)
@@ -363,40 +620,73 @@ pub fn build_operator_tree(
 
         if use_streaming {
             // Streaming path: O(groups) memory
+            let partitioned = detect_partitioned_group_by(query, options);
             tracing::debug!(
                 group_by_count = options.group_by.len(),
                 agg_count = streaming_specs.len(),
+                partitioned,
                 "using streaming GroupAggregateOperator"
             );
-            operator = Box::new(GroupAggregateOperator::new(
-                operator,
-                options.group_by.clone(),
-                streaming_specs,
-                None, // graph_view - will be set from context if needed
-            ));
+            // GroupAggregateOperator replaces both GroupBy and Aggregate,
+            // so use required_aggregate_vars (what the combined output must contain).
+            operator = Box::new(
+                GroupAggregateOperator::new(
+                    operator,
+                    options.group_by.clone(),
+                    streaming_specs,
+                    None, // graph_view - will be set from context if needed
+                    partitioned,
+                )
+                .with_out_schema(
+                    variable_deps
+                        .as_ref()
+                        .map(|d| d.required_aggregate_vars.as_slice()),
+                ),
+            );
         } else {
             // Traditional path: GroupByOperator + AggregateOperator
-            operator = Box::new(GroupByOperator::new(operator, options.group_by.clone()));
+            operator = Box::new(
+                GroupByOperator::new(operator, options.group_by.clone()).with_out_schema(
+                    variable_deps
+                        .as_ref()
+                        .map(|d| d.required_groupby_vars.as_slice()),
+                ),
+            );
             if !options.aggregates.is_empty() {
-                operator = Box::new(AggregateOperator::new(operator, options.aggregates.clone()));
+                operator = Box::new(
+                    AggregateOperator::new(operator, options.aggregates.clone()).with_out_schema(
+                        variable_deps
+                            .as_ref()
+                            .map(|d| d.required_aggregate_vars.as_slice()),
+                    ),
+                );
             }
         }
     }
 
     // HAVING (filter on aggregated results)
     if let Some(ref having_expr) = options.having {
-        operator = Box::new(HavingOperator::new(operator, having_expr.clone()));
+        operator = Box::new(
+            HavingOperator::new(operator, having_expr.clone()).with_out_schema(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_having_vars.as_slice()),
+            ),
+        );
     }
 
     // Post-aggregation BINDs (e.g., SELECT (CEIL(?avg) AS ?ceil))
     if !options.post_binds.is_empty() {
-        for (var, expr) in &options.post_binds {
-            operator = Box::new(crate::bind::BindOperator::new(
-                operator,
-                *var,
-                expr.clone(),
-                vec![],
-            ));
+        for (i, (var, expr)) in options.post_binds.iter().enumerate() {
+            operator = Box::new(
+                crate::bind::BindOperator::new(operator, *var, expr.clone(), vec![])
+                    .with_out_schema(
+                        variable_deps
+                            .as_ref()
+                            .and_then(|d| d.required_bind_vars.get(i))
+                            .map(|v| v.as_slice()),
+                    ),
+            );
         }
     }
 
@@ -436,22 +726,30 @@ pub fn build_operator_tree(
                 }
             }
         }
-        operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        operator = Box::new(
+            SortOperator::new(operator, options.order_by.clone()).with_out_schema(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_sort_vars.as_slice()),
+            ),
+        );
     }
 
     // PROJECT (select specific columns)
-    // Skip projection for CONSTRUCT - we need all bindings for templating
-    if query.select_mode != SelectMode::Construct && !query.select.is_empty() {
-        // Validate all select vars exist in schema
-        for var in &query.select {
-            if !post_group_schema.contains(var) {
-                return Err(QueryError::VariableNotFound(format!(
-                    "Selected variable {:?} not found in query schema",
-                    var
-                )));
+    // Skip projection for CONSTRUCT/Wildcard/Boolean - only Select/SelectOne project
+    if let Some(vars) = query.output.select_vars() {
+        if !vars.is_empty() {
+            // Validate all select vars exist in schema
+            for var in vars {
+                if !post_group_schema.contains(var) {
+                    return Err(QueryError::VariableNotFound(format!(
+                        "Selected variable {:?} not found in query schema",
+                        var
+                    )));
+                }
             }
+            operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
         }
-        operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
     }
 
     // DISTINCT (after projection)
@@ -479,7 +777,7 @@ mod tests {
     use super::*;
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
-    use crate::parse::ParsedQuery;
+    use crate::parse::{ParsedQuery, QueryOutput};
     use crate::sort::SortSpec;
     use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
@@ -494,14 +792,17 @@ mod tests {
     }
 
     fn make_simple_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
+        let output = if select.is_empty() {
+            QueryOutput::Wildcard
+        } else {
+            QueryOutput::Select(select)
+        };
         ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select,
+            output,
             patterns,
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         }
     }
@@ -511,11 +812,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(99)], // Variable not in pattern
+            output: QueryOutput::Select(vec![VarId(99)]), // Variable not in pattern
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 
@@ -531,11 +830,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(0)],
+            output: QueryOutput::Select(vec![VarId(0)]),
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 

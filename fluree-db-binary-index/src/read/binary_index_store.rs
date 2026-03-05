@@ -34,7 +34,6 @@ use fluree_db_core::{Flake, FlakeMeta, FlakeValue, PrefixTrie, Sid};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 
 // ============================================================================
@@ -164,7 +163,11 @@ impl BinaryIndexStore {
     ///
     /// Loads per-order manifests (`index_manifest_spot.json`, `index_manifest_psot.json`,
     /// etc.) and builds per-graph, per-order branch manifests.
-    pub fn load(run_dir: &Path, index_dir: &Path) -> io::Result<Self> {
+    pub fn load(
+        run_dir: &Path,
+        index_dir: &Path,
+        leaflet_cache: Arc<LeafletCache>,
+    ) -> io::Result<Self> {
         let _span = tracing::debug_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
 
         // ---- Load per-order index manifests ----
@@ -550,16 +553,7 @@ impl BinaryIndexStore {
             "BinaryIndexStore loaded"
         );
 
-        // ---- Initialize leaflet cache ----
-        // Default: 8 GiB (tuned for large batched joins / repeated scans).
-        // Override with `FLUREE_LEAFLET_CACHE_BYTES` (exact bytes).
-        let leaflet_cache_bytes: u64 = leaflet_cache_bytes_from_env();
-        tracing::info!(
-            leaflet_cache_bytes,
-            leaflet_cache_gib = (leaflet_cache_bytes as f64) / (1024.0 * 1024.0 * 1024.0),
-            "initializing leaflet cache"
-        );
-        let leaflet_cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
+        let leaflet_cache = Some(leaflet_cache);
 
         // ---- Finalize lazy vector arenas (need cache handle) ----
         for pa in pending_arenas {
@@ -627,34 +621,6 @@ impl BinaryIndexStore {
         })
     }
 
-    /// Load a BinaryIndexStore using a shared leaflet cache.
-    ///
-    /// The provided cache is shared across all stores that receive the same
-    /// `Arc`, giving one global budget instead of per-store budgets. This
-    /// is the recommended constructor for multi-ledger deployments.
-    ///
-    /// Pass `None` to disable caching entirely (e.g., during index builds).
-    pub fn load_with_cache(
-        run_dir: &Path,
-        index_dir: &Path,
-        cache: Option<Arc<LeafletCache>>,
-    ) -> io::Result<Self> {
-        let mut store = Self::load(run_dir, index_dir)?;
-        store.leaflet_cache = cache;
-        Ok(store)
-    }
-
-    /// Load from a v5 binary root (`IRB1`) with default leaflet cache.
-    pub async fn load_from_root_v5_default(
-        cs: Arc<dyn ContentStore>,
-        root: &crate::format::index_root::IndexRootV5,
-        cache_dir: &Path,
-    ) -> io::Result<Self> {
-        let leaflet_cache_bytes: u64 = leaflet_cache_bytes_from_env();
-        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
-        Self::load_from_root_v5(cs, root, cache_dir, cache).await
-    }
-
     /// Load from raw root bytes in IRB1 binary format.
     ///
     /// Decodes an `IndexRootV5` from the given bytes and loads the store.
@@ -672,17 +638,6 @@ impl BinaryIndexStore {
             )
         })?;
         Self::load_from_root_v5(cs, &v5, cache_dir, leaflet_cache).await
-    }
-
-    /// Load from raw root bytes with default leaflet cache.
-    pub async fn load_from_root_bytes_default(
-        cs: Arc<dyn ContentStore>,
-        bytes: &[u8],
-        cache_dir: &Path,
-    ) -> io::Result<Self> {
-        let leaflet_cache_bytes: u64 = leaflet_cache_bytes_from_env();
-        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
-        Self::load_from_root_bytes(cs, bytes, cache_dir, cache).await
     }
 
     /// Load from a v5 binary root (`IRB1`).
@@ -2767,13 +2722,6 @@ fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
         _ => io::ErrorKind::Other,
     };
     io::Error::new(kind, e.to_string())
-}
-
-fn leaflet_cache_bytes_from_env() -> u64 {
-    std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
-        .ok()
-        .and_then(|s| u64::from_str(&s).ok())
-        .unwrap_or(8 * 1024 * 1024 * 1024)
 }
 
 fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {

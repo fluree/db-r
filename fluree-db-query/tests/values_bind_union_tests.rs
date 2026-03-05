@@ -12,7 +12,7 @@ use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
-use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::seed::EmptyOperator;
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::values::ValuesOperator;
@@ -33,14 +33,17 @@ fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePatter
 }
 
 fn make_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
+    let output = if select.is_empty() {
+        QueryOutput::Wildcard
+    } else {
+        QueryOutput::Select(select)
+    };
     ParsedQuery {
         context: ParsedContext::default(),
         orig_context: None,
-        select,
+        output,
         patterns,
         options: QueryOptions::default(),
-        select_mode: SelectMode::default(),
-        construct_template: None,
         graph_select: None,
     }
 }
@@ -264,9 +267,11 @@ async fn test_bind_clobber_same_value() {
     let vars = VarRegistry::new();
     let ctx = ExecutionContext::new(&snapshot, &vars);
 
-    // Create a seed that already has ?x = 42
+    // Create a seed that already has ?x = 42.
+    // Use xsd_integer (not xsd_long) to match the datatype that
+    // ComparableValue::Long.to_binding() now produces.
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-    let columns = vec![vec![Binding::lit(FlakeValue::Long(42), xsd_long())]];
+    let columns = vec![vec![Binding::lit(FlakeValue::Long(42), Sid::xsd_integer())]];
     let seed_batch = Batch::new(schema.clone(), columns).unwrap();
 
     use fluree_db_query::seed::SeedOperator;

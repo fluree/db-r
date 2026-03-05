@@ -199,16 +199,20 @@ where
         );
 
         // Format with tracking
-        let config = format_config.with_select_mode(query_result.select_mode);
         let result_json = match db.policy() {
             Some(policy) => query_result
-                .format_async_with_policy_tracked(db.as_graph_db_ref(), &config, policy, &tracker)
+                .format_async_with_policy_tracked(
+                    db.as_graph_db_ref(),
+                    &format_config,
+                    policy,
+                    &tracker,
+                )
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .format_async_tracked(db.as_graph_db_ref(), &config, &tracker)
+                .format_async_tracked(db.as_graph_db_ref(), &format_config, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())

@@ -172,3 +172,10 @@ rmcp = { git = "https://github.com/fluree/rust-sdk-fork", rev = "ed14e6d6f0e2370
 lto = true
 strip = true
 codegen-units = 1
+
+[profile.dev-fast]
+inherits = "release"
+lto = false
+strip = false
+codegen-units = 16
+opt-level = 2

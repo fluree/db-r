@@ -10,7 +10,7 @@ use fluree_db_query::ir::Pattern;
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::parse::{
-    ConstructTemplate as QueryConstructTemplate, ParsedQuery, SelectMode,
+    ConstructTemplate as QueryConstructTemplate, ParsedQuery, QueryOutput,
 };
 use fluree_db_query::triple::TriplePattern;
 
@@ -38,10 +38,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         // Build construct template
         let construct_template = QueryConstructTemplate::new(template_patterns);
 
-        // For CONSTRUCT queries, we need all variables from the template in select
-        // The formatter will use template bindings, not projected variables
-        let select = Vec::new(); // CONSTRUCT doesn't project - all bindings available
-
         // Lower solution modifiers (CONSTRUCT supports ORDER BY, LIMIT, OFFSET but not GROUP BY/HAVING)
         let options = self.lower_construct_modifiers(&construct.modifiers)?;
 
@@ -51,11 +47,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(ParsedQuery {
             context: ctx,
             orig_context: Some(ctx_val),
-            select,
+            output: QueryOutput::Construct(construct_template),
             patterns,
             options,
-            select_mode: SelectMode::Construct,
-            construct_template: Some(construct_template),
             graph_select: None, // SPARQL doesn't support graph crawl
         })
     }

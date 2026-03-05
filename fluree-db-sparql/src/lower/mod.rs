@@ -60,7 +60,7 @@ pub use error::{LowerError, Result};
 use crate::ast::query::{QueryBody, SelectVariables, SparqlAst};
 
 use fluree_db_query::parse::encode::IriEncoder;
-use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 
 use fluree_graph_json_ld::{parse_context, ParsedContext};
@@ -125,6 +125,13 @@ struct LoweringContext<'a, E> {
     base: Option<Arc<str>>,
     /// Aggregate expression → alias variable mapping (for HAVING)
     aggregate_aliases: Option<HashMap<String, VarId>>,
+    /// Cache of lowered aggregate-input expressions that have been desugared to a
+    /// pre-aggregation `BIND(expr AS ?__agg_expr_N)` variable.
+    ///
+    /// Key is a span-free structural string of the input expression.
+    agg_expr_binds: HashMap<String, VarId>,
+    /// Monotonic counter for generating aggregate-input bind variables (`?__agg_expr_0`, `?__agg_expr_1`, …).
+    agg_counter: u32,
     /// Monotonic counter for generating intermediate property-path join variables (`?__pp0`, `?__pp1`, …).
     pp_counter: u32,
 }
@@ -147,6 +154,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             prefixes,
             base,
             aggregate_aliases: None,
+            agg_expr_binds: HashMap::new(),
+            agg_counter: 0,
             pp_counter: 0,
         }
     }
@@ -183,19 +192,17 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
                 // SELECT * should behave like "wildcard select" for JSON-LD-style outputs.
                 // This lets formatters emit object rows keyed by variable name (Clojure parity).
-                let select_mode = match &select_query.select.variables {
-                    SelectVariables::Star => SelectMode::Wildcard,
-                    _ => SelectMode::Many,
+                let output = match &select_query.select.variables {
+                    SelectVariables::Star => QueryOutput::Wildcard,
+                    _ => QueryOutput::Select(select),
                 };
 
                 Ok(ParsedQuery {
                     context: ctx,
                     orig_context: None, // SPARQL doesn't originate from JSON context
-                    select,
+                    output,
                     patterns,
                     options,
-                    select_mode,
-                    construct_template: None,
                     graph_select: None, // SPARQL doesn't support graph crawl
                 })
             }
@@ -299,7 +306,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
         assert!(matches!(query.patterns[0], Pattern::Triple(_)));
     }
@@ -312,8 +319,8 @@ mod tests {
         )
         .unwrap();
 
-        // SELECT * should include all variables from WHERE
-        assert!(!query.select.is_empty());
+        // SELECT * should produce Wildcard output
+        assert!(matches!(query.output, QueryOutput::Wildcard));
     }
 
     #[test]
@@ -327,7 +334,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select.len(), 3);
+        assert_eq!(query.output.select_vars().unwrap().len(), 3);
         assert_eq!(query.patterns.len(), 2);
     }
 
@@ -811,12 +818,11 @@ mod tests {
         )
         .unwrap();
 
-        // Verify select mode is Construct
-        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Construct);
-
-        // Verify template is present
-        assert!(query.construct_template.is_some());
-        let template = query.construct_template.unwrap();
+        // Verify output is Construct
+        let template = query
+            .output
+            .construct_template()
+            .expect("should be Construct");
         assert_eq!(template.patterns.len(), 1);
 
         // Verify WHERE patterns are lowered
@@ -836,8 +842,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(query.construct_template.is_some());
-        let template = query.construct_template.unwrap();
+        let template = query
+            .output
+            .construct_template()
+            .expect("should be Construct");
         assert_eq!(template.patterns.len(), 2);
     }
 
@@ -850,10 +858,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Construct);
-        assert!(query.construct_template.is_some());
-
-        let template = query.construct_template.unwrap();
+        let template = query
+            .output
+            .construct_template()
+            .expect("should be Construct");
         // Template should contain the WHERE patterns
         assert_eq!(template.patterns.len(), 1);
     }
@@ -887,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_construct_empty_select() {
-        // CONSTRUCT queries don't project - select should be empty
+        // CONSTRUCT queries don't project - select_vars() should be None
         let query = lower_query(
             "PREFIX ex: <http://example.org/>
              CONSTRUCT { ?s ex:p ?o } WHERE { ?s ex:q ?o }",
@@ -895,7 +903,7 @@ mod tests {
         .unwrap();
 
         // CONSTRUCT doesn't project variables like SELECT does
-        assert!(query.select.is_empty());
+        assert!(query.output.select_vars().is_none());
     }
 
     // =========================================================================
@@ -910,13 +918,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
-        assert!(query.select.is_empty(), "ASK should not project variables");
+        assert!(matches!(query.output, QueryOutput::Boolean));
         assert_eq!(query.options.limit, Some(1), "ASK should inject LIMIT 1");
-        assert!(
-            query.construct_template.is_none(),
-            "ASK should have no CONSTRUCT template"
-        );
         assert_eq!(query.patterns.len(), 1);
         assert!(matches!(query.patterns[0], Pattern::Triple(_)));
     }
@@ -929,8 +932,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
-        assert!(query.select.is_empty());
+        assert!(matches!(query.output, QueryOutput::Boolean));
         assert_eq!(query.patterns.len(), 2);
     }
 
@@ -942,7 +944,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Boolean);
+        assert!(matches!(query.output, QueryOutput::Boolean));
         // Patterns: Triple + Filter
         assert!(query.patterns.len() >= 2);
     }
@@ -1057,7 +1059,7 @@ mod tests {
         .unwrap();
 
         // Should parse complex arithmetic without error
-        assert_eq!(query.select.len(), 1);
+        assert_eq!(query.output.select_vars().unwrap().len(), 1);
         let has_filter = query
             .patterns
             .iter()
@@ -1421,6 +1423,35 @@ mod tests {
             query.options.aggregates[0].function,
             AggregateFn::Sum
         ));
+    }
+
+    #[test]
+    fn test_aggregate_over_expression_desugars_to_bind() {
+        let (query, vars) = lower_query_with_vars(
+            "PREFIX ex: <http://example.org/>
+             SELECT (SUM(YEAR(?dt)) AS ?sum) WHERE { ?s ex:created ?dt }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::Sum));
+
+        let input_var = agg.input_var.expect("expected aggregate input var");
+        let input_name = vars.name(input_var);
+        assert!(
+            input_name.starts_with("?__agg_expr_"),
+            "expected synthetic aggregate-input var, got: {input_name}"
+        );
+
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { var, .. } if *var == input_var));
+        assert!(
+            has_bind,
+            "expected a pre-aggregation BIND for the input expression"
+        );
     }
 
     #[test]
@@ -2438,16 +2469,18 @@ mod tests {
     }
 
     #[test]
-    fn test_property_path_sequence_transitive_step_errors() {
-        // Transitive modifier inside a sequence step should error
-        let result = lower_query(
+    fn test_property_path_sequence_transitive_step_allowed() {
+        // Transitive modifier inside a sequence step should work
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?x WHERE { ?s ex:parent+/ex:name ?x }",
-        );
+        )
+        .unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
+        // Should lower to: PropertyPath(?s, ex:parent, +, ?__pp0), Triple(?__pp0, ex:name, ?x)
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+        assert!(matches!(query.patterns[1], Pattern::Triple(_)));
     }
 
     #[test]

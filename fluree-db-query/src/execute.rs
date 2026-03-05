@@ -30,6 +30,7 @@
 //!
 //! Use `execute_query` for simple execution or build an `ExecutableQuery` with custom `QueryOptions` for full control.
 
+mod dependency;
 mod operator_tree;
 mod pushdown;
 mod reasoning_prep;
@@ -303,7 +304,7 @@ mod tests {
     use super::*;
     use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
-    use crate::parse::{ParsedQuery, SelectMode};
+    use crate::parse::{ParsedQuery, QueryOutput};
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::triple::{Ref, Term, TriplePattern};
@@ -334,11 +335,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![],
+            output: QueryOutput::Wildcard,
             patterns: vec![],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
         let executable = ExecutableQuery::simple(query);
@@ -376,11 +375,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(99)], // Variable not in pattern
+            output: QueryOutput::Select(vec![VarId(99)]), // Variable not in pattern
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 
@@ -396,11 +393,9 @@ mod tests {
         let query = ParsedQuery {
             context: ParsedContext::default(),
             orig_context: None,
-            select: vec![VarId(0)],
+            output: QueryOutput::Select(vec![VarId(0)]),
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
             graph_select: None,
         };
 
@@ -417,7 +412,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result = where_plan::build_where_operators(&patterns, None);
+        let result = where_plan::build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -434,7 +429,7 @@ mod tests {
             )),
         ];
 
-        let result = where_plan::build_where_operators(&patterns, None);
+        let result = where_plan::build_where_operators(&patterns, None, None);
         assert!(result.is_ok());
     }
 

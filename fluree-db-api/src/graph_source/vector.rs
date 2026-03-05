@@ -14,7 +14,7 @@ use crate::graph_source::result::{
     VectorCreateResult, VectorDropResult, VectorStalenessCheck, VectorSyncResult,
 };
 #[cfg(feature = "vector")]
-use crate::{QueryResult as ApiQueryResult, Result};
+use crate::Result;
 #[cfg(feature = "vector")]
 use fluree_db_core::{ledger_id::split_ledger_id, ContentId, ContentStore, Storage, StorageWrite};
 #[cfg(feature = "vector")]
@@ -28,7 +28,7 @@ use fluree_db_query::vector::usearch::{
     IncrementalVectorUpdater, VectorIndex, VectorIndexBuilder, VectorPropertyDeps,
 };
 #[cfg(feature = "vector")]
-use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, QueryOutput, VarRegistry};
 #[cfg(feature = "vector")]
 use serde_json::Value as JsonValue;
 #[cfg(feature = "vector")]
@@ -251,8 +251,7 @@ where
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing
         let mut parsed_for_exec = parsed.clone();
-        parsed_for_exec.select_mode = SelectMode::Wildcard;
-        parsed_for_exec.select.clear();
+        parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
@@ -261,19 +260,14 @@ where
         let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
-        let result = ApiQueryResult {
+        let result = crate::query::helpers::build_query_result(
             vars,
-            t: ledger.t(),
-            novelty: Some(ledger.novelty.clone()),
-            context: parsed.context,
-            orig_context: parsed.orig_context,
-            select: parsed.select,
-            select_mode: parsed.select_mode,
+            parsed,
             batches,
-            binary_graph: None,
-            construct_template: parsed.construct_template,
-            graph_select: parsed.graph_select,
-        };
+            ledger.t(),
+            Some(ledger.novelty.clone()),
+            None,
+        );
 
         let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
         match json {

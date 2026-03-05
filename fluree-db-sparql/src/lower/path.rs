@@ -282,8 +282,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Ref::Var(self.vars.get_or_insert(&var_name))
             };
 
-            let triple = self.lower_sequence_step_triple(step, &prev, &next, span)?;
-            patterns.push(Pattern::Triple(triple));
+            let pat = self.lower_sequence_step_pattern(step, &prev, &next, span)?;
+            patterns.push(pat);
 
             prev = next;
         }
@@ -416,15 +416,44 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     }
 
     /// Validate that a leaf inside an Alternative (within a sequence step) is a
-    /// simple step: `Iri(_)`, `A`, or `Inverse { path: Iri(_) | A }`.
+    /// "simple" step: `Iri(_)`, `A`, `Inverse { path: Iri(_) | A }`, or a transitive
+    /// modifier (`+`/`*`) applied to a simple predicate (and inverse of those).
     fn validate_simple_sparql_step(step: &SparqlPropertyPath, span: SourceSpan) -> Result<()> {
         let unwrapped = Self::unwrap_group(step);
         match unwrapped {
             SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),
+            SparqlPropertyPath::OneOrMore { path: inner, .. }
+            | SparqlPropertyPath::ZeroOrMore { path: inner, .. } => {
+                let inner_unwrapped = Self::unwrap_group(inner);
+                match inner_unwrapped {
+                    SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),
+                    other => Err(LowerError::invalid_property_path(
+                        format!(
+                            "Transitive steps within a sequence must apply +/* to a simple predicate; got {}",
+                            sparql_path_name(other),
+                        ),
+                        span,
+                    )),
+                }
+            }
             SparqlPropertyPath::Inverse { path: inner, .. } => {
                 let inner_unwrapped = Self::unwrap_group(inner);
                 match inner_unwrapped {
                     SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),
+                    SparqlPropertyPath::OneOrMore { path: tp_inner, .. }
+                    | SparqlPropertyPath::ZeroOrMore { path: tp_inner, .. } => {
+                        let tp_unwrapped = Self::unwrap_group(tp_inner);
+                        match tp_unwrapped {
+                            SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),
+                            other => Err(LowerError::invalid_property_path(
+                                format!(
+                                    "Transitive inverse steps within a sequence must apply +/* to a simple predicate; got inverse of {}",
+                                    sparql_path_name(other),
+                                ),
+                                span,
+                            )),
+                        }
+                    }
                     other => Err(LowerError::invalid_property_path(
                         format!(
                             "Alternative steps within a sequence must be simple predicates or \
@@ -520,8 +549,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Ref::Var(self.vars.get_or_insert(&var_name))
             };
 
-            let triple = self.lower_sequence_step_triple(step, &prev, &next, span)?;
-            patterns.push(Pattern::Triple(triple));
+            let pat = self.lower_sequence_step_pattern(step, &prev, &next, span)?;
+            patterns.push(pat);
 
             prev = next;
         }
@@ -529,40 +558,108 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(patterns)
     }
 
-    /// Lower a single sequence step to a `TriplePattern`.
+    /// Lower a single sequence step to a pattern (`Triple` or `PropertyPath`).
     ///
     /// Forward step `p`: `Triple(prev, p, next)`
     /// Inverse step `^p`: `Triple(next, p, prev)` (swapped)
+    /// Transitive step `p+`/`p*`: `PropertyPath(prev, p, next)`
+    /// Inverse-transitive step `^p+`/`^p*`: `PropertyPath(next, p, prev)` (swapped)
     ///
     /// Note: Alternative steps (`(a|b)`) are handled by distribution in
     /// `lower_sequence_chain` before this method is called.
-    fn lower_sequence_step_triple(
+    fn lower_sequence_step_pattern(
         &mut self,
         step: &SparqlPropertyPath,
         prev: &Ref,
         next: &Ref,
         span: SourceSpan,
-    ) -> Result<TriplePattern> {
+    ) -> Result<Pattern> {
         match step {
             SparqlPropertyPath::Iri(iri) => {
                 let expanded = self.expand_iri(iri)?;
                 let p = Ref::Iri(Arc::from(expanded.as_str()));
-                Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
+                Ok(Pattern::Triple(TriplePattern::new(
+                    prev.clone(),
+                    p,
+                    next.clone().into(),
+                )))
             }
             SparqlPropertyPath::A { .. } => {
                 let p = Ref::Iri(Arc::from(TYPE));
-                Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
+                Ok(Pattern::Triple(TriplePattern::new(
+                    prev.clone(),
+                    p,
+                    next.clone().into(),
+                )))
             }
             SparqlPropertyPath::Inverse { path: inner, .. } => {
+                match inner.as_ref() {
+                    SparqlPropertyPath::OneOrMore { path: tp_inner, .. }
+                    | SparqlPropertyPath::ZeroOrMore { path: tp_inner, .. } => {
+                        // Inverse-transitive: ^p+ or ^p*
+                        if prev.is_bound() && next.is_bound() {
+                            return Err(LowerError::invalid_property_path(
+                                "Property path requires at least one variable (cannot have both subject and object as constants)",
+                                span,
+                            ));
+                        }
+                        let iri = self.extract_simple_predicate_iri(tp_inner, span)?;
+                        let modifier = match inner.as_ref() {
+                            SparqlPropertyPath::OneOrMore { .. } => PathModifier::OneOrMore,
+                            _ => PathModifier::ZeroOrMore,
+                        };
+                        let predicate_sid = self
+                            .encoder
+                            .encode_iri(&iri)
+                            .ok_or_else(|| LowerError::unknown_namespace(&iri, span))?;
+                        Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                            next.clone(),
+                            predicate_sid,
+                            modifier,
+                            prev.clone(),
+                        )))
+                    }
+                    _ => {
+                        // Simple inverse: ^p → Triple with s/o swapped
+                        let iri = self.extract_simple_predicate_iri(inner, span)?;
+                        let p = Ref::Iri(Arc::from(iri.as_str()));
+                        Ok(Pattern::Triple(TriplePattern::new(
+                            next.clone(),
+                            p,
+                            prev.clone().into(),
+                        )))
+                    }
+                }
+            }
+            SparqlPropertyPath::OneOrMore { path: inner, .. }
+            | SparqlPropertyPath::ZeroOrMore { path: inner, .. } => {
+                if prev.is_bound() && next.is_bound() {
+                    return Err(LowerError::invalid_property_path(
+                        "Property path requires at least one variable (cannot have both subject and object as constants)",
+                        span,
+                    ));
+                }
                 let iri = self.extract_simple_predicate_iri(inner, span)?;
-                let p = Ref::Iri(Arc::from(iri.as_str()));
-                Ok(TriplePattern::new(next.clone(), p, prev.clone().into()))
+                let modifier = match step {
+                    SparqlPropertyPath::OneOrMore { .. } => PathModifier::OneOrMore,
+                    _ => PathModifier::ZeroOrMore,
+                };
+                let predicate_sid = self
+                    .encoder
+                    .encode_iri(&iri)
+                    .ok_or_else(|| LowerError::unknown_namespace(&iri, span))?;
+                Ok(Pattern::PropertyPath(PropertyPathPattern::new(
+                    prev.clone(),
+                    predicate_sid,
+                    modifier,
+                    next.clone(),
+                )))
             }
             other => Err(LowerError::invalid_property_path(
                 format!(
-                    "Sequence (/) steps must be simple predicates, inverse simple \
-                     predicates (^ex:p), or alternatives of simple predicates \
-                     ((ex:a|ex:b)); got {}",
+                    "Sequence (/) steps must be simple predicates, inverse simple predicates \
+                     (^ex:p), transitive predicates (ex:p+ or ex:p*), or alternatives of simple \
+                     predicates ((ex:a|ex:b)); got {}",
                     sparql_path_name(other),
                 ),
                 span,
@@ -578,8 +675,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
-        let triple = self.lower_sequence_step_triple(step, s, o, span)?;
-        Ok(vec![Pattern::Triple(triple)])
+        let pat = self.lower_sequence_step_pattern(step, s, o, span)?;
+        Ok(vec![pat])
     }
 
     /// Lower a single branch of an alternative path to pattern(s).
