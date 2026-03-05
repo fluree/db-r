@@ -357,6 +357,11 @@ impl LeafletCache {
         Self { inner }
     }
 
+    /// Create a new cache with the given maximum megabyte budget.
+    pub fn with_max_mb(mb: u64) -> Self {
+        Self::with_max_bytes(mb.saturating_mul(1024 * 1024))
+    }
+
     /// Approximate total size of entries in bytes (moka weighted size).
     pub fn weighted_size_bytes(&self) -> u64 {
         self.inner.weighted_size()

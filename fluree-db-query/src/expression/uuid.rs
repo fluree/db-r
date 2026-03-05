@@ -12,7 +12,7 @@ use super::value::ComparableValue;
 
 pub fn eval_uuid(args: &[Expression]) -> Result<Option<ComparableValue>> {
     check_arity(args, 0, "UUID")?;
-    Ok(Some(ComparableValue::String(Arc::from(format!(
+    Ok(Some(ComparableValue::Iri(Arc::from(format!(
         "urn:uuid:{}",
         Uuid::new_v4()
     )))))

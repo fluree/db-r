@@ -15,6 +15,9 @@ pub fn eval_if<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 3, "IF")?;
+    // Per W3C SPARQL spec §17.4.1: if evaluation of the condition raises
+    // an error, IF also raises an error. The caller (eval_to_binding)
+    // converts errors to Binding::Unbound for BIND expressions.
     let cond = args[0].eval_to_bool(row, ctx)?;
     if cond {
         args[1].eval_to_comparable(row, ctx)
@@ -28,10 +31,12 @@ pub fn eval_coalesce<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
+    // Per W3C SPARQL spec: COALESCE returns the first argument that evaluates
+    // without error and is not unbound. Errors are caught and skipped.
     for arg in args {
-        let val = arg.eval_to_comparable(row, ctx)?;
-        if val.is_some() {
-            return Ok(val);
+        match arg.eval_to_comparable(row, ctx) {
+            Ok(Some(val)) => return Ok(Some(val)),
+            Ok(None) | Err(_) => continue,
         }
     }
     Ok(None)

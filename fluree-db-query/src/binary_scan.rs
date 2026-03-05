@@ -345,19 +345,36 @@ impl BinaryScanOperator {
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
         emit: EmitMask,
+        index_hint: Option<IndexType>,
     ) -> Self {
-        let mut index = IndexType::for_query(
-            pattern.s_bound(),
-            pattern.p_bound(),
-            pattern.o_bound(),
-            pattern.o_is_ref(),
-        );
+        let s_bound = pattern.s_bound();
+        let p_bound = pattern.p_bound();
+        let o_bound = pattern.o_bound();
+        let o_is_ref = pattern.o_is_ref();
+
+        let mut index = IndexType::for_query(s_bound, p_bound, o_bound, o_is_ref);
 
         // When object bounds are present and default index is PSOT, switch to POST
         // for object-range scanning.
         if object_bounds.is_some() && index == IndexType::Psot {
             index = IndexType::Post;
         }
+
+        // Plan-time override to align physical order with downstream operators.
+        if let Some(hint) = index_hint {
+            index = hint;
+        }
+
+        tracing::debug!(
+            s_bound,
+            p_bound,
+            o_bound,
+            o_is_ref,
+            ?index,
+            ?index_hint,
+            has_object_bounds = object_bounds.is_some(),
+            "binary scan index selected"
+        );
 
         let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
             schema_from_pattern_with_emit(&pattern, emit);
@@ -395,9 +412,14 @@ impl BinaryScanOperator {
         index: IndexType,
         inline_ops: Vec<InlineOperator>,
     ) -> Self {
-        let mut op = Self::new(pattern, graph_view, None, inline_ops, EmitMask::ALL);
-        op.index = index;
-        op
+        Self::new(
+            pattern,
+            graph_view,
+            None,
+            inline_ops,
+            EmitMask::ALL,
+            Some(index),
+        )
     }
 
     /// Get the index type being used.
@@ -1587,6 +1609,10 @@ pub struct ScanOperator {
     inline_ops: Vec<InlineOperator>,
     /// Which pattern variables to emit into schema.
     emit: EmitMask,
+    /// Optional explicit index selection (overrides IndexType::for_query).
+    ///
+    /// Used to align scan physical order with downstream operators (e.g., GROUP BY).
+    index_hint: Option<IndexType>,
 }
 
 impl ScanOperator {
@@ -1611,6 +1637,17 @@ impl ScanOperator {
         inline_ops: Vec<InlineOperator>,
         emit: EmitMask,
     ) -> Self {
+        Self::new_with_emit_and_index(pattern, object_bounds, inline_ops, emit, None)
+    }
+
+    /// Create a new scan operator with explicit emission control and index hint.
+    pub fn new_with_emit_and_index(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+        index_hint: Option<IndexType>,
+    ) -> Self {
         let (base_schema, _, _, _) = schema_from_pattern_with_emit(&pattern, emit);
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
         Self {
@@ -1621,6 +1658,7 @@ impl ScanOperator {
             state: OperatorState::Created,
             inline_ops,
             emit,
+            index_hint,
         }
     }
 }
@@ -1720,6 +1758,7 @@ impl Operator for ScanOperator {
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.inline_ops),
                 self.emit,
+                self.index_hint,
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);

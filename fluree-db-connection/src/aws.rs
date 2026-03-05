@@ -484,6 +484,3 @@ pub async fn get_or_init_sdk_config() -> Result<&'static aws_config::SdkConfig> 
         .get()
         .ok_or_else(|| ConnectionError::storage("Failed to initialize AWS SDK config"))
 }
-
-#[cfg(test)]
-mod tests {}

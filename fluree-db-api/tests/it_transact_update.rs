@@ -429,7 +429,26 @@ async fn update_where_bind_datetime_functions() {
     assert_eq!(result.get("ex:day").and_then(|v| v.as_i64()), Some(13));
     assert_eq!(result.get("ex:hours").and_then(|v| v.as_i64()), Some(14));
     assert_eq!(result.get("ex:minutes").and_then(|v| v.as_i64()), Some(17));
-    assert_eq!(result.get("ex:seconds").and_then(|v| v.as_i64()), Some(22));
+    // SECONDS returns xsd:decimal per W3C spec. The JSON-LD output may
+    // serialize it as a plain string ("22.435000000"), a JSON number, or a
+    // typed value object.
+    let seconds_val = result.get("ex:seconds").expect("seconds");
+    let seconds = seconds_val
+        .as_f64()
+        .or_else(|| seconds_val.as_str().and_then(|s| s.parse::<f64>().ok()))
+        .or_else(|| {
+            seconds_val
+                .get("@value")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+        })
+        .or_else(|| seconds_val.get("@value").and_then(|v| v.as_f64()))
+        .expect("seconds should be numeric");
+    assert!(
+        (seconds - 22.435).abs() < 0.001,
+        "expected ~22.435, got {}",
+        seconds
+    );
     let mut tz_values: Vec<&str> = result
         .get("ex:tz")
         .and_then(|v| v.as_array())
@@ -438,7 +457,9 @@ async fn update_where_bind_datetime_functions() {
         .filter_map(|v| v.as_str())
         .collect();
     tz_values.sort();
-    assert_eq!(tz_values, vec!["+00:00", "-05:00"]);
+    // TZ() returns the literal timezone string from the input.
+    // For "...Z" input, TZ returns "Z" (not "+00:00").
+    assert_eq!(tz_values, vec!["-05:00", "Z"]);
     assert_eq!(result.get("ex:comp="), Some(&json!(false)));
     assert_eq!(result.get("ex:comp<"), Some(&json!(true)));
     assert_eq!(result.get("ex:comp<="), Some(&json!(true)));
@@ -915,6 +936,9 @@ async fn update_where_bind_error_handling_unknown_function() {
 
 #[tokio::test]
 async fn update_where_bind_error_handling_runtime_type_mismatch() {
+    // W3C §17: type mismatch in ABS() produces unbound, not an error.
+    // (abs ?text) where ?text is a string returns Ok(None) → ?err is unbound,
+    // and the insert simply omits the ex:error predicate.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-runtime");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -935,7 +959,7 @@ async fn update_where_bind_error_handling_runtime_type_mismatch() {
         .await
         .expect("seed error fns");
 
-    let run_err = fluree
+    let result = fluree
         .update(
             seeded.ledger,
             &json!({
@@ -950,19 +974,18 @@ async fn update_where_bind_error_handling_runtime_type_mismatch() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        // Error should indicate type mismatch for ABS function
-        assert!(
-            err.to_string().contains("ABS requires a numeric argument"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 async fn update_where_bind_error_handling_invalid_iri() {
+    // IRI("bad:thing") produces a Binding::Iri at the expression level, but
+    // the transact layer rejects raw IRIs that can't be resolved to a SID
+    // for flake generation.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-invalid-iri");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -998,11 +1021,14 @@ async fn update_where_bind_error_handling_invalid_iri() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
+    assert!(
+        run_err.is_err(),
+        "expected transact error for unresolvable IRI"
+    );
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("Unknown IRI")
-                || err.to_string().contains("Unknown IRI or namespace"),
+            err.to_string().contains("Raw IRI")
+                || err.to_string().contains("cannot be used as object"),
             "unexpected error: {}",
             err
         );
@@ -1058,6 +1084,9 @@ async fn update_where_bind_error_handling_invalid_datatype_iri() {
 
 #[tokio::test]
 async fn update_where_bind_error_handling_invalid_iri_type() {
+    // W3C §17: type mismatch in IRI() produces unbound, not an error.
+    // (iri 42) with a numeric arg returns Ok(None) → ?err is unbound,
+    // and the insert simply omits the ex:error predicate.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-iri-type");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1078,7 +1107,7 @@ async fn update_where_bind_error_handling_invalid_iri_type() {
         .await
         .expect("seed error fns");
 
-    let run_err = fluree
+    let result = fluree
         .update(
             seeded.ledger,
             &json!({
@@ -1093,19 +1122,18 @@ async fn update_where_bind_error_handling_invalid_iri_type() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string()
-                .contains("IRI requires a string or IRI argument"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 async fn update_where_bind_error_handling_strdt_non_string() {
+    // W3C §17: type mismatch in STRDT() produces unbound, not an error.
+    // (str-dt 42 "xsd:string") with a numeric first arg returns Ok(None) → ?err is unbound,
+    // and the insert simply omits the ex:error predicate.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-strdt-non-string");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1126,7 +1154,7 @@ async fn update_where_bind_error_handling_strdt_non_string() {
         .await
         .expect("seed error fns");
 
-    let run_err = fluree
+    let result = fluree
         .update(
             seeded.ledger,
             &json!({
@@ -1141,19 +1169,17 @@ async fn update_where_bind_error_handling_strdt_non_string() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string()
-                .contains("STRDT requires a string lexical form"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 async fn update_where_bind_error_handling_bnode_arity() {
+    // Per W3C spec, BNODE accepts 0 or 1 arguments. (bnode ?text) with a
+    // string label now produces a deterministic blank node rather than an error.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-bnode-arity");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1174,7 +1200,7 @@ async fn update_where_bind_error_handling_bnode_arity() {
         .await
         .expect("seed error fns");
 
-    let run_err = fluree
+    let result = fluree
         .update(
             seeded.ledger,
             &json!({
@@ -1189,18 +1215,18 @@ async fn update_where_bind_error_handling_bnode_arity() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string().contains("BNODE requires no arguments"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "BNODE with 1 arg should succeed, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
 async fn update_where_bind_error_handling_strlang_non_string() {
+    // W3C §17: type mismatch in STRLANG() produces unbound, not an error.
+    // (str-lang 42 "en") with a numeric first arg returns Ok(None) → ?err is unbound,
+    // and the insert simply omits the ex:error predicate.
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis("it/transact-update:error-strlang-non-string");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1221,7 +1247,7 @@ async fn update_where_bind_error_handling_strlang_non_string() {
         .await
         .expect("seed error fns");
 
-    let run_err = fluree
+    let result = fluree
         .update(
             seeded.ledger,
             &json!({
@@ -1236,15 +1262,11 @@ async fn update_where_bind_error_handling_strlang_non_string() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string()
-                .contains("STRLANG requires a string lexical form"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "type mismatch should produce unbound, not error: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]

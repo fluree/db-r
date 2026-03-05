@@ -461,7 +461,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         sparql: &str,
         accept: &str,
-    ) -> Result<Vec<u8>, RemoteLedgerError> {
+    ) -> Result<bytes::Bytes, RemoteLedgerError> {
         let url = self.op_url("query", ledger);
         let resp = self
             .send_raw(
@@ -476,7 +476,6 @@ impl RemoteLedgerClient {
         if resp.status().is_success() {
             resp.bytes()
                 .await
-                .map(|b| b.to_vec())
                 .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
         } else {
             Err(Self::map_error(resp).await)
@@ -488,7 +487,7 @@ impl RemoteLedgerClient {
         &self,
         sparql: &str,
         accept: &str,
-    ) -> Result<Vec<u8>, RemoteLedgerError> {
+    ) -> Result<bytes::Bytes, RemoteLedgerError> {
         let url = self.op_url_root("query");
         let resp = self
             .send_raw(
@@ -503,7 +502,6 @@ impl RemoteLedgerClient {
         if resp.status().is_success() {
             resp.bytes()
                 .await
-                .map(|b| b.to_vec())
                 .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
         } else {
             Err(Self::map_error(resp).await)

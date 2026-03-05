@@ -1482,7 +1482,8 @@ fn lower_function_name(name: &str) -> Function {
         "hours" => Function::Hours,
         "minutes" => Function::Minutes,
         "seconds" => Function::Seconds,
-        "tz" | "timezone" => Function::Tz,
+        "tz" => Function::Tz,
+        "timezone" => Function::Timezone,
         // Type functions
         "isiri" | "isuri" | "is-iri" | "is-uri" => Function::IsIri,
         "isblank" | "is-blank" => Function::IsBlank,

@@ -360,7 +360,7 @@ impl ComparableValue {
         match self {
             ComparableValue::Long(n) => Ok(Binding::lit(
                 FlakeValue::Long(n),
-                datatypes.xsd_long.clone(),
+                datatypes.xsd_integer.clone(),
             )),
             ComparableValue::Double(d) => Ok(Binding::lit(
                 FlakeValue::Double(d),
@@ -404,17 +404,15 @@ impl ComparableValue {
                 datatypes.geo_wkt_literal.clone(),
             )),
             ComparableValue::Iri(iri) => {
-                let ctx = ctx.ok_or_else(|| {
-                    QueryError::InvalidFilter(
-                        "bind evaluation requires database context for iri()".to_string(),
-                    )
-                })?;
-                ctx.snapshot
-                    .encode_iri_strict(&iri)
-                    .map(Binding::Sid)
-                    .ok_or_else(|| {
-                        QueryError::InvalidFilter(format!("Unknown IRI or namespace: {}", iri))
-                    })
+                // Try to encode to a SID if we have database context,
+                // but fall back to Binding::Iri for constructed IRIs
+                // (UUID, IRI() function) that don't exist in the database.
+                if let Some(ctx) = ctx {
+                    if let Some(sid) = ctx.snapshot.encode_iri_strict(&iri) {
+                        return Ok(Binding::Sid(sid));
+                    }
+                }
+                Ok(Binding::Iri(iri))
             }
             ComparableValue::TypedLiteral { val, dt_iri, lang } => {
                 if let Some(lang) = lang {

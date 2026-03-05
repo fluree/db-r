@@ -116,6 +116,8 @@ struct ProcessedLeaflet {
     row_count: u32,
     first_s_id: u64,
     first_p_id: u32,
+    first_o_kind: u8,
+    first_o_key: u64,
     /// First record of this leaflet (None for passthrough).
     first_record: Option<RunRecord>,
     /// Last record of this leaflet (None for passthrough).
@@ -274,11 +276,22 @@ fn slice_novelty_to_leaflets<'a>(
 fn passthrough_leaflet(leaf_bytes: &[u8], entry: &LeafletDirEntry) -> ProcessedLeaflet {
     let start = entry.offset as usize;
     let end = start + entry.compressed_len as usize;
+    let (first_o_kind, first_o_key) = match (entry.first_o_kind, entry.first_o_key) {
+        (Some(k), Some(o)) => (k, o),
+        _ => {
+            // Older leaf versions don't carry first_o_* in the directory; read the leaflet header.
+            let lh = LeafletHeader::read_from(&leaf_bytes[start..end])
+                .expect("leaflet header should be readable for passthrough leaflet");
+            (lh.first_o_kind, lh.first_o_key)
+        }
+    };
     ProcessedLeaflet {
         data: leaf_bytes[start..end].to_vec(),
         row_count: entry.row_count,
         first_s_id: entry.first_s_id,
         first_p_id: entry.first_p_id,
+        first_o_kind,
+        first_o_key,
         first_record: None,
         last_record: None,
     }
@@ -366,6 +379,8 @@ fn merge_and_encode_leaflet(
             row_count: records.len() as u32,
             first_s_id: first.s_id.as_u64(),
             first_p_id: first.p_id,
+            first_o_kind: first.o_kind,
+            first_o_key: first.o_key,
             first_record: Some(first),
             last_record: Some(last),
         }])
@@ -442,6 +457,8 @@ fn split_and_encode_leaflet(
             row_count: chunk.len() as u32,
             first_s_id: first.s_id.as_u64(),
             first_p_id: first.p_id,
+            first_o_kind: first.o_kind,
+            first_o_key: first.o_key,
             first_record: Some(first),
             last_record: Some(last),
         });
@@ -661,6 +678,9 @@ fn build_leaf_blob(
         buf.extend_from_slice(&l.row_count.to_le_bytes());
         buf.extend_from_slice(&l.first_s_id.to_le_bytes());
         buf.extend_from_slice(&l.first_p_id.to_le_bytes());
+        buf.push(l.first_o_kind);
+        buf.extend_from_slice(&[0u8; 3]);
+        buf.extend_from_slice(&l.first_o_key.to_le_bytes());
         offset += l.data.len() as u64;
     }
 
@@ -1003,7 +1023,10 @@ mod tests {
 
         // Verify magic + version
         assert_eq!(&leaf.bytes[0..4], b"FLI2");
-        assert_eq!(leaf.bytes[4], 2); // version
+        assert_eq!(
+            leaf.bytes[4],
+            fluree_db_binary_index::format::leaf::LEAF_VERSION
+        ); // version
 
         // Verify CID is consistent with content
         let mut hasher = Sha256::new();
