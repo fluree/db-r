@@ -45,10 +45,54 @@ use fluree_db_core::{
     ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::namespaces::FLUREE_DB;
+use fluree_vocab::rdf;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::policy::QueryPolicyEnforcer;
+
+// ============================================================================
+// Variable emission control
+// ============================================================================
+
+/// Controls which triple-pattern variables are emitted into the operator schema.
+///
+/// This enables plan-time pruning of unused variables so scans can avoid decoding
+/// and materializing values that do not affect query results.
+///
+/// # Planner usage
+///
+/// The query planner sets mask fields to `false` for positions that are not
+/// referenced downstream. Typical scenarios:
+///
+/// - **`COUNT(*)` / `COUNT(?x)` with unused positions:** If a query only counts
+///   results and never reads the object, `o` can be `false` to skip object
+///   decoding (Region 2 zstd decompression, string/lang resolution, etc.).
+///
+/// - **Existence-only sub-patterns:** In `FILTER EXISTS { ?s <p> ?o }` the
+///   engine only needs to know whether rows exist, not their values, so all
+///   positions can be masked off and the scan becomes a pure count.
+///
+/// - **Projection push-down:** When SELECT names only `?s`, the planner can
+///   set `p: false, o: false` on scans where `?p` and `?o` are not used in
+///   filters, joins, or ORDER BY.
+///
+/// The default (`EmitMask::ALL`) emits all positions and is always safe.
+/// Non-ALL masks are an optimisation — correctness must never depend on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitMask {
+    pub s: bool,
+    pub p: bool,
+    pub o: bool,
+}
+
+impl EmitMask {
+    pub const ALL: Self = Self {
+        s: true,
+        p: true,
+        o: true,
+    };
+}
 
 // ============================================================================
 // IndexType → RunSortOrder mapping
@@ -73,55 +117,6 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
 ///
 /// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where each position
 /// is the column index of that variable in the schema (None if bound).
-fn schema_from_pattern(
-    pattern: &TriplePattern,
-) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
-    let mut schema_vec = Vec::with_capacity(3);
-    let mut s_var_pos = None;
-    let mut p_var_pos = None;
-    let mut o_var_pos = None;
-
-    if let Ref::Var(v) = &pattern.s {
-        s_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
-    }
-    if let Ref::Var(v) = &pattern.p {
-        p_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
-    }
-    if let Term::Var(v) = &pattern.o {
-        o_var_pos = Some(schema_vec.len());
-        schema_vec.push(*v);
-    }
-
-    (
-        Arc::from(schema_vec.into_boxed_slice()),
-        s_var_pos,
-        p_var_pos,
-        o_var_pos,
-    )
-}
-
-/// Controls which triple-pattern variables are emitted into the scan output schema.
-///
-/// This is a light-weight physical-property knob used by WHERE planning to avoid
-/// materializing unused columns (especially large object columns) when safe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmitMask {
-    pub s: bool,
-    pub p: bool,
-    pub o: bool,
-}
-
-impl EmitMask {
-    pub const ALL: Self = Self {
-        s: true,
-        p: true,
-        o: true,
-    };
-}
-
-/// Like `schema_from_pattern`, but allows pruning emitted variables via `emit`.
 fn schema_from_pattern_with_emit(
     pattern: &TriplePattern,
     emit: EmitMask,
@@ -133,20 +128,32 @@ fn schema_from_pattern_with_emit(
 
     if emit.s {
         if let Ref::Var(v) = &pattern.s {
-            s_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                s_var_pos = Some(pos);
+            } else {
+                s_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
     if emit.p {
         if let Ref::Var(v) = &pattern.p {
-            p_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                p_var_pos = Some(pos);
+            } else {
+                p_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
     if emit.o {
         if let Term::Var(v) = &pattern.o {
-            o_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
+            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
+                o_var_pos = Some(pos);
+            } else {
+                o_var_pos = Some(schema_vec.len());
+                schema_vec.push(*v);
+            }
         }
     }
 
@@ -156,6 +163,55 @@ fn schema_from_pattern_with_emit(
         p_var_pos,
         o_var_pos,
     )
+}
+
+/// Pre-compute which repeated-variable equality checks are needed for a pattern.
+///
+/// Returns `(s==o, s==p, p==o)` flags. When all three are false (the common case),
+/// `within_row_var_equality_ok` can short-circuit without inspecting the pattern.
+fn repeated_var_flags(pattern: &TriplePattern) -> (bool, bool, bool) {
+    let s_var = match &pattern.s {
+        Ref::Var(v) => Some(*v),
+        _ => None,
+    };
+    let p_var = match &pattern.p {
+        Ref::Var(v) => Some(*v),
+        _ => None,
+    };
+    let o_var = match &pattern.o {
+        Term::Var(v) => Some(*v),
+        _ => None,
+    };
+    (
+        s_var.is_some_and(|v| o_var == Some(v)),
+        s_var.is_some_and(|v| p_var == Some(v)),
+        p_var.is_some_and(|v| o_var == Some(v)),
+    )
+}
+
+/// True when the triple pattern's predicate is `rdf:type` (by Sid or IRI).
+///
+/// This is used for performance short-circuits based on RDF semantics, e.g.
+/// avoiding literal-metadata decoding for `?s rdf:type ?o` scans.
+#[inline]
+fn predicate_is_rdf_type(p: &Ref) -> bool {
+    match p {
+        Ref::Sid(sid) => fluree_db_core::is_rdf_type(sid),
+        Ref::Iri(iri) => iri.as_ref() == rdf::TYPE,
+        Ref::Var(_) => false,
+    }
+}
+
+/// True when a variable-object scan can safely skip Region 2 decoding because
+/// the object is semantically ref-only.
+///
+/// Today this is limited to `rdf:type` patterns with no datatype/lang constraint:
+/// RDF requires `rdf:type` objects to be IRIs (or blank nodes), so dt/lang/i/t
+/// metadata is irrelevant. Skipping Region 2 reduces zstd decode and cache churn
+/// on large `rdf:type` scans (common in sparqloscope benchmarks).
+#[inline]
+fn object_var_is_ref_only(pattern: &TriplePattern) -> bool {
+    matches!(pattern.o, Term::Var(_)) && pattern.dtc.is_none() && predicate_is_rdf_type(&pattern.p)
 }
 
 // ============================================================================
@@ -223,9 +279,106 @@ pub struct BinaryScanOperator {
     /// Inline operators evaluated per-row during batch processing.
     /// Applied after building triple bindings, before adding to output columns.
     inline_ops: Vec<InlineOperator>,
+    /// Pre-computed repeated-variable flags from the triple pattern.
+    /// When all are false (the common case), `within_row_var_equality_ok`
+    /// short-circuits without inspecting the pattern on every row.
+    check_s_eq_o: bool,
+    check_s_eq_p: bool,
+    check_p_eq_o: bool,
 }
 
 impl BinaryScanOperator {
+    #[inline]
+    fn base_schema_len(&self) -> usize {
+        let mut max_pos: Option<usize> = None;
+        for pos in [self.s_var_pos, self.p_var_pos, self.o_var_pos]
+            .into_iter()
+            .flatten()
+        {
+            max_pos = Some(max_pos.map_or(pos, |m| m.max(pos)));
+        }
+        max_pos.map_or(0, |m| m + 1)
+    }
+
+    /// Enforce within-pattern repeated-variable constraints.
+    ///
+    /// SPARQL allows the same variable to appear in multiple positions of a triple pattern,
+    /// e.g. `?x <p> ?x` or `?x ?x ?o`. These are equality constraints that must be applied
+    /// even when emission pruning omits one of the positions.
+    ///
+    /// Uses pre-computed `check_s_eq_o`, `check_s_eq_p`, `check_p_eq_o` flags to
+    /// short-circuit the common case where no variables are repeated.
+    fn within_row_var_equality_ok(&mut self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
+        // Fast path: no repeated variables in this pattern (the common case).
+        if !self.check_s_eq_o && !self.check_s_eq_p && !self.check_p_eq_o {
+            return Ok(true);
+        }
+
+        // s == o is only possible when o is a ref pointing to s_id.
+        if self.check_s_eq_o {
+            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
+                return Ok(false);
+            }
+            if decoded.o_keys[row] != decoded.s_ids[row] {
+                return Ok(false);
+            }
+        }
+
+        // For comparisons involving predicate IDs, decode to Sid (different ID domains).
+        if self.check_s_eq_p {
+            let s = self.resolve_s_id(decoded.s_ids[row])?;
+            let p = self.resolve_p_id(decoded.p_ids[row]);
+            if s != p {
+                return Ok(false);
+            }
+        }
+        if self.check_p_eq_o {
+            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
+                return Ok(false);
+            }
+            let o = self.resolve_s_id(decoded.o_keys[row])?;
+            let p = self.resolve_p_id(decoded.p_ids[row]);
+            if o != p {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    #[inline]
+    fn set_binding_at(&mut self, slots: &mut [Binding], pos: usize, b: Binding) -> Result<bool> {
+        match &slots[pos] {
+            Binding::Unbound => {
+                slots[pos] = b;
+                Ok(true)
+            }
+            existing if existing == &b => Ok(true),
+            // When the same var is shared across positions, prefer allowing
+            // Encoded* vs Sid comparisons by decoding only in the mismatch case.
+            Binding::Sid(sid) => match b {
+                Binding::EncodedSid { s_id } => Ok(self.resolve_s_id(s_id)? == *sid),
+                Binding::EncodedPid { p_id } => Ok(self.resolve_p_id(p_id) == *sid),
+                _ => Ok(false),
+            },
+            Binding::EncodedSid { s_id } => match b {
+                Binding::Sid(sid) => Ok(self.resolve_s_id(*s_id)? == sid),
+                Binding::EncodedPid { p_id } => {
+                    Ok(self.resolve_s_id(*s_id)? == self.resolve_p_id(p_id))
+                }
+                _ => Ok(false),
+            },
+            Binding::EncodedPid { p_id } => match b {
+                Binding::Sid(sid) => Ok(self.resolve_p_id(*p_id) == sid),
+                Binding::EncodedSid { s_id } => {
+                    Ok(self.resolve_p_id(*p_id) == self.resolve_s_id(s_id)?)
+                }
+                _ => Ok(false),
+            },
+            _ => Ok(false),
+        }
+    }
+
     /// Create a new BinaryScanOperator for a triple pattern.
     ///
     /// The `graph_view` provides a graph-scoped view of the binary index store.
@@ -271,6 +424,7 @@ impl BinaryScanOperator {
         let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
             schema_from_pattern_with_emit(&pattern, emit);
         let p_is_var = pattern.p.is_var();
+        let (check_s_eq_o, check_s_eq_p, check_p_eq_o) = repeated_var_flags(&pattern);
 
         // Extend schema with new bind variables from inline operators.
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
@@ -294,6 +448,9 @@ impl BinaryScanOperator {
             overlay_epoch: 0,
             dict_overlay: None,
             inline_ops,
+            check_s_eq_o,
+            check_s_eq_p,
+            check_p_eq_o,
         }
     }
 
@@ -699,23 +856,45 @@ impl BinaryScanOperator {
     ) -> Result<usize> {
         let mut produced = 0;
         let ncols = self.schema.len();
-        let mut bindings = Vec::with_capacity(ncols);
+        let base_len = self.base_schema_len();
+        let mut bindings = Vec::with_capacity(ncols.max(base_len));
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
                 continue;
             }
 
-            bindings.clear();
+            if !self.within_row_var_equality_ok(decoded, row)? {
+                continue;
+            }
 
-            if let Some(b) = self.build_subject_binding(decoded.s_ids[row])? {
-                bindings.push(b);
+            bindings.clear();
+            bindings.resize(base_len, Binding::Unbound);
+
+            // Fill bindings in schema order using precomputed positions.
+            if let Some(pos) = self.s_var_pos {
+                let b = self
+                    .build_subject_binding(decoded.s_ids[row])?
+                    .expect("s_var_pos implies subject binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
-            if let Some(b) = self.build_predicate_binding(decoded.p_ids[row]) {
-                bindings.push(b);
+            if let Some(pos) = self.p_var_pos {
+                let b = self
+                    .build_predicate_binding(decoded.p_ids[row])
+                    .expect("p_var_pos implies predicate binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
-            if let Some(b) = self.build_object_binding(decoded, row)? {
-                bindings.push(b);
+            if let Some(pos) = self.o_var_pos {
+                let b = self
+                    .build_object_binding(decoded, row)?
+                    .expect("o_var_pos implies object binding");
+                if !self.set_binding_at(&mut bindings, pos, b)? {
+                    continue;
+                }
             }
 
             // Apply inline operators; may extend `bindings` or skip the row.
@@ -1195,7 +1374,15 @@ impl Operator for BinaryScanOperator {
                 }
 
                 // Use optimized subject lookup for SPOT with bound subject
-                let need_region2 = self.o_var_pos.is_some();
+                let need_region2 =
+                    self.o_var_pos.is_some() && !object_var_is_ref_only(&self.pattern);
+                tracing::debug!(
+                    need_region2,
+                    o_is_var = self.o_var_pos.is_some(),
+                    object_ref_only = object_var_is_ref_only(&self.pattern),
+                    p = ?self.pattern.p,
+                    "binary_scan: cursor need_region2 decision"
+                );
                 let cursor = if order == RunSortOrder::Spot {
                     if let Some(s_id) = filter.s_id {
                         BinaryCursor::for_subject(
@@ -1641,6 +1828,7 @@ impl Operator for ScanOperator {
                 self.pattern.clone(),
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.inline_ops),
+                self.emit,
             ))
         };
 
@@ -1711,9 +1899,11 @@ impl RangeScanOperator {
         pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
         inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
     ) -> Self {
         let p_is_var = pattern.p.is_var();
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
+            schema_from_pattern_with_emit(&pattern, emit);
         let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
 
         Self {

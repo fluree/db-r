@@ -205,8 +205,16 @@ pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
     // All predicates are bound (not vars) - can be Ref::Sid or Ref::Iri
     let predicates_bound = patterns.iter().all(|p| p.p_bound());
 
-    // All objects are vars - not literal/SID constants
-    let objects_are_vars = patterns.iter().all(|p| matches!(&p.o, Term::Var(_)));
+    // All objects are vars - not literal/SID constants, and must be distinct.
+    //
+    // PropertyJoinOperator produces one output column per predicate's object var.
+    // If object vars repeat (or equal the subject var), the shape is no longer a
+    // simple star and requires true join semantics (including object unification).
+    let mut obj_vars: HashSet<VarId> = HashSet::new();
+    let objects_ok = patterns.iter().all(|p| match &p.o {
+        Term::Var(v) => *v != first_s && obj_vars.insert(*v),
+        _ => false,
+    });
 
     // Predicates are distinct (avoid weird duplicate shapes)
     // Accept both Ref::Sid and Ref::Iri as distinct predicate keys
@@ -220,7 +228,7 @@ pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
         .collect();
     let predicates_distinct = predicates.len() == patterns.len();
 
-    same_subject && predicates_bound && objects_are_vars && predicates_distinct
+    same_subject && predicates_bound && objects_ok && predicates_distinct
 }
 
 /// Represents a range constraint extracted from a filter expression

@@ -176,7 +176,6 @@ async fn run_foreground(
         }
         CliError::Server(format!("failed to initialize server: {e}"))
     })?;
-
     let result = server.run().await;
 
     // Clean up meta file on exit (normal shutdown or error).

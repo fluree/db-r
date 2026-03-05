@@ -473,6 +473,174 @@ async fn indexed_then_insert_graph_crawl_custom_type_returns_properties() {
         .await;
 }
 
+// Regression: repeated vars in a triple pattern must not create duplicate schema
+// =============================================================================
+
+/// Regression: indexed/binary-scan path must handle repeated variables in a single triple pattern
+/// (e.g. `?x ex:self ?x` or `?x ?x ?o`) without producing a Batch schema containing duplicate VarIds.
+#[tokio::test]
+async fn indexed_repeated_vars_in_triple_pattern_do_not_duplicate_schema() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-repeated-vars:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Seed and index.
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    // Used for ?x ex:self ?x
+                    {"@id": "ex:a", "ex:self": {"@id": "ex:a"}},
+                    // Used for ?x ?x ?o (predicate IRI equals subject IRI)
+                    {"@id": "ex:a", "ex:a": {"@id": "ex:b"}}
+                ]
+            });
+            let ledger1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &insert,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("seed insert")
+                .ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger1.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1, "should index to t=1");
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger1.t())
+                .await
+                .expect("load indexed view");
+
+            // 1) subject==object repeated var
+            let q1 = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?x WHERE { ?x ex:self ?x }
+            "#;
+            let r1 = fluree
+                .query(&view, QueryInput::Sparql(q1))
+                .await
+                .expect("query 1 should succeed");
+            let jsonld1 = r1.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld1),
+                normalize_rows_array(&json!([["ex:a"]])),
+                "expected ?x=ex:a"
+            );
+
+            // 2) subject==predicate repeated var
+            let q2 = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?x ?o WHERE { ?x ?x ?o }
+            "#;
+            let r2 = fluree
+                .query(&view, QueryInput::Sparql(q2))
+                .await
+                .expect("query 2 should succeed");
+            let jsonld2 = r2.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld2),
+                normalize_rows_array(&json!([["ex:a", "ex:b"]])),
+                "expected (?x,?o)=(ex:a,ex:b)"
+            );
+        })
+        .await;
+}
+
+/// Regression: a two-pattern join that shares both subject and object variables
+/// (e.g. `?s p1 ?o . ?s p2 ?o`) must not be planned as a PropertyJoinOperator
+/// (which assumes distinct object vars) and must execute without duplicate schema.
+#[tokio::test]
+async fn indexed_multicolumn_join_shared_object_var_executes() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-multicolumn-join:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:s1", "ex:p1": {"@id": "ex:o1"}, "ex:p2": {"@id": "ex:o1"}},
+                    {"@id": "ex:s2", "ex:p1": {"@id": "ex:o2"}, "ex:p2": {"@id": "ex:o2"}},
+                    {"@id": "ex:s3", "ex:p1": {"@id": "ex:o3"}}
+                ]
+            });
+            let ledger1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &insert,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("seed insert")
+                .ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger1.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1, "should index to t=1");
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger1.t())
+                .await
+                .expect("load indexed view");
+
+            let q = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (COUNT(*) AS ?count)
+                WHERE { ?s ex:p1 ?o . ?s ex:p2 ?o . }
+            "#;
+            let r = fluree
+                .query(&view, QueryInput::Sparql(q))
+                .await
+                .expect("multicolumn join query should succeed");
+            let jsonld = r.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                normalize_rows_array(&json!([2])),
+                "expected two matching (s,o) pairs"
+            );
+        })
+        .await;
+}
+
 // =============================================================================
 // Overlay correctness: COUNT fast paths must incorporate novelty
 // =============================================================================
