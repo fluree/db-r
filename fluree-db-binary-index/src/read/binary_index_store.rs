@@ -109,26 +109,26 @@ struct GraphIndex {
 
 /// All dictionary and encoding state needed to translate between
 /// human-readable IRIs/strings and compact integer IDs.
-struct DictionarySet {
-    predicates: PredicateDict,
-    predicate_reverse: HashMap<String, u32>,
+pub(crate) struct DictionarySet {
+    pub(crate) predicates: PredicateDict,
+    pub(crate) predicate_reverse: HashMap<String, u32>,
     /// Graph IRI → dict_index (0-based). g_id = dict_index + 1.
-    graphs_reverse: HashMap<String, GraphId>,
+    pub(crate) graphs_reverse: HashMap<String, GraphId>,
     /// Subject forward packs keyed by ns_code.
-    subject_forward_packs: std::collections::BTreeMap<u16, ForwardPackReader>,
-    subject_reverse_tree: Option<DictTreeReader>,
+    pub(crate) subject_forward_packs: std::collections::BTreeMap<u16, ForwardPackReader>,
+    pub(crate) subject_reverse_tree: Option<DictTreeReader>,
     /// String forward pack reader (all string IDs in one stream).
-    string_forward_packs: ForwardPackReader,
-    string_reverse_tree: Option<DictTreeReader>,
+    pub(crate) string_forward_packs: ForwardPackReader,
+    pub(crate) string_reverse_tree: Option<DictTreeReader>,
     /// Total subject count across all namespaces (for DictOverlay watermark).
-    subject_count: u32,
+    pub(crate) subject_count: u32,
     /// Total string count (for DictOverlay watermark).
-    string_count: u32,
-    namespace_codes: HashMap<u16, String>,
-    namespace_reverse: HashMap<String, u16>,
-    prefix_trie: PrefixTrie,
-    language_tags: LanguageTagDict,
-    dt_sids: Vec<Sid>,
+    pub(crate) string_count: u32,
+    pub(crate) namespace_codes: HashMap<u16, String>,
+    pub(crate) namespace_reverse: HashMap<String, u16>,
+    pub(crate) prefix_trie: PrefixTrie,
+    pub(crate) language_tags: LanguageTagDict,
+    pub(crate) dt_sids: Vec<Sid>,
 }
 
 /// Per-graph, per-order branch manifests and leaf directories.
@@ -2724,7 +2724,7 @@ fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
     io::Error::new(kind, e.to_string())
 }
 
-fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     if target.exists() {
         return Ok(());
     }
@@ -2775,7 +2775,7 @@ fn cache_bytes_to_file(
 
 /// Fetch artifact bytes by CID: reads from local file if available (file storage),
 /// then local cache, otherwise downloads from content store and writes to cache.
-async fn fetch_cached_bytes(
+pub(crate) async fn fetch_cached_bytes(
     cs: &dyn ContentStore,
     id: &ContentId,
     cache_dir: &Path,
@@ -2799,7 +2799,7 @@ async fn fetch_cached_bytes(
 ///
 /// Like `fetch_cached_bytes` but uses `cid.to_string()` as the cache filename
 /// instead of `{hash}.{ext}`. Preferred for CID-native artifacts (branches, leaves).
-async fn fetch_cached_bytes_cid(
+pub(crate) async fn fetch_cached_bytes_cid(
     cs: &dyn ContentStore,
     id: &ContentId,
     cache_dir: &Path,
@@ -2841,7 +2841,7 @@ fn build_dict_reader_reverse(entries: Vec<ReverseEntry>) -> io::Result<DictTreeR
 ///
 /// If `leaflet_cache` is provided, the reader will use it for in-memory
 /// caching of leaf blobs (keyed by `xxh3_128(cas_address)`, immutable).
-async fn load_dict_tree_from_cas(
+pub(crate) async fn load_dict_tree_from_cas(
     cs: Arc<dyn ContentStore>,
     refs: &crate::format::index_root::DictTreeRefs,
     cache_dir: &Path,

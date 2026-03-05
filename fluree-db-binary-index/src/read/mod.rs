@@ -8,4 +8,5 @@ pub mod column_types;
 pub mod leaflet_cache;
 pub mod query;
 pub mod replay;
+pub mod store_v6;
 pub mod types_v3;
