@@ -234,3 +234,177 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
         named_graphs,
     })
 }
+
+/// Upload V3 index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
+///
+/// V3 artifacts are in-memory — no file reads needed. This function writes
+/// bytes directly to CAS with bounded parallelism.
+///
+/// Returns `UploadedIndexes` in the same shape as the V1 upload function.
+/// V3 `LeafEntryV3` is converted to V1 `LeafEntry` for compatibility with
+/// the existing root assembly code (V6 root assembly will be added later).
+pub(crate) async fn upload_v3_indexes_to_cas<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    build_result: &crate::V3BuildResult,
+) -> Result<UploadedIndexes> {
+    use fluree_db_binary_index::format::branch::LeafEntry;
+    use fluree_db_core::ContentKind;
+    use std::collections::BTreeMap;
+
+    let mut default_orders: Vec<InlineOrderRouting> = Vec::new();
+    let mut named_map: BTreeMap<GraphId, Vec<(RunSortOrder, ContentId)>> = BTreeMap::new();
+
+    for (order, order_result) in &build_result.order_results {
+        for graph in &order_result.graphs {
+            let g_id = graph.g_id;
+            let is_default_graph = g_id == 0;
+
+            // Upload leaf blobs + sidecar blobs.
+            for leaf_info in &graph.leaf_infos {
+                // Sidecar first (CAS ordering: sidecar must exist before leaf references it).
+                if let (Some(sc_cid), Some(sc_bytes)) =
+                    (&leaf_info.sidecar_cid, &leaf_info.sidecar_bytes)
+                {
+                    storage
+                        .content_write_bytes_with_hash(
+                            ContentKind::HistorySidecar,
+                            ledger_id,
+                            &sc_cid.digest_hex(),
+                            sc_bytes,
+                        )
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+
+                // Leaf blob.
+                storage
+                    .content_write_bytes_with_hash(
+                        ContentKind::IndexLeafV3,
+                        ledger_id,
+                        &leaf_info.leaf_cid.digest_hex(),
+                        &leaf_info.leaf_bytes,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            }
+
+            // Upload branch manifest for named graphs.
+            let uploaded_branch_cid = if !is_default_graph {
+                storage
+                    .content_write_bytes_with_hash(
+                        ContentKind::IndexBranchV3,
+                        ledger_id,
+                        &graph.branch_cid.digest_hex(),
+                        &graph.branch_bytes,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                Some(graph.branch_cid.clone())
+            } else {
+                None
+            };
+
+            // Convert V3 LeafEntryV3 → V1 LeafEntry for root assembly compatibility.
+            // This is a temporary bridge until V6 root assembly is implemented.
+            let v1_leaf_entries: Vec<LeafEntry> = graph
+                .leaf_entries
+                .iter()
+                .map(|v3| {
+                    // Convert V2 routing keys to V1 RunRecord (best-effort mapping).
+                    // The V1 root only uses these for range routing, so we need the
+                    // core identity fields. Fields not present in V2 (dt, lang_id, op)
+                    // are set to zero/defaults.
+                    let first_key = run_record_v2_to_v1_key(&v3.first_key);
+                    let last_key = run_record_v2_to_v1_key(&v3.last_key);
+                    LeafEntry {
+                        first_key,
+                        last_key,
+                        row_count: v3.row_count,
+                        leaf_cid: v3.leaf_cid.clone(),
+                        resolved_path: None,
+                    }
+                })
+                .collect();
+
+            if is_default_graph {
+                default_orders.push(InlineOrderRouting {
+                    order: *order,
+                    leaves: v1_leaf_entries,
+                });
+            } else {
+                let branch_cid = uploaded_branch_cid.expect("named graph must have branch CID");
+                named_map
+                    .entry(g_id)
+                    .or_default()
+                    .push((*order, branch_cid));
+            }
+        }
+    }
+
+    let named_graphs: Vec<NamedGraphRouting> = named_map
+        .into_iter()
+        .map(|(g_id, orders)| NamedGraphRouting { g_id, orders })
+        .collect();
+
+    Ok(UploadedIndexes {
+        default_graph_orders: default_orders,
+        named_graphs,
+    })
+}
+
+/// Convert a `RunRecordV2` to a V1 `RunRecord` for root assembly compatibility.
+///
+/// # WARNING: NOT ROUTING-SAFE
+///
+/// This is a **lossy** conversion — `dt`, `lang_id`, `op` are set to defaults,
+/// and many distinct `o_type` values collapse to the same `o_kind`. The resulting
+/// V1 keys do NOT preserve V3 sort order and **MUST NOT** be used for binary-search
+/// routing against FLI3 leaves.
+///
+/// This bridge exists ONLY to satisfy the `InlineOrderRouting` type signature
+/// required by `UploadedIndexes`. It is a temporary measure until `IndexRootV6`
+/// encodes V3 routing keys natively. No read-side code should consume these keys.
+fn run_record_v2_to_v1_key(
+    v2: &fluree_db_binary_index::format::run_record_v2::RunRecordV2,
+) -> fluree_db_binary_index::format::run_record::RunRecord {
+    use fluree_db_binary_index::format::run_record::RunRecord;
+    use fluree_db_core::o_type::OType;
+
+    let ot = OType::from_u16(v2.o_type);
+    // Map o_type back to a rough o_kind for the V1 key.
+    // This is imprecise but sufficient for routing.
+    let o_kind = if ot.is_embedded() {
+        match ot.decode_kind() {
+            fluree_db_core::DecodeKind::Null => fluree_db_core::ObjKind::NULL,
+            fluree_db_core::DecodeKind::Bool => fluree_db_core::ObjKind::BOOL,
+            fluree_db_core::DecodeKind::I64 => fluree_db_core::ObjKind::NUM_INT,
+            fluree_db_core::DecodeKind::F64 => fluree_db_core::ObjKind::NUM_F64,
+            fluree_db_core::DecodeKind::Date => fluree_db_core::ObjKind::DATE,
+            fluree_db_core::DecodeKind::Time => fluree_db_core::ObjKind::TIME,
+            fluree_db_core::DecodeKind::DateTime => fluree_db_core::ObjKind::DATE_TIME,
+            fluree_db_core::DecodeKind::GeoPoint => fluree_db_core::ObjKind::GEO_POINT,
+            fluree_db_core::DecodeKind::BlankNode => fluree_db_core::ObjKind::REF_ID,
+            _ => fluree_db_core::ObjKind::NUM_INT, // fallback
+        }
+    } else if ot.is_iri_ref() {
+        fluree_db_core::ObjKind::REF_ID
+    } else if ot.is_lang_string() || ot.is_string_dict() || ot.is_customer_datatype() {
+        fluree_db_core::ObjKind::LEX_ID
+    } else {
+        fluree_db_core::ObjKind::LEX_ID
+    };
+
+    RunRecord {
+        s_id: v2.s_id,
+        o_key: v2.o_key,
+        p_id: v2.p_id,
+        t: v2.t,
+        i: v2.o_i,
+        g_id: v2.g_id,
+        dt: 0,
+        lang_id: 0,
+        o_kind: o_kind.as_u8(),
+        op: 1, // asserts (import-only)
+    }
+}

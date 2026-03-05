@@ -1,8 +1,10 @@
+pub mod build_v3_from_commits;
 pub mod incremental_branch;
 pub mod incremental_leaf;
 pub mod incremental_resolve;
 pub mod incremental_root;
 pub mod index_build;
+pub mod index_build_v2;
 pub mod merge;
 pub mod merge_v2;
 pub mod novelty_merge;

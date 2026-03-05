@@ -52,6 +52,12 @@ pub const CODEC_FLUREE_SPATIAL_INDEX: u64 = FLUREE_CODEC_BASE + 11;
 /// Multicodec for Fluree history sidecar blobs (FHS1, per-leaf time-travel data).
 pub const CODEC_FLUREE_HISTORY_SIDECAR: u64 = FLUREE_CODEC_BASE + 12;
 
+/// Multicodec for Fluree V3 index branch manifests (FBR3).
+pub const CODEC_FLUREE_INDEX_BRANCH_V3: u64 = FLUREE_CODEC_BASE + 13;
+
+/// Multicodec for Fluree V3 index leaf files (FLI3).
+pub const CODEC_FLUREE_INDEX_LEAF_V3: u64 = FLUREE_CODEC_BASE + 14;
+
 // ============================================================================
 // DictKind
 // ============================================================================
@@ -125,6 +131,10 @@ pub enum ContentKind {
     SpatialIndex,
     /// History sidecar blob (FHS1, per-leaf time-travel data)
     HistorySidecar,
+    /// V3 index branch manifest (FBR3)
+    IndexBranchV3,
+    /// V3 index leaf file (FLI3)
+    IndexLeafV3,
 }
 
 // ============================================================================
@@ -149,6 +159,8 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
             ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
             ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
+            ContentKind::IndexBranchV3 => CODEC_FLUREE_INDEX_BRANCH_V3,
+            ContentKind::IndexLeafV3 => CODEC_FLUREE_INDEX_LEAF_V3,
         }
     }
 
@@ -173,6 +185,8 @@ impl ContentKind {
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
             CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
+            CODEC_FLUREE_INDEX_BRANCH_V3 => Some(ContentKind::IndexBranchV3),
+            CODEC_FLUREE_INDEX_LEAF_V3 => Some(ContentKind::IndexLeafV3),
             _ => None,
         }
     }
@@ -192,6 +206,8 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
             ContentKind::SpatialIndex => "spatial-index",
             ContentKind::HistorySidecar => "history-sidecar",
+            ContentKind::IndexBranchV3 => "index-branch",
+            ContentKind::IndexLeafV3 => "index-leaf",
         }
     }
 }

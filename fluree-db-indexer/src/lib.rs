@@ -59,6 +59,11 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 // Re-export build pipeline types
 pub use build::types::{UploadedDicts, UploadedIndexes};
 
+// Re-export V3 build pipeline types
+pub use run_index::build::build_v3_from_commits::{
+    build_v3_indexes_from_commits, V3BuildConfig, V3BuildResult, V3CommitInput,
+};
+
 use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 use tracing::Instrument;
@@ -228,6 +233,18 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     )],
 ) -> Result<UploadedIndexes> {
     build::upload::upload_indexes_to_cas(storage, ledger_id, build_results).await
+}
+
+/// Upload V3 index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
+///
+/// V3 artifacts are in-memory (from `V3BuildResult`), so this writes bytes
+/// directly to CAS rather than reading from disk paths.
+pub async fn upload_v3_indexes_to_cas<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    build_result: &V3BuildResult,
+) -> Result<UploadedIndexes> {
+    build::upload::upload_v3_indexes_to_cas(storage, ledger_id, build_result).await
 }
 
 /// Upload dictionary artifacts from persisted flat files to CAS.

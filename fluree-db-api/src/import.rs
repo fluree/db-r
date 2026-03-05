@@ -142,6 +142,12 @@ pub struct ImportConfig {
     /// Number of leaflets per leaf file. Default: 10.
     /// Larger values produce fewer, bigger leaf files (less tree depth, bigger reads).
     pub leaflets_per_leaf: usize,
+    /// Index format version: 2 = FLI2/FBR2/IRB1 (legacy), 3 = FLI3/FBR3/FIR6 (columnar).
+    /// Default: 2 (V3 is opt-in during development).
+    pub index_format_version: u8,
+    /// Target rows per leaf for V3 format. Default: 250_000.
+    /// Only used when `index_format_version == 3`.
+    pub leaf_target_rows: usize,
     /// Optional progress callback invoked at key pipeline milestones.
     pub progress: Option<ProgressFn>,
 }
@@ -177,6 +183,8 @@ impl Default for ImportConfig {
             max_inflight_chunks: 0,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            index_format_version: 2,
+            leaf_target_rows: 250_000,
             progress: None,
         }
     }
@@ -739,6 +747,18 @@ where
     /// Larger values produce fewer leaf files (shallower tree).
     pub fn leaflets_per_leaf(mut self, n: usize) -> Self {
         self.config.leaflets_per_leaf = n;
+        self
+    }
+
+    /// Set the index format version: 2 = FLI2 (legacy), 3 = FLI3 (columnar).
+    pub fn index_format_version(mut self, v: u8) -> Self {
+        self.config.index_format_version = v;
+        self
+    }
+
+    /// Set the target rows per leaf for V3 format. Default: 250_000.
+    pub fn leaf_target_rows(mut self, n: usize) -> Self {
+        self.config.leaf_target_rows = n;
         self
     }
 
@@ -2795,107 +2815,222 @@ where
         });
     }
 
-    // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
-    let spot_leaflet_rows = config.leaflet_rows;
-    let spot_leaflets_per_leaf = config.leaflets_per_leaf;
-    let sec_leaflet_rows = config.leaflet_rows;
-    let sec_leaflets_per_leaf = config.leaflets_per_leaf;
-
-    let spot_index_dir = input.index_dir.to_path_buf();
-    let spot_counter = merge_counter.clone();
-    let spot_rdf_type_p_id = input.rdf_type_p_id;
-    let index_parent_span = tracing::Span::current();
-    let spot_span = index_parent_span.clone();
-    let spot_handle = tokio::task::spawn_blocking(move || {
-        let _guard = spot_span.enter();
-        build_spot_from_sorted_commits(
-            spot_inputs,
-            SpotFromCommitsConfig {
-                index_dir: spot_index_dir,
-                p_width,
-                dt_width,
-                leaflet_rows: spot_leaflet_rows,
-                leaflets_per_leaf: spot_leaflets_per_leaf,
-                zstd_level: 1,
-                progress: Some(spot_counter),
-                skip_dedup: true,   // Fresh import: unique asserts, no retractions.
-                skip_region3: true, // Append-only: no history journal needed.
-                rdf_type_p_id: Some(spot_rdf_type_p_id),
-                class_bitset,
-            },
-        )
-    });
-
-    // ---- Phase D→E: Remap to secondary run files, then build secondary indexes ----
+    // ---- Format-version branch: V3 (FLI3) vs V2 (FLI2) ----
     //
-    // Phase D (remap) runs concurrently with Phase C (SPOT build) — no dependency.
-    // Phase E (secondary index build) chains after Phase D (needs run files).
-    // Both run inside a single spawn_blocking task.
-    let remap_run_dir = input.run_dir.to_path_buf();
-    let remap_remap_dir = remap_dir.clone();
-    let sorted_commit_infos = input.sorted_commit_infos;
-    let dt_tags = input.dt_tags;
-    let dt_tags_for_classes = dt_tags.clone();
-    let collect_id_stats = input.collect_id_stats;
-    let run_budget_mb = config.effective_run_budget_mb();
-    let worker_cap = config.effective_heavy_workers();
-    let remap_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
-    let secondary_counter = merge_counter.clone();
-    let de_index_dir = input.index_dir.to_path_buf();
-
-    config.emit_progress(ImportPhase::PreparingIndex {
-        stage: "Remapping commits → runs",
-    });
-
-    // Phase D→E result: (secondary index results, optional stats hook).
-    type DeResult = (
-        Vec<(RunSortOrder, fluree_db_indexer::run_index::IndexBuildResult)>,
+    // Both paths produce the same output tuple:
+    // - uploaded_indexes: for root assembly
+    // - stats_hook: for ID-based stats (None in V3 path for now)
+    // - spot_class_stats: for class stats (None in V3 path for now)
+    type BuildOutput = (
+        fluree_db_indexer::UploadedIndexes,
         Option<fluree_db_indexer::stats::IdStatsHook>,
+        Option<fluree_db_indexer::run_index::SpotClassStats>,
     );
 
-    let de_span = index_parent_span;
-    let de_handle = tokio::task::spawn_blocking(
-        move || -> std::result::Result<DeResult, ImportError> {
-            let _guard = de_span.enter();
-            use fluree_db_binary_index::RunSortOrder as RSO;
-            use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-            use fluree_db_indexer::run_index::{MultiOrderConfig, MultiOrderRunWriter};
+    // Pre-extract values needed after the format branch, before input fields are moved.
+    let dt_tags_for_classes = input.dt_tags.clone();
 
-            // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
-            tracing::info!(
-                chunks = sorted_commit_infos.len(),
-                "starting parallel remap (secondary orders, concurrent with SPOT build)"
-            );
-            let remap_start = Instant::now();
+    let (uploaded_indexes, stats_hook, spot_class_stats): BuildOutput = if config
+        .index_format_version
+        == 3
+    {
+        // V3 path: remap → V2 run files → k-way merge → FLI3/FBR3 for all 4 orders.
+        let v3_index_dir = input.index_dir.to_path_buf();
+        let v3_run_dir = input.run_dir.to_path_buf();
+        let v3_leaflet_target_rows = config.leaflet_rows;
+        let v3_leaf_target_rows = config.leaf_target_rows;
+        let v3_run_budget = config.effective_run_budget_mb() * 1024 * 1024;
+        let v3_sorted_commit_infos = input.sorted_commit_infos;
+        let v3_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
+        let v3_counter = merge_counter.clone();
+        // Read custom datatype IRIs from the on-disk datatypes.dict (JSON array).
+        // Skip the first RESERVED_COUNT entries (well-known types).
+        let v3_datatype_iris = {
+            let dt_path = input.run_dir.join("datatypes.dict");
+            if dt_path.exists() {
+                let bytes = std::fs::read(&dt_path)?;
+                let all_iris: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
+                    ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })?;
+                all_iris
+                    .into_iter()
+                    .skip(fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
 
-            let worker_count = std::cmp::min(worker_cap, sorted_commit_infos.len().max(1));
-            tracing::info!(
-                heavy_worker_cap = worker_cap,
-                remap_workers = worker_count,
-                "derived remap worker count"
-            );
-            let per_thread_budget_bytes =
-                ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
+        config.emit_progress(ImportPhase::PreparingIndex {
+            stage: "Building V3 columnar indexes",
+        });
 
-            let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
-            let mut total_remap_records: u64 = 0;
+        let v3_handle =
+            tokio::task::spawn_blocking(move || -> std::result::Result<_, ImportError> {
+                let registry = fluree_db_core::OTypeRegistry::new(&v3_datatype_iris);
 
-            // Bounded remap parallelism: work distribution via atomic counter.
-            let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let commits: Vec<fluree_db_indexer::V3CommitInput> = v3_sorted_commit_infos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, info)| {
+                        let remap_dir = v3_run_dir.join("remap");
+                        fluree_db_indexer::V3CommitInput {
+                            commit_path: info.path.clone(),
+                            record_count: info.record_count,
+                            subject_remap_path: remap_dir.join(format!("subjects_{i:05}.rmp")),
+                            string_remap_path: remap_dir.join(format!("strings_{i:05}.rmp")),
+                            lang_remap: v3_lang_remaps.get(i).cloned().unwrap_or_default(),
+                        }
+                    })
+                    .collect();
 
-            std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
-                let thread_parent = tracing::Span::current();
-                let mut handles = Vec::with_capacity(worker_count);
-                for _ in 0..worker_count {
-                    let commit_infos_ref = &sorted_commit_infos;
-                    let dt_tags_ref = &dt_tags;
-                    let lang_remaps_ref = &remap_lang_remaps;
-                    let remap_run_dir = remap_run_dir.clone();
-                    let remap_dir = remap_remap_dir.clone();
-                    let next_chunk = std::sync::Arc::clone(&next_chunk);
-                    let thread_span = thread_parent.clone();
+                let v3_config = fluree_db_indexer::V3BuildConfig {
+                    run_dir: v3_run_dir.join("v3_runs"),
+                    index_dir: v3_index_dir,
+                    g_id: 0, // default graph (import initially targets g_id=0)
+                    leaflet_target_rows: v3_leaflet_target_rows,
+                    leaf_target_rows: v3_leaf_target_rows,
+                    zstd_level: 1,
+                    run_budget_bytes: v3_run_budget,
+                    progress: Some(v3_counter),
+                };
 
-                    handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
+                std::fs::create_dir_all(&v3_config.run_dir)
+                    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                let result = fluree_db_indexer::build_v3_indexes_from_commits(
+                    &commits, &registry, &v3_config,
+                )
+                .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                tracing::info!(
+                    total_rows = result.total_rows,
+                    total_remapped = result.total_remapped,
+                    remap_elapsed = ?result.remap_elapsed,
+                    build_elapsed = ?result.build_elapsed,
+                    orders = result.order_results.len(),
+                    "V3 index build complete"
+                );
+
+                Ok(result)
+            });
+
+        let v3_result = v3_handle
+            .await
+            .map_err(|e| ImportError::IndexBuild(format!("V3 build task panicked: {e}")))?
+            .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+        // Upload V3 artifacts to CAS.
+        let v3_uploaded = fluree_db_indexer::upload_v3_indexes_to_cas(storage, alias, &v3_result)
+            .await
+            .map_err(|e| ImportError::Upload(e.to_string()))?;
+
+        // V3 path does not produce ID stats or class stats (deferred to future milestone).
+        (v3_uploaded, None, None)
+    } else {
+        // V2 (legacy) path: original Phase C + D + E pipeline.
+
+        // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
+        let spot_leaflet_rows = config.leaflet_rows;
+        let spot_leaflets_per_leaf = config.leaflets_per_leaf;
+        let sec_leaflet_rows = config.leaflet_rows;
+        let sec_leaflets_per_leaf = config.leaflets_per_leaf;
+
+        let spot_index_dir = input.index_dir.to_path_buf();
+        let spot_counter = merge_counter.clone();
+        let spot_rdf_type_p_id = input.rdf_type_p_id;
+        let index_parent_span = tracing::Span::current();
+        let spot_span = index_parent_span.clone();
+        let spot_handle = tokio::task::spawn_blocking(move || {
+            let _guard = spot_span.enter();
+            build_spot_from_sorted_commits(
+                spot_inputs,
+                SpotFromCommitsConfig {
+                    index_dir: spot_index_dir,
+                    p_width,
+                    dt_width,
+                    leaflet_rows: spot_leaflet_rows,
+                    leaflets_per_leaf: spot_leaflets_per_leaf,
+                    zstd_level: 1,
+                    progress: Some(spot_counter),
+                    skip_dedup: true, // Fresh import: unique asserts, no retractions.
+                    skip_region3: true, // Append-only: no history journal needed.
+                    rdf_type_p_id: Some(spot_rdf_type_p_id),
+                    class_bitset,
+                },
+            )
+        });
+
+        // ---- Phase D→E: Remap to secondary run files, then build secondary indexes ----
+        //
+        // Phase D (remap) runs concurrently with Phase C (SPOT build) — no dependency.
+        // Phase E (secondary index build) chains after Phase D (needs run files).
+        // Both run inside a single spawn_blocking task.
+        let remap_run_dir = input.run_dir.to_path_buf();
+        let remap_remap_dir = remap_dir.clone();
+        let sorted_commit_infos = input.sorted_commit_infos;
+        let dt_tags = input.dt_tags;
+        // dt_tags_for_classes is now defined before the format branch (line 2831).
+        let collect_id_stats = input.collect_id_stats;
+        let run_budget_mb = config.effective_run_budget_mb();
+        let worker_cap = config.effective_heavy_workers();
+        let remap_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
+        let secondary_counter = merge_counter.clone();
+        let de_index_dir = input.index_dir.to_path_buf();
+
+        config.emit_progress(ImportPhase::PreparingIndex {
+            stage: "Remapping commits → runs",
+        });
+
+        // Phase D→E result: (secondary index results, optional stats hook).
+        type DeResult = (
+            Vec<(RunSortOrder, fluree_db_indexer::run_index::IndexBuildResult)>,
+            Option<fluree_db_indexer::stats::IdStatsHook>,
+        );
+
+        let de_span = index_parent_span;
+        let de_handle = tokio::task::spawn_blocking(
+            move || -> std::result::Result<DeResult, ImportError> {
+                let _guard = de_span.enter();
+                use fluree_db_binary_index::RunSortOrder as RSO;
+                use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
+                use fluree_db_indexer::run_index::{MultiOrderConfig, MultiOrderRunWriter};
+
+                // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
+                tracing::info!(
+                    chunks = sorted_commit_infos.len(),
+                    "starting parallel remap (secondary orders, concurrent with SPOT build)"
+                );
+                let remap_start = Instant::now();
+
+                let worker_count = std::cmp::min(worker_cap, sorted_commit_infos.len().max(1));
+                tracing::info!(
+                    heavy_worker_cap = worker_cap,
+                    remap_workers = worker_count,
+                    "derived remap worker count"
+                );
+                let per_thread_budget_bytes =
+                    ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
+
+                let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
+                let mut total_remap_records: u64 = 0;
+
+                // Bounded remap parallelism: work distribution via atomic counter.
+                let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+                std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
+                    let thread_parent = tracing::Span::current();
+                    let mut handles = Vec::with_capacity(worker_count);
+                    for _ in 0..worker_count {
+                        let commit_infos_ref = &sorted_commit_infos;
+                        let dt_tags_ref = &dt_tags;
+                        let lang_remaps_ref = &remap_lang_remaps;
+                        let remap_run_dir = remap_run_dir.clone();
+                        let remap_dir = remap_remap_dir.clone();
+                        let next_chunk = std::sync::Arc::clone(&next_chunk);
+                        let thread_span = thread_parent.clone();
+
+                        handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
                     let _guard = thread_span.enter();
                     let mut local_total = 0u64;
                     let mut local_hooks = Vec::new();
@@ -2965,124 +3100,126 @@ where
 
                     Ok((local_total, local_hooks))
                 }));
+                    }
+
+                    for h in handles {
+                        let (written, mut hooks) = h.join().map_err(|_| {
+                            ImportError::RunGeneration("remap thread panicked".into())
+                        })??;
+                        total_remap_records += written;
+                        stats_hooks.append(&mut hooks);
+                    }
+
+                    Ok(())
+                })?;
+
+                tracing::info!(
+                    total_records = total_remap_records,
+                    elapsed_ms = remap_start.elapsed().as_millis(),
+                    "parallel remap complete"
+                );
+
+                // Merge stats hooks from all remap threads.
+                let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
+                    let mut merged = stats_hooks.remove(0);
+                    for hook in stats_hooks {
+                        merged.merge_from(hook);
+                    }
+                    Some(merged)
+                } else {
+                    None
+                };
+
+                // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
+                // Chains after Phase D — needs the run files just written.
+                tracing::info!("starting secondary index build (PSOT/POST/OPST)");
+                let secondary_results = build_all_indexes(
+                    &remap_run_dir,
+                    &de_index_dir,
+                    secondary_orders,
+                    sec_leaflet_rows,
+                    sec_leaflets_per_leaf,
+                    1, // zstd_level
+                    Some(secondary_counter),
+                    true, // skip_dedup: fresh import, unique asserts only
+                    true, // skip_region3: append-only, no history journal needed
+                )
+                .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                Ok((secondary_results, stats_hook))
+            },
+        );
+
+        // Poll the merge counter every 250ms and emit progress events.
+        let poll_progress = config.progress.clone();
+        let poll_counter = merge_counter.clone();
+        let poll_total = total_index_flakes;
+        let poll_start = build_start;
+        let poll_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                let merged = poll_counter.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(ref cb) = poll_progress {
+                    cb(ImportPhase::Indexing {
+                        merged_flakes: merged,
+                        total_flakes: poll_total,
+                        elapsed_secs: poll_start.elapsed().as_secs_f64(),
+                    });
                 }
-
-                for h in handles {
-                    let (written, mut hooks) = h.join().map_err(|_| {
-                        ImportError::RunGeneration("remap thread panicked".into())
-                    })??;
-                    total_remap_records += written;
-                    stats_hooks.append(&mut hooks);
+                // Stop when build is complete (counter won't increase further)
+                if merged >= poll_total {
+                    break;
                 }
+            }
+        });
 
-                Ok(())
-            })?;
-
-            tracing::info!(
-                total_records = total_remap_records,
-                elapsed_ms = remap_start.elapsed().as_millis(),
-                "parallel remap complete"
-            );
-
-            // Merge stats hooks from all remap threads.
-            let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
-                let mut merged = stats_hooks.remove(0);
-                for hook in stats_hooks {
-                    merged.merge_from(hook);
-                }
-                Some(merged)
-            } else {
-                None
-            };
-
-            // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
-            // Chains after Phase D — needs the run files just written.
-            tracing::info!("starting secondary index build (PSOT/POST/OPST)");
-            let secondary_results = build_all_indexes(
-                &remap_run_dir,
-                &de_index_dir,
-                secondary_orders,
-                sec_leaflet_rows,
-                sec_leaflets_per_leaf,
-                1, // zstd_level
-                Some(secondary_counter),
-                true, // skip_dedup: fresh import, unique asserts only
-                true, // skip_region3: append-only, no history journal needed
-            )
+        // Wait for both concurrent pipelines to complete.
+        let (spot_result, spot_class_stats) = spot_handle
+            .await
+            .map_err(|e| ImportError::IndexBuild(format!("SPOT build task panicked: {}", e)))?
             .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-            Ok((secondary_results, stats_hook))
-        },
-    );
+        let (mut build_results, stats_hook) = de_handle
+            .await
+            .map_err(|e| ImportError::IndexBuild(format!("Phase D→E task panicked: {}", e)))??;
 
-    // Poll the merge counter every 250ms and emit progress events.
-    let poll_progress = config.progress.clone();
-    let poll_counter = merge_counter.clone();
-    let poll_total = total_index_flakes;
-    let poll_start = build_start;
-    let poll_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
-        loop {
-            interval.tick().await;
-            let merged = poll_counter.load(std::sync::atomic::Ordering::Relaxed);
-            if let Some(ref cb) = poll_progress {
-                cb(ImportPhase::Indexing {
-                    merged_flakes: merged,
-                    total_flakes: poll_total,
-                    elapsed_secs: poll_start.elapsed().as_secs_f64(),
-                });
-            }
-            // Stop when build is complete (counter won't increase further)
-            if merged >= poll_total {
-                break;
-            }
-        }
-    });
+        // Combine SPOT result with secondary results.
+        build_results.push((RunSortOrder::Spot, spot_result));
 
-    // Wait for both concurrent pipelines to complete.
-    let (spot_result, spot_class_stats) = spot_handle
-        .await
-        .map_err(|e| ImportError::IndexBuild(format!("SPOT build task panicked: {}", e)))?
-        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+        // Stop the polling task
+        poll_handle.abort();
 
-    let (mut build_results, stats_hook) = de_handle
-        .await
-        .map_err(|e| ImportError::IndexBuild(format!("Phase D→E task panicked: {}", e)))??;
+        // Emit final build progress
+        let merged = merge_counter.load(std::sync::atomic::Ordering::Relaxed);
+        config.emit_progress(ImportPhase::Indexing {
+            merged_flakes: merged,
+            total_flakes: total_index_flakes,
+            elapsed_secs: build_start.elapsed().as_secs_f64(),
+        });
 
-    // Combine SPOT result with secondary results.
-    build_results.push((RunSortOrder::Spot, spot_result));
-
-    // Stop the polling task
-    poll_handle.abort();
-
-    // Emit final build progress
-    let merged = merge_counter.load(std::sync::atomic::Ordering::Relaxed);
-    config.emit_progress(ImportPhase::Indexing {
-        merged_flakes: merged,
-        total_flakes: total_index_flakes,
-        elapsed_secs: build_start.elapsed().as_secs_f64(),
-    });
-
-    tracing::info!(
-        elapsed = ?build_start.elapsed(),
-        "index build complete (SPOT from sorted commits + secondary)"
-    );
-
-    for (order, result) in &build_results {
         tracing::info!(
-            order = order.dir_name().to_uppercase(),
-            graphs = result.graphs.len(),
-            total_rows = result.total_rows,
-            elapsed = ?result.elapsed,
-            "index order complete"
+            elapsed = ?build_start.elapsed(),
+            "index build complete (SPOT from sorted commits + secondary)"
         );
-    }
 
-    // Upload index segments to CAS (needs build_results).
-    // Dict upload may still be running — we overlap with it.
-    let uploaded_indexes = upload_indexes_to_cas(storage, alias, &build_results)
-        .await
-        .map_err(|e| ImportError::Upload(e.to_string()))?;
+        for (order, result) in &build_results {
+            tracing::info!(
+                order = order.dir_name().to_uppercase(),
+                graphs = result.graphs.len(),
+                total_rows = result.total_rows,
+                elapsed = ?result.elapsed,
+                "index order complete"
+            );
+        }
+
+        // Upload index segments to CAS (needs build_results).
+        // Dict upload may still be running — we overlap with it.
+        let v2_uploaded = upload_indexes_to_cas(storage, alias, &build_results)
+            .await
+            .map_err(|e| ImportError::Upload(e.to_string()))?;
+        (v2_uploaded, stats_hook, spot_class_stats)
+    }; // end format-version branch (V3 path returns above, V2 path returns here)
 
     // Wait for dict upload to complete.
     let uploaded_dicts = dict_upload_handle
@@ -3229,24 +3366,28 @@ where
         (stats, Some(sketch_cid), Some(summary))
     } else {
         // Fallback: flake counts only (no per-property / datatype breakdown).
-        let (_, spot_result) = build_results
+        // Derive from uploaded_indexes (works for both V2 and V3 paths).
+        let total_flakes: u64 = uploaded_indexes
+            .default_graph_orders
             .iter()
-            .find(|(order, _)| *order == RunSortOrder::Spot)
-            .expect("SPOT index must always be present in build results");
+            .flat_map(|o| o.leaves.iter())
+            .map(|l| l.row_count)
+            .sum();
 
-        let graphs: Vec<fluree_db_core::index_stats::GraphStatsEntry> = spot_result
-            .graphs
-            .iter()
-            .map(|g| fluree_db_core::index_stats::GraphStatsEntry {
-                g_id: g.g_id,
-                flakes: g.total_rows,
-                size: 0,
-                properties: Vec::new(),
-                classes: None,
-            })
-            .collect();
-
-        let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
+        let graphs: Vec<fluree_db_core::index_stats::GraphStatsEntry> = {
+            let mut gs = Vec::new();
+            // Default graph.
+            if !uploaded_indexes.default_graph_orders.is_empty() {
+                gs.push(fluree_db_core::index_stats::GraphStatsEntry {
+                    g_id: 0,
+                    flakes: total_flakes,
+                    size: 0,
+                    properties: Vec::new(),
+                    classes: None,
+                });
+            }
+            gs
+        };
 
         let stats = fluree_db_core::index_stats::IndexStats {
             flakes: total_flakes,
@@ -3258,6 +3399,26 @@ where
 
         (stats, None, None)
     };
+
+    // ---- V3 early return: root assembly and publish are deferred until read-side exists ----
+    if config.index_format_version == 3 {
+        tracing::warn!(
+            "V3 index format: artifacts built and uploaded to CAS, but IndexRootV6 \
+             encoding and nameservice publish are not yet implemented. \
+             The index is not queryable until the V3 read-side is complete."
+        );
+        // Return a placeholder result. The caller should not publish this.
+        let placeholder_cid = fluree_db_core::ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
+            &fluree_db_core::sha256_hex(b"v3-placeholder"),
+        )
+        .expect("valid placeholder CID");
+        return Ok(IndexUploadResult {
+            root_id: placeholder_cid,
+            index_t: input.final_t,
+            summary: None, // No class/property stats in V3 milestone.
+        });
+    }
 
     // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
     tracing::info!("post-upload: stats built, constructing IRB1 root");

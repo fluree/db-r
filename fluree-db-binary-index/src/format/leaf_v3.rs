@@ -313,7 +313,7 @@ impl LeafWriterV3 {
 fn compute_cid_leaf(bytes: &[u8]) -> ContentId {
     let hex_digest = fluree_db_core::sha256_hex(bytes);
     ContentId::from_hex_digest(
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF,
+        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF_V3,
         &hex_digest,
     )
     .expect("valid SHA-256 hex digest")
