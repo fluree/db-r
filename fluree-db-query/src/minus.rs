@@ -222,7 +222,7 @@ impl MinusOperator {
     }
 }
 
-/// Check if a fully-bound input matches a wildcard minus row.
+/// Check if an input row matches a wildcard minus row.
 ///
 /// Both vecs are ordered by shared_vars. `minus_row` has `None` for unbound positions.
 /// Match fires if: compatible on all positions AND at least one position is bound on both sides.
@@ -305,7 +305,7 @@ impl Operator for MinusOperator {
         // Materialize the MINUS subtree once with an empty seed (fresh scope).
         // MINUS is always uncorrelated — the subtree doesn't see outer variables.
         if !self.shared_vars.is_empty() {
-            #[allow(clippy::box_default)]
+            #[expect(clippy::box_default)]
             let seed: BoxedOperator = Box::new(EmptyOperator::new());
             let mut minus_op = build_where_operators_seeded(
                 Some(seed),

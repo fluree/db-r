@@ -96,7 +96,7 @@ async fn eval_exists_uncorrelated(
     negated: bool,
     ctx: &ExecutionContext<'_>,
 ) -> Result<bool> {
-    #[allow(clippy::box_default)]
+    #[expect(clippy::box_default)]
     let seed: BoxedOperator = Box::new(EmptyOperator::new());
     let mut exists_op = build_where_operators_seeded(Some(seed), patterns, None, None)?;
 
