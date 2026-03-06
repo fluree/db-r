@@ -191,9 +191,21 @@ fn is_numeric_datatype(dt: &str) -> bool {
     matches!(
         dt.strip_prefix(XSD),
         Some(
-            "integer" | "decimal" | "float" | "double" | "long" | "int" | "short" | "byte"
-                | "nonNegativeInteger" | "positiveInteger" | "nonPositiveInteger"
-                | "negativeInteger" | "unsignedLong" | "unsignedInt" | "unsignedShort"
+            "integer"
+                | "decimal"
+                | "float"
+                | "double"
+                | "long"
+                | "int"
+                | "short"
+                | "byte"
+                | "nonNegativeInteger"
+                | "positiveInteger"
+                | "nonPositiveInteger"
+                | "negativeInteger"
+                | "unsignedLong"
+                | "unsignedInt"
+                | "unsignedShort"
                 | "unsignedByte"
         )
     )
