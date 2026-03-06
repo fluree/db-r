@@ -28,7 +28,7 @@ use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
 
-use super::dependency::compute_variable_deps;
+use super::dependency::{compute_variable_deps, VariableDeps};
 use super::where_plan::build_where_operators_with_needed;
 use super::where_plan::collect_var_stats;
 
@@ -346,7 +346,226 @@ fn detect_property_join_count_all(
     Some((subject_var?, preds, agg.output_var))
 }
 
-/// Build the complete operator tree for a query
+/// Apply ORDER BY → PROJECT → DISTINCT → OFFSET → LIMIT without validation.
+///
+/// Used by fast-path operators that skip grouping/aggregation.
+fn apply_fast_path_tail(
+    mut operator: BoxedOperator,
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> BoxedOperator {
+    if !options.order_by.is_empty() {
+        operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+    }
+    if let Some(vars) = query.output.select_vars().filter(|v| !v.is_empty()) {
+        operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+    }
+    if options.distinct {
+        operator = Box::new(DistinctOperator::new(operator));
+    }
+    if let Some(offset) = options.offset.filter(|&o| o > 0) {
+        operator = Box::new(OffsetOperator::new(operator, offset));
+    }
+    if let Some(limit) = options.limit {
+        operator = Box::new(LimitOperator::new(operator, limit));
+    }
+    operator
+}
+
+/// Try all fast-path optimizations, returning `Some` if one matches.
+fn try_fast_path(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+    stats: &Option<Arc<StatsView>>,
+) -> Option<Result<BoxedOperator>> {
+    // `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
+    if let Some((pred, s_var, o_var, count_var, limit)) =
+        detect_predicate_group_by_object_count_topk(query, options)
+    {
+        return Some(Ok(Box::new(PredicateGroupCountFirstsOperator::new(
+            s_var,
+            o_var,
+            count_var,
+            pred,
+            limit,
+            stats.clone(),
+        ))));
+    }
+
+    // `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
+    if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
+        let op = Box::new(PredicateObjectCountFirstsOperator::new(
+            pred,
+            s_var,
+            obj,
+            count_var,
+            stats.clone(),
+        ));
+        return Some(Ok(apply_fast_path_tail(op, query, options)));
+    }
+
+    // Stats-based count-by-predicate: answer directly from IndexStats.
+    if let Some(ref stats_view) = stats {
+        if let Some((pred_var, count_var)) = detect_stats_count_by_predicate(query, options) {
+            let op = Box::new(StatsCountByPredicateOperator::new(
+                Arc::clone(stats_view),
+                pred_var,
+                count_var,
+            ));
+            return Some(Ok(apply_fast_path_tail(op, query, options)));
+        }
+    }
+
+    // Same-subject N-predicate COUNT(*) without join-row materialization.
+    // COUNT(*) = sum_s Π_i count_pi(s)
+    if let Some((s, preds, count_var)) = detect_property_join_count_all(query, options) {
+        tracing::debug!("detected property-join COUNT(*) fast-path");
+        let op = Box::new(PropertyJoinCountAllOperator::new(s, preds, count_var));
+        return Some(Ok(apply_fast_path_tail(op, query, options)));
+    }
+
+    None
+}
+
+/// Build GROUP BY + Aggregate operators, choosing streaming vs traditional path.
+///
+/// Streaming (O(groups) memory) is used when all aggregates support it and the
+/// SELECT clause doesn't need grouped (non-key, non-aggregate) variables.
+fn build_grouping_operators(
+    mut operator: BoxedOperator,
+    query: &ParsedQuery,
+    options: &QueryOptions,
+    variable_deps: &Option<VariableDeps>,
+) -> Result<BoxedOperator> {
+    let current_schema = operator.schema().to_vec();
+
+    // Validate group vars exist in schema
+    for var in &options.group_by {
+        if !current_schema.contains(var) {
+            return Err(QueryError::VariableNotFound(format!(
+                "GROUP BY variable {:?} not found in query schema",
+                var
+            )));
+        }
+    }
+
+    // Validate aggregates
+    let group_by_set: std::collections::HashSet<VarId> =
+        options.group_by.iter().copied().collect();
+    let mut seen_output_vars: std::collections::HashSet<VarId> =
+        std::collections::HashSet::new();
+
+    for spec in &options.aggregates {
+        if let Some(input_var) = spec.input_var {
+            if !current_schema.contains(&input_var) {
+                return Err(QueryError::VariableNotFound(format!(
+                    "Aggregate input variable {:?} not found in schema",
+                    input_var
+                )));
+            }
+            if !options.group_by.is_empty() && group_by_set.contains(&input_var) {
+                return Err(QueryError::InvalidQuery(format!(
+                    "Aggregate input variable {:?} is a GROUP BY key and will not be grouped",
+                    input_var
+                )));
+            }
+            if spec.output_var != input_var && current_schema.contains(&spec.output_var) {
+                return Err(QueryError::InvalidQuery(format!(
+                    "Aggregate output variable {:?} already exists in schema",
+                    spec.output_var
+                )));
+            }
+        } else if current_schema.contains(&spec.output_var) {
+            return Err(QueryError::InvalidQuery(format!(
+                "Aggregate output variable {:?} already exists in schema",
+                spec.output_var
+            )));
+        }
+        if !seen_output_vars.insert(spec.output_var) {
+            return Err(QueryError::InvalidQuery(format!(
+                "Duplicate aggregate output variable {:?}",
+                spec.output_var
+            )));
+        }
+    }
+
+    // Try streaming path: GroupAggregateOperator replaces both GroupBy + Aggregate
+    // when all aggregates are streamable (COUNT, SUM, AVG, MIN, MAX).
+    let streaming_specs: Vec<StreamingAggSpec> = options
+        .aggregates
+        .iter()
+        .map(|spec| {
+            let input_col = spec
+                .input_var
+                .and_then(|v| current_schema.iter().position(|&sv| sv == v));
+            StreamingAggSpec {
+                function: spec.function.clone(),
+                input_col,
+                output_var: spec.output_var,
+                distinct: spec.distinct,
+            }
+        })
+        .collect();
+
+    // The streaming operator only outputs GROUP BY keys + aggregate outputs.
+    // If SELECT projects any *grouped* variables (non-key, non-aggregate),
+    // we must use the traditional path so those vars become `Binding::Grouped`.
+    let select_needs_grouped_vars = query.output.select_vars().is_some_and(|vars| {
+        vars.iter().any(|v| {
+            !options.group_by.contains(v)
+                && !options.aggregates.iter().any(|a| a.output_var == *v)
+        })
+    });
+
+    let use_streaming = !options.aggregates.is_empty()
+        && GroupAggregateOperator::all_streamable(&streaming_specs)
+        && !select_needs_grouped_vars;
+
+    if use_streaming {
+        let partitioned = detect_partitioned_group_by(query, options);
+        tracing::debug!(
+            group_by_count = options.group_by.len(),
+            agg_count = streaming_specs.len(),
+            partitioned,
+            "using streaming GroupAggregateOperator"
+        );
+        operator = Box::new(
+            GroupAggregateOperator::new(
+                operator,
+                options.group_by.clone(),
+                streaming_specs,
+                None,
+                partitioned,
+            )
+            .with_out_schema(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_aggregate_vars.as_slice()),
+            ),
+        );
+    } else {
+        operator = Box::new(
+            GroupByOperator::new(operator, options.group_by.clone()).with_out_schema(
+                variable_deps
+                    .as_ref()
+                    .map(|d| d.required_groupby_vars.as_slice()),
+            ),
+        );
+        if !options.aggregates.is_empty() {
+            operator = Box::new(
+                AggregateOperator::new(operator, options.aggregates.clone()).with_out_schema(
+                    variable_deps
+                        .as_ref()
+                        .map(|d| d.required_aggregate_vars.as_slice()),
+                ),
+            );
+        }
+    }
+
+    Ok(operator)
+}
+
+/// Build the complete operator tree for a query.
 ///
 /// Constructs operators in the order:
 /// WHERE patterns → GROUP BY → Aggregates → HAVING → ORDER BY → PROJECT → DISTINCT → OFFSET → LIMIT
@@ -355,316 +574,43 @@ pub fn build_operator_tree(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
-    // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
-    //
-    // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.
-    if let Some((pred, s_var, o_var, count_var, limit)) =
-        detect_predicate_group_by_object_count_topk(query, options)
-    {
-        return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
-            s_var,
-            o_var,
-            count_var,
-            pred,
-            limit,
-            stats.clone(),
-        )));
-    }
-
-    // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
-    if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
-        let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
-            pred,
-            s_var,
-            obj,
-            count_var,
-            stats.clone(),
-        ));
-
-        // ORDER BY
-        if !options.order_by.is_empty() {
-            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
-        }
-
-        // PROJECT
-        if let Some(vars) = query.output.select_vars() {
-            if !vars.is_empty() {
-                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
-            }
-        }
-
-        // DISTINCT
-        if options.distinct {
-            operator = Box::new(DistinctOperator::new(operator));
-        }
-
-        // OFFSET
-        if let Some(offset) = options.offset {
-            if offset > 0 {
-                operator = Box::new(OffsetOperator::new(operator, offset));
-            }
-        }
-
-        // LIMIT
-        if let Some(limit) = options.limit {
-            operator = Box::new(LimitOperator::new(operator, limit));
-        }
-
-        return Ok(operator);
-    }
-
-    // Fast-path: stats-based count-by-predicate query
-    // This avoids scanning all triples when we can answer directly from IndexStats.
-    if let Some(ref stats_view) = stats {
-        if let Some((pred_var, count_var)) = detect_stats_count_by_predicate(query, options) {
-            let mut operator: BoxedOperator = Box::new(StatsCountByPredicateOperator::new(
-                Arc::clone(stats_view),
-                pred_var,
-                count_var,
-            ));
-
-            // ORDER BY (on predicate or count)
-            if !options.order_by.is_empty() {
-                operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
-            }
-
-            // PROJECT (select specific columns)
-            if let Some(vars) = query.output.select_vars() {
-                if !vars.is_empty() {
-                    operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
-                }
-            }
-
-            // DISTINCT
-            if options.distinct {
-                operator = Box::new(crate::distinct::DistinctOperator::new(operator));
-            }
-
-            // OFFSET
-            if let Some(offset) = options.offset {
-                if offset > 0 {
-                    operator = Box::new(OffsetOperator::new(operator, offset));
-                }
-            }
-
-            // LIMIT
-            if let Some(limit) = options.limit {
-                operator = Box::new(LimitOperator::new(operator, limit));
-            }
-
-            return Ok(operator);
-        }
-    }
-
-    // Fast-path: same-subject N-predicate COUNT(*) without join-row materialization.
-    //
-    // This is safe because it preserves SPARQL solution multiplicity semantics:
-    // COUNT(*) = sum_s Π_i count_pi(s)
-    if let Some((s, preds, count_var)) = detect_property_join_count_all(query, options) {
-        tracing::debug!("detected property-join COUNT(*) fast-path");
-        let mut operator: BoxedOperator =
-            Box::new(PropertyJoinCountAllOperator::new(s, preds, count_var));
-
-        // ORDER BY (on count)
-        if !options.order_by.is_empty() {
-            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
-        }
-
-        // PROJECT
-        if let Some(vars) = query.output.select_vars() {
-            if !vars.is_empty() {
-                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
-            }
-        }
-
-        // DISTINCT
-        if options.distinct {
-            operator = Box::new(DistinctOperator::new(operator));
-        }
-
-        // OFFSET
-        if let Some(offset) = options.offset {
-            if offset > 0 {
-                operator = Box::new(OffsetOperator::new(operator, offset));
-            }
-        }
-
-        // LIMIT
-        if let Some(limit) = options.limit {
-            operator = Box::new(LimitOperator::new(operator, limit));
-        }
-
-        return Ok(operator);
+    if let Some(result) = try_fast_path(query, options, &stats) {
+        return result;
     }
 
     // Compute per-operator downstream dependency sets for trimming.
-    // Done before building WHERE operators so we can push projection into the WHERE clause.
     let variable_deps = compute_variable_deps(query, options);
 
-    // Build WHERE clause operators with projection pushdown
-    let required_where_vars = variable_deps
-        .as_ref()
-        .map(|d| d.required_where_vars.as_slice());
-    // needed-vars for WHERE planning: derived from variable_deps when available,
-    // otherwise treat all WHERE-bound vars as needed (wildcard/boolean/construct cases).
-    let mut needed_where_vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
-    if let Some(req) = required_where_vars {
-        needed_where_vars.extend(req.iter().copied());
-    } else {
-        let mut counts: std::collections::HashMap<VarId, usize> = std::collections::HashMap::new();
-        let mut vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
-        collect_var_stats(&query.patterns, &mut counts, &mut vars);
-        vars.extend(counts.keys().copied());
-        needed_where_vars = vars;
-    }
+    // Needed-vars for WHERE planning: derived from variable_deps when available,
+    // otherwise treat all WHERE-bound vars as needed (wildcard/boolean/construct).
+    let needed_where_vars: std::collections::HashSet<VarId> =
+        if let Some(ref deps) = variable_deps {
+            deps.required_where_vars.iter().copied().collect()
+        } else {
+            let mut counts = std::collections::HashMap::new();
+            let mut vars = std::collections::HashSet::new();
+            collect_var_stats(&query.patterns, &mut counts, &mut vars);
+            vars.extend(counts.keys().copied());
+            vars
+        };
 
     let mut operator = build_where_operators_with_needed(
         &query.patterns,
         stats,
         &needed_where_vars,
         &options.group_by,
-        required_where_vars,
+        variable_deps
+            .as_ref()
+            .map(|d| d.required_where_vars.as_slice()),
     )?;
 
-    // Get the schema after WHERE (before grouping)
-    let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
-
     // GROUP BY + Aggregates
-    // We use streaming GroupAggregateOperator when all aggregates are streamable
-    // (COUNT, SUM, AVG, MIN, MAX). This is O(groups) memory instead of O(rows).
     let needs_grouping = !options.group_by.is_empty() || !options.aggregates.is_empty();
     if needs_grouping {
-        // Validate group vars exist in where schema
-        for var in &options.group_by {
-            if !where_schema.contains(var) {
-                return Err(QueryError::VariableNotFound(format!(
-                    "GROUP BY variable {:?} not found in query schema",
-                    var
-                )));
-            }
-        }
-
-        // Validate aggregates
-        let current_schema = operator.schema();
-        let group_by_set: std::collections::HashSet<VarId> =
-            options.group_by.iter().copied().collect();
-        let mut seen_output_vars: std::collections::HashSet<VarId> =
-            std::collections::HashSet::new();
-
-        for spec in &options.aggregates {
-            if let Some(input_var) = spec.input_var {
-                if !current_schema.contains(&input_var) {
-                    return Err(QueryError::VariableNotFound(format!(
-                        "Aggregate input variable {:?} not found in schema",
-                        input_var
-                    )));
-                }
-                if !options.group_by.is_empty() && group_by_set.contains(&input_var) {
-                    return Err(QueryError::InvalidQuery(format!(
-                        "Aggregate input variable {:?} is a GROUP BY key and will not be grouped",
-                        input_var
-                    )));
-                }
-                if spec.output_var != input_var && current_schema.contains(&spec.output_var) {
-                    return Err(QueryError::InvalidQuery(format!(
-                        "Aggregate output variable {:?} already exists in schema",
-                        spec.output_var
-                    )));
-                }
-            } else if current_schema.contains(&spec.output_var) {
-                return Err(QueryError::InvalidQuery(format!(
-                    "Aggregate output variable {:?} already exists in schema",
-                    spec.output_var
-                )));
-            }
-            if !seen_output_vars.insert(spec.output_var) {
-                return Err(QueryError::InvalidQuery(format!(
-                    "Duplicate aggregate output variable {:?}",
-                    spec.output_var
-                )));
-            }
-        }
-
-        // Try streaming path: GroupAggregateOperator replaces both GroupBy + Aggregate
-        // when all aggregates are streamable (COUNT, SUM, AVG, MIN, MAX).
-        let streaming_specs: Vec<StreamingAggSpec> = options
-            .aggregates
-            .iter()
-            .map(|spec| {
-                let input_col = spec
-                    .input_var
-                    .and_then(|v| current_schema.iter().position(|&sv| sv == v));
-                StreamingAggSpec {
-                    function: spec.function.clone(),
-                    input_col,
-                    output_var: spec.output_var,
-                    distinct: spec.distinct,
-                }
-            })
-            .collect();
-
-        // The streaming GroupAggregateOperator only outputs GROUP BY keys + aggregate outputs.
-        // If the SELECT projects any *grouped* variables (non-key, non-aggregate),
-        // we must use the traditional GroupByOperator path so those vars become
-        // `Binding::Grouped(Vec<Binding>)` and remain selectable.
-        let select_needs_grouped_vars = query.output.select_vars().is_some_and(|vars| {
-            vars.iter().any(|v| {
-                !options.group_by.contains(v)
-                    && !options.aggregates.iter().any(|a| a.output_var == *v)
-            })
-        });
-
-        let use_streaming = !options.aggregates.is_empty()
-            && GroupAggregateOperator::all_streamable(&streaming_specs)
-            && !select_needs_grouped_vars;
-
-        if use_streaming {
-            // Streaming path: O(groups) memory
-            let partitioned = detect_partitioned_group_by(query, options);
-            tracing::debug!(
-                group_by_count = options.group_by.len(),
-                agg_count = streaming_specs.len(),
-                partitioned,
-                "using streaming GroupAggregateOperator"
-            );
-            // GroupAggregateOperator replaces both GroupBy and Aggregate,
-            // so use required_aggregate_vars (what the combined output must contain).
-            operator = Box::new(
-                GroupAggregateOperator::new(
-                    operator,
-                    options.group_by.clone(),
-                    streaming_specs,
-                    None, // graph_view - will be set from context if needed
-                    partitioned,
-                )
-                .with_out_schema(
-                    variable_deps
-                        .as_ref()
-                        .map(|d| d.required_aggregate_vars.as_slice()),
-                ),
-            );
-        } else {
-            // Traditional path: GroupByOperator + AggregateOperator
-            operator = Box::new(
-                GroupByOperator::new(operator, options.group_by.clone()).with_out_schema(
-                    variable_deps
-                        .as_ref()
-                        .map(|d| d.required_groupby_vars.as_slice()),
-                ),
-            );
-            if !options.aggregates.is_empty() {
-                operator = Box::new(
-                    AggregateOperator::new(operator, options.aggregates.clone()).with_out_schema(
-                        variable_deps
-                            .as_ref()
-                            .map(|d| d.required_aggregate_vars.as_slice()),
-                    ),
-                );
-            }
-        }
+        operator = build_grouping_operators(operator, query, options, &variable_deps)?;
     }
 
-    // HAVING (filter on aggregated results)
+    // HAVING
     if let Some(ref having_expr) = options.having {
         operator = Box::new(
             HavingOperator::new(operator, having_expr.clone()).with_out_schema(
@@ -676,40 +622,33 @@ pub fn build_operator_tree(
     }
 
     // Post-aggregation BINDs (e.g., SELECT (CEIL(?avg) AS ?ceil))
-    if !options.post_binds.is_empty() {
-        for (i, (var, expr)) in options.post_binds.iter().enumerate() {
-            operator = Box::new(
-                crate::bind::BindOperator::new(operator, *var, expr.clone(), vec![])
-                    .with_out_schema(
-                        variable_deps
-                            .as_ref()
-                            .and_then(|d| d.required_bind_vars.get(i))
-                            .map(|v| v.as_slice()),
-                    ),
-            );
-        }
+    for (i, (var, expr)) in options.post_binds.iter().enumerate() {
+        operator = Box::new(
+            crate::bind::BindOperator::new(operator, *var, expr.clone(), vec![]).with_out_schema(
+                variable_deps
+                    .as_ref()
+                    .and_then(|d| d.required_bind_vars.get(i))
+                    .map(|v| v.as_slice()),
+            ),
+        );
     }
 
-    // Get the schema after grouping/aggregation/binds (for validation)
+    // Schema after grouping/aggregation/binds — used for ORDER BY + PROJECT validation.
     let post_group_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
 
-    // ORDER BY (before projection - may reference vars not in SELECT)
+    // ORDER BY (before projection — may reference vars not in SELECT)
     if !options.order_by.is_empty() {
-        // Validate sort vars exist in current schema
-        // Disallow sorting on Grouped variables (non-key, non-aggregated) because comparison is undefined.
-        let mut allowed_sort_vars: Option<std::collections::HashSet<VarId>> = None;
-        if needs_grouping {
-            let mut allowed = std::collections::HashSet::new();
-            // GROUP BY keys are scalar
-            for v in &options.group_by {
-                allowed.insert(*v);
-            }
-            // Aggregate outputs are scalar
-            for spec in &options.aggregates {
-                allowed.insert(spec.output_var);
-            }
-            allowed_sort_vars = Some(allowed);
-        }
+        // Disallow sorting on Grouped variables (non-key, non-aggregated) because
+        // comparison is undefined.
+        let allowed_sort_vars: Option<std::collections::HashSet<VarId>> = if needs_grouping {
+            let mut allowed: std::collections::HashSet<VarId> =
+                options.group_by.iter().copied().collect();
+            allowed.extend(options.aggregates.iter().map(|a| a.output_var));
+            Some(allowed)
+        } else {
+            None
+        };
+
         for spec in &options.order_by {
             if !post_group_schema.contains(&spec.var) {
                 return Err(QueryError::VariableNotFound(format!(
@@ -726,6 +665,7 @@ pub fn build_operator_tree(
                 }
             }
         }
+
         operator = Box::new(
             SortOperator::new(operator, options.order_by.clone()).with_out_schema(
                 variable_deps
@@ -735,36 +675,26 @@ pub fn build_operator_tree(
         );
     }
 
-    // PROJECT (select specific columns)
-    // Skip projection for CONSTRUCT/Wildcard/Boolean - only Select/SelectOne project
-    if let Some(vars) = query.output.select_vars() {
-        if !vars.is_empty() {
-            // Validate all select vars exist in schema
-            for var in vars {
-                if !post_group_schema.contains(var) {
-                    return Err(QueryError::VariableNotFound(format!(
-                        "Selected variable {:?} not found in query schema",
-                        var
-                    )));
-                }
+    // PROJECT (Select/SelectOne only — CONSTRUCT/Wildcard/Boolean skip this)
+    if let Some(vars) = query.output.select_vars().filter(|v| !v.is_empty()) {
+        for var in vars {
+            if !post_group_schema.contains(var) {
+                return Err(QueryError::VariableNotFound(format!(
+                    "Selected variable {:?} not found in query schema",
+                    var
+                )));
             }
-            operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
         }
+        operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
     }
 
-    // DISTINCT (after projection)
+    // DISTINCT → OFFSET → LIMIT
     if options.distinct {
         operator = Box::new(DistinctOperator::new(operator));
     }
-
-    // OFFSET
-    if let Some(offset) = options.offset {
-        if offset > 0 {
-            operator = Box::new(OffsetOperator::new(operator, offset));
-        }
+    if let Some(offset) = options.offset.filter(|&o| o > 0) {
+        operator = Box::new(OffsetOperator::new(operator, offset));
     }
-
-    // LIMIT
     if let Some(limit) = options.limit {
         operator = Box::new(LimitOperator::new(operator, limit));
     }
