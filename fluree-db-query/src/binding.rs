@@ -7,6 +7,7 @@
 //! - `RowView`: Zero-copy view of a single row
 
 use crate::var_registry::VarId;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
 use std::sync::Arc;
 
@@ -72,10 +73,8 @@ pub enum Binding {
     Lit {
         /// The value (String, Long, Double, Bool - never Ref)
         val: FlakeValue,
-        /// Datatype SID (e.g., xsd:string, xsd:long)
-        dt: Sid,
-        /// Optional language tag (for rdf:langString)
-        lang: Option<Arc<str>>,
+        /// Datatype constraint (explicit datatype or language tag)
+        dtc: DatatypeConstraint,
         /// Optional transaction time (when the flake was asserted)
         t: Option<i64>,
         /// Optional operation type for history queries (true = assert, false = retract)
@@ -162,8 +161,7 @@ impl Binding {
         );
         Binding::Lit {
             val,
-            dt,
-            lang: None,
+            dtc: DatatypeConstraint::Explicit(dt),
             t: None,
             op: None,
             p_id: None,
@@ -171,15 +169,14 @@ impl Binding {
     }
 
     /// Create a new literal binding with language tag
-    pub fn lit_lang(val: FlakeValue, dt: Sid, lang: impl Into<Arc<str>>) -> Self {
+    pub fn lit_lang(val: FlakeValue, lang: impl Into<Arc<str>>) -> Self {
         debug_assert!(
             !matches!(val, FlakeValue::Ref(_)),
             "Lit cannot contain Ref - use Binding::Sid"
         );
         Binding::Lit {
             val,
-            dt,
-            lang: Some(lang.into()),
+            dtc: DatatypeConstraint::LangTag(lang.into()),
             t: None,
             op: None,
             p_id: None,
@@ -194,8 +191,7 @@ impl Binding {
         );
         Binding::Lit {
             val,
-            dt,
-            lang: None,
+            dtc: DatatypeConstraint::Explicit(dt),
             t: Some(t),
             op: None,
             p_id: None,
@@ -210,8 +206,7 @@ impl Binding {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
             other => Binding::Lit {
                 val: other,
-                dt,
-                lang: None,
+                dtc: DatatypeConstraint::Explicit(dt),
                 t: None,
                 op: None,
                 p_id: None,
@@ -225,14 +220,19 @@ impl Binding {
     pub fn from_object_with_meta(val: FlakeValue, dt: Sid, meta: Option<FlakeMeta>) -> Self {
         match val {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
-            other => Binding::Lit {
-                val: other,
-                dt,
-                lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                t: None,
-                op: None,
-                p_id: None,
-            },
+            other => {
+                let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                    Some(lang) => DatatypeConstraint::LangTag(lang),
+                    None => DatatypeConstraint::Explicit(dt),
+                };
+                Binding::Lit {
+                    val: other,
+                    dtc,
+                    t: None,
+                    op: None,
+                    p_id: None,
+                }
+            }
         }
     }
 
@@ -243,14 +243,19 @@ impl Binding {
     pub fn from_object_with_t(val: FlakeValue, dt: Sid, meta: Option<FlakeMeta>, t: i64) -> Self {
         match val {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
-            other => Binding::Lit {
-                val: other,
-                dt,
-                lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                t: Some(t),
-                op: None,
-                p_id: None,
-            },
+            other => {
+                let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                    Some(lang) => DatatypeConstraint::LangTag(lang),
+                    None => DatatypeConstraint::Explicit(dt),
+                };
+                Binding::Lit {
+                    val: other,
+                    dtc,
+                    t: Some(t),
+                    op: None,
+                    p_id: None,
+                }
+            }
         }
     }
 
@@ -267,14 +272,19 @@ impl Binding {
     ) -> Self {
         match val {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
-            other => Binding::Lit {
-                val: other,
-                dt,
-                lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                t: Some(t),
-                op: Some(op),
-                p_id: None,
-            },
+            other => {
+                let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                    Some(lang) => DatatypeConstraint::LangTag(lang),
+                    None => DatatypeConstraint::Explicit(dt),
+                };
+                Binding::Lit {
+                    val: other,
+                    dtc,
+                    t: Some(t),
+                    op: Some(op),
+                    p_id: None,
+                }
+            }
         }
     }
 
@@ -459,9 +469,9 @@ impl Binding {
     }
 
     /// Try to get literal value
-    pub fn as_lit(&self) -> Option<(&FlakeValue, &Sid, Option<&Arc<str>>)> {
+    pub fn as_lit(&self) -> Option<(&FlakeValue, &DatatypeConstraint)> {
         match self {
-            Binding::Lit { val, dt, lang, .. } => Some((val, dt, lang.as_ref())),
+            Binding::Lit { val, dtc, .. } => Some((val, dtc)),
             _ => None,
         }
     }
@@ -624,17 +634,15 @@ impl PartialEq for Binding {
             (
                 Binding::Lit {
                     val: v1,
-                    dt: d1,
-                    lang: l1,
+                    dtc: dtc1,
                     .. // t and op intentionally ignored - they are metadata only
                 },
                 Binding::Lit {
                     val: v2,
-                    dt: d2,
-                    lang: l2,
+                    dtc: dtc2,
                     .. // t and op intentionally ignored - they are metadata only
                 },
-            ) => v1 == v2 && d1 == d2 && l1 == l2,
+            ) => v1 == v2 && dtc1 == dtc2,
             // Encoded literals compare by their encoded identity (excluding t metadata).
             (
                 Binding::EncodedLit {
@@ -737,12 +745,11 @@ impl std::hash::Hash for Binding {
                 3u8.hash(state);
                 iri.hash(state);
             }
-            Binding::Lit { val, dt, lang, .. } => {
+            Binding::Lit { val, dtc, .. } => {
                 // t and op intentionally excluded - they are metadata only
                 4u8.hash(state);
                 val.hash(state);
-                dt.hash(state);
-                lang.hash(state);
+                dtc.hash(state);
             }
             Binding::EncodedLit {
                 o_kind,
@@ -1220,10 +1227,10 @@ mod tests {
         let binding = Binding::from_object(FlakeValue::Long(42), xsd_long());
 
         assert!(binding.is_lit());
-        let (val, dt, lang) = binding.as_lit().unwrap();
+        let (val, dtc) = binding.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(42));
-        assert_eq!(dt.name.as_ref(), "long");
-        assert!(lang.is_none());
+        assert_eq!(dtc.datatype().name.as_ref(), "long");
+        assert!(dtc.lang_tag().is_none());
     }
 
     // `Binding::lit` uses `debug_assert!` to enforce the "no Ref in Lit" invariant.
@@ -1296,7 +1303,7 @@ mod tests {
         assert!(matches!(b, Binding::Sid(_)));
 
         let b = batch.get(1, VarId(1)).unwrap();
-        let (val, _, _) = b.as_lit().unwrap();
+        let (val, _) = b.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(20));
 
         // Invalid VarId
@@ -1324,10 +1331,10 @@ mod tests {
         assert_eq!(view.num_columns(), 2);
         assert_eq!(view.schema(), &[VarId(0), VarId(2)]);
 
-        let (val, _, _) = view.get(0, 0).unwrap().as_lit().unwrap();
+        let (val, _) = view.get(0, 0).unwrap().as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(1));
 
-        let (val, _, _) = view.get(0, 1).unwrap().as_lit().unwrap();
+        let (val, _) = view.get(0, 1).unwrap().as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(3));
     }
 
@@ -1348,11 +1355,11 @@ mod tests {
         let batch = Batch::new(schema, columns).unwrap();
 
         let row = batch.row_view(0).unwrap();
-        let (val, _, _) = row.get(VarId(0)).unwrap().as_lit().unwrap();
+        let (val, _) = row.get(VarId(0)).unwrap().as_lit().unwrap();
         assert_eq!(*val, FlakeValue::String("a".into()));
 
         let row = batch.row_view(1).unwrap();
-        let (val, _, _) = row.get(VarId(1)).unwrap().as_lit().unwrap();
+        let (val, _) = row.get(VarId(1)).unwrap().as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(2));
     }
 

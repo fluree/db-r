@@ -683,7 +683,7 @@ fn binding_to_flake_object(binding: &Binding) -> Option<(FlakeValue, Sid)> {
         Binding::IriMatch { primary_sid, .. } => {
             Some((FlakeValue::Ref(primary_sid.clone()), Sid::new(1, "id")))
         }
-        Binding::Lit { val, dt, .. } => Some((val.clone(), dt.clone())),
+        Binding::Lit { val, dtc, .. } => Some((val.clone(), dtc.datatype().clone())),
         Binding::EncodedLit { .. } => None,
         Binding::EncodedSid { .. } => None, // Requires materialization
         Binding::EncodedPid { .. } => None, // Requires materialization

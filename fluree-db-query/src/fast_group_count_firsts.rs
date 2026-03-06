@@ -14,6 +14,7 @@ use fluree_db_binary_index::{
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::value_id::ValueTypeTag;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::StatsView;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -717,8 +718,7 @@ impl Operator for PredicateGroupCountFirstsOperator {
             }
             col_c.push(Binding::Lit {
                 val: fluree_db_core::FlakeValue::Long(count),
-                dt: fluree_db_core::Sid::xsd_integer(),
-                lang: None,
+                dtc: DatatypeConstraint::Explicit(fluree_db_core::Sid::xsd_integer()),
                 t: None,
                 op: None,
                 p_id: None,
@@ -1048,8 +1048,7 @@ impl Operator for PredicateObjectCountFirstsOperator {
 
         let col_c = vec![Binding::Lit {
             val: fluree_db_core::FlakeValue::Long(self.count),
-            dt: fluree_db_core::Sid::xsd_integer(),
-            lang: None,
+            dtc: DatatypeConstraint::Explicit(fluree_db_core::Sid::xsd_integer()),
             t: None,
             op: None,
             p_id: None,
