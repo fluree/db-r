@@ -1427,21 +1427,16 @@ mod tests {
     ) -> Result<BoxedOperator> {
         // Preserve historical test behavior: keep all triple vars.
         let needed: HashSet<VarId> = triples.iter().flat_map(|tp| tp.variables()).collect();
-        let (counts, protected) = compute_where_var_stats(
-            &triples
-                .iter()
-                .cloned()
-                .map(Pattern::Triple)
-                .collect::<Vec<_>>(),
-            &needed,
-        );
+        let as_patterns: Vec<Pattern> =
+            triples.iter().cloned().map(Pattern::Triple).collect();
+        let counts = compute_var_counts(&as_patterns);
         super::build_triple_operators(
             existing,
             triples,
             object_bounds,
             None,
             &counts,
-            &protected,
+            &needed,
             &[],
         )
     }
