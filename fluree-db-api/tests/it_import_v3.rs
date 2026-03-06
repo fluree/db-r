@@ -422,3 +422,331 @@ ex:bob a ex:User ;
     jld_names.sort();
     assert_eq!(jld_names, vec!["Alice", "Bob"], "JSON-LD query failed");
 }
+
+// ============================================================================
+// E2E: import V3 → transact → query (overlay merge)
+// ============================================================================
+
+/// Import V3, then transact a new triple, then query — verifies overlay merge
+/// surfaces both indexed data and uncommitted novelty.
+#[tokio::test]
+async fn import_v3_transact_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice a ex:User ;
+    schema:name "Alice" ;
+    schema:age 42 .
+
+ex:bob a ex:User ;
+    schema:name "Bob" ;
+    schema:age 22 .
+"#;
+
+    let ttl_path = write_ttl(data_dir.path(), "overlay.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Phase 1: Import with V3 format.
+    let _import_result = fluree
+        .create("test/v3-overlay:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("V3 import should succeed");
+
+    // Phase 2: Load ledger, then transact a new triple (overlay/novelty).
+    let ledger = fluree
+        .ledger("test/v3-overlay:main")
+        .await
+        .expect("load V3 ledger");
+
+    let insert_data = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:cam",
+            "@type": "ex:User",
+            "schema:name": "Cam",
+            "schema:age": 34
+        }]
+    });
+
+    let txn_result = fluree
+        .insert(ledger, &insert_data)
+        .await
+        .expect("insert should succeed");
+
+    assert!(
+        txn_result.receipt.flake_count > 0,
+        "transaction should produce flakes"
+    );
+    let ledger_after = txn_result.ledger;
+
+    // Phase 3: Query the post-transaction ledger — should see indexed (Alice, Bob)
+    // plus overlay (Cam).
+    let names_result = support::query_sparql(
+        &fluree,
+        &ledger_after,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name WHERE { ?s schema:name ?name }
+        ORDER BY ?name
+        "#,
+    )
+    .await
+    .expect("overlay query");
+    let names_json = names_result
+        .to_sparql_json(&ledger_after.snapshot)
+        .expect("format sparql json");
+    let bindings = names_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Alice", "Bob", "Cam"],
+        "overlay merge should surface both indexed and novelty data"
+    );
+
+    // Verify rdf:type also shows all three users.
+    let type_result = support::query_sparql(
+        &fluree,
+        &ledger_after,
+        r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s WHERE { ?s a ex:User }
+        ORDER BY ?s
+        "#,
+    )
+    .await
+    .expect("type query with overlay");
+    let type_json = type_result
+        .to_sparql_json(&ledger_after.snapshot)
+        .expect("format sparql json");
+    let type_bindings = type_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(
+        type_bindings.len(),
+        3,
+        "expected 3 ex:User instances (2 indexed + 1 overlay)"
+    );
+
+    // Verify integer query on overlay entity.
+    let cam_age = support::query_sparql(
+        &fluree,
+        &ledger_after,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?age WHERE { ex:cam schema:age ?age }
+        "#,
+    )
+    .await
+    .expect("cam age query");
+    let cam_age_json = cam_age
+        .to_sparql_json(&ledger_after.snapshot)
+        .expect("format sparql json");
+    let cam_age_bindings = cam_age_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(cam_age_bindings.len(), 1, "expected 1 age result for Cam");
+    assert_eq!(
+        cam_age_bindings[0]["age"]["value"].as_str().unwrap(),
+        "34",
+        "Cam's age should be 34"
+    );
+}
+
+/// Overlay retraction: import V3 → retract an indexed triple → verify it disappears.
+#[tokio::test]
+async fn import_v3_retract_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice schema:name "Alice" ;
+    schema:age 42 .
+
+ex:bob schema:name "Bob" ;
+    schema:age 22 .
+"#;
+    let ttl_path = write_ttl(data_dir.path(), "retract.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build");
+
+    let _import = fluree
+        .create("test/v3-retract:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("import");
+
+    let ledger = fluree
+        .ledger("test/v3-retract:main")
+        .await
+        .expect("load");
+
+    // Retract Bob's name.
+    let delete_data = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "delete": [{
+            "@id": "ex:bob",
+            "schema:name": "Bob"
+        }]
+    });
+
+    let txn = fluree
+        .transact(
+            ledger,
+            fluree_db_api::TxnType::Update,
+            &delete_data,
+            fluree_db_api::TxnOpts::default(),
+            fluree_db_api::CommitOpts::default(),
+            &Default::default(),
+        )
+        .await
+        .expect("retract should succeed");
+
+    let ledger_after = txn.ledger;
+
+    // Query names — should only see Alice (Bob's name retracted).
+    let names_result = support::query_sparql(
+        &fluree,
+        &ledger_after,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name WHERE { ?s schema:name ?name }
+        ORDER BY ?name
+        "#,
+    )
+    .await
+    .expect("post-retract query");
+    let names_json = names_result
+        .to_sparql_json(&ledger_after.snapshot)
+        .expect("format");
+    let bindings = names_json["results"]["bindings"]
+        .as_array()
+        .expect("array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Alice"],
+        "retract should remove Bob's name, leaving only Alice"
+    );
+}
+
+/// Overlay langString: import V3 → transact a langString → verify tag preserved.
+#[tokio::test]
+async fn import_v3_overlay_lang_string() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice schema:name "Alice" .
+"#;
+    let ttl_path = write_ttl(data_dir.path(), "lang.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build");
+
+    let _import = fluree
+        .create("test/v3-lang:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("import");
+
+    let ledger = fluree
+        .ledger("test/v3-lang:main")
+        .await
+        .expect("load");
+
+    // Transact a langString via overlay.
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:alice",
+            "schema:description": {
+                "@value": "A person",
+                "@language": "en"
+            }
+        }]
+    });
+
+    let txn = fluree
+        .insert(ledger, &insert)
+        .await
+        .expect("insert langString");
+    let ledger_after = txn.ledger;
+
+    // Query descriptions — should see the novelty langString with tag.
+    let desc_result = support::query_sparql(
+        &fluree,
+        &ledger_after,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?desc WHERE { ?s schema:description ?desc }
+        "#,
+    )
+    .await
+    .expect("langString overlay query");
+    let desc_json = desc_result
+        .to_sparql_json(&ledger_after.snapshot)
+        .expect("format");
+    let desc_bindings = desc_json["results"]["bindings"]
+        .as_array()
+        .expect("array");
+    assert_eq!(desc_bindings.len(), 1, "expected 1 description");
+    assert_eq!(
+        desc_bindings[0]["desc"]["value"].as_str().unwrap(),
+        "A person"
+    );
+    assert_eq!(
+        desc_bindings[0]["desc"]["xml:lang"].as_str().unwrap(),
+        "en",
+        "language tag should be preserved for novelty langString"
+    );
+}

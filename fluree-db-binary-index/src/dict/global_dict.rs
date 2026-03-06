@@ -146,6 +146,12 @@ impl LanguageTagDict {
         self.inner.resolve(id)
     }
 
+    /// Reverse lookup: find the u16 ID for a given language tag string.
+    /// Returns None if the tag is not in the dictionary.
+    pub fn find(&self, tag: &str) -> Option<u16> {
+        self.inner.find(tag)
+    }
+
     /// Number of distinct language tags (excluding the "none" sentinel).
     pub fn len(&self) -> u16 {
         self.inner.len() as u16

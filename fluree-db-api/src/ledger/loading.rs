@@ -80,6 +80,18 @@ where
                     store_v6.augment_namespace_codes(&state.snapshot.namespace_codes);
 
                     let arc_store_v6 = Arc::new(store_v6);
+
+                    // Attach V3 range provider so policy/SHACL/reasoner/property
+                    // paths work through range_with_overlay().
+                    if state.snapshot.range_provider.is_none() {
+                        let provider =
+                            fluree_db_query::BinaryRangeProviderV3::new(
+                                Arc::clone(&arc_store_v6),
+                                state.dict_novelty.clone(),
+                            );
+                        state.snapshot.range_provider = Some(Arc::new(provider));
+                    }
+
                     // V6 store: set binary_store_v6. Do NOT set binary_store (V5)
                     // so that the query engine uses V3 operators exclusively.
                     state.binary_store_v6 = Some(TypeErasedStore(arc_store_v6));

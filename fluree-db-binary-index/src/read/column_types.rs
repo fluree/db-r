@@ -106,6 +106,19 @@ pub struct ColumnBatch {
 }
 
 impl ColumnBatch {
+    /// Create an empty batch with zero rows.
+    pub fn empty() -> Self {
+        Self {
+            row_count: 0,
+            s_id: ColumnData::AbsentDefault,
+            o_key: ColumnData::AbsentDefault,
+            p_id: ColumnData::AbsentDefault,
+            o_type: ColumnData::AbsentDefault,
+            o_i: ColumnData::AbsentDefault,
+            t: ColumnData::AbsentDefault,
+        }
+    }
+
     /// True if this batch has no rows.
     #[inline]
     pub fn is_empty(&self) -> bool {

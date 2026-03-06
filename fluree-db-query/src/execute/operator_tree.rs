@@ -7,6 +7,7 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::fast_sum_datetime_component::{DateComponentFn, PredicateSumDateComponentOperator};
 use crate::fast_group_count_firsts::{
     PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
 };
@@ -346,6 +347,88 @@ fn detect_property_join_count_all(
     Some((subject_var?, preds, agg.output_var))
 }
 
+fn detect_predicate_sum_datetime_component(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, DateComponentFn, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    // Must be single aggregate, no grouping/having/binds/etc.
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+    {
+        return None;
+    }
+    // LIMIT is fine as long as it's >= 1 (single row output). OFFSET is disallowed above.
+    if let Some(lim) = options.limit {
+        if lim == 0 {
+            return None;
+        }
+    }
+
+    // SELECT must be exactly the aggregate output var.
+    let select_vars = query.output.select_vars()?;
+    let agg = &options.aggregates[0];
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+    if agg.distinct || !matches!(agg.function, AggregateFn::Sum) {
+        return None;
+    }
+
+    // Pattern shape: one Triple + one Bind (desugared aggregate expr input).
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let (tp, bind_var, bind_expr) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Bind { var, expr }) => (tp, *var, expr),
+        // Be conservative: only accept the canonical lowering order.
+        _ => return None,
+    };
+
+    // Triple must be ?s <p> ?o with bound predicate and var object.
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
+
+    // Bind must define the aggregate input var, and SUM must use it.
+    if agg.input_var != Some(bind_var) {
+        return None;
+    }
+
+    // Bind expression must be component(?o).
+    let crate::ir::Expression::Call { func, args } = bind_expr else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    if !matches!(&args[0], crate::ir::Expression::Var(v) if v == o_var) {
+        return None;
+    }
+
+    let component = match func {
+        crate::ir::Function::Year => DateComponentFn::Year,
+        crate::ir::Function::Month => DateComponentFn::Month,
+        crate::ir::Function::Day => DateComponentFn::Day,
+        _ => return None,
+    };
+
+    Some((pred, component, agg.output_var))
+}
+
 /// Build the complete operator tree for a query
 ///
 /// Constructs operators in the order:
@@ -355,6 +438,35 @@ pub fn build_operator_tree(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
+    build_operator_tree_inner(query, options, stats, true)
+}
+
+fn build_operator_tree_inner(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+    stats: Option<Arc<StatsView>>,
+    enable_sum_component_fast_path: bool,
+) -> Result<BoxedOperator> {
+    // Fast-path: `SELECT (SUM(DAY(?o)) AS ?sum) WHERE { ?s <p> ?o }` and friends.
+    //
+    // These are lowered as: Triple + Bind(expr) + SUM(synthetic_var).
+    // This operator scans the predicate's POST range and aggregates directly from encoded values.
+    if enable_sum_component_fast_path {
+        if let Some((pred, component, out_var)) =
+            detect_predicate_sum_datetime_component(query, options)
+        {
+            // Build fallback operator tree without this fast path to preserve correctness in
+            // pre-index / history / policy contexts.
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(PredicateSumDateComponentOperator::new(
+                pred,
+                component,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
     // Fast-path: `?s <p> ?o GROUP BY ?o COUNT(?s)` top-k using leaflet FIRST headers.
     //
     // This avoids decoding leaflets for long (p,o) runs that span leaflet boundaries.

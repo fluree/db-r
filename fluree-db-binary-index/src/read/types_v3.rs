@@ -171,6 +171,48 @@ pub fn cmp_row_vs_overlay_v3(
     }
 }
 
+/// Compare an overlay op against a `RunRecordV2` branch key.
+///
+/// Used for per-leaf overlay slicing: binary-search overlay ops against
+/// leaf `first_key`/`last_key` in the branch manifest.
+#[inline]
+pub fn cmp_overlay_vs_record_v3(
+    ov: &OverlayOpV3,
+    rec: &crate::format::run_record_v2::RunRecordV2,
+    order: RunSortOrder,
+) -> Ordering {
+    let ov_sid = fluree_db_core::subject_id::SubjectId(ov.s_id);
+    match order {
+        RunSortOrder::Spot => ov_sid
+            .cmp(&rec.s_id)
+            .then(ov.p_id.cmp(&rec.p_id))
+            .then(ov.o_type.cmp(&rec.o_type))
+            .then(ov.o_key.cmp(&rec.o_key))
+            .then(ov.o_i.cmp(&rec.o_i)),
+        RunSortOrder::Psot => ov
+            .p_id
+            .cmp(&rec.p_id)
+            .then(ov_sid.cmp(&rec.s_id))
+            .then(ov.o_type.cmp(&rec.o_type))
+            .then(ov.o_key.cmp(&rec.o_key))
+            .then(ov.o_i.cmp(&rec.o_i)),
+        RunSortOrder::Post => ov
+            .p_id
+            .cmp(&rec.p_id)
+            .then(ov.o_type.cmp(&rec.o_type))
+            .then(ov.o_key.cmp(&rec.o_key))
+            .then(ov.o_i.cmp(&rec.o_i))
+            .then(ov_sid.cmp(&rec.s_id)),
+        RunSortOrder::Opst => ov
+            .o_type
+            .cmp(&rec.o_type)
+            .then(ov.o_key.cmp(&rec.o_key))
+            .then(ov.o_i.cmp(&rec.o_i))
+            .then(ov.p_id.cmp(&rec.p_id))
+            .then(ov_sid.cmp(&rec.s_id)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

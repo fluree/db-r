@@ -553,6 +553,68 @@ impl BinaryIndexStoreV6 {
         &self.dicts.dt_sids
     }
 
+    /// Reverse subject lookup by namespace parts (avoids IRI construction).
+    pub fn find_subject_id_by_parts(
+        &self,
+        ns_code: u16,
+        suffix: &str,
+    ) -> io::Result<Option<u64>> {
+        match &self.dicts.subject_reverse_tree {
+            Some(tree) => {
+                let key =
+                    crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix.as_bytes());
+                tree.reverse_lookup(&key)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Reverse string lookup: value → string_id.
+    pub fn find_string_id(&self, value: &str) -> io::Result<Option<u32>> {
+        match &self.dicts.string_reverse_tree {
+            Some(tree) => tree
+                .reverse_lookup(value.as_bytes())
+                .map(|opt| opt.map(|id| id as u32)),
+            None => Ok(None),
+        }
+    }
+
+    /// Number of predicates in the persisted dictionary.
+    pub fn predicate_count(&self) -> u32 {
+        self.dicts.predicates.len()
+    }
+
+    /// Number of strings in the persisted forward dictionary.
+    pub fn string_count(&self) -> u32 {
+        self.dicts.string_count
+    }
+
+    /// Number of language tags in the persisted dictionary.
+    pub fn language_tag_count(&self) -> u16 {
+        self.dicts.language_tags.len()
+    }
+
+    /// Look up a predicate Sid by p_id, returning the full IRI as a Sid.
+    pub fn predicate_sid(&self, p_id: u32) -> Option<Sid> {
+        let iri = self.dicts.predicates.resolve(p_id)?;
+        Some(self.encode_iri(iri))
+    }
+
+    /// Look up a datatype ID by its Sid.
+    pub fn find_dt_id(&self, dt_sid: &Sid) -> u16 {
+        self.dicts
+            .dt_sids
+            .iter()
+            .position(|s| s == dt_sid)
+            .map(|i| i as u16)
+            .unwrap_or(0)
+    }
+
+    /// Find the 1-based lang_id for a language tag string. Returns None if not found.
+    pub fn resolve_lang_id(&self, tag: &str) -> Option<u16> {
+        self.dicts.language_tags.find(tag)
+    }
+
     /// Augment namespace codes with entries from novelty commits.
     pub fn augment_namespace_codes(&mut self, codes: &std::collections::HashMap<u16, String>) {
         for (&code, prefix) in codes {

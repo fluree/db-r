@@ -14,6 +14,7 @@
 
 pub mod aggregate;
 pub mod binary_range;
+pub mod binary_range_v3;
 pub mod binary_scan;
 mod binary_scan_v3;
 pub mod bind;
@@ -30,6 +31,7 @@ pub mod exists;
 pub mod explain;
 pub mod expression;
 pub mod fast_group_count_firsts;
+pub mod fast_sum_datetime_component;
 pub mod filter;
 pub mod geo_rewrite;
 pub mod geo_search;
@@ -72,6 +74,7 @@ pub mod vector;
 // Re-exports
 pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSpec};
 pub use binary_range::BinaryRangeProvider;
+pub use binary_range_v3::BinaryRangeProviderV3;
 pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use bind::BindOperator;
 pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};

@@ -13,11 +13,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use fluree_db_binary_index::read::types_v3::{sort_overlay_ops_v3, OverlayOpV3};
 use fluree_db_binary_index::{
     BinaryCursorV3, BinaryFilterV3, BinaryGraphViewV3, BinaryIndexStoreV6, ColumnBatch,
     ColumnProjection,
 };
-use fluree_db_core::{dt_compatible, FlakeValue, GraphId, IndexType, ObjectBounds, Sid};
+use fluree_db_core::o_type::OType;
+use fluree_db_core::value_id::ObjKey;
+use fluree_db_core::{
+    dt_compatible, FlakeValue, GraphId, IndexType, ObjectBounds, OverlayProvider, Sid,
+};
 
 use crate::binary_scan::{index_type_to_sort_order, schema_from_pattern_with_emit, EmitMask};
 use crate::binding::{Batch, Binding};
@@ -457,7 +462,7 @@ impl Operator for BinaryScanOperatorV3 {
         &self.schema
     }
 
-    async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -499,8 +504,27 @@ impl Operator for BinaryScanOperatorV3 {
             Arc::new(branch_ref.clone());
 
         // Create cursor: full scan with filter.
-        let cursor =
+        let mut cursor =
             BinaryCursorV3::scan_all(Arc::clone(&self.store), order, branch, filter, projection);
+
+        // Overlay: translate novelty flakes to OverlayOpV3 and attach to cursor.
+        if ctx.overlay.is_some() {
+            let mut ops = translate_overlay_flakes_v3(
+                ctx.overlay(),
+                &self.store,
+                ctx.dict_novelty.as_ref(),
+                ctx.to_t,
+                self.g_id,
+            );
+            if !ops.is_empty() {
+                sort_overlay_ops_v3(&mut ops, order);
+                let epoch = ctx.overlay().epoch();
+                cursor.set_overlay_ops(ops);
+                cursor.set_epoch(epoch);
+            }
+        }
+        cursor.set_to_t(ctx.to_t);
+
         self.cursor = Some(cursor);
         self.state = OperatorState::Open;
 
@@ -571,4 +595,305 @@ impl Operator for BinaryScanOperatorV3 {
         self.p_sids.clear();
         self.state = OperatorState::Closed;
     }
+}
+
+// ============================================================================
+// Overlay translation: Flake → OverlayOpV3
+// ============================================================================
+
+/// Translate overlay flakes to V3 integer-ID space.
+///
+/// Uses the V6 store for persisted dictionary lookups and DictNovelty for
+/// ephemeral IDs from uncommitted transactions.
+fn translate_overlay_flakes_v3(
+    overlay: &dyn OverlayProvider,
+    store: &BinaryIndexStoreV6,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    to_t: i64,
+    g_id: GraphId,
+) -> Vec<OverlayOpV3> {
+    let mut ops = Vec::new();
+    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut next_ephemeral_p_id = store.predicate_count();
+
+    overlay.for_each_overlay_flake(
+        g_id,
+        fluree_db_core::IndexType::Spot,
+        None,
+        None,
+        true,
+        to_t,
+        &mut |flake| {
+            match translate_one_flake_v3_pub(
+                flake,
+                store,
+                dict_novelty,
+                &mut ephemeral_preds,
+                &mut next_ephemeral_p_id,
+            ) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to translate overlay flake to V3");
+                }
+            }
+        },
+    );
+
+    ops
+}
+
+/// Translate a single Flake to an OverlayOpV3.
+///
+/// `pub(crate)` so `binary_range_v3` can reuse it for overlay translation.
+pub(crate) fn translate_one_flake_v3_pub(
+    flake: &fluree_db_core::Flake,
+    store: &BinaryIndexStoreV6,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ephemeral_preds: &mut HashMap<String, u32>,
+    next_ephemeral_p_id: &mut u32,
+) -> std::io::Result<OverlayOpV3> {
+    // Subject: persisted → DictNovelty → error
+    let s_id = resolve_subject_v3(&flake.s, store, dict_novelty)?;
+
+    // Predicate: persisted → ephemeral
+    let p_iri = store.sid_to_iri(&flake.p);
+    let p_id = resolve_predicate_v3(&p_iri, store, ephemeral_preds, next_ephemeral_p_id);
+
+    // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
+    let lang = flake.m.as_ref().and_then(|m| m.lang.as_deref());
+    let (o_type, o_key) = value_to_otype_okey(&flake.o, &flake.dt, lang, store, dict_novelty)?;
+
+    // List index
+    let o_i = flake
+        .m
+        .as_ref()
+        .and_then(|m| m.i)
+        .map(|i| i as u32)
+        .unwrap_or(u32::MAX);
+
+    Ok(OverlayOpV3 {
+        s_id,
+        p_id,
+        o_type: o_type.as_u16(),
+        o_key,
+        o_i,
+        t: flake.t,
+        op: flake.op,
+    })
+}
+
+/// Resolve a predicate IRI to p_id.
+///
+/// Predicates are not tracked in DictNovelty (they're per-query ephemeral in V5).
+/// For V3 overlay, novel predicates get an ephemeral p_id above the persisted count.
+/// These ephemeral IDs won't match any persisted data (correct: the predicate
+/// is novelty-only), but will match overlay ops that use the same ID.
+fn resolve_predicate_v3(
+    iri: &str,
+    store: &BinaryIndexStoreV6,
+    ephemeral_preds: &mut HashMap<String, u32>,
+    next_ephemeral_p_id: &mut u32,
+) -> u32 {
+    if let Some(id) = store.find_predicate_id(iri) {
+        return id;
+    }
+    // Ephemeral allocation for novel predicates.
+    *ephemeral_preds
+        .entry(iri.to_string())
+        .or_insert_with(|| {
+            let id = *next_ephemeral_p_id;
+            *next_ephemeral_p_id += 1;
+            id
+        })
+}
+
+/// Resolve a subject Sid to s_id using persisted dict then DictNovelty.
+fn resolve_subject_v3(
+    sid: &Sid,
+    store: &BinaryIndexStoreV6,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<u64> {
+    // 1. Persisted
+    if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
+        return Ok(id);
+    }
+    // 2. DictNovelty
+    if let Some(dn) = dict_novelty {
+        if dn.is_initialized() {
+            if let Some(id) = dn.subjects.find_subject(sid.namespace_code, &sid.name) {
+                return Ok(id);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "subject not found in persisted or novelty dict: ns={} name={}",
+            sid.namespace_code, sid.name
+        ),
+    ))
+}
+
+/// Resolve a string value to a string_id using persisted dict then DictNovelty.
+fn resolve_string_v3(
+    value: &str,
+    store: &BinaryIndexStoreV6,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<u32> {
+    // 1. Persisted
+    if let Some(id) = store.find_string_id(value)? {
+        return Ok(id);
+    }
+    // 2. DictNovelty
+    if let Some(dn) = dict_novelty {
+        if dn.is_initialized() {
+            if let Some(id) = dn.strings.find_string(value) {
+                return Ok(id);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("string not found in dict: {}", &value[..value.len().min(50)]),
+    ))
+}
+
+/// Convert a FlakeValue to `(OType, o_key)` in V3 encoding.
+///
+/// Uses `dt_sid` (the flake's datatype Sid) and `lang` (from FlakeMeta) to derive
+/// the correct OType, rather than inferring purely from the FlakeValue variant.
+/// This is critical for:
+/// - langString: OType must embed the lang_id, not use XSD_STRING
+/// - numeric subtypes: xsd:int vs xsd:integer can share the same FlakeValue::Long
+/// - string subtypes: xsd:anyURI vs xsd:string share FlakeValue::String
+fn value_to_otype_okey(
+    val: &FlakeValue,
+    dt_sid: &Sid,
+    lang: Option<&str>,
+    store: &BinaryIndexStoreV6,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<(OType, u64)> {
+    // If the value has a language tag, it's rdf:langString — encode lang_id into OType.
+    if let Some(lang_tag) = lang {
+        let str_id = resolve_string_v3(
+            match val {
+                FlakeValue::String(s) => s,
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "langString value must be FlakeValue::String",
+                    ))
+                }
+            },
+            store,
+            dict_novelty,
+        )?;
+        let lang_id = store.resolve_lang_id(lang_tag).unwrap_or_else(|| {
+            tracing::warn!(tag = lang_tag, "language tag not found in persisted dict, using 1");
+            1
+        });
+        return Ok((OType::lang_string(lang_id), str_id as u64));
+    }
+
+    // For value types that are dt-dependent (Long, Double, String), resolve
+    // the exact OType from the datatype Sid IRI. For value types with 1:1
+    // OType mapping (Bool, Date, Ref, etc.), the FlakeValue variant suffices.
+    let dt_otype = otype_from_dt_sid(dt_sid, store);
+
+    match val {
+        FlakeValue::Null => Ok((OType::NULL, 0)),
+        FlakeValue::Boolean(b) => Ok((OType::XSD_BOOLEAN, *b as u64)),
+        FlakeValue::Long(n) => {
+            // Use dt-derived OType for integer subtypes (xsd:int, xsd:short, etc.)
+            let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
+            Ok((ot, ObjKey::encode_i64(*n).as_u64()))
+        }
+        FlakeValue::Double(d) => {
+            if d.is_finite() && d.fract() == 0.0 {
+                let as_i64 = *d as i64;
+                if (as_i64 as f64) == *d {
+                    let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
+                    return Ok((ot, ObjKey::encode_i64(as_i64).as_u64()));
+                }
+            }
+            if d.is_finite() {
+                let ot = dt_otype.unwrap_or(OType::XSD_DOUBLE);
+                match ObjKey::encode_f64(*d) {
+                    Ok(key) => Ok((ot, key.as_u64())),
+                    Err(_) => Ok((OType::NULL, 0)),
+                }
+            } else {
+                Ok((OType::NULL, 0))
+            }
+        }
+        FlakeValue::Ref(sid) => {
+            let s_id = resolve_subject_v3(sid, store, dict_novelty)?;
+            Ok((OType::IRI_REF, s_id))
+        }
+        FlakeValue::String(s) => {
+            let str_id = resolve_string_v3(s, store, dict_novelty)?;
+            // Use dt-derived OType for string subtypes (xsd:anyURI, xsd:token, etc.)
+            let ot = dt_otype.unwrap_or(OType::XSD_STRING);
+            Ok((ot, str_id as u64))
+        }
+        FlakeValue::Json(s) => {
+            let str_id = resolve_string_v3(s, store, dict_novelty)?;
+            Ok((OType::RDF_JSON, str_id as u64))
+        }
+        FlakeValue::Date(d) => {
+            let days = d.days_since_epoch();
+            Ok((OType::XSD_DATE, ObjKey::encode_date(days).as_u64()))
+        }
+        FlakeValue::DateTime(dt) => {
+            let micros = dt.epoch_micros();
+            Ok((
+                OType::XSD_DATE_TIME,
+                ObjKey::encode_datetime(micros).as_u64(),
+            ))
+        }
+        FlakeValue::Time(t) => {
+            let micros = t.micros_since_midnight();
+            Ok((OType::XSD_TIME, ObjKey::encode_time(micros).as_u64()))
+        }
+        FlakeValue::GYear(g) => Ok((
+            OType::XSD_G_YEAR,
+            ObjKey::encode_g_year(g.year()).as_u64(),
+        )),
+        FlakeValue::GYearMonth(g) => Ok((
+            OType::XSD_G_YEAR_MONTH,
+            ObjKey::encode_g_year_month(g.year(), g.month()).as_u64(),
+        )),
+        FlakeValue::GMonth(g) => Ok((
+            OType::XSD_G_MONTH,
+            ObjKey::encode_g_month(g.month()).as_u64(),
+        )),
+        FlakeValue::GDay(g) => Ok((OType::XSD_G_DAY, ObjKey::encode_g_day(g.day()).as_u64())),
+        FlakeValue::GMonthDay(g) => Ok((
+            OType::XSD_G_MONTH_DAY,
+            ObjKey::encode_g_month_day(g.month(), g.day()).as_u64(),
+        )),
+        FlakeValue::YearMonthDuration(d) => Ok((
+            OType::XSD_YEAR_MONTH_DURATION,
+            ObjKey::encode_year_month_dur(d.months()).as_u64(),
+        )),
+        FlakeValue::DayTimeDuration(d) => Ok((
+            OType::XSD_DAY_TIME_DURATION,
+            ObjKey::encode_day_time_dur(d.micros()).as_u64(),
+        )),
+        FlakeValue::GeoPoint(bits) => Ok((OType::GEO_POINT, bits.0)),
+        // Types not yet handled: BigInt, Decimal, Vector, Duration
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("unsupported FlakeValue variant for V3 overlay: {:?}", val),
+        )),
+    }
+}
+
+/// Resolve a datatype Sid to its OType constant.
+///
+/// Reconstructs the IRI from the Sid and matches against well-known XSD types.
+/// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
+fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStoreV6) -> Option<OType> {
+    let iri = store.sid_to_iri(dt_sid);
+    fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
 }

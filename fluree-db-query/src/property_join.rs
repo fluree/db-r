@@ -383,9 +383,10 @@ impl Operator for PropertyJoinOperator {
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
+                // Batched probe requires V5 binary store (V6 has no batched_lookup yet).
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
-                    && ctx.has_binary_store()
+                    && ctx.binary_store.is_some()
                     && dtc.is_none();
 
                 if can_batched_probe {
@@ -522,7 +523,7 @@ impl Operator for PropertyJoinOperator {
                 scan.close();
 
                 // After the first scan (driver), capture the subject IDs for batched probing.
-                if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
+                if order_pos == 0 && driver_pred_idx.is_some() && ctx.binary_store.is_some() {
                     let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
                     for k in all_subject_values.keys() {
                         if let SubjectKey::Id(s_id) = k {
