@@ -120,23 +120,13 @@ pub fn collect_var_stats(
     walk(patterns, counts, vars);
 }
 
-/// Compute WHERE-level variable stats used for emission pruning.
-///
-/// Returns:
-/// - `var_counts`: how many times each var appears across patterns.
-/// - `protected_vars`: vars that must not be pruned from scan output.
+/// Compute per-variable occurrence counts for emission pruning and join heuristics.
 #[inline]
-fn compute_where_var_stats(
-    patterns: &[Pattern],
-    needed_vars: &HashSet<VarId>,
-) -> (HashMap<VarId, usize>, HashSet<VarId>) {
+fn compute_var_counts(patterns: &[Pattern]) -> HashMap<VarId, usize> {
     let mut counts: HashMap<VarId, usize> = HashMap::new();
     let mut all_vars: HashSet<VarId> = HashSet::new();
     collect_var_stats(patterns, &mut counts, &mut all_vars);
-
-    // Today we treat "needed after WHERE" vars as protected.
-    // (Join vars are protected via `var_counts` in `emit_mask_for_triple`.)
-    (counts, needed_vars.clone())
+    counts
 }
 
 // ============================================================================
@@ -310,10 +300,9 @@ fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> 
 /// Each VALUES pattern wraps the current operator with a `ValuesOperator`,
 /// creating an empty seed if no operator exists yet.
 fn apply_values(
-    operator: Option<BoxedOperator>,
+    mut operator: Option<BoxedOperator>,
     block_values: Vec<ValuesPattern>,
 ) -> Option<BoxedOperator> {
-    let mut operator = operator;
     for vp in block_values {
         let child = get_or_empty_seed(operator.take());
         operator = Some(Box::new(ValuesOperator::new(child, vp.vars, vp.rows)));
@@ -623,7 +612,7 @@ fn inline_chain(
 /// deferred BINDs/FILTERs as their dependencies become bound.
 #[allow(clippy::too_many_arguments)]
 fn build_sequential_join_block(
-    operator: Option<BoxedOperator>,
+    mut operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
@@ -634,7 +623,6 @@ fn build_sequential_join_block(
     protected_vars: &HashSet<VarId>,
     group_by: &[VarId],
 ) -> Result<Option<BoxedOperator>> {
-    let mut operator = operator;
 
     if !block_values.is_empty() {
         operator = apply_values(operator, block_values);
@@ -893,7 +881,10 @@ pub fn build_where_operators_seeded_with_needed(
     let patterns = &reordered_storage;
 
     // Compute variable stats for emission pruning and join heuristics.
-    let (var_counts, protected_vars) = compute_where_var_stats(patterns, needed_vars);
+    // `needed_vars` doubles as the protected set (vars that must not be pruned from scan output).
+    let var_counts = compute_var_counts(patterns);
+    // Rebind to clarify intent at call sites (join vars are separately protected via `var_counts`).
+    let protected_vars: &HashSet<VarId> = needed_vars;
 
     // If no explicit seed, determine if we need an empty seed.
     //
@@ -945,7 +936,7 @@ pub fn build_where_operators_seeded_with_needed(
                         operator.take(),
                         &patterns[start],
                         &var_counts,
-                        &protected_vars,
+                        protected_vars,
                         group_by,
                     );
                     i = start + 1;
@@ -968,7 +959,7 @@ pub fn build_where_operators_seeded_with_needed(
                         &HashMap::new(),
                         augmented_ref,
                         &var_counts,
-                        &protected_vars,
+                        protected_vars,
                         group_by,
                     )?);
                     continue;
@@ -1005,7 +996,7 @@ pub fn build_where_operators_seeded_with_needed(
                         pending_filters,
                         &pushdown,
                         &var_counts,
-                        &protected_vars,
+                        protected_vars,
                         group_by,
                     )?;
                 } else {
@@ -1018,7 +1009,7 @@ pub fn build_where_operators_seeded_with_needed(
                         &pushdown,
                         augmented_ref,
                         &var_counts,
-                        &protected_vars,
+                        protected_vars,
                         group_by,
                     )?;
                 }
