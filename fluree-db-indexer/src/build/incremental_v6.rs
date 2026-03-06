@@ -1117,6 +1117,7 @@ where
             .unwrap_or(u32::MAX);
         let mut stats_hook = stats::IdStatsHook::with_prior_properties(prior_properties);
         stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+        stats_hook.set_track_ref_targets(true);
 
         // Seed per-graph flake totals from base root stats.
         if let Some(ref base_stats) = base_root.stats {
@@ -1159,8 +1160,13 @@ where
             }
         };
 
-        // Capture class counts before finalize consumes the hook.
+        // Capture class tracking data before finalize consumes the hook.
         let class_count_deltas = stats_hook.class_count_deltas().clone();
+        let novelty_subject_class_deltas = stats_hook.subject_class_deltas().clone();
+        let novelty_subject_props = stats_hook.subject_props().clone();
+        let novelty_subject_prop_dts = stats_hook.subject_prop_dts().clone();
+        let novelty_subject_prop_langs = stats_hook.subject_prop_langs().clone();
+        let subject_ref_history = stats_hook.subject_ref_history().clone();
 
         // Finalize stats.
         let id_stats_result = stats_hook.finalize();
@@ -1219,67 +1225,456 @@ where
                 })
                 .collect();
 
-            // Build per-graph class entries from class_count_deltas.
-            // class_count_deltas has (g_id, class_sid64) → count delta from novelty.
-            // Merge with prior base root class counts for the full picture.
-            let mut class_map: std::collections::HashMap<(fluree_db_core::GraphId, u64), i64> =
-                std::collections::HashMap::new();
+            // Class-property attribution: build full ClassStatEntry with property usage.
+            //
+            // Strategy (matches V5 Phase 4.6d):
+            // 1. Load V6 store for PSOT lookup + SID resolution
+            // 2. Per-graph batched PSOT lookup for base class memberships
+            // 3. Merge base + novelty class deltas → subject→classes
+            // 4. Cross-reference subject→properties with subject→classes
+            // 5. Build ClassStatEntry with datatypes, langs, ref-class edges
+            // 6. Apply count deltas to base entries, add new entries
+            let mut final_graphs = id_stats_result.graphs;
 
-            // Seed from base root class counts.
-            if let Some(ref base_stats) = base_root.stats {
-                if let Some(ref graphs) = base_stats.graphs {
-                    for g in graphs {
-                        if let Some(ref classes) = g.classes {
-                            for c in classes {
-                                // Convert class Sid back to sid64 for keying.
-                                // Use ns_code from the Sid's namespace_code.
-                                let class_key_hash = {
-                                    let mut hasher =
-                                        std::collections::hash_map::DefaultHasher::new();
-                                    std::hash::Hash::hash(&c.class_sid, &mut hasher);
-                                    std::hash::Hasher::finish(&hasher)
-                                };
-                                *class_map.entry((g.g_id, class_key_hash)).or_insert(0) +=
-                                    c.count as i64;
+            let has_class_changes =
+                !class_count_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
+
+            if has_class_changes || !novelty_subject_props.is_empty() {
+                let cache_dir = config
+                    .data_dir
+                    .as_ref()
+                    .map(|d| d.join("class_cache"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("fluree_class_cache_v6"));
+                let _ = std::fs::create_dir_all(&cache_dir);
+
+                // subject_classes: (g_id, s_id) → HashSet<class_sid64>
+                let mut subject_classes: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u64>,
+                > = std::collections::HashMap::new();
+
+                // SID resolver closure (populated when store loads successfully).
+                let resolve_class_sid =
+                    |sid64: u64,
+                     store: Option<&fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>,
+                     new_subs: &std::collections::HashMap<(u16, u64), String>|
+                     -> fluree_db_core::Sid {
+                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
+                        // Try novelty subjects first.
+                        if let Some(suffix) = new_subs.get(&(sid.ns_code(), sid.local_id())) {
+                            return fluree_db_core::Sid::new(sid.ns_code(), suffix.as_str());
+                        }
+                        // Try store resolution.
+                        if let Some(s) = store {
+                            if let Ok(iri) = s.resolve_subject_iri(sid64) {
+                                return s.encode_iri(&iri);
+                            }
+                        }
+                        // Fallback: ns_code + local_id (will be opaque but stable).
+                        fluree_db_core::Sid::new(sid.ns_code(), sid.local_id().to_string())
+                    };
+
+                let new_subject_suffix: std::collections::HashMap<(u16, u64), String> = novelty
+                    .new_subjects
+                    .iter()
+                    .filter_map(|(ns_code, local_id, suffix)| {
+                        let s = std::str::from_utf8(suffix).ok()?.to_string();
+                        Some(((*ns_code, *local_id), s))
+                    })
+                    .collect();
+
+                // Load V6 store for PSOT lookup + SID resolution.
+                let store_opt = if rdf_type_p_id != u32::MAX {
+                    match fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6::load_from_root_v6(
+                        content_store.clone(),
+                        base_root,
+                        &cache_dir,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(s) => Some(Arc::new(s)),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "V6 store load for class attribution failed");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // Partition novelty subjects by g_id for per-graph PSOT scans.
+                // Also include ref-object s_ids so we can resolve ref-class edges.
+                if let Some(ref store) = store_opt {
+                    let iri_ref_otype = fluree_db_core::o_type::OType::IRI_REF.as_u16();
+                    let mut subjects_by_graph: std::collections::HashMap<u16, Vec<u64>> =
+                        std::collections::HashMap::new();
+                    for &(g_id, s_id) in novelty_subject_class_deltas
+                        .keys()
+                        .chain(novelty_subject_props.keys())
+                    {
+                        subjects_by_graph.entry(g_id).or_default().push(s_id);
+                    }
+                    // Add ref-object targets so we can look up their class memberships.
+                    for (i, rec) in novelty.records.iter().enumerate() {
+                        if rec.o_type == iri_ref_otype
+                            && rec.p_id != rdf_type_p_id
+                            && novelty.ops[i] != 0
+                        {
+                            subjects_by_graph
+                                .entry(rec.g_id)
+                                .or_default()
+                                .push(rec.o_key);
+                        }
+                    }
+                    // Dedup within each graph.
+                    for sids in subjects_by_graph.values_mut() {
+                        sids.sort_unstable();
+                        sids.dedup();
+                    }
+
+                    // Batched PSOT lookup per graph.
+                    for (&scan_g_id, scan_sids) in &subjects_by_graph {
+                        if scan_sids.is_empty() {
+                            continue;
+                        }
+                        match fluree_db_binary_index::batched_lookup_predicate_refs_v6(
+                            store,
+                            scan_g_id,
+                            rdf_type_p_id,
+                            scan_sids,
+                            base_root.index_t,
+                        ) {
+                            Ok(base_map) => {
+                                for (s_id, classes) in base_map {
+                                    subject_classes
+                                        .entry((scan_g_id, s_id))
+                                        .or_default()
+                                        .extend(classes);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    g_id = scan_g_id, error = %e,
+                                    "batched PSOT class lookup failed for graph"
+                                );
                             }
                         }
                     }
                 }
-            }
 
-            // Apply novelty deltas. class_count_deltas uses sid64 directly.
-            for (&(g_id, _class_sid64), &delta) in &class_count_deltas {
-                // For now, accumulate deltas but we can't resolve sid64 → Sid
-                // without a store. The per-graph class entries will be populated
-                // during schema extraction when a V6 store is available.
-                // Just track the total delta per graph.
-                let _ = (g_id, delta); // will be used below
-            }
+                // Apply novelty rdf:type deltas on top of base memberships.
+                for (&(g_id, s_id), class_map) in &novelty_subject_class_deltas {
+                    let set = subject_classes.entry((g_id, s_id)).or_default();
+                    for (&class_sid64, &delta) in class_map {
+                        if delta > 0 {
+                            set.insert(class_sid64);
+                        } else {
+                            set.remove(&class_sid64);
+                        }
+                    }
+                }
 
-            // Build root-level class counts from the deltas.
-            // Full class→property attribution requires a PSOT scan and will
-            // be added in a future iteration.
-            // Apply class instance counts to per-graph entries.
-            let mut final_graphs = id_stats_result.graphs;
-
-            if !class_count_deltas.is_empty() {
-                let mut by_graph: std::collections::HashMap<
-                    fluree_db_core::GraphId,
-                    Vec<is::ClassStatEntry>,
+                // Build class→properties, class→prop→dts, class→prop→langs, ref_edges.
+                let mut class_properties: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u32>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_dts: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u8, i64>>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_lang_deltas: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u16, i64>>,
+                > = std::collections::HashMap::new();
+                let mut ref_edges: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
                 > = std::collections::HashMap::new();
 
-                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
-                    if delta <= 0 {
-                        continue;
+                for (&(g_id, s_id), props) in &novelty_subject_props {
+                    if let Some(classes) = subject_classes.get(&(g_id, s_id)) {
+                        for &class_sid64 in classes {
+                            class_properties
+                                .entry((g_id, class_sid64))
+                                .or_default()
+                                .extend(props);
+                            if let Some(s_dts) = novelty_subject_prop_dts.get(&(g_id, s_id)) {
+                                for (&pid, dt_map) in s_dts {
+                                    let cp = class_prop_dts
+                                        .entry((g_id, class_sid64))
+                                        .or_default()
+                                        .entry(pid)
+                                        .or_default();
+                                    for (&dt, &cnt) in dt_map {
+                                        *cp.entry(dt).or_insert(0) += cnt;
+                                    }
+                                }
+                            }
+                            if let Some(s_langs) = novelty_subject_prop_langs.get(&(g_id, s_id)) {
+                                for (&pid, lang_map) in s_langs {
+                                    let cl = class_prop_lang_deltas
+                                        .entry((g_id, class_sid64))
+                                        .or_default()
+                                        .entry(pid)
+                                        .or_default();
+                                    for (&lid, &cnt) in lang_map {
+                                        *cl.entry(lid).or_insert(0) += cnt;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    let sid = fluree_db_core::subject_id::SubjectId::from_u64(class_sid64);
-                    let class_sid =
-                        fluree_db_core::Sid::new(sid.ns_code(), sid.local_id().to_string());
-                    by_graph.entry(g_id).or_default().push(is::ClassStatEntry {
-                        class_sid,
-                        count: delta as u64,
-                        properties: Vec::new(),
-                    });
+                }
+                for (&(g_id, subj), per_prop) in &subject_ref_history {
+                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
+                        continue;
+                    };
+                    for (&pid, objs) in per_prop {
+                        for (&obj, &delta) in objs {
+                            if delta == 0 {
+                                continue;
+                            }
+                            let Some(obj_classes) = subject_classes.get(&(g_id, obj)) else {
+                                continue;
+                            };
+                            for &sc in subj_classes {
+                                for &oc in obj_classes {
+                                    *ref_edges
+                                        .entry((g_id, sc))
+                                        .or_default()
+                                        .entry(pid)
+                                        .or_default()
+                                        .entry(oc)
+                                        .or_insert(0) += delta;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Build lang_id → tag string map from the language dict (keyed by id, not Vec index).
+                let lang_id_to_tag: std::collections::HashMap<u16, String> = novelty
+                    .shared
+                    .languages
+                    .iter()
+                    .map(|(lang_id, tag)| (lang_id, tag.to_string()))
+                    .collect();
+
+                // Build entries_by_key from base + apply deltas.
+                let mut entries_by_key: std::collections::HashMap<(u16, u64), is::ClassStatEntry> =
+                    std::collections::HashMap::new();
+
+                // Seed from base root per-graph class entries.
+                if let Some(ref base_stats) = base_root.stats {
+                    if let Some(ref graphs) = base_stats.graphs {
+                        for g in graphs {
+                            if let Some(ref classes) = g.classes {
+                                for entry in classes {
+                                    // Try to resolve class Sid → sid64 via store.
+                                    let sid64 = store_opt
+                                        .as_ref()
+                                        .and_then(|s| {
+                                            s.sid_to_s_id(&entry.class_sid).ok().flatten()
+                                        })
+                                        .unwrap_or(0);
+                                    if sid64 != 0 {
+                                        entries_by_key.insert((g.g_id, sid64), entry.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Apply class count deltas (both positive and negative).
+                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
+                    let entry = entries_by_key
+                        .entry((g_id, class_sid64))
+                        .or_insert_with(|| {
+                            let class_sid = resolve_class_sid(
+                                class_sid64,
+                                store_opt.as_deref(),
+                                &new_subject_suffix,
+                            );
+                            is::ClassStatEntry {
+                                class_sid,
+                                count: 0,
+                                properties: Vec::new(),
+                            }
+                        });
+                    entry.count = (entry.count as i64 + delta).max(0) as u64;
+                }
+
+                // Build property attribution for each class entry.
+                for (&(g_id, class_sid64), entry) in entries_by_key.iter_mut() {
+                    if let Some(props) = class_properties.get(&(g_id, class_sid64)) {
+                        let class_dts = class_prop_dts.get(&(g_id, class_sid64));
+                        let class_refs = ref_edges.get(&(g_id, class_sid64));
+                        let class_langs = class_prop_lang_deltas.get(&(g_id, class_sid64));
+
+                        // Merge novelty properties with existing properties.
+                        let mut prop_set: std::collections::HashSet<u32> = entry
+                            .properties
+                            .iter()
+                            .filter_map(|pu| {
+                                novelty.shared.predicates.get(&format!(
+                                    "{}{}",
+                                    novelty
+                                        .shared
+                                        .ns_prefixes
+                                        .get(&pu.property_sid.namespace_code)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or(""),
+                                    pu.property_sid.name
+                                ))
+                            })
+                            .collect();
+                        prop_set.extend(props);
+
+                        // Index base property usage by p_id for merging.
+                        let base_prop_by_pid: std::collections::HashMap<
+                            u32,
+                            &is::ClassPropertyUsage,
+                        > = entry
+                            .properties
+                            .iter()
+                            .filter_map(|pu| {
+                                let iri = format!(
+                                    "{}{}",
+                                    novelty
+                                        .shared
+                                        .ns_prefixes
+                                        .get(&pu.property_sid.namespace_code)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or(""),
+                                    pu.property_sid.name
+                                );
+                                novelty.shared.predicates.get(&iri).map(|pid| (pid, pu))
+                            })
+                            .collect();
+
+                        entry.properties = prop_set
+                            .iter()
+                            .map(|&cp_id| {
+                                let iri = novelty.shared.predicates.resolve(cp_id).unwrap_or("");
+                                let p_sid = match trie.longest_match(iri) {
+                                    Some((code, plen)) => {
+                                        fluree_db_core::Sid::new(code, &iri[plen..])
+                                    }
+                                    None => fluree_db_core::Sid::new(0, iri),
+                                };
+                                let base_pu = base_prop_by_pid.get(&cp_id).copied();
+
+                                // Merge base + novelty datatypes.
+                                let mut merged_dts: std::collections::HashMap<u8, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for &(dt, cnt) in &bpu.datatypes {
+                                        *merged_dts.entry(dt).or_insert(0) += cnt as i64;
+                                    }
+                                }
+                                if let Some(dt_delta) = class_dts.and_then(|m| m.get(&cp_id)) {
+                                    for (&dt, &cnt) in dt_delta {
+                                        *merged_dts.entry(dt).or_insert(0) += cnt;
+                                    }
+                                }
+                                let datatypes: Vec<(u8, u64)> = merged_dts
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(dt, v)| (dt, v as u64))
+                                    .collect();
+
+                                // Merge base + novelty langs.
+                                let mut merged_langs: std::collections::HashMap<String, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for (tag, cnt) in &bpu.langs {
+                                        *merged_langs.entry(tag.clone()).or_insert(0) +=
+                                            *cnt as i64;
+                                    }
+                                }
+                                if let Some(lang_delta) = class_langs.and_then(|m| m.get(&cp_id)) {
+                                    for (&lid, &cnt) in lang_delta {
+                                        let tag = lang_id_to_tag
+                                            .get(&lid)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("lang:{lid}"));
+                                        *merged_langs.entry(tag).or_insert(0) += cnt;
+                                    }
+                                }
+                                let langs: Vec<(String, u64)> = merged_langs
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(tag, v)| (tag, v as u64))
+                                    .collect();
+
+                                // Merge base + novelty ref_classes.
+                                let mut merged_refs: std::collections::HashMap<u64, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for rc in &bpu.ref_classes {
+                                        let rc_sid64 = store_opt
+                                            .as_ref()
+                                            .and_then(|s| {
+                                                s.sid_to_s_id(&rc.class_sid).ok().flatten()
+                                            })
+                                            .unwrap_or(0);
+                                        if rc_sid64 != 0 {
+                                            *merged_refs.entry(rc_sid64).or_insert(0) +=
+                                                rc.count as i64;
+                                        }
+                                    }
+                                }
+                                if let Some(ref_delta) = class_refs.and_then(|m| m.get(&cp_id)) {
+                                    for (&target, &cnt) in ref_delta {
+                                        *merged_refs.entry(target).or_insert(0) += cnt;
+                                    }
+                                }
+                                let ref_classes: Vec<is::ClassRefCount> = merged_refs
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(target_sid64, cnt)| {
+                                        let cs = resolve_class_sid(
+                                            target_sid64,
+                                            store_opt.as_deref(),
+                                            &new_subject_suffix,
+                                        );
+                                        is::ClassRefCount {
+                                            class_sid: cs,
+                                            count: cnt as u64,
+                                        }
+                                    })
+                                    .collect();
+
+                                is::ClassPropertyUsage {
+                                    property_sid: p_sid,
+                                    datatypes,
+                                    langs,
+                                    ref_classes,
+                                }
+                            })
+                            .collect();
+                    }
+                    // Resolve class SID if still placeholder.
+                    if entry.class_sid.name.is_empty() && entry.class_sid.namespace_code == 0 {
+                        entry.class_sid = resolve_class_sid(
+                            class_sid64,
+                            store_opt.as_deref(),
+                            &new_subject_suffix,
+                        );
+                    }
+                }
+
+                // Remove entries with count=0 (fully retracted classes).
+                entries_by_key.retain(|_, e| e.count > 0);
+
+                // Group into per-graph class lists.
+                let mut by_graph: std::collections::HashMap<u16, Vec<is::ClassStatEntry>> =
+                    std::collections::HashMap::new();
+                for ((g_id, _), entry) in entries_by_key {
+                    by_graph.entry(g_id).or_default().push(entry);
                 }
 
                 for g in &mut final_graphs {

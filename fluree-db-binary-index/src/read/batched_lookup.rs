@@ -126,6 +126,120 @@ pub fn batched_lookup_predicate_refs(
     Ok(out)
 }
 
+/// V6 (FLI3) variant: batched PSOT lookup for ref-valued predicate objects.
+///
+/// Same strategy as the V5 version but uses `BinaryCursorV3` with `RunRecordV2`
+/// keys and `OType::IRI_REF` filtering. No overlay merge — caller applies
+/// novelty deltas separately.
+///
+/// Returns `HashMap<sid64_subject, Vec<sid64_class>>`.
+pub fn batched_lookup_predicate_refs_v6(
+    store: &Arc<super::store_v6::BinaryIndexStoreV6>,
+    g_id: GraphId,
+    p_id: u32,
+    subjects: &[u64],
+    to_t: i64,
+) -> io::Result<HashMap<u64, Vec<u64>>> {
+    use super::binary_cursor_v3::BinaryCursorV3;
+    use super::column_types::{BinaryFilterV3, ColumnProjection, ColumnSet};
+    use crate::format::column_block::ColumnId;
+    use crate::format::run_record_v2::RunRecordV2;
+    use fluree_db_core::o_type::OType;
+
+    if subjects.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut sorted_subjects = subjects.to_vec();
+    sorted_subjects.sort_unstable();
+    sorted_subjects.dedup();
+
+    let s_id_set: HashSet<u64> = sorted_subjects.iter().copied().collect();
+    let mut out: HashMap<u64, Vec<u64>> = HashMap::new();
+
+    let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
+        return Ok(out);
+    };
+    let branch = Arc::new(branch.clone());
+
+    let iri_ref = OType::IRI_REF.as_u16();
+
+    const MAX_SPAN: u64 = 100_000;
+    const MAX_CHUNK: usize = 1000;
+    let chunks = chunk_subjects(&sorted_subjects, MAX_SPAN, MAX_CHUNK);
+
+    // Only need s_id, o_type, o_key columns for class lookup.
+    let mut needed = ColumnSet::EMPTY;
+    needed.insert(ColumnId::SId);
+    needed.insert(ColumnId::OType);
+    needed.insert(ColumnId::OKey);
+    let projection = ColumnProjection {
+        output: needed,
+        internal: ColumnSet::EMPTY,
+    };
+
+    for chunk in &chunks {
+        let min_s = chunk[0];
+        let max_s = *chunk.last().unwrap();
+
+        let min_key = RunRecordV2 {
+            s_id: SubjectId::from_u64(min_s),
+            o_key: 0,
+            p_id,
+            t: 0,
+            o_i: 0,
+            o_type: 0,
+            g_id,
+        };
+        let max_key = RunRecordV2 {
+            s_id: SubjectId::from_u64(max_s),
+            o_key: u64::MAX,
+            p_id,
+            t: 0,
+            o_i: u32::MAX,
+            o_type: u16::MAX,
+            g_id,
+        };
+
+        let filter = BinaryFilterV3 {
+            p_id: Some(p_id),
+            ..Default::default()
+        };
+
+        let mut cursor = BinaryCursorV3::new(
+            Arc::clone(store),
+            RunSortOrder::Psot,
+            Arc::clone(&branch),
+            &min_key,
+            &max_key,
+            filter,
+            projection,
+        );
+        cursor.set_to_t(to_t);
+
+        while let Some(batch) = cursor.next_batch()? {
+            for i in 0..batch.row_count {
+                let s_id = batch.s_id.get(i);
+                if !s_id_set.contains(&s_id) {
+                    continue;
+                }
+                let ot = batch.o_type.get_or(i, 0);
+                if ot != iri_ref {
+                    continue;
+                }
+                out.entry(s_id).or_default().push(batch.o_key.get(i));
+            }
+        }
+    }
+
+    for classes in out.values_mut() {
+        classes.sort_unstable();
+        classes.dedup();
+    }
+
+    Ok(out)
+}
+
 /// Break sorted subjects into chunks where each chunk spans at most
 /// `max_span` IDs and contains at most `max_chunk` subjects.
 fn chunk_subjects(sorted: &[u64], max_span: u64, max_chunk: usize) -> Vec<&[u64]> {

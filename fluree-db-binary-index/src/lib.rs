@@ -15,7 +15,7 @@ pub mod format;
 pub mod read;
 
 // ── Key read-side types ──────────────────────────────────────────────────────
-pub use read::batched_lookup::batched_lookup_predicate_refs;
+pub use read::batched_lookup::{batched_lookup_predicate_refs, batched_lookup_predicate_refs_v6};
 pub use read::binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use read::binary_index_store::{BinaryGraphView, BinaryIndexStore};
 pub use read::leaflet_cache::{
