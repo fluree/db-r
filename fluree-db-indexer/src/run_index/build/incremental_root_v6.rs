@@ -11,8 +11,8 @@ use fluree_db_binary_index::format::index_root_v6::{
 };
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
-use fluree_db_core::{IndexSchema, IndexStats};
 use fluree_db_core::ContentId;
+use fluree_db_core::{IndexSchema, IndexStats};
 use std::collections::BTreeMap;
 
 /// Selective mutation builder for `IndexRootV6`.

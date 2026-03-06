@@ -554,11 +554,7 @@ impl BinaryIndexStoreV6 {
     }
 
     /// Reverse subject lookup by namespace parts (avoids IRI construction).
-    pub fn find_subject_id_by_parts(
-        &self,
-        ns_code: u16,
-        suffix: &str,
-    ) -> io::Result<Option<u64>> {
+    pub fn find_subject_id_by_parts(&self, ns_code: u16, suffix: &str) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
                 let key =

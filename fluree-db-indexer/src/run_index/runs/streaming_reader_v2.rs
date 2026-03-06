@@ -132,10 +132,10 @@ impl StreamingRunReaderV2 {
             for i in 0..to_read {
                 let off = i * record_size;
                 if self.has_op {
-                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] =
-                        raw[off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
-                            .try_into()
-                            .unwrap();
+                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = raw
+                        [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
                     let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
                     self.buffer.push(rec);
                     self.op_buffer.push(op);

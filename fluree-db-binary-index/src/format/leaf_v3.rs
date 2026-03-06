@@ -89,6 +89,10 @@ pub struct LeafWriterV3 {
 
     // History accumulation.
     sidecar_builder: HistSidecarBuilder,
+    /// Whether a sidecar segment has been started for the current leaflet buffer.
+    /// Reset to false on flush_leaflet(). Set to true on first push_history_entry()
+    /// or on flush_leaflet() itself (which starts a segment for the encoded leaflet).
+    current_segment_started: bool,
 
     // Segmentation tracking.
     current_seg_p_id: Option<u32>,
@@ -124,6 +128,7 @@ impl LeafWriterV3 {
             skip_history: false,
             record_buf: Vec::with_capacity(leaflet_target_rows),
             sidecar_builder: HistSidecarBuilder::new(),
+            current_segment_started: false,
             current_seg_p_id: None,
             current_seg_o_type: None,
             encoded_leaflets: Vec::new(),
@@ -183,15 +188,20 @@ impl LeafWriterV3 {
     }
 
     /// Push a history-only entry (retract-winner: no latest-state row,
-    /// but history must be logged). For the import-only milestone this
-    /// is a no-op since import is append-only.
+    /// but history must be logged).
+    ///
+    /// History entries are associated with the current leaflet's sidecar segment.
+    /// If no segment has been started yet (before the first `flush_leaflet`),
+    /// one is started automatically. When `flush_leaflet` runs, if a segment
+    /// was already started by history entries, it keeps it; otherwise it starts
+    /// a new empty one. This ensures segment count always equals leaflet count.
     pub fn push_history_entry(&mut self, entry: HistEntryV2) {
         if self.skip_history {
             return;
         }
-        // Ensure there's a current leaflet history segment.
-        if self.sidecar_builder_needs_start() {
+        if !self.current_segment_started {
             self.sidecar_builder.start_leaflet();
+            self.current_segment_started = true;
         }
         self.sidecar_builder.push_entry(entry);
     }
@@ -220,12 +230,6 @@ impl LeafWriterV3 {
         }
     }
 
-    fn sidecar_builder_needs_start(&self) -> bool {
-        // If we haven't started a history segment for the current leaflet yet.
-        // Approximate: check if the builder has fewer segments than encoded+1.
-        true // always start — the builder handles dedup internally
-    }
-
     // ── Flush leaflet ──────────────────────────────────────────────────
 
     fn flush_leaflet(&mut self) -> io::Result<()> {
@@ -237,10 +241,14 @@ impl LeafWriterV3 {
         let encoded = encode_leaflet_v3(&records, self.order, self.zstd_level);
         let row_count = encoded.row_count as u64;
 
-        // Start a history segment for this leaflet (even if empty).
-        if !self.skip_history {
+        // Ensure a history segment exists for this leaflet.
+        // If push_history_entry() already started one, skip. Otherwise start an empty one.
+        // This guarantees segment count == leaflet count.
+        if !self.skip_history && !self.current_segment_started {
             self.sidecar_builder.start_leaflet();
         }
+        // Reset for the next leaflet.
+        self.current_segment_started = false;
 
         self.leaf_accumulated_rows += row_count;
         self.encoded_leaflets.push(encoded);

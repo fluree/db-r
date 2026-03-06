@@ -286,14 +286,14 @@ fn fast_datetime_component_from_binding(
     const DEFAULT_YEAR: i64 = 1970;
     const DEFAULT_MONTH: i64 = 1;
 
-    let extract_from_parts = |year: i64, month: i64, day: i64, hour: i64, minute: i64| match component
-    {
-        DateComponent::Year => Some(year),
-        DateComponent::Month => Some(month),
-        DateComponent::Day => Some(day),
-        DateComponent::Hour => Some(hour),
-        DateComponent::Minute => Some(minute),
-    };
+    let extract_from_parts =
+        |year: i64, month: i64, day: i64, hour: i64, minute: i64| match component {
+            DateComponent::Year => Some(year),
+            DateComponent::Month => Some(month),
+            DateComponent::Day => Some(day),
+            DateComponent::Hour => Some(hour),
+            DateComponent::Minute => Some(minute),
+        };
 
     match binding {
         Binding::Lit { val, dt, .. } => match val {
@@ -301,10 +301,10 @@ fn fast_datetime_component_from_binding(
             FlakeValue::GYearMonth(gym) => {
                 extract_from_parts(gym.year() as i64, gym.month() as i64, 1, 0, 0)
             }
-            FlakeValue::GMonth(gm) => {
-                extract_from_parts(DEFAULT_YEAR, gm.month() as i64, 1, 0, 0)
+            FlakeValue::GMonth(gm) => extract_from_parts(DEFAULT_YEAR, gm.month() as i64, 1, 0, 0),
+            FlakeValue::GDay(gd) => {
+                extract_from_parts(DEFAULT_YEAR, DEFAULT_MONTH, gd.day() as i64, 0, 0)
             }
-            FlakeValue::GDay(gd) => extract_from_parts(DEFAULT_YEAR, DEFAULT_MONTH, gd.day() as i64, 0, 0),
             FlakeValue::GMonthDay(gmd) => {
                 extract_from_parts(DEFAULT_YEAR, gmd.month() as i64, gmd.day() as i64, 0, 0)
             }
@@ -334,13 +334,9 @@ fn fast_datetime_component_from_binding(
                 x if x == ObjKind::G_MONTH.as_u8() => {
                     extract_from_parts(DEFAULT_YEAR, key.decode_g_month() as i64, 1, 0, 0)
                 }
-                x if x == ObjKind::G_DAY.as_u8() => extract_from_parts(
-                    DEFAULT_YEAR,
-                    DEFAULT_MONTH,
-                    key.decode_g_day() as i64,
-                    0,
-                    0,
-                ),
+                x if x == ObjKind::G_DAY.as_u8() => {
+                    extract_from_parts(DEFAULT_YEAR, DEFAULT_MONTH, key.decode_g_day() as i64, 0, 0)
+                }
                 x if x == ObjKind::G_MONTH_DAY.as_u8() => {
                     let (m, d) = key.decode_g_month_day();
                     extract_from_parts(DEFAULT_YEAR, m as i64, d as i64, 0, 0)

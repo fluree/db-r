@@ -87,7 +87,9 @@ where
 
     // Catch mis-sorted novelty early — silent mis-slicing is brutal to debug.
     debug_assert!(
-        novelty.windows(2).all(|w| cmp_v2_for_order(order)(&w[0], &w[1]) != std::cmp::Ordering::Greater),
+        novelty
+            .windows(2)
+            .all(|w| cmp_v2_for_order(order)(&w[0], &w[1]) != std::cmp::Ordering::Greater),
         "novelty must be sorted by the branch's sort order ({order:?})"
     );
 
@@ -204,9 +206,8 @@ fn slice_novelty_to_leaves<'a>(
     for i in 0..n_leaves {
         if i + 1 < n_leaves {
             let next_first = &manifest.leaves[i + 1].first_key;
-            let split_pos = remaining_records.partition_point(|rec| {
-                cmp(rec, next_first) == std::cmp::Ordering::Less
-            });
+            let split_pos = remaining_records
+                .partition_point(|rec| cmp(rec, next_first) == std::cmp::Ordering::Less);
 
             let (this_recs, rest_recs) = remaining_records.split_at(split_pos);
             let (this_ops, rest_ops) = remaining_ops.split_at(split_pos);

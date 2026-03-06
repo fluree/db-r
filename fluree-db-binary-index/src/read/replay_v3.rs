@@ -427,10 +427,7 @@ fn find_base_assert_at_target(
 ) -> Option<HistEntryV2> {
     // History is sorted by t descending. Find the first assert with t ≤ t_target.
     for entry in history {
-        if entry.t <= t_target
-            && entry.op == 1
-            && FactKeyV3::from_hist(entry) == *key
-        {
+        if entry.t <= t_target && entry.op == 1 && FactKeyV3::from_hist(entry) == *key {
             return Some(*entry);
         }
     }
@@ -555,13 +552,20 @@ mod tests {
         let batch = make_batch(&[(1, 1, 10, 1), (2, 1, 20, 2)]);
         let result = replay_leaflet_v3(&batch, &[], -1, RunSortOrder::Spot);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().row_count, 0, "t_target < 0 means before genesis");
+        assert_eq!(
+            result.unwrap().row_count,
+            0,
+            "t_target < 0 means before genesis"
+        );
     }
 
     #[test]
     fn huge_t_target_returns_none() {
         let batch = make_batch(&[(1, 1, 10, 1)]);
         let result = replay_leaflet_v3(&batch, &[], i64::MAX, RunSortOrder::Spot);
-        assert!(result.is_none(), "t_target > u32::MAX means no replay needed");
+        assert!(
+            result.is_none(),
+            "t_target > u32::MAX means no replay needed"
+        );
     }
 }

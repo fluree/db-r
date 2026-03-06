@@ -119,12 +119,8 @@ pub fn update_leaf_v3(input: &LeafUpdateInputV3<'_>) -> io::Result<LeafUpdateOut
     let dir = decode_leaf_dir_v3_with_base(input.leaf_bytes, &header)?;
 
     // Slice novelty to leaflets.
-    let novelty_slices = slice_novelty_to_leaflets(
-        input.novelty,
-        input.novelty_ops,
-        &dir,
-        input.order,
-    );
+    let novelty_slices =
+        slice_novelty_to_leaflets(input.novelty, input.novelty_ops, &dir, input.order);
 
     // Process each leaflet.
     let mut processed: Vec<ProcessedLeafletV3> = Vec::with_capacity(
@@ -144,13 +140,8 @@ pub fn update_leaf_v3(input: &LeafUpdateInputV3<'_>) -> io::Result<LeafUpdateOut
             )?);
         } else {
             // Decode, merge, re-encode.
-            let mut merged = merge_and_encode_leaflet(
-                input,
-                entry,
-                dir.payload_base,
-                nov_slice,
-                ops_slice,
-            )?;
+            let mut merged =
+                merge_and_encode_leaflet(input, entry, dir.payload_base, nov_slice, ops_slice)?;
             processed.append(&mut merged);
         }
     }
@@ -187,11 +178,12 @@ fn slice_novelty_to_leaflets<'a>(
     }
 
     // Build ordered keys from leaflet first_keys for comparison.
-    let cmp_rec = |rec: &RunRecordV2, boundary_key: &[u8; ORDERED_KEY_V2_SIZE]| -> std::cmp::Ordering {
-        let mut rec_key = [0u8; ORDERED_KEY_V2_SIZE];
-        write_ordered_key_v2(order, rec, &mut rec_key);
-        rec_key.cmp(boundary_key)
-    };
+    let cmp_rec =
+        |rec: &RunRecordV2, boundary_key: &[u8; ORDERED_KEY_V2_SIZE]| -> std::cmp::Ordering {
+            let mut rec_key = [0u8; ORDERED_KEY_V2_SIZE];
+            write_ordered_key_v2(order, rec, &mut rec_key);
+            rec_key.cmp(boundary_key)
+        };
 
     let mut result = Vec::with_capacity(n_leaflets);
     let mut remaining_records = novelty;
@@ -300,8 +292,13 @@ fn merge_and_encode_leaflet(
 ) -> io::Result<Vec<ProcessedLeafletV3>> {
     // 1. Load existing leaflet columns.
     let projection = ColumnProjection::all();
-    let batch =
-        load_leaflet_columns(input.leaf_bytes, entry, payload_base, &projection, input.order)?;
+    let batch = load_leaflet_columns(
+        input.leaf_bytes,
+        entry,
+        payload_base,
+        &projection,
+        input.order,
+    )?;
 
     // 2. Load existing history from sidecar.
     let existing_history = load_existing_history(entry, input.sidecar_bytes)?;
@@ -456,9 +453,8 @@ fn partition_history_to_chunks(
         };
 
         // Find the chunk this entry belongs to via binary search on boundaries.
-        let chunk_idx = boundaries.partition_point(|boundary| {
-            cmp(&entry_rec, boundary) != std::cmp::Ordering::Less
-        });
+        let chunk_idx = boundaries
+            .partition_point(|boundary| cmp(&entry_rec, boundary) != std::cmp::Ordering::Less);
 
         partitioned[chunk_idx].push(*entry);
     }
@@ -695,7 +691,6 @@ fn empty_encoded_leaflet_with_keys(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,10 +715,7 @@ mod tests {
     }
 
     /// Build a V3 leaf from records using LeafWriterV3.
-    fn build_test_leaf(
-        records: &[RunRecordV2],
-        order: RunSortOrder,
-    ) -> (Vec<u8>, Option<Vec<u8>>) {
+    fn build_test_leaf(records: &[RunRecordV2], order: RunSortOrder) -> (Vec<u8>, Option<Vec<u8>>) {
         let mut writer = LeafWriterV3::new(order, 100, 10000, 1);
         writer.set_skip_history(true);
         for rec in records {
@@ -871,8 +863,8 @@ mod tests {
         // Verify the new leaf's directory preserves the original key range (not zeroed).
         let new_header = decode_leaf_header_v3(&output.leaves[0].info.leaf_bytes).unwrap();
         // The leaflet directory first_key should be non-zero (preserved from original).
-        let dir = decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &new_header)
-            .unwrap();
+        let dir =
+            decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &new_header).unwrap();
         assert!(!dir.entries.is_empty());
         // Keys should be the same as the original leaflet's keys.
         assert_eq!(
@@ -927,8 +919,7 @@ mod tests {
         // Decode sidecar and verify history entries are distributed
         // (not all concentrated in segment 0).
         let sc_bytes = output.leaves[0].info.sidecar_bytes.as_ref().unwrap();
-        let dir = decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &header)
-            .unwrap();
+        let dir = decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &header).unwrap();
 
         let mut total_history = 0;
         for entry in &dir.entries {

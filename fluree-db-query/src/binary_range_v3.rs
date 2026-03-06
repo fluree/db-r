@@ -43,9 +43,15 @@ impl RangeProvider for BinaryRangeProviderV3 {
         overlay: &dyn OverlayProvider,
     ) -> std::io::Result<Vec<fluree_db_core::Flake>> {
         match test {
-            RangeTest::Eq => {
-                binary_range_eq_v3(&self.store, &self.dict_novelty, g_id, index, match_val, opts, overlay)
-            }
+            RangeTest::Eq => binary_range_eq_v3(
+                &self.store,
+                &self.dict_novelty,
+                g_id,
+                index,
+                match_val,
+                opts,
+                overlay,
+            ),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 format!("V3 range provider: unsupported RangeTest {:?}", test),
@@ -83,14 +89,13 @@ fn binary_range_eq_v3(
         Some(b) => Arc::new(b.clone()),
         None => {
             // No branch for this order — return overlay-only results if any.
-            return overlay_only_flakes(store, g_id, match_val, opts, overlay);
+            return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
         }
     };
 
     // Create cursor: full scan with filter.
     let projection = ColumnProjection::all();
-    let mut cursor =
-        BinaryCursorV3::scan_all(Arc::clone(store), order, branch, filter, projection);
+    let mut cursor = BinaryCursorV3::scan_all(Arc::clone(store), order, branch, filter, projection);
 
     // Apply overlay.
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
@@ -110,18 +115,16 @@ fn binary_range_eq_v3(
             None,
             true,
             effective_to_t,
-            &mut |flake| {
-                match crate::binary_scan_v3::translate_one_flake_v3_pub(
-                    flake,
-                    store,
-                    Some(dict_novelty),
-                    &mut ephemeral_preds,
-                    &mut next_ep,
-                ) {
-                    Ok(op) => ops.push(op),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "V3 range: failed to translate overlay flake");
-                    }
+            &mut |flake| match crate::binary_scan_v3::translate_one_flake_v3_pub(
+                flake,
+                store,
+                Some(dict_novelty),
+                &mut ephemeral_preds,
+                &mut next_ep,
+            ) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    tracing::warn!(error = %e, "V3 range: failed to translate overlay flake");
                 }
             },
         );
@@ -236,14 +239,79 @@ fn resolve_sid(
 }
 
 /// Overlay-only results when no branch exists for the requested order.
+///
+/// Collects flakes directly from the overlay provider, applies match filtering
+/// and options (offset/limit). Used at genesis or before first indexing when
+/// no persisted branch exists for the requested sort order.
 fn overlay_only_flakes(
-    _store: &Arc<BinaryIndexStoreV6>,
-    _g_id: GraphId,
-    _match_val: &RangeMatch,
-    _opts: &RangeOptions,
-    _overlay: &dyn OverlayProvider,
+    store: &Arc<BinaryIndexStoreV6>,
+    g_id: GraphId,
+    index: IndexType,
+    match_val: &RangeMatch,
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
 ) -> std::io::Result<Vec<fluree_db_core::Flake>> {
-    // For now, return empty. Overlay-only without an index branch is an edge case
-    // that happens at genesis or before first indexing.
-    Ok(Vec::new())
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let offset = opts.offset.unwrap_or(0);
+
+    // Use Cell for early-exit: once we've collected offset+limit, stop cloning.
+    let mut skipped = 0usize;
+    let mut collected = 0usize;
+    let mut flakes = Vec::new();
+
+    overlay.for_each_overlay_flake(
+        g_id,
+        index,
+        None,
+        None,
+        true,
+        effective_to_t,
+        &mut |flake| {
+            // Early exit: already have enough results.
+            if collected >= limit {
+                return;
+            }
+
+            // Only include asserts (op=true).
+            if !flake.op {
+                return;
+            }
+
+            // Filter by match components.
+            if let Some(ref s_sid) = match_val.s {
+                if flake.s != *s_sid {
+                    return;
+                }
+            }
+            if let Some(ref p_sid) = match_val.p {
+                if flake.p != *p_sid {
+                    return;
+                }
+            }
+            if let Some(ref o_val) = match_val.o {
+                if flake.o != *o_val {
+                    return;
+                }
+            }
+
+            // Apply object bounds (same as persisted path).
+            if let Some(ref bounds) = opts.object_bounds {
+                if !bounds.matches(&flake.o) {
+                    return;
+                }
+            }
+
+            // Apply offset.
+            if skipped < offset {
+                skipped += 1;
+                return;
+            }
+
+            flakes.push(flake.clone());
+            collected += 1;
+        },
+    );
+
+    Ok(flakes)
 }

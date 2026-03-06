@@ -175,7 +175,7 @@ pub fn build_v3_indexes_from_commits(
 /// - Input: `&[SortedCommitInfo]` (not `&[V3CommitInput]`)
 /// - Remap: identity (global IDs already in place)
 /// - `skip_dedup: false` (rebuild may have retractions)
-/// - `skip_history: true` (sidecar production deferred to milestone 2)
+/// - `skip_history: false` (produce history sidecars for time-travel)
 pub fn build_v3_indexes_from_remapped_commits(
     commit_infos: &[crate::run_index::runs::spool::SortedCommitInfo],
     registry: &OTypeRegistry,
@@ -230,8 +230,8 @@ pub fn build_v3_indexes_from_remapped_commits(
         leaflet_target_rows: config.leaflet_target_rows,
         leaf_target_rows: config.leaf_target_rows,
         zstd_level: config.zstd_level,
-        skip_dedup: false,  // Rebuild: must deduplicate (max-t wins).
-        skip_history: true, // Sidecar production deferred to milestone 2.
+        skip_dedup: false,   // Rebuild: must deduplicate (max-t wins).
+        skip_history: false, // Produce history sidecars for time-travel.
         g_id: config.g_id,
         progress: None, // Progress already reported during remap.
     };

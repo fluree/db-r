@@ -339,7 +339,9 @@ ex:bob a ex:User ;
         1,
         "expected exactly one subject for description=\"A user\"@en"
     );
-    let alice_s2 = alice_desc_subject_bindings[0]["s"]["value"].as_str().unwrap();
+    let alice_s2 = alice_desc_subject_bindings[0]["s"]["value"]
+        .as_str()
+        .unwrap();
     assert!(
         alice_s2 == "http://example.org/ns/alice" || alice_s2 == "ex:alice",
         "bound langString object scan mismatch: {alice_s2}"
@@ -607,10 +609,7 @@ ex:bob schema:name "Bob" ;
         .await
         .expect("import");
 
-    let ledger = fluree
-        .ledger("test/v3-retract:main")
-        .await
-        .expect("load");
+    let ledger = fluree.ledger("test/v3-retract:main").await.expect("load");
 
     // Retract Bob's name.
     let delete_data = json!({
@@ -653,9 +652,7 @@ ex:bob schema:name "Bob" ;
     let names_json = names_result
         .to_sparql_json(&ledger_after.snapshot)
         .expect("format");
-    let bindings = names_json["results"]["bindings"]
-        .as_array()
-        .expect("array");
+    let bindings = names_json["results"]["bindings"].as_array().expect("array");
     let names: Vec<&str> = bindings
         .iter()
         .map(|b| b["name"]["value"].as_str().unwrap())
@@ -696,10 +693,7 @@ ex:alice schema:name "Alice" .
         .await
         .expect("import");
 
-    let ledger = fluree
-        .ledger("test/v3-lang:main")
-        .await
-        .expect("load");
+    let ledger = fluree.ledger("test/v3-lang:main").await.expect("load");
 
     // Transact a langString via overlay.
     let insert = json!({
@@ -736,9 +730,7 @@ ex:alice schema:name "Alice" .
     let desc_json = desc_result
         .to_sparql_json(&ledger_after.snapshot)
         .expect("format");
-    let desc_bindings = desc_json["results"]["bindings"]
-        .as_array()
-        .expect("array");
+    let desc_bindings = desc_json["results"]["bindings"].as_array().expect("array");
     assert_eq!(desc_bindings.len(), 1, "expected 1 description");
     assert_eq!(
         desc_bindings[0]["desc"]["value"].as_str().unwrap(),
@@ -921,9 +913,7 @@ ex:bob a ex:User ;
     let age_json = age_result
         .to_sparql_json(&rebuilt_ledger.snapshot)
         .expect("format");
-    let age_bindings = age_json["results"]["bindings"]
-        .as_array()
-        .expect("array");
+    let age_bindings = age_json["results"]["bindings"].as_array().expect("array");
     assert_eq!(age_bindings.len(), 1);
     assert_eq!(age_bindings[0]["age"]["value"].as_str().unwrap(), "34");
 
@@ -1176,9 +1166,7 @@ ex:bob a ex:User ;
     let cam_json = cam_result
         .to_sparql_json(&incr_ledger.snapshot)
         .expect("format");
-    let cam_bindings = cam_json["results"]["bindings"]
-        .as_array()
-        .expect("array");
+    let cam_bindings = cam_json["results"]["bindings"].as_array().expect("array");
     assert_eq!(cam_bindings.len(), 1);
     assert_eq!(
         cam_bindings[0]["age"]["value"].as_str().unwrap(),

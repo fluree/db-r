@@ -194,9 +194,7 @@ where
                     );
                 }
             }
-        } else if config.incremental_enabled
-            && record.index_head_id.is_some()
-            && record.index_t > 0
+        } else if config.incremental_enabled && record.index_head_id.is_some() && record.index_t > 0
         {
             tracing::info!(
                 commit_gap = commit_gap,

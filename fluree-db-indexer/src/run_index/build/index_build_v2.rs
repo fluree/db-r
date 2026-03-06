@@ -131,22 +131,72 @@ pub fn build_index_v2(config: &IndexBuildV2Config) -> Result<IndexBuildV2Result,
     let mut progress_batch: u64 = 0;
 
     loop {
-        let result = if config.skip_dedup {
-            merge.next_record()?
+        if config.skip_dedup {
+            // Import path: no dedup, no history.
+            let Some((record, op)) = merge.next_record()? else {
+                break;
+            };
+            if op == 0 {
+                continue;
+            }
+            writer.push_record(record)?;
+        } else if config.skip_history {
+            // Rebuild without history: dedup but discard non-winners.
+            let Some((record, op)) = merge.next_deduped()? else {
+                break;
+            };
+            if op == 0 {
+                continue;
+            }
+            writer.push_record(record)?;
         } else {
-            merge.next_deduped()?
-        };
-        let Some((record, op)) = result else { break };
-
-        // In the rebuild path, retract-winners (op == 0) should be
-        // filtered out so they don't appear in the final index.
-        if op == 0 {
-            continue;
+            // Rebuild with history: dedup and capture non-winners as sidecar entries.
+            let Some((record, op, history)) = merge.next_deduped_with_history()? else {
+                break;
+            };
+            // Push history entries for non-winners (these become sidecar segments).
+            for (hist_rec, hist_op) in &history {
+                writer.push_history_entry(
+                    fluree_db_binary_index::format::history_sidecar::HistEntryV2 {
+                        s_id: hist_rec.s_id,
+                        p_id: hist_rec.p_id,
+                        o_type: hist_rec.o_type,
+                        o_key: hist_rec.o_key,
+                        o_i: hist_rec.o_i,
+                        t: hist_rec.t,
+                        op: *hist_op,
+                    },
+                );
+            }
+            if op == 0 {
+                // Retract-winner: don't push to latest-state, but history is already recorded.
+                // Also push a history-only entry for the retract-winner itself.
+                writer.push_history_entry(
+                    fluree_db_binary_index::format::history_sidecar::HistEntryV2 {
+                        s_id: record.s_id,
+                        p_id: record.p_id,
+                        o_type: record.o_type,
+                        o_key: record.o_key,
+                        o_i: record.o_i,
+                        t: record.t,
+                        op,
+                    },
+                );
+                // Don't count retract-winners in total_rows (they're not in latest-state).
+                // Only track progress for the UI.
+                progress_batch += 1;
+                if progress_batch >= PROGRESS_BATCH_SIZE {
+                    if let Some(ref ctr) = config.progress {
+                        ctr.fetch_add(progress_batch, Ordering::Relaxed);
+                    }
+                    progress_batch = 0;
+                }
+                continue;
+            }
+            writer.push_record(record)?;
         }
 
-        writer.push_record(record)?;
         total_rows += 1;
-
         progress_batch += 1;
         if progress_batch >= PROGRESS_BATCH_SIZE {
             if let Some(ref ctr) = config.progress {

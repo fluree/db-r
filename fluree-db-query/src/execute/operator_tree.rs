@@ -7,10 +7,10 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
-use crate::fast_sum_datetime_component::{DateComponentFn, PredicateSumDateComponentOperator};
 use crate::fast_group_count_firsts::{
     PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
 };
+use crate::fast_sum_datetime_component::{DateComponentFn, PredicateSumDateComponentOperator};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;

@@ -117,8 +117,7 @@ where
 
     for (&g_id, indices) in &by_graph {
         // Extract this graph's records + ops.
-        let graph_records: Vec<RunRecordV2> =
-            indices.iter().map(|&i| novelty.records[i]).collect();
+        let graph_records: Vec<RunRecordV2> = indices.iter().map(|&i| novelty.records[i]).collect();
         let graph_ops: Vec<u8> = indices.iter().map(|&i| novelty.ops[i]).collect();
 
         let is_default_graph = g_id == 0;
@@ -142,9 +141,10 @@ where
 
                 if let Some(leaves) = existing_leaves {
                     // Build a temporary FBR3 manifest for update_branch_v3.
-                    let branch_bytes = fluree_db_binary_index::format::branch_v3::build_branch_v3_bytes(
-                        order, g_id, leaves,
-                    );
+                    let branch_bytes =
+                        fluree_db_binary_index::format::branch_v3::build_branch_v3_bytes(
+                            order, g_id, leaves,
+                        );
 
                     let branch_config = BranchUpdateConfigV3 {
                         order,
@@ -174,7 +174,11 @@ where
                                 .or(Ok(None))
                         },
                     )
-                    .map_err(|e| IndexerError::StorageWrite(format!("V6 branch update g={g_id} {order:?}: {e}")))?;
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!(
+                            "V6 branch update g={g_id} {order:?}: {e}"
+                        ))
+                    })?;
 
                     // Upload new leaf + sidecar blobs.
                     for blob in &result.new_leaf_blobs {
@@ -252,11 +256,12 @@ where
 
                 if let Some(existing_branch_cid) = branch_cid {
                     // Fetch existing branch manifest.
-                    let branch_bytes = content_store.get(existing_branch_cid).await.map_err(|e| {
-                        IndexerError::StorageRead(format!(
-                            "fetch V3 branch g_id={g_id} {order:?}: {e}"
-                        ))
-                    })?;
+                    let branch_bytes =
+                        content_store.get(existing_branch_cid).await.map_err(|e| {
+                            IndexerError::StorageRead(format!(
+                                "fetch V3 branch g_id={g_id} {order:?}: {e}"
+                            ))
+                        })?;
 
                     let branch_config = BranchUpdateConfigV3 {
                         order,
@@ -286,9 +291,11 @@ where
                                 .or(Ok(None))
                         },
                     )
-                    .map_err(|e| IndexerError::StorageWrite(format!(
-                        "V6 branch update g={g_id} {order:?}: {e}"
-                    )))?;
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!(
+                            "V6 branch update g={g_id} {order:?}: {e}"
+                        ))
+                    })?;
 
                     // Upload new leaf + sidecar blobs.
                     for blob in &result.new_leaf_blobs {
@@ -329,12 +336,7 @@ where
                     root_builder.add_replaced_cids(result.replaced_sidecar_cids);
                 } else {
                     // No existing branch for this named graph + order — build from scratch.
-                    let result = build_fresh_named_graph_v3(
-                        &sorted_records,
-                        order,
-                        g_id,
-                        &config,
-                    )?;
+                    let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, &config)?;
 
                     // Upload blobs.
                     for blob in &result.new_leaf_blobs {
@@ -429,11 +431,11 @@ where
     // Forward packs are append-only: existing pack refs are preserved, new entries get
     // their own pack artifacts appended to the routing list.
     {
+        use super::upload::cid_from_write;
         use fluree_db_binary_index::dict::incremental::{
             build_incremental_string_packs, build_incremental_subject_packs_for_ns,
         };
         use fluree_db_binary_index::format::index_root::PackBranchEntry;
-        use super::upload::cid_from_write;
 
         // String forward packs.
         // Invariant: new_strings is sorted by string_id ascending (enforced by resolver).
@@ -482,7 +484,10 @@ where
         // Invariant: new_subjects is sorted by (ns_code, local_id) ascending (enforced by resolver).
         if !novelty.new_subjects.is_empty() {
             debug_assert!(
-                novelty.new_subjects.windows(2).all(|w| (w[0].0, w[0].1) <= (w[1].0, w[1].1)),
+                novelty
+                    .new_subjects
+                    .windows(2)
+                    .all(|w| (w[0].0, w[0].1) <= (w[1].0, w[1].1)),
                 "new_subjects must be sorted by (ns_code, local_id) ascending"
             );
 
@@ -522,9 +527,7 @@ where
                     &entry_refs,
                 )
                 .map_err(|e| {
-                    IndexerError::StorageWrite(format!(
-                        "subject fwd pack build ns={ns_code}: {e}"
-                    ))
+                    IndexerError::StorageWrite(format!("subject fwd pack build ns={ns_code}: {e}"))
                 })?;
 
                 // Upload new packs and build updated refs.
@@ -710,10 +713,10 @@ fn build_fresh_default_graph_v3(
     g_id: u16,
     config: &IndexerConfig,
 ) -> Result<BranchUpdateResultV3> {
+    use crate::run_index::build::incremental_leaf_v3::NewLeafBlobV3;
     use fluree_db_binary_index::format::branch_v3::{build_branch_v3_bytes, LeafEntryV3};
     use fluree_db_binary_index::format::leaf_v3::LeafWriterV3;
     use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
-    use crate::run_index::build::incremental_leaf_v3::NewLeafBlobV3;
 
     let leaflet_target = config.leaflet_rows.max(1);
     let leaf_target = leaflet_target.saturating_mul(config.leaflets_per_leaf.max(1));
@@ -733,8 +736,11 @@ fn build_fresh_default_graph_v3(
     let mut new_blobs = Vec::with_capacity(leaf_infos.len());
 
     for info in leaf_infos {
-        let header = fluree_db_binary_index::format::leaf_v3::decode_leaf_header_v3(&info.leaf_bytes)
-            .map_err(|e| IndexerError::StorageWrite(format!("decode fresh leaf header: {e}")))?;
+        let header =
+            fluree_db_binary_index::format::leaf_v3::decode_leaf_header_v3(&info.leaf_bytes)
+                .map_err(|e| {
+                    IndexerError::StorageWrite(format!("decode fresh leaf header: {e}"))
+                })?;
         let first_key = read_ordered_key_v2(order, &header.first_key);
         let last_key = read_ordered_key_v2(order, &header.last_key);
 

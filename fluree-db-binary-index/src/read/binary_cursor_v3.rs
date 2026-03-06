@@ -218,9 +218,7 @@ impl BinaryCursorV3 {
                     // Pre-skip by directory metadata (only when no overlay —
                     // overlay merge may add rows to otherwise-skippable leaflets).
                     let has_ov = self.has_overlay();
-                    if !has_ov
-                        && self.filter.skip_leaflet(entry.p_const, entry.o_type_const)
-                    {
+                    if !has_ov && self.filter.skip_leaflet(entry.p_const, entry.o_type_const) {
                         continue;
                     }
                     if entry.row_count == 0 && !has_ov {

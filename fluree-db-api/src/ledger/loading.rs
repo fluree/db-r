@@ -97,11 +97,10 @@ where
                     // Attach V3 range provider so policy/SHACL/reasoner/property
                     // paths work through range_with_overlay().
                     if state.snapshot.range_provider.is_none() {
-                        let provider =
-                            fluree_db_query::BinaryRangeProviderV3::new(
-                                Arc::clone(&arc_store_v6),
-                                state.dict_novelty.clone(),
-                            );
+                        let provider = fluree_db_query::BinaryRangeProviderV3::new(
+                            Arc::clone(&arc_store_v6),
+                            state.dict_novelty.clone(),
+                        );
                         state.snapshot.range_provider = Some(Arc::new(provider));
                     }
 

@@ -22,7 +22,9 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use chrono::Datelike;
 use fluree_db_binary_index::format::column_block::ColumnId;
-use fluree_db_binary_index::format::leaf_v3::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3};
+use fluree_db_binary_index::format::leaf_v3::{
+    decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
+};
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
@@ -113,12 +115,8 @@ impl Operator for PredicateSumDateComponentOperator {
 
         if allow_fast {
             if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
-                let sum = sum_component_v6(
-                    store_v6,
-                    ctx.binary_g_id,
-                    &self.predicate,
-                    self.component,
-                )?;
+                let sum =
+                    sum_component_v6(store_v6, ctx.binary_g_id, &self.predicate, self.component)?;
                 self.state = OperatorState::Open;
                 self.done = false;
                 // Store sum in fallback-less path by stashing it in done-state batch generation.
@@ -130,12 +128,8 @@ impl Operator for PredicateSumDateComponentOperator {
             }
 
             if let Some(store_v5) = ctx.binary_store.as_ref() {
-                let sum = sum_component_v5(
-                    store_v5,
-                    ctx.binary_g_id,
-                    &self.predicate,
-                    self.component,
-                )?;
+                let sum =
+                    sum_component_v5(store_v5, ctx.binary_g_id, &self.predicate, self.component)?;
                 self.state = OperatorState::Open;
                 self.done = false;
                 self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
@@ -203,10 +197,7 @@ impl PrecomputedSingleBatchOperator {
 #[async_trait]
 impl Operator for PrecomputedSingleBatchOperator {
     fn schema(&self) -> &[VarId] {
-        self.batch
-            .as_ref()
-            .map(|b| b.schema())
-            .unwrap_or(&[])
+        self.batch.as_ref().map(|b| b.schema()).unwrap_or(&[])
     }
 
     async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -319,8 +310,9 @@ fn sum_component_v6(
                 internal: needed,
             };
 
-            let batch = load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
-                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+            let batch =
+                load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
 
             for row in 0..batch.row_count {
                 let o_key = batch.o_key.get(row);
@@ -392,11 +384,7 @@ fn component_from_otype_okey(o_type: u16, o_key: u64, component: DateComponentFn
         // xsd:dateTime: epoch micros; interpret in UTC for component extraction.
         let micros = key.decode_datetime();
         let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_micros(micros)?;
-        (
-            dt.year() as i64,
-            dt.month() as i64,
-            dt.day() as i64,
-        )
+        (dt.year() as i64, dt.month() as i64, dt.day() as i64)
     } else {
         return None;
     };
@@ -480,7 +468,9 @@ fn component_from_okey_v5(kind: ObjKind, key: ObjKey, component: DateComponentFn
             (y as i64, m as i64, 1)
         }
         x if x == ObjKind::G_MONTH.as_u8() => (DEFAULT_YEAR, key.decode_g_month() as i64, 1),
-        x if x == ObjKind::G_DAY.as_u8() => (DEFAULT_YEAR, DEFAULT_MONTH, key.decode_g_day() as i64),
+        x if x == ObjKind::G_DAY.as_u8() => {
+            (DEFAULT_YEAR, DEFAULT_MONTH, key.decode_g_day() as i64)
+        }
         x if x == ObjKind::G_MONTH_DAY.as_u8() => {
             let (m, d) = key.decode_g_month_day();
             (DEFAULT_YEAR, m as i64, d as i64)
@@ -505,4 +495,3 @@ fn component_from_okey_v5(kind: ObjKind, key: ObjKey, component: DateComponentFn
         DateComponentFn::Day => Some(day),
     }
 }
-

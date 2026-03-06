@@ -149,6 +149,42 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
         Ok(Some((winner, winner_op)))
     }
 
+    /// Like `next_deduped`, but also returns non-winning entries as history.
+    ///
+    /// Returns `(winner, winner_op, history)` where `history` contains all
+    /// non-winning duplicates (same identity, lower t) as `(RunRecordV2, u8)` pairs.
+    /// These are the entries that should become history sidecar entries.
+    #[allow(clippy::type_complexity)]
+    pub fn next_deduped_with_history(
+        &mut self,
+    ) -> io::Result<Option<(RunRecordV2, u8, Vec<(RunRecordV2, u8)>)>> {
+        let (mut winner, mut winner_op) = match self.next_record()? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+        let mut history: Vec<(RunRecordV2, u8)> = Vec::new();
+
+        // Consume consecutive duplicates, keeping the highest-t as winner.
+        while let Some(peeked) = self.heap.first().map(|e| &e.record) {
+            if !same_identity_v2(&winner, peeked) {
+                break;
+            }
+            let (dup, dup_op) = self.next_record()?.unwrap();
+            if dup.t > winner.t {
+                // The old winner becomes history.
+                history.push((winner, winner_op));
+                winner = dup;
+                winner_op = dup_op;
+            } else {
+                // The dup is history.
+                history.push((dup, dup_op));
+            }
+        }
+
+        Ok(Some((winner, winner_op, history)))
+    }
+
     pub fn is_exhausted(&self) -> bool {
         self.heap.is_empty()
     }

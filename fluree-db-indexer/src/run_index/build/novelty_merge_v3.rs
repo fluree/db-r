@@ -659,7 +659,7 @@ mod tests {
 
         let out = merge_novelty_v3(&input);
         assert_eq!(out.records.len(), 0); // empty latest-state
-        // History: new retraction (t=5) + old assert (t=1)
+                                          // History: new retraction (t=5) + old assert (t=1)
         assert_eq!(out.history.len(), 2);
         assert_eq!(out.history[0].t, 5);
         assert_eq!(out.history[0].op, 0); // retract

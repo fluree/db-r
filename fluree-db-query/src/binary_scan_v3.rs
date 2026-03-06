@@ -638,18 +638,16 @@ fn translate_overlay_flakes_v3(
         None,
         true,
         to_t,
-        &mut |flake| {
-            match translate_one_flake_v3_pub(
-                flake,
-                store,
-                dict_novelty,
-                &mut ephemeral_preds,
-                &mut next_ephemeral_p_id,
-            ) {
-                Ok(op) => ops.push(op),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to translate overlay flake to V3");
-                }
+        &mut |flake| match translate_one_flake_v3_pub(
+            flake,
+            store,
+            dict_novelty,
+            &mut ephemeral_preds,
+            &mut next_ephemeral_p_id,
+        ) {
+            Ok(op) => ops.push(op),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to translate overlay flake to V3");
             }
         },
     );
@@ -713,13 +711,11 @@ fn resolve_predicate_v3(
         return id;
     }
     // Ephemeral allocation for novel predicates.
-    *ephemeral_preds
-        .entry(iri.to_string())
-        .or_insert_with(|| {
-            let id = *next_ephemeral_p_id;
-            *next_ephemeral_p_id += 1;
-            id
-        })
+    *ephemeral_preds.entry(iri.to_string()).or_insert_with(|| {
+        let id = *next_ephemeral_p_id;
+        *next_ephemeral_p_id += 1;
+        id
+    })
 }
 
 /// Resolve a subject Sid to s_id using persisted dict then DictNovelty.
@@ -769,7 +765,10 @@ fn resolve_string_v3(
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        format!("string not found in dict: {}", &value[..value.len().min(50)]),
+        format!(
+            "string not found in dict: {}",
+            &value[..value.len().min(50)]
+        ),
     ))
 }
 
@@ -804,7 +803,10 @@ fn value_to_otype_okey(
             dict_novelty,
         )?;
         let lang_id = store.resolve_lang_id(lang_tag).unwrap_or_else(|| {
-            tracing::warn!(tag = lang_tag, "language tag not found in persisted dict, using 1");
+            tracing::warn!(
+                tag = lang_tag,
+                "language tag not found in persisted dict, using 1"
+            );
             1
         });
         return Ok((OType::lang_string(lang_id), str_id as u64));
@@ -870,10 +872,7 @@ fn value_to_otype_okey(
             let micros = t.micros_since_midnight();
             Ok((OType::XSD_TIME, ObjKey::encode_time(micros).as_u64()))
         }
-        FlakeValue::GYear(g) => Ok((
-            OType::XSD_G_YEAR,
-            ObjKey::encode_g_year(g.year()).as_u64(),
-        )),
+        FlakeValue::GYear(g) => Ok((OType::XSD_G_YEAR, ObjKey::encode_g_year(g.year()).as_u64())),
         FlakeValue::GYearMonth(g) => Ok((
             OType::XSD_G_YEAR_MONTH,
             ObjKey::encode_g_year_month(g.year(), g.month()).as_u64(),
