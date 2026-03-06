@@ -123,11 +123,10 @@ fn detect_predicate_group_by_object_count_topk(
     }
     // ORDER BY DESC(?count) and LIMIT k required so we can do top-k directly.
     let limit = options.limit?;
-    if options.order_by.len() != 1 {
+    let [ob] = options.order_by.as_slice() else {
         return None;
-    }
-    let ob = &options.order_by[0];
-    if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
+    };
+    if ob.var != agg.output_var || ob.direction != SortDirection::Descending {
         return None;
     }
     Some((pred, *s_var, *o_var, agg.output_var, limit))
