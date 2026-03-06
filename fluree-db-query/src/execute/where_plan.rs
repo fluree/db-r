@@ -898,13 +898,11 @@ pub fn build_where_operators_seeded_with_needed(
             Some(Pattern::Triple(_)) | Some(Pattern::Values { .. }) | Some(Pattern::Bind { .. })
         );
 
-    // Start with provided seed, else start with empty operator if needed
-    let mut operator: Option<BoxedOperator> = if let Some(seed) = seed {
-        Some(seed)
-    } else if needs_empty_seed {
-        Some(Box::new(EmptyOperator::new()))
-    } else {
-        None
+    // Start with provided seed, else start with empty operator if needed.
+    let mut operator: Option<BoxedOperator> = match (seed, needs_empty_seed) {
+        (Some(seed), _) => Some(seed),
+        (None, true) => Some(Box::new(EmptyOperator::new())),
+        (None, false) => None,
     };
 
     // Precompute suffix variable sets for O(1) augmentation at each pattern.
