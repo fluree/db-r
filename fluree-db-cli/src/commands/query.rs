@@ -91,6 +91,7 @@ pub async fn run(
     expr: Option<&str>,
     file_flag: Option<&Path>,
     format_str: &str,
+    normalize_arrays: bool,
     bench: bool,
     sparql_flag: bool,
     fql_flag: bool,
@@ -119,12 +120,13 @@ pub async fn run(
     // Parse output format
     let output_format = match format_str.to_lowercase().as_str() {
         "json" => OutputFormatKind::Json,
+        "typed-json" | "typed_json" | "typedjson" => OutputFormatKind::TypedJson,
         "table" => OutputFormatKind::Table,
         "csv" => OutputFormatKind::Csv,
         "tsv" => OutputFormatKind::Tsv,
         other => {
             return Err(CliError::Usage(format!(
-                "unknown output format '{other}'; valid formats: json, table, csv, tsv"
+                "unknown output format '{other}'; valid formats: json, typed-json, table, csv, tsv"
             )));
         }
     };
@@ -369,15 +371,15 @@ pub async fn run(
                 );
             } else {
                 // JSON-LD queries can produce nested graph crawl results; always render as JSON.
-                let output_format = if query_format == detect::QueryFormat::JsonLd {
-                    OutputFormatKind::Json
-                } else {
-                    output_format
+                let display_format = match output_format {
+                    OutputFormatKind::TypedJson => OutputFormatKind::TypedJson,
+                    _ if query_format == detect::QueryFormat::JsonLd => OutputFormatKind::Json,
+                    _ => output_format,
                 };
 
                 // Fast path: SPARQL default table output (avoid materializing full SPARQL JSON).
                 if query_format == detect::QueryFormat::Sparql
-                    && output_format == OutputFormatKind::Table
+                    && display_format == OutputFormatKind::Table
                     && limit.is_none()
                 {
                     let render_timer = Instant::now();
@@ -398,14 +400,25 @@ pub async fn run(
 
                 // Full formatting path
                 let render_timer = Instant::now();
-                let formatted_json = match query_format {
-                    detect::QueryFormat::Sparql => result.to_sparql_json(&view.snapshot)?,
-                    detect::QueryFormat::JsonLd => {
-                        result.to_jsonld_async(view.as_graph_db_ref()).await?
+                let formatted_json = if display_format == OutputFormatKind::TypedJson {
+                    let mut config = fluree_db_api::FormatterConfig::typed_json();
+                    if normalize_arrays {
+                        config = config.with_normalize_arrays();
+                    }
+                    result.format_async(view.as_graph_db_ref(), &config).await?
+                } else if normalize_arrays && query_format == detect::QueryFormat::JsonLd {
+                    let config = fluree_db_api::FormatterConfig::jsonld().with_normalize_arrays();
+                    result.format_async(view.as_graph_db_ref(), &config).await?
+                } else {
+                    match query_format {
+                        detect::QueryFormat::Sparql => result.to_sparql_json(&view.snapshot)?,
+                        detect::QueryFormat::JsonLd => {
+                            result.to_jsonld_async(view.as_graph_db_ref()).await?
+                        }
                     }
                 };
                 let output =
-                    output::format_result(&formatted_json, output_format, query_format, limit)?;
+                    output::format_result(&formatted_json, display_format, query_format, limit)?;
                 let render_elapsed = render_timer.elapsed();
                 println!("{}", output.text);
                 eprintln!(

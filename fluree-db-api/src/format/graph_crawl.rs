@@ -17,7 +17,7 @@
 //! {"select": {"ex:alice": ["*"]}}
 //! ```
 
-use super::config::FormatterConfig;
+use super::config::{FormatterConfig, OutputFormat};
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
@@ -181,7 +181,7 @@ pub async fn format_async(
     result: &QueryResult,
     db: GraphDbRef<'_>,
     compactor: &IriCompactor,
-    _config: &FormatterConfig,
+    config: &FormatterConfig,
     policy: Option<&PolicyContext>,
     tracker: Option<&Tracker>,
 ) -> Result<JsonValue> {
@@ -189,7 +189,7 @@ pub async fn format_async(
         FormatError::InvalidBinding("Graph crawl format called without graph_select spec".into())
     })?;
 
-    let formatter = GraphCrawlFormatter::new(db, compactor, spec, policy, tracker);
+    let formatter = GraphCrawlFormatter::new(db, compactor, spec, config, policy, tracker);
 
     // Shared cache across all rows
     let mut cache: HashMap<CacheKey, JsonValue> = HashMap::new();
@@ -267,6 +267,11 @@ pub async fn format_async(
                                 row.push(obj.clone());
                             } else {
                                 let value = match batch.get(row_idx, *var) {
+                                    Some(binding) if formatter.typed => {
+                                        super::typed::format_binding_with_result(
+                                            result, binding, compactor,
+                                        )?
+                                    }
                                     Some(binding) => super::jsonld::format_binding_with_result(
                                         result, binding, compactor,
                                     )?,
@@ -292,6 +297,10 @@ struct GraphCrawlFormatter<'a> {
     db: GraphDbRef<'a>,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
+    /// Whether to emit typed JSON (`{"@value": ..., "@type": ...}`) for all literals.
+    typed: bool,
+    /// Whether to always wrap property values in arrays (even single-valued).
+    normalize_arrays: bool,
     /// Optional policy context for access control filtering.
     /// When None, no policy filtering is applied (zero overhead).
     policy: Option<&'a PolicyContext>,
@@ -304,6 +313,7 @@ impl<'a> GraphCrawlFormatter<'a> {
         db: GraphDbRef<'a>,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,
+        config: &FormatterConfig,
         policy: Option<&'a PolicyContext>,
         tracker: Option<&'a Tracker>,
     ) -> Self {
@@ -311,6 +321,8 @@ impl<'a> GraphCrawlFormatter<'a> {
             db,
             compactor,
             spec,
+            typed: config.format == OutputFormat::TypedJson,
+            normalize_arrays: config.normalize_arrays,
             policy,
             tracker,
         }
@@ -407,8 +419,10 @@ impl<'a> GraphCrawlFormatter<'a> {
 
                 if !values.is_empty() {
                     let key = self.format_predicate_key(&pred)?;
-                    // Single value vs array (based on actual cardinality)
-                    if values.len() == 1 && !self.force_array_for_key(&key) {
+                    if values.len() == 1
+                        && !self.normalize_arrays
+                        && !self.force_array_for_key(&key)
+                    {
                         obj.insert(key, values.into_iter().next().unwrap());
                     } else {
                         obj.insert(key, JsonValue::Array(values));
@@ -432,7 +446,10 @@ impl<'a> GraphCrawlFormatter<'a> {
                         .await?;
                     if !values.is_empty() {
                         let key = self.compactor.compact_sid(rev_pred)?;
-                        if values.len() == 1 && !self.force_array_for_key(&key) {
+                        if values.len() == 1
+                            && !self.normalize_arrays
+                            && !self.force_array_for_key(&key)
+                        {
                             obj.insert(key, values.into_iter().next().unwrap());
                         } else {
                             obj.insert(key, JsonValue::Array(values));
@@ -573,6 +590,8 @@ impl<'a> GraphCrawlFormatter<'a> {
                     // Literal value
                     if let Some(nested) = pred_ctx.explicit_sub_spec {
                         values.push(self.format_literal_virtual(flake, nested)?);
+                    } else if self.typed {
+                        values.push(self.format_typed_literal_value(flake)?);
                     } else {
                         values.push(self.format_literal_value(flake)?);
                     }
@@ -764,6 +783,94 @@ impl<'a> GraphCrawlFormatter<'a> {
             FlakeValue::DayTimeDuration(v) => JsonValue::String(v.to_string()),
             FlakeValue::Duration(v) => JsonValue::String(v.to_string()),
             FlakeValue::GeoPoint(v) => JsonValue::String(v.to_string()),
+        };
+
+        Ok(json!({
+            "@value": value_json,
+            "@type": dt_compact
+        }))
+    }
+
+    /// Format a literal flake value with explicit type annotations (TypedJson mode).
+    ///
+    /// Always emits `{"@value": ..., "@type": "..."}` for every literal, including
+    /// types that would normally be inferred (xsd:string, xsd:long, etc.).
+    /// Language-tagged strings use `{"@value": ..., "@language": "..."}` (no @type).
+    /// `@json` values use `{"@value": <parsed>, "@type": "@json"}`.
+    fn format_typed_literal_value(&self, flake: &Flake) -> Result<JsonValue> {
+        let dt_full = self.compactor.decode_sid(&flake.dt)?;
+        let dt_compact = self.compactor.compact_sid(&flake.dt)?;
+
+        // @json datatype: deserialize and wrap with @type
+        if dt_full == rdf::JSON || dt_compact == "@json" {
+            return match &flake.o {
+                FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
+                    let json_val: JsonValue = serde_json::from_str(json_str).map_err(|e| {
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                    })?;
+                    Ok(json!({
+                        "@value": json_val,
+                        "@type": "@json"
+                    }))
+                }
+                _ => Err(FormatError::InvalidBinding(
+                    "@json datatype must have FlakeValue::Json".to_string(),
+                )),
+            };
+        }
+
+        // Language-tagged string: use @language instead of @type
+        if let Some(ref meta) = flake.m {
+            if let Some(ref lang) = meta.lang {
+                return match &flake.o {
+                    FlakeValue::String(s) => Ok(json!({
+                        "@value": s,
+                        "@language": lang
+                    })),
+                    FlakeValue::Null => Ok(JsonValue::Null),
+                    _ => Err(FormatError::InvalidBinding(
+                        "Language-tagged literals must be strings".to_string(),
+                    )),
+                };
+            }
+        }
+
+        // All other types: always include @type
+        let value_json = match &flake.o {
+            FlakeValue::String(s) => json!(s),
+            FlakeValue::Long(n) => json!(n),
+            FlakeValue::Double(d) => {
+                if d.is_nan() {
+                    json!("NaN")
+                } else if d.is_infinite() {
+                    if d.is_sign_positive() {
+                        json!("INF")
+                    } else {
+                        json!("-INF")
+                    }
+                } else {
+                    json!(d)
+                }
+            }
+            FlakeValue::Boolean(b) => json!(b),
+            FlakeValue::Vector(v) => json!(v),
+            FlakeValue::Json(_) => unreachable!("@json handled above"),
+            FlakeValue::Null => return Ok(JsonValue::Null),
+            FlakeValue::Ref(sid) => return Ok(json!({ "@id": self.compactor.compact_sid(sid)? })),
+            FlakeValue::BigInt(n) => json!(n.to_string()),
+            FlakeValue::Decimal(d) => json!(d.to_string()),
+            FlakeValue::DateTime(dt) => json!(dt.to_string()),
+            FlakeValue::Date(d) => json!(d.to_string()),
+            FlakeValue::Time(t) => json!(t.to_string()),
+            FlakeValue::GYear(v) => json!(v.to_string()),
+            FlakeValue::GYearMonth(v) => json!(v.to_string()),
+            FlakeValue::GMonth(v) => json!(v.to_string()),
+            FlakeValue::GDay(v) => json!(v.to_string()),
+            FlakeValue::GMonthDay(v) => json!(v.to_string()),
+            FlakeValue::YearMonthDuration(v) => json!(v.to_string()),
+            FlakeValue::DayTimeDuration(v) => json!(v.to_string()),
+            FlakeValue::Duration(v) => json!(v.to_string()),
+            FlakeValue::GeoPoint(v) => json!(v.to_string()),
         };
 
         Ok(json!({

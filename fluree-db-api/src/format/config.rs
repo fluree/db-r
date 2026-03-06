@@ -102,6 +102,19 @@ pub struct FormatterConfig {
     ///
     /// When true, uses indentation and newlines for human readability.
     pub pretty: bool,
+
+    /// Normalize multi-value properties to always use arrays
+    ///
+    /// When true, graph crawl results always wrap property values in arrays,
+    /// even when there is only a single value. This ensures predictable shapes
+    /// for programmatic consumers (e.g., deserializing into `Vec<T>` fields).
+    ///
+    /// When false (default), single-valued properties return bare scalars and
+    /// multi-valued properties return arrays (existing behavior). The
+    /// `@container: @set` context annotation still forces arrays per-property.
+    ///
+    /// Only affects graph crawl formatting; tabular SELECT results are unaffected.
+    pub normalize_arrays: bool,
 }
 
 impl FormatterConfig {
@@ -159,6 +172,16 @@ impl FormatterConfig {
     /// Set the JSON-LD row shape
     pub fn with_row_shape(mut self, shape: JsonLdRowShape) -> Self {
         self.jsonld_row_shape = shape;
+        self
+    }
+
+    /// Enable array normalization for graph crawl results
+    ///
+    /// When enabled, all multi-value properties are wrapped in arrays even
+    /// when only a single value exists. This produces predictable shapes for
+    /// deserialization into typed structs (e.g., `Vec<String>` fields).
+    pub fn with_normalize_arrays(mut self) -> Self {
+        self.normalize_arrays = true;
         self
     }
 }

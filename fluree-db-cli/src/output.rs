@@ -11,6 +11,7 @@ use fluree_db_query::binding::Binding;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormatKind {
     Json,
+    TypedJson,
     Table,
     Csv,
     Tsv,
@@ -20,6 +21,7 @@ impl std::fmt::Display for OutputFormatKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json => f.write_str("json"),
+            Self::TypedJson => f.write_str("typed-json"),
             Self::Table => f.write_str("table"),
             Self::Csv => f.write_str("csv"),
             Self::Tsv => f.write_str("tsv"),
@@ -243,7 +245,9 @@ pub fn format_result(
     limit: Option<usize>,
 ) -> CliResult<FormatOutput> {
     match format {
-        OutputFormatKind::Json => format_json(json, query_format, limit),
+        OutputFormatKind::Json | OutputFormatKind::TypedJson => {
+            format_json(json, query_format, limit)
+        }
         OutputFormatKind::Table => format_as_table(json, query_format, limit),
         OutputFormatKind::Csv | OutputFormatKind::Tsv => {
             // TSV/CSV should be handled before reaching this function (via QueryResult methods).

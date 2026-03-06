@@ -11,30 +11,23 @@ Fluree supports multiple output formats for query results, each optimized for di
 **Characteristics:**
 - Uses `@context` for IRI compaction
 - Compact IRIs (e.g., `ex:alice` instead of full IRIs)
-- Type-preserving (datatypes maintained)
+- Inferable datatypes (string, long, double, boolean) rendered as bare values
 - Language tags preserved
 
-**Example:**
+**Example (graph crawl):**
 
 ```json
-{
-  "@context": {
-    "ex": "http://example.org/ns/"
-  },
-  "@graph": [
-    {
-      "@id": "ex:alice",
-      "ex:name": "Alice",
-      "ex:age": {
-        "@value": "30",
-        "@type": "http://www.w3.org/2001/XMLSchema#integer"
-      }
-    }
-  ]
-}
+[
+  {
+    "@id": "ex:alice",
+    "schema:name": "Alice",
+    "schema:age": 30,
+    "schema:knows": {"@id": "ex:bob"}
+  }
+]
 ```
 
-**Row Format:**
+**Example (tabular SELECT):**
 
 ```json
 [
@@ -72,17 +65,6 @@ Standard SPARQL 1.1 result format for SPARQL queries.
           "value": "30",
           "datatype": "http://www.w3.org/2001/XMLSchema#integer"
         }
-      },
-      {
-        "name": {
-          "type": "literal",
-          "value": "Bob"
-        },
-        "age": {
-          "type": "literal",
-          "value": "25",
-          "datatype": "http://www.w3.org/2001/XMLSchema#integer"
-        }
       }
     ]
   }
@@ -91,40 +73,72 @@ Standard SPARQL 1.1 result format for SPARQL queries.
 
 ### Typed JSON Format
 
-Type-preserving JSON format with explicit datatype information.
+Type-preserving JSON format with explicit datatype information on every value. Works with both tabular SELECT queries and graph crawl (entity-centric) queries.
 
 **Characteristics:**
-- Explicit datatype information
-- Language tags preserved
-- IRI expansion/compaction
-- Suitable for type-aware applications
+- Every literal includes `{"@value": ..., "@type": "..."}` — even inferable types
+- References use `{"@id": "..."}`
+- Language-tagged strings use `{"@value": ..., "@language": "..."}`
+- `@json` values use `{"@value": <parsed>, "@type": "@json"}`
+- Nested entities in graph crawl results are also fully typed
+- IRIs compacted via `@context`
 
-**Example:**
+**Example (tabular SELECT):**
 
 ```json
 [
   {
-    "name": {
-      "value": "Alice",
-      "type": "http://www.w3.org/2001/XMLSchema#string"
-    },
-    "age": {
-      "value": 30,
-      "type": "http://www.w3.org/2001/XMLSchema#integer"
-    }
-  },
-  {
-    "name": {
-      "value": "Bob",
-      "type": "http://www.w3.org/2001/XMLSchema#string"
-    },
-    "age": {
-      "value": 25,
-      "type": "http://www.w3.org/2001/XMLSchema#integer"
-    }
+    "?name": {"@value": "Alice", "@type": "xsd:string"},
+    "?age": {"@value": 30, "@type": "xsd:long"}
   }
 ]
 ```
+
+**Example (graph crawl):**
+
+```json
+[
+  {
+    "@id": "ex:alice",
+    "@type": ["schema:Person"],
+    "schema:name": {"@value": "Alice", "@type": "xsd:string"},
+    "schema:age": {"@value": 30, "@type": "xsd:long"},
+    "schema:knows": {
+      "@id": "ex:bob",
+      "schema:name": {"@value": "Bob", "@type": "xsd:string"}
+    },
+    "ex:data": {"@value": {"key": "val"}, "@type": "@json"}
+  }
+]
+```
+
+## Array Normalization
+
+By default, graph crawl results return single-valued properties as bare scalars and multi-valued properties as arrays:
+
+```json
+{"schema:name": "Alice", "ex:tags": ["rust", "wasm"]}
+```
+
+This can be problematic for typed struct deserialization (e.g., a `Vec<String>` field that receives a bare string when only one value exists).
+
+**`normalize_arrays`** forces all property values into arrays regardless of cardinality:
+
+```json
+{"schema:name": ["Alice"], "ex:tags": ["rust", "wasm"]}
+```
+
+This is orthogonal to typed JSON and can be combined with any format:
+
+```rust
+// Typed + normalized — most predictable for struct deserialization
+let config = FormatterConfig::typed_json().with_normalize_arrays();
+
+// JSON-LD + normalized — compact values but predictable shapes
+let config = FormatterConfig::jsonld().with_normalize_arrays();
+```
+
+The `@container: @set` context annotation still forces arrays per-property and works regardless of the `normalize_arrays` setting.
 
 ## Format Selection
 
@@ -164,19 +178,19 @@ WHERE {
 **JSON-LD:**
 
 ```json
-{
-  "@value": "Hello",
-  "@type": "http://www.w3.org/2001/XMLSchema#string"
-}
+"Hello"
+```
+
+**Typed JSON:**
+
+```json
+{"@value": "Hello", "@type": "xsd:string"}
 ```
 
 **SPARQL JSON:**
 
 ```json
-{
-  "type": "literal",
-  "value": "Hello"
-}
+{"type": "literal", "value": "Hello"}
 ```
 
 ### Numeric Types
@@ -184,60 +198,41 @@ WHERE {
 **JSON-LD:**
 
 ```json
-{
-  "@value": "42",
-  "@type": "http://www.w3.org/2001/XMLSchema#integer"
-}
+42
+```
+
+**Typed JSON:**
+
+```json
+{"@value": 42, "@type": "xsd:long"}
 ```
 
 **SPARQL JSON:**
 
 ```json
-{
-  "type": "literal",
-  "value": "42",
-  "datatype": "http://www.w3.org/2001/XMLSchema#integer"
-}
+{"type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer"}
 ```
 
 ### Language-Tagged Strings
 
-**JSON-LD:**
+All formats use the same representation:
 
 ```json
-{
-  "@value": "Hello",
-  "@language": "en"
-}
-```
-
-**SPARQL JSON:**
-
-```json
-{
-  "type": "literal",
-  "value": "Hello",
-  "xml:lang": "en"
-}
+{"@value": "Hello", "@language": "en"}
 ```
 
 ### IRIs
 
-**JSON-LD:**
+**JSON-LD / Typed JSON:**
 
 ```json
-{
-  "@id": "ex:alice"
-}
+{"@id": "ex:alice"}
 ```
 
 **SPARQL JSON:**
 
 ```json
-{
-  "type": "uri",
-  "value": "http://example.org/ns/alice"
-}
+{"type": "uri", "value": "http://example.org/ns/alice"}
 ```
 
 ## Rust API
@@ -273,20 +268,66 @@ let result = fluree.query_from()
 Available format constructors:
 - `FormatterConfig::jsonld()` — JSON-LD (default for JSON-LD queries)
 - `FormatterConfig::sparql_json()` — SPARQL 1.1 JSON Results (default for SPARQL queries)
-- `FormatterConfig::typed_json()` — Typed JSON with explicit datatypes on every binding
+- `FormatterConfig::typed_json()` — Typed JSON with explicit datatypes on every value
+
+Builder methods:
+- `.with_normalize_arrays()` — Force array wrapping for all graph crawl properties
+- `.with_pretty()` — Pretty-print JSON output
 
 All three query paths (`db.query()`, `dataset.query()`, `fluree.query_from()`) support `.format()`.
+
+### Direct formatting on QueryResult
+
+For graph crawl queries (which require async DB access):
+
+```rust
+// Typed JSON with graph crawl support
+let json = result.to_typed_json_async(db.as_graph_db_ref()).await?;
+
+// Custom config (e.g., typed + normalize_arrays)
+let config = FormatterConfig::typed_json().with_normalize_arrays();
+let json = result.format_async(db.as_graph_db_ref(), &config).await?;
+```
 
 When no `.format()` is set:
 - JSON-LD queries default to JSON-LD format
 - SPARQL queries default to SPARQL JSON format
 
+## CLI Usage
+
+The `fluree query` command supports format selection via `--format`:
+
+```bash
+# Default table output
+fluree query "SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 5"
+
+# JSON output
+fluree query --format json '{"select": {"ex:alice": ["*"]}, "from": "mydb:main"}'
+
+# Typed JSON output (explicit types on every value)
+fluree query --format typed-json '{"select": {"ex:alice": ["*"]}, "from": "mydb:main"}'
+
+# Normalize arrays (force all properties to arrays)
+fluree query --format json --normalize-arrays '{"select": {"ex:alice": ["*"]}, "from": "mydb:main"}'
+
+# Typed JSON + normalize arrays (most predictable for programmatic use)
+fluree query --format typed-json --normalize-arrays '{"select": {"ex:alice": ["*"]}, "from": "mydb:main"}'
+```
+
+## Performance Considerations
+
+- **JSON-LD** is the most efficient format — inferable types skip the `@value`/`@type` wrapper
+- **Typed JSON** adds a constant-factor overhead per literal value (one extra JSON object allocation). Query execution is unaffected — only the formatting phase is slower.
+- **normalize_arrays** adds zero overhead when disabled (default). When enabled, it skips the `len() == 1` check — no additional allocations beyond the array wrapper.
+- **TSV/CSV** bypass JSON DOM construction entirely for maximum throughput
+
 ## Best Practices
 
-1. **Use JSON-LD for Applications**: Most applications benefit from JSON-LD's compact format
-2. **Use SPARQL JSON for SPARQL Tools**: Standard format for SPARQL endpoints
-3. **Use Typed JSON for Type-Aware Apps**: When explicit type information is needed
-4. **Consider Performance**: JSON-LD is typically most efficient
+1. **Use JSON-LD for human-facing apps**: Compact and readable
+2. **Use Typed JSON for struct deserialization**: Unambiguous types prevent parsing surprises
+3. **Use `normalize_arrays` for typed consumers**: Ensures `Vec<T>` fields always get arrays
+4. **Use SPARQL JSON for standard tooling**: Interoperable with SPARQL clients
+5. **Use TSV/CSV for bulk export**: Highest throughput, smallest memory footprint
 
 ## Related Documentation
 
