@@ -134,24 +134,19 @@ impl Function {
             Function::Op => fluree::eval_op(args, row),
 
             // XSD datatype constructor (cast) functions — W3C SPARQL 1.1 §17.5
-            Function::Custom(name) => match name.as_str() {
-                "http://www.w3.org/2001/XMLSchema#boolean" => {
-                    cast::eval_xsd_boolean(args, row, ctx)
-                }
-                "http://www.w3.org/2001/XMLSchema#integer" => {
-                    cast::eval_xsd_integer(args, row, ctx)
-                }
-                "http://www.w3.org/2001/XMLSchema#float" => cast::eval_xsd_float(args, row, ctx),
-                "http://www.w3.org/2001/XMLSchema#double" => cast::eval_xsd_double(args, row, ctx),
-                "http://www.w3.org/2001/XMLSchema#decimal" => {
-                    cast::eval_xsd_decimal(args, row, ctx)
-                }
-                "http://www.w3.org/2001/XMLSchema#string" => cast::eval_xsd_string(args, row, ctx),
-                _ => Err(QueryError::InvalidFilter(format!(
-                    "Unknown function: {}",
-                    name
-                ))),
-            },
+            // SPARQL-only: JSON-LD queries do not produce these (casts are a SPARQL concept).
+            Function::XsdBoolean => cast::eval_xsd_boolean(args, row, ctx),
+            Function::XsdInteger => cast::eval_xsd_integer(args, row, ctx),
+            Function::XsdFloat => cast::eval_xsd_float(args, row, ctx),
+            Function::XsdDouble => cast::eval_xsd_double(args, row, ctx),
+            Function::XsdDecimal => cast::eval_xsd_decimal(args, row, ctx),
+            Function::XsdString => cast::eval_xsd_string(args, row, ctx),
+
+            // Unknown function
+            Function::Custom(name) => Err(QueryError::InvalidFilter(format!(
+                "Unknown function: {}",
+                name
+            ))),
         }
     }
 

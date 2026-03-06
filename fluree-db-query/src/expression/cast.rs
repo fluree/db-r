@@ -12,10 +12,34 @@ use crate::ir::Expression;
 use bigdecimal::BigDecimal;
 use fluree_db_core::FlakeValue;
 use num_traits::ToPrimitive;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
+
+static XSD_FLOAT_IRI: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from(fluree_vocab::xsd::FLOAT));
+
+/// Unwrap a `TypedLiteral` into the corresponding primitive `ComparableValue`.
+///
+/// If the inner `FlakeValue` maps to a known primitive variant, returns that
+/// variant. Otherwise returns the original value unchanged. This eliminates
+/// the need to duplicate match arms for `TypedLiteral` in every cast function.
+fn unwrap_typed_literal(v: ComparableValue) -> ComparableValue {
+    match v {
+        ComparableValue::TypedLiteral { val, .. } => match val {
+            FlakeValue::Boolean(b) => ComparableValue::Bool(b),
+            FlakeValue::Long(n) => ComparableValue::Long(n),
+            FlakeValue::Double(d) => ComparableValue::Double(d),
+            FlakeValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
+            _ => ComparableValue::TypedLiteral {
+                val,
+                dt_iri: None,
+                lang: None,
+            },
+        },
+        other => other,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // xsd:boolean
@@ -34,6 +58,7 @@ pub fn eval_xsd_boolean<R: RowAccess>(
 }
 
 fn cast_to_boolean(v: ComparableValue) -> Option<ComparableValue> {
+    let v = unwrap_typed_literal(v);
     let b = match v {
         ComparableValue::Bool(b) => b,
         ComparableValue::Long(n) => n != 0,
@@ -48,22 +73,6 @@ fn cast_to_boolean(v: ComparableValue) -> Option<ComparableValue> {
         ComparableValue::String(s) => match s.as_ref() {
             "true" | "1" => true,
             "false" | "0" => false,
-            _ => return None,
-        },
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::Boolean(b) => b,
-            FlakeValue::Long(n) => n != 0,
-            FlakeValue::Double(d) => {
-                if d.is_nan() {
-                    return None;
-                }
-                d != 0.0
-            }
-            FlakeValue::String(s) => match s.as_str() {
-                "true" | "1" => true,
-                "false" | "0" => false,
-                _ => return None,
-            },
             _ => return None,
         },
         _ => return None,
@@ -88,6 +97,7 @@ pub fn eval_xsd_integer<R: RowAccess>(
 }
 
 fn cast_to_integer(v: ComparableValue) -> Option<ComparableValue> {
+    let v = unwrap_typed_literal(v);
     let n = match v {
         ComparableValue::Long(n) => n,
         ComparableValue::Bool(b) => i64::from(b),
@@ -110,18 +120,6 @@ fn cast_to_integer(v: ComparableValue) -> Option<ComparableValue> {
             }
         }
         ComparableValue::String(s) => s.parse::<i64>().ok()?,
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::Long(n) => n,
-            FlakeValue::Boolean(b) => i64::from(b),
-            FlakeValue::Double(d) => {
-                if !d.is_finite() || d > i64::MAX as f64 || d < i64::MIN as f64 {
-                    return None;
-                }
-                d.trunc() as i64
-            }
-            FlakeValue::String(s) => s.parse::<i64>().ok()?,
-            _ => return None,
-        },
         _ => return None,
     };
     Some(ComparableValue::Long(n))
@@ -144,6 +142,7 @@ pub fn eval_xsd_float<R: RowAccess>(
 }
 
 fn cast_to_float(v: ComparableValue) -> Option<ComparableValue> {
+    let v = unwrap_typed_literal(v);
     let f: f32 = match v {
         ComparableValue::Bool(b) => {
             if b {
@@ -157,19 +156,6 @@ fn cast_to_float(v: ComparableValue) -> Option<ComparableValue> {
         ComparableValue::BigInt(n) => n.to_f32()?,
         ComparableValue::Decimal(d) => d.to_f64()? as f32,
         ComparableValue::String(s) => s.parse::<f32>().ok()?,
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::Boolean(b) => {
-                if b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            FlakeValue::Long(n) => n as f32,
-            FlakeValue::Double(d) => d as f32,
-            FlakeValue::String(s) => s.parse::<f32>().ok()?,
-            _ => return None,
-        },
         _ => return None,
     };
     Some(float_typed_literal(f))
@@ -184,7 +170,7 @@ fn float_typed_literal(f: f32) -> ComparableValue {
     let s = format_f32(f);
     ComparableValue::TypedLiteral {
         val: FlakeValue::String(s),
-        dt_iri: Some(Arc::from("http://www.w3.org/2001/XMLSchema#float")),
+        dt_iri: Some(XSD_FLOAT_IRI.clone()),
         lang: None,
     }
 }
@@ -225,6 +211,7 @@ pub fn eval_xsd_double<R: RowAccess>(
 }
 
 fn cast_to_double(v: ComparableValue) -> Option<ComparableValue> {
+    let v = unwrap_typed_literal(v);
     let d: f64 = match v {
         ComparableValue::Bool(b) => {
             if b {
@@ -238,19 +225,6 @@ fn cast_to_double(v: ComparableValue) -> Option<ComparableValue> {
         ComparableValue::BigInt(n) => n.to_f64()?,
         ComparableValue::Decimal(dec) => dec.to_f64()?,
         ComparableValue::String(s) => s.parse::<f64>().ok()?,
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::Boolean(b) => {
-                if b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            FlakeValue::Long(n) => n as f64,
-            FlakeValue::Double(d) => d,
-            FlakeValue::String(s) => s.parse::<f64>().ok()?,
-            _ => return None,
-        },
         _ => return None,
     };
     Some(ComparableValue::Double(d))
@@ -273,6 +247,7 @@ pub fn eval_xsd_decimal<R: RowAccess>(
 }
 
 fn cast_to_decimal(v: ComparableValue) -> Option<ComparableValue> {
+    let v = unwrap_typed_literal(v);
     let d = match v {
         ComparableValue::Decimal(d) => return Some(ComparableValue::Decimal(d)),
         ComparableValue::Bool(b) => BigDecimal::from(i64::from(b)),
@@ -285,18 +260,6 @@ fn cast_to_decimal(v: ComparableValue) -> Option<ComparableValue> {
         }
         ComparableValue::BigInt(n) => BigDecimal::from((*n).clone()),
         ComparableValue::String(s) => parse_decimal_string(&s)?,
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::Long(n) => BigDecimal::from(n),
-            FlakeValue::Boolean(b) => BigDecimal::from(i64::from(b)),
-            FlakeValue::Double(d) => {
-                if !d.is_finite() {
-                    return None;
-                }
-                BigDecimal::try_from(d).ok()?
-            }
-            FlakeValue::String(s) => parse_decimal_string(&s)?,
-            _ => return None,
-        },
         _ => return None,
     };
     Some(ComparableValue::Decimal(Box::new(d)))
@@ -537,7 +500,7 @@ mod tests {
     fn integer_from_float_string_is_none() {
         let row = empty_row();
         assert_eq!(
-            eval_xsd_integer(&[string_expr("3.14")], &row, None).unwrap(),
+            eval_xsd_integer(&[string_expr("2.75")], &row, None).unwrap(),
             None
         );
     }
@@ -548,8 +511,8 @@ mod tests {
     fn double_from_double_identity() {
         let row = empty_row();
         assert_eq!(
-            eval_xsd_double(&[double(3.14)], &row, None).unwrap(),
-            Some(ComparableValue::Double(3.14))
+            eval_xsd_double(&[double(2.75)], &row, None).unwrap(),
+            Some(ComparableValue::Double(2.75))
         );
     }
 
@@ -579,8 +542,8 @@ mod tests {
     fn double_from_string() {
         let row = empty_row();
         assert_eq!(
-            eval_xsd_double(&[string_expr("3.14")], &row, None).unwrap(),
-            Some(ComparableValue::Double(3.14))
+            eval_xsd_double(&[string_expr("2.75")], &row, None).unwrap(),
+            Some(ComparableValue::Double(2.75))
         );
     }
 
@@ -662,7 +625,7 @@ mod tests {
     #[test]
     fn string_from_double() {
         let row = empty_row();
-        let result = eval_xsd_string(&[double(3.14)], &row, None).unwrap();
+        let result = eval_xsd_string(&[double(2.75)], &row, None).unwrap();
         assert!(result.is_some());
     }
 
@@ -697,6 +660,50 @@ mod tests {
         assert_eq!(
             eval_xsd_float(&[string_expr("abc")], &row, None).unwrap(),
             None
+        );
+    }
+
+    // === arity validation ===
+
+    #[test]
+    fn cast_wrong_arity_two_args_errors() {
+        let row = empty_row();
+        assert!(eval_xsd_integer(&[long(1), long(2)], &row, None).is_err());
+        assert!(eval_xsd_boolean(&[bool_expr(true), bool_expr(false)], &row, None).is_err());
+        assert!(eval_xsd_double(&[double(1.0), double(2.0)], &row, None).is_err());
+        assert!(eval_xsd_float(&[double(1.0), double(2.0)], &row, None).is_err());
+        assert!(eval_xsd_decimal(&[long(1), long(2)], &row, None).is_err());
+        assert!(eval_xsd_string(&[long(1), long(2)], &row, None).is_err());
+    }
+
+    #[test]
+    fn cast_wrong_arity_zero_args_errors() {
+        let row = empty_row();
+        assert!(eval_xsd_integer(&[], &row, None).is_err());
+        assert!(eval_xsd_boolean(&[], &row, None).is_err());
+        assert!(eval_xsd_double(&[], &row, None).is_err());
+        assert!(eval_xsd_float(&[], &row, None).is_err());
+        assert!(eval_xsd_decimal(&[], &row, None).is_err());
+        assert!(eval_xsd_string(&[], &row, None).is_err());
+    }
+
+    // === negative values ===
+
+    #[test]
+    fn integer_from_negative_long() {
+        let row = empty_row();
+        assert_eq!(
+            eval_xsd_integer(&[long(-7)], &row, None).unwrap(),
+            Some(ComparableValue::Long(-7))
+        );
+    }
+
+    #[test]
+    fn double_from_negative() {
+        let row = empty_row();
+        assert_eq!(
+            eval_xsd_double(&[double(-2.75)], &row, None).unwrap(),
+            Some(ComparableValue::Double(-2.75))
         );
     }
 }

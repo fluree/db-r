@@ -824,3 +824,23 @@ mem:fact-01kk1sq2xwmxsqe828pgk28svw a mem:Fact ;
     mem:supersedes mem:fact-01kk1qbna7qqqk6hck165kcjcy ;
     mem:createdAt "2026-03-06T14:44:36.924914+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+
+mem:fact-01kk1tyss4k7z99yyjbsk7gd7h a mem:Fact ;
+    mem:content "XSD Cast Functions — JSON-LD vs SPARQL Expressibility & Integration Tests\n\n**Current Status (2026-03-06):**\n- SPARQL: Fully implemented (6/6 W3C cast tests passing)\n- JSON-LD: NOT currently expressible via normal query syntax\n\n**Implementation Details:**\n\nCast Functions Implemented:\n- xsd:boolean(?x) — Cast to boolean\n- xsd:integer(?x) — Cast to i64 (truncates from float, rejects NaN/Inf)\n- xsd:float(?x) — Cast to f32 (stored as TypedLiteral with xsd:float datatype)\n- xsd:double(?x) — Cast to f64\n- xsd:decimal(?x) — Cast to BigDecimal (rejects scientific notation strings)\n- xsd:string(?x) — Cast to string (canonical decimal form for Decimal inputs)\n\nLocation: fluree-db-query/src/expression/cast.rs (357 lines, includes 50+ unit tests)\n\nError Semantics:\n- Invalid casts return Ok(None) (unbound), NOT errors (per W3C §17.5)\n- E.g., xsd:integer(\"abc\") returns None; xsd:boolean(NaN) returns None\n\n**Shared Architecture:**\n- Both SPARQL and JSON-LD queries compile to same IR and execution engine\n- Expression evaluation happens in fluree-db-query/src/expression/dispatch.rs\n- Function dispatch routes Function::Custom(full_iri) → cast::eval_xsd_* via IRI matching\n\n**SPARQL Support:**\n- Parser: fluree-db-sparql/src/parse/expr.rs — recognizes xsd:integer(...) as FunctionName::Extension(iri)\n- Lowering: fluree-db-sparql/src/lower/expression.rs — expands QNAME prefix to full IRI (e.g., \"xsd:integer\" → \"http://www.w3.org/2001/XMLSchema#integer\")\n- Lowered to: Function::Custom(full_iri) → dispatch handles by IRI string matching\n- W3C Tests: testsuite-sparql/rdf-tests/sparql/sparql11/cast/ (6 tests: cast-int.rq, cast-bool.rq, cast-float.rq, cast-double.rq, cast-decimal.rq, cast-string.rq)\n\n**JSON-LD Query Support:**\n- Parser: fluree-db-query/src/parse/filter_sexpr.rs — accepts S-expressions like (strlen ?var)\n- Lowering: fluree-db-query/src/parse/lower.rs::lower_function_name() — does NOT handle xsd: prefix expansion\n- Current behavior: (xsd:integer ?val) is parsed as Function::Custom(\"xsd:integer\") (NOT full IRI)\n- Dispatch failure: dispatch.rs only recognizes Function::Custom with FULL IRIs (http://www.w3.org/2001/XMLSchema#integer)\n- Result: Function call fails with \"Unknown function: xsd:integer\"\n\n**Why JSON-LD Doesn't Work:**\n1. JSON-LD syntax lacks automatic prefix expansion for function names (unlike SPARQL with QNAME tokenization)\n2. In S-expression filters, function names are strings without context-based expansion\n3. Workaround would require: (a) explicitly pass expanded IRIs in filters, OR (b) enhance lower.rs to expand QNAMES in filter expressions\n\n**No JSON-LD Integration Tests:**\n- fluree-db-api/tests/it_query_jsonld*.rs — NO tests using xsd:integer, xsd:boolean, etc.\n- fluree-db-api/tests/it_query_sparql.rs — NO SPARQL tests for XSD casts (W3C tests in testsuite-sparql only)\n- SPARQL integration tests only in: testsuite-sparql/rdf-tests/sparql/sparql11/cast/\n\n**Shared Functions in JSON-LD Tests:**\n- Examples: [\"bind\", \"?len\", \"(strlen ?label)\"] — plain function names work\n- Examples: [\"bind\", \"?upper\", \"(ucase ?note)\"] — plain function names work\n- BUT: [\"bind\", \"?x\", \"(xsd:integer ?val)\"] — would FAIL (no prefix expansion in filter lowering)" ;
+    mem:tag "cast-functions" ;
+    mem:tag "expressibility" ;
+    mem:tag "function-dispatch" ;
+    mem:tag "integration-tests" ;
+    mem:tag "jsonld" ;
+    mem:tag "sparql" ;
+    mem:tag "xsd-casts" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/expression/cast.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/dispatch.rs" ;
+    mem:artifactRef "fluree-db-query/src/parse/lower.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/expression.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/expr.rs" ;
+    mem:artifactRef "testsuite-sparql/rdf-tests/sparql/sparql11/cast/" ;
+    mem:branch "fix/sparql-xsd-casts" ;
+    mem:createdAt "2026-03-06T15:06:18.276519+00:00"^^xsd:dateTime .

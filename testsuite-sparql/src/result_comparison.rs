@@ -223,7 +223,10 @@ fn numeric_values_equal(a: &str, b: &str, datatype: &str) -> bool {
         "integer" | "long" | "int" | "short" | "byte" | "nonNegativeInteger"
         | "positiveInteger" | "nonPositiveInteger" | "negativeInteger" | "unsignedLong"
         | "unsignedInt" | "unsignedShort" | "unsignedByte" => {
-            a.parse::<i128>().ok() == b.parse::<i128>().ok()
+            match (a.parse::<i128>().ok(), b.parse::<i128>().ok()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
         }
         "float" | "double" => {
             let (pa, pb) = (a.parse::<f64>(), b.parse::<f64>());
@@ -239,10 +242,35 @@ fn numeric_values_equal(a: &str, b: &str, datatype: &str) -> bool {
             }
         }
         "decimal" => {
-            // Parse as f64 for value comparison (covers "0" == "0.0", "1" == "1.0", etc.)
-            a.parse::<f64>().ok() == b.parse::<f64>().ok()
+            // Compare decimal values as rational numbers to avoid f64 precision loss.
+            // Covers non-canonical forms like "0" == "0.0", "1" == "1.0", etc.
+            match (parse_decimal(a), parse_decimal(b)) {
+                (Some((an, ad)), Some((bn, bd))) => {
+                    // Cross-multiply to compare: a_num/a_den == b_num/b_den
+                    an * bd == bn * ad
+                }
+                _ => false,
+            }
         }
         _ => false,
+    }
+}
+
+/// Parse a decimal string into (numerator, denominator) as i128 values.
+///
+/// Handles forms like "0", "0.0", "1.50", "-3.14" without floating-point
+/// precision loss. Returns None for unparseable strings.
+fn parse_decimal(s: &str) -> Option<(i128, i128)> {
+    let s = s.trim();
+    if let Some(dot_pos) = s.find('.') {
+        let frac_digits = s.len() - dot_pos - 1;
+        let without_dot: String = s.chars().filter(|c| *c != '.').collect();
+        let numerator = without_dot.parse::<i128>().ok()?;
+        let denominator = 10i128.checked_pow(frac_digits as u32)?;
+        Some((numerator, denominator))
+    } else {
+        let numerator = s.parse::<i128>().ok()?;
+        Some((numerator, 1))
     }
 }
 
