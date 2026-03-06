@@ -194,6 +194,40 @@ pub fn load_leaflet_columns(
     })
 }
 
+/// Load columns from a V3 leaflet with `LeafletCache` support.
+///
+/// On cache hit, returns the previously decoded `ColumnBatch` directly (zero
+/// decompress cost). On miss, calls `load_leaflet_columns`, inserts the result
+/// into the cache, and returns it.
+///
+/// The cache key uses `(leaf_id, leaflet_idx)` — base columns are immutable
+/// (content-addressed leaf CID), so no `to_t`/`epoch` dimension is needed.
+/// Overlay merge and time-travel replay are applied downstream.
+///
+/// **Important**: this always decodes ALL columns (projection=all) so the cached
+/// batch can serve any subsequent projection. The per-column `ColumnData::Block`
+/// values are `Arc<[T]>` and cheap to clone.
+pub fn load_leaflet_columns_cached(
+    leaf_bytes: &[u8],
+    entry: &LeafletDirEntryV3,
+    payload_base: usize,
+    order: RunSortOrder,
+    cache: &super::leaflet_cache::LeafletCache,
+    leaf_id: u128,
+    leaflet_idx: u8,
+) -> io::Result<ColumnBatch> {
+    let key = super::leaflet_cache::V3BatchCacheKey {
+        leaf_id,
+        leaflet_idx,
+    };
+
+    cache.try_get_or_decode_v3_batch(key, || {
+        // Cache miss: decode ALL columns so the cached batch serves any projection.
+        let all = ColumnProjection::all();
+        load_leaflet_columns(leaf_bytes, entry, payload_base, &all, order)
+    })
+}
+
 // Re-export for convenience: callers use decode_leaf_dir_v3_with_base to get
 // the authoritative payload_base alongside the directory entries.
 pub use crate::format::leaf_v3::{decode_leaf_dir_v3_with_base, DecodedLeafDirV3};

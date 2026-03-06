@@ -92,6 +92,22 @@ where
                             .or_insert_with(|| prefix.clone());
                     }
 
+                    // Extract stats from the FIR6 root if present.
+                    // from_fir6_header() is a fast-path that doesn't parse stats;
+                    // we do a full decode here to get them.
+                    if state.snapshot.stats.is_none() {
+                        if let Ok(root) =
+                            fluree_db_binary_index::format::index_root_v6::IndexRootV6::decode(
+                                &bytes,
+                            )
+                        {
+                            if root.stats.is_some() {
+                                state.snapshot.stats = root.stats;
+                                tracing::debug!("loaded stats from FIR6 root");
+                            }
+                        }
+                    }
+
                     let arc_store_v6 = Arc::new(store_v6);
 
                     // Attach V3 range provider so policy/SHACL/reasoner/property

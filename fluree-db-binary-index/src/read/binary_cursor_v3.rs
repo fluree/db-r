@@ -20,7 +20,7 @@ use crate::format::run_record::RunSortOrder;
 use crate::format::run_record_v2::cmp_v2_for_order;
 use crate::read::types_v3::{cmp_row_vs_overlay_v3, OverlayOpV3};
 
-use super::column_loader::load_leaflet_columns;
+use super::column_loader::{load_leaflet_columns, load_leaflet_columns_cached};
 use super::column_types::{BinaryFilterV3, ColumnBatch, ColumnData, ColumnProjection};
 use super::replay_v3::replay_leaflet_v3;
 use super::store_v6::BinaryIndexStoreV6;
@@ -65,6 +65,8 @@ struct OpenLeaf {
     dir: DecodedLeafDirV3,
     /// Sidecar bytes for history replay (fetched lazily per leaf).
     sidecar_bytes: Option<Vec<u8>>,
+    /// Content-addressed leaf identity for cache keying.
+    leaf_id: u128,
 }
 
 impl BinaryCursorV3 {
@@ -225,15 +227,28 @@ impl BinaryCursorV3 {
                         continue;
                     }
 
-                    // Load columns.
+                    // Load columns (cached when LeafletCache is available).
                     let mut batch = if entry.row_count > 0 {
-                        load_leaflet_columns(
-                            &leaf.bytes,
-                            entry,
-                            leaf.dir.payload_base,
-                            &self.projection,
-                            self.order,
-                        )?
+                        let leaflet_idx = (self.current_leaflet_idx - 1) as u8;
+                        if let Some(cache) = self.store.leaflet_cache() {
+                            load_leaflet_columns_cached(
+                                &leaf.bytes,
+                                entry,
+                                leaf.dir.payload_base,
+                                self.order,
+                                cache,
+                                leaf.leaf_id,
+                                leaflet_idx,
+                            )?
+                        } else {
+                            load_leaflet_columns(
+                                &leaf.bytes,
+                                entry,
+                                leaf.dir.payload_base,
+                                &self.projection,
+                                self.order,
+                            )?
+                        }
                     } else {
                         ColumnBatch::empty()
                     };
@@ -341,10 +356,12 @@ impl BinaryCursorV3 {
                 None
             };
 
+            let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_cid.to_bytes().as_ref());
             self.current_leaf = Some(OpenLeaf {
                 bytes,
                 dir,
                 sidecar_bytes,
+                leaf_id,
             });
             self.current_leaflet_idx = 0;
         }

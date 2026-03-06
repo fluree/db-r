@@ -27,7 +27,9 @@ use fluree_db_binary_index::format::leaf_v3::{
 };
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
-use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+use fluree_db_binary_index::read::column_loader::{
+    load_leaflet_columns, load_leaflet_columns_cached,
+};
 use fluree_db_binary_index::{BinaryCursor, BinaryFilter, BinaryIndexStore, BinaryIndexStoreV6};
 use fluree_db_binary_index::{ColumnProjection, ColumnSet};
 use fluree_db_core::o_type::OType;
@@ -272,6 +274,8 @@ fn sum_component_v6(
 
     let mut sum: i64 = 0;
 
+    let cache = store.leaflet_cache();
+
     for leaf_entry in &branch.leaves[leaf_range] {
         let bytes = store
             .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
@@ -280,8 +284,9 @@ fn sum_component_v6(
             decode_leaf_header_v3(&bytes).map_err(|e| QueryError::Internal(e.to_string()))?;
         let dir = decode_leaf_dir_v3_with_base(&bytes, &header)
             .map_err(|e| QueryError::Internal(e.to_string()))?;
+        let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
 
-        for entry in &dir.entries {
+        for (i, entry) in dir.entries.iter().enumerate() {
             if entry.row_count == 0 {
                 continue;
             }
@@ -298,21 +303,31 @@ fn sum_component_v6(
                 }
             }
 
-            // Decode only the minimal required columns (o_key, plus o_type when not constant).
-            let mut needed = ColumnSet::EMPTY;
-            needed.insert(ColumnId::OKey);
-            let needs_o_type_col = entry.o_type_const.is_none();
-            if needs_o_type_col {
-                needed.insert(ColumnId::OType);
-            }
-            let projection = ColumnProjection {
-                output: ColumnSet::EMPTY,
-                internal: needed,
-            };
-
-            let batch =
+            // Load columns (cached when available).
+            let batch = if let Some(c) = &cache {
+                load_leaflet_columns_cached(
+                    &bytes,
+                    entry,
+                    dir.payload_base,
+                    header.order,
+                    c,
+                    leaf_id,
+                    i as u8,
+                )
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            } else {
+                let mut needed = ColumnSet::EMPTY;
+                needed.insert(ColumnId::OKey);
+                if entry.o_type_const.is_none() {
+                    needed.insert(ColumnId::OType);
+                }
+                let projection = ColumnProjection {
+                    output: ColumnSet::EMPTY,
+                    internal: needed,
+                };
                 load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            };
 
             for row in 0..batch.row_count {
                 let o_key = batch.o_key.get(row);

@@ -180,6 +180,24 @@ enum CacheKey {
     ///
     /// Key = xxh3_128 of a canonical ledger-info cache key string.
     LedgerInfo(u128),
+    /// V3 (FLI3) decoded column batch. Content-addressed via `leaf_id`
+    /// (derived from leaf CID) — immutable, self-invalidating on rewrite.
+    /// `leaflet_idx` selects which leaflet within the leaf.
+    V3Batch(V3BatchCacheKey),
+}
+
+/// Cache key for a V3 decoded `ColumnBatch`.
+///
+/// Base columns are immutable (content-addressed leaf CID), so no `to_t`/`epoch`
+/// dimension is needed. Different scans with different overlay state or time bounds
+/// skip the cache rather than storing separate entries — overlay merge and time-travel
+/// replay are applied downstream from the cached base columns.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct V3BatchCacheKey {
+    /// `xxh3_128(leaf_cid.to_bytes())` — content-addressed, self-invalidating.
+    pub leaf_id: u128,
+    /// Leaflet slot within the leaf (0..leaflet_count).
+    pub leaflet_idx: u8,
 }
 
 // ============================================================================
@@ -266,6 +284,8 @@ enum CachedEntry {
     Bm25Leaflet(Arc<[u8]>),
     VectorShard(Arc<crate::arena::vector::VectorShard>),
     LedgerInfo(Arc<[u8]>),
+    /// V3 decoded column batch (base columns, no overlay/replay applied).
+    V3Batch(super::column_types::ColumnBatch),
 }
 
 impl CachedEntry {
@@ -283,6 +303,7 @@ impl CachedEntry {
                     + shard.values.capacity() * std::mem::size_of::<f32>()
             }
             CachedEntry::LedgerInfo(bytes) => bytes.len(),
+            CachedEntry::V3Batch(batch) => batch.byte_size(),
         }
     }
 }
@@ -501,6 +522,41 @@ impl LeafletCache {
     pub fn insert_ledger_info(&self, key: u128, bytes: Arc<[u8]>) {
         self.inner
             .insert(CacheKey::LedgerInfo(key), CachedEntry::LedgerInfo(bytes));
+    }
+
+    // ========================================================================
+    // V3 column batch cache (FLI3 decoded leaflets)
+    // ========================================================================
+
+    /// Get a cached V3 column batch (read-only, no insertion).
+    pub fn get_v3_batch(&self, key: &V3BatchCacheKey) -> Option<super::column_types::ColumnBatch> {
+        match self.inner.get(&CacheKey::V3Batch(key.clone())) {
+            Some(CachedEntry::V3Batch(batch)) => Some(batch),
+            _ => None,
+        }
+    }
+
+    /// Get or decode a V3 column batch with single-flight and error propagation.
+    ///
+    /// On cache miss, calls `decode_fn` to produce the batch, inserts it, and
+    /// returns the cached copy. Uses `try_get_with` so concurrent callers for
+    /// the same leaflet share one decompression.
+    pub fn try_get_or_decode_v3_batch<F>(
+        &self,
+        key: V3BatchCacheKey,
+        decode_fn: F,
+    ) -> io::Result<super::column_types::ColumnBatch>
+    where
+        F: FnOnce() -> io::Result<super::column_types::ColumnBatch>,
+    {
+        let result = self.inner.try_get_with(CacheKey::V3Batch(key), || {
+            decode_fn().map(CachedEntry::V3Batch)
+        });
+        match result {
+            Ok(CachedEntry::V3Batch(batch)) => Ok(batch),
+            Ok(_) => unreachable!("V3Batch key always maps to V3Batch entry"),
+            Err(arc_err) => Err(io::Error::new(arc_err.kind(), arc_err.to_string())),
+        }
     }
 
     // ========================================================================

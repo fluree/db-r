@@ -614,6 +614,143 @@ where
                         "Phase D-V3 complete: all graph indexes built"
                     );
 
+                    // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
+                    // by reading all sorted commit files and feeding IdStatsHook.
+                    let dt_tags: &[fluree_db_core::value_id::ValueTypeTag] = &shared.dt_tags;
+                    let rdf_type_p_id = shared
+                        .predicates
+                        .get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+
+                    let mut stats_hook = crate::stats::IdStatsHook::new();
+                    stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+
+                    for info in &sorted_commit_infos {
+                        let reader = run_index::SpoolReader::open(&info.path, info.record_count)
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        for result in reader {
+                            let record =
+                                result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            let sr = run_index::spool::stats_record_for_remapped_run_record(
+                                &record,
+                                Some(dt_tags),
+                            );
+                            stats_hook.on_record(&sr);
+                        }
+                    }
+
+                    // Upload HLL sketches to CAS (must happen before finalize
+                    // consumes the hook).
+                    let sketch_ref = {
+                        let sketch_blob = crate::stats::HllSketchBlob::from_properties(
+                            commit_t,
+                            stats_hook.properties(),
+                        );
+                        if !sketch_blob.entries.is_empty() {
+                            let sketch_bytes = sketch_blob.to_json_bytes().map_err(|e| {
+                                IndexerError::StorageWrite(format!("sketch serialize: {e}"))
+                            })?;
+                            let sketch_wr = storage
+                                .content_write_bytes(
+                                    ContentKind::StatsSketch,
+                                    &ledger_id,
+                                    &sketch_bytes,
+                                )
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                            tracing::info!(
+                                %cid,
+                                bytes = sketch_wr.size_bytes,
+                                entries = sketch_blob.entries.len(),
+                                "Phase D-V3 stats: HLL sketch uploaded"
+                            );
+                            Some(cid)
+                        } else {
+                            None
+                        }
+                    };
+
+                    let id_stats_result = stats_hook.finalize();
+
+                    // Build the full IndexStats for the FIR6 root.
+                    let trie_for_stats =
+                        fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
+                    let db_stats = {
+                        use fluree_db_core::index_stats as is;
+
+                        // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
+                        // Aggregate across graphs by p_id.
+                        struct PropAgg {
+                            count: u64,
+                            ndv_values: u64,
+                            ndv_subjects: u64,
+                            last_modified_t: i64,
+                            datatypes: Vec<(u8, u64)>,
+                        }
+                        let mut agg: std::collections::HashMap<u32, PropAgg> =
+                            std::collections::HashMap::new();
+                        for g in &id_stats_result.graphs {
+                            for p in &g.properties {
+                                let e = agg.entry(p.p_id).or_insert(PropAgg {
+                                    count: 0,
+                                    ndv_values: 0,
+                                    ndv_subjects: 0,
+                                    last_modified_t: 0,
+                                    datatypes: Vec::new(),
+                                });
+                                e.count += p.count;
+                                e.ndv_values = e.ndv_values.max(p.ndv_values);
+                                e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                                e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                                for &(dt, cnt) in &p.datatypes {
+                                    if let Some(existing) =
+                                        e.datatypes.iter_mut().find(|(d, _)| *d == dt)
+                                    {
+                                        existing.1 += cnt;
+                                    } else {
+                                        e.datatypes.push((dt, cnt));
+                                    }
+                                }
+                            }
+                        }
+                        let properties: Vec<is::PropertyStatEntry> = agg
+                            .into_iter()
+                            .map(|(p_id, pa)| {
+                                let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                                let (ns, name) = match trie_for_stats.longest_match(iri) {
+                                    Some((code, prefix_len)) => {
+                                        (code, iri[prefix_len..].to_string())
+                                    }
+                                    None => (0u16, iri.to_string()),
+                                };
+                                is::PropertyStatEntry {
+                                    sid: (ns, name),
+                                    count: pa.count,
+                                    ndv_values: pa.ndv_values,
+                                    ndv_subjects: pa.ndv_subjects,
+                                    last_modified_t: pa.last_modified_t,
+                                    datatypes: pa.datatypes,
+                                }
+                            })
+                            .collect();
+
+                        is::IndexStats {
+                            flakes: id_stats_result.total_flakes,
+                            size: 0,
+                            properties: Some(properties),
+                            classes: None, // Class stats deferred (requires batched PSOT).
+                            graphs: Some(id_stats_result.graphs),
+                        }
+                    };
+
+                    tracing::info!(
+                        total_flakes = db_stats.flakes,
+                        property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
+                        graph_count = db_stats.graphs.as_ref().map_or(0, |g| g.len()),
+                        "Phase D-V3 stats: collected"
+                    );
+
                     // Phase E-V3: Upload V3 artifacts to CAS.
                     let v3_uploaded =
                         super::upload::upload_v3_indexes_to_cas(&storage, &ledger_id, &v3_result)
@@ -715,6 +852,8 @@ where
                         total_commit_size,
                         total_asserts,
                         total_retracts,
+                        db_stats: Some(db_stats),
+                        sketch_ref,
                     };
 
                     let result = super::root_assembly::encode_and_write_root_v6(

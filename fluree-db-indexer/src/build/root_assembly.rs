@@ -163,6 +163,11 @@ pub(crate) struct Fir6Inputs {
     pub total_commit_size: u64,
     pub total_asserts: u64,
     pub total_retracts: u64,
+    /// Full query-time stats (HLL-derived cardinalities, per-graph properties).
+    /// `None` if stats collection was skipped or deferred.
+    pub db_stats: Option<fluree_db_core::index_stats::IndexStats>,
+    /// CAS reference for the serialized HLL sketch blob.
+    pub sketch_ref: Option<ContentId>,
 }
 
 /// Encode an `IndexRootV6` (FIR6), write to CAS, and return an `IndexResult`.
@@ -222,11 +227,11 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         o_type_table: IndexRootV6::build_o_type_table(&custom_dt_iris, &inputs.language_tags),
         default_graph_orders,
         named_graphs: inputs.v3_uploaded.named_graphs,
-        stats: None, // Stats deferred for V3 rebuild milestone.
+        stats: inputs.db_stats,
         schema: None,
         prev_index: None,
         garbage: None,
-        sketch_ref: None,
+        sketch_ref: inputs.sketch_ref,
     };
 
     // Attach garbage manifest and prev_index if provided.
