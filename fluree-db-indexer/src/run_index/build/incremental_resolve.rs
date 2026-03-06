@@ -50,9 +50,13 @@ pub struct IncrementalNovelty {
     pub base_root: IndexRootV5,
     /// New subject entries: `(ns_code, local_id_in_ns, suffix_bytes)`.
     /// Only subjects NOT found in the existing reverse tree.
+    ///
+    /// **Invariant**: sorted by `(ns_code, local_id)` ascending.
     pub new_subjects: Vec<(u16, u64, Vec<u8>)>,
     /// New string entries: `(global_string_id, value_bytes)`.
     /// Only strings NOT found in the existing reverse tree.
+    ///
+    /// **Invariant**: sorted by `string_id` ascending (contiguous from watermark+1).
     pub new_strings: Vec<(u32, Vec<u8>)>,
     /// Updated subject watermarks (position-indexed by ns_code).
     pub updated_watermarks: Vec<u64>,
@@ -564,6 +568,13 @@ fn reconcile_chunk_to_global(
     } else {
         string_watermark
     };
+
+    // Enforce sort invariants for downstream consumers (forward pack builders).
+    debug_assert!(
+        new_strings.windows(2).all(|w| w[0].0 < w[1].0),
+        "new_strings must be sorted by string_id ascending"
+    );
+    new_subjects.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     Ok(ReconcileResult {
         subject_remap,

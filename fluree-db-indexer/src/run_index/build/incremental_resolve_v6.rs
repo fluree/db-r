@@ -1,0 +1,517 @@
+//! Incremental commit resolution for the V6 (FIR6) index root.
+//!
+//! V6-native version of `incremental_resolve.rs`. Loads an `IndexRootV6`
+//! instead of `IndexRootV5`, builds an `OTypeRegistry`, and produces
+//! `RunRecordV2` output with per-record op bytes.
+//!
+//! The commit chain walking, reconciliation, and remap logic is reused from
+//! the V5 module — those are format-agnostic. The differences are:
+//!
+//! 1. Root type: `IndexRootV6` (shared `DictRefsV5` for dict trees)
+//! 2. Output records: `Vec<RunRecordV2>` + `Vec<u8>` (parallel ops)
+//! 3. `OTypeRegistry` built from root's `datatype_iris` + `language_tags`
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use fluree_db_binary_index::format::index_root_v6::IndexRootV6;
+use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
+use fluree_db_core::content_id::ContentId;
+use fluree_db_core::o_type_registry::OTypeRegistry;
+use fluree_db_core::storage::ContentStore;
+use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::DatatypeDictId;
+
+use super::incremental_resolve::{load_reverse_tree, IncrementalResolveError};
+use crate::run_index::resolve::resolver::{RebuildChunk, SharedResolverState};
+
+// ============================================================================
+// Types
+// ============================================================================
+
+/// Configuration for V6 incremental commit resolution.
+pub struct IncrementalResolveConfigV6 {
+    /// CID of the base FIR6 index root.
+    pub base_root_id: ContentId,
+    /// CID of the head commit (latest commit to include).
+    pub head_commit_id: ContentId,
+    /// Only include commits with `t > from_t` (typically `root.index_t`).
+    pub from_t: i64,
+}
+
+/// Result of V6 incremental commit resolution.
+///
+/// Contains globally-addressed `RunRecordV2` records sorted by graph+SPOT,
+/// with parallel `ops` array, plus metadata for downstream phases.
+pub struct IncrementalNoveltyV6 {
+    /// Globally-addressed RunRecordV2 records, sorted by (g_id, SPOT).
+    pub records: Vec<RunRecordV2>,
+    /// Parallel ops array: 1=assert, 0=retract. Same length as `records`.
+    pub ops: Vec<u8>,
+    /// The decoded base root (needed by downstream phases).
+    pub base_root: IndexRootV6,
+    /// Updated resolver state.
+    pub shared: SharedResolverState,
+    /// New subject entries not found in reverse tree.
+    ///
+    /// **Invariant**: sorted by `(ns_code, local_id)` ascending. Within each
+    /// namespace, local_ids are contiguous starting at `watermark + 1`.
+    /// Consumed directly by forward pack builders (no re-sorting needed).
+    pub new_subjects: Vec<(u16, u64, Vec<u8>)>,
+    /// New string entries not found in reverse tree.
+    ///
+    /// **Invariant**: sorted by `string_id` ascending. IDs are contiguous
+    /// starting at `string_watermark + 1`. Consumed directly by forward
+    /// pack builders (no re-sorting needed).
+    pub new_strings: Vec<(u32, Vec<u8>)>,
+    /// Updated subject watermarks.
+    pub updated_watermarks: Vec<u64>,
+    /// Updated string watermark.
+    pub updated_string_watermark: u32,
+    /// Maximum t value across all resolved commits.
+    pub max_t: i64,
+    /// Cumulative commit blob size.
+    pub delta_commit_size: u64,
+    /// Total assertions.
+    pub delta_asserts: u64,
+    /// Total retractions.
+    pub delta_retracts: u64,
+    /// Base vector arena counts per (g_id, p_id) for handle offsetting.
+    pub base_vector_counts: HashMap<(u16, u32), u32>,
+    /// Base numbig arena counts per (g_id, p_id).
+    pub base_numbig_counts: HashMap<(u16, u32), usize>,
+    /// String text bytes for fulltext assertion entries.
+    pub fulltext_string_bytes: HashMap<u32, Vec<u8>>,
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Resolve incremental commits against a V6 (FIR6) index root.
+///
+/// This is the V6-native Phase 1 for the incremental indexing pipeline.
+pub async fn resolve_incremental_commits_v6(
+    cs: Arc<dyn ContentStore>,
+    config: IncrementalResolveConfigV6,
+) -> Result<IncrementalNoveltyV6, IncrementalResolveError> {
+    // 1. Load and decode IndexRootV6.
+    let root_bytes = cs.get(&config.base_root_id).await.map_err(|e| {
+        IncrementalResolveError::RootLoad(format!(
+            "failed to load FIR6 root {}: {}",
+            config.base_root_id, e
+        ))
+    })?;
+    let root = IndexRootV6::decode(&root_bytes)
+        .map_err(|e| IncrementalResolveError::RootLoad(format!("failed to decode FIR6: {}", e)))?;
+
+    tracing::info!(
+        index_t = root.index_t,
+        from_t = config.from_t,
+        head = %config.head_commit_id,
+        "V6 incremental resolve: loaded base root"
+    );
+
+    // 2. Build OTypeRegistry from root's datatype and language metadata.
+    let custom_dt_iris: Vec<String> = root
+        .datatype_iris
+        .iter()
+        .skip(DatatypeDictId::RESERVED_COUNT as usize)
+        .cloned()
+        .collect();
+    let o_type_registry = OTypeRegistry::new(&custom_dt_iris);
+
+    // 3. Load subject + string reverse dict trees (same DictRefsV5 as V5).
+    let subject_tree = load_reverse_tree(&cs, &root.dict_refs.subject_reverse).await?;
+    let string_tree = load_reverse_tree(&cs, &root.dict_refs.string_reverse).await?;
+
+    // 4. Seed SharedResolverState from V6 root.
+    let mut shared = SharedResolverState::from_index_root_v6(&root)?;
+
+    // Enable spatial hook for non-POINT geometry detection.
+    shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
+    // Enable fulltext hook.
+    shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
+
+    // 4a. Pre-seed numbig arenas.
+    let mut base_numbig_counts: HashMap<(u16, u32), usize> = HashMap::new();
+    for ga in &root.graph_arenas {
+        if ga.numbig.is_empty() {
+            continue;
+        }
+        let nb_map = shared.numbigs.entry(ga.g_id).or_default();
+        for (p_id, cid) in &ga.numbig {
+            let bytes = cs.get(cid).await.map_err(|e| {
+                IncrementalResolveError::RootLoad(format!(
+                    "numbig arena load for g_id={}, p_id={}: {}",
+                    ga.g_id, p_id, e
+                ))
+            })?;
+            let arena = fluree_db_binary_index::arena::numbig::read_numbig_arena_from_bytes(&bytes)
+                .map_err(|e| {
+                    IncrementalResolveError::RootLoad(format!("numbig arena decode: {}", e))
+                })?;
+            base_numbig_counts.insert((ga.g_id, *p_id), arena.len());
+            nb_map.insert(*p_id, arena);
+        }
+    }
+
+    // 4b. Collect base vector counts.
+    let mut base_vector_counts: HashMap<(u16, u32), u32> = HashMap::new();
+    for ga in &root.graph_arenas {
+        for vref in &ga.vectors {
+            let manifest_bytes = cs.get(&vref.manifest).await.map_err(|e| {
+                IncrementalResolveError::RootLoad(format!(
+                    "vector manifest load for g_id={}, p_id={}: {}",
+                    ga.g_id, vref.p_id, e
+                ))
+            })?;
+            let manifest =
+                fluree_db_binary_index::arena::vector::read_vector_manifest(&manifest_bytes)
+                    .map_err(|e| {
+                        IncrementalResolveError::RootLoad(format!("vector manifest decode: {}", e))
+                    })?;
+            base_vector_counts.insert((ga.g_id, vref.p_id), manifest.total_count);
+        }
+    }
+
+    // 5. Walk commit chain (same as V5 — commit format is version-independent).
+    let commit_cids =
+        walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
+
+    // 6. Resolve commits into chunk.
+    let mut chunk = RebuildChunk::new();
+    let mut max_t: i64 = root.index_t;
+    let mut delta_commit_size = 0u64;
+    let mut delta_asserts = 0u64;
+    let mut delta_retracts = 0u64;
+    let mut commit_count = 0usize;
+
+    for cid in &commit_cids {
+        let bytes = cs.get(cid).await.map_err(|e| {
+            IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
+        })?;
+        let envelope = fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
+            IncrementalResolveError::CommitChain(format!(
+                "failed to decode envelope for {}: {}",
+                cid, e
+            ))
+        })?;
+        let resolved = shared
+            .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
+            .map_err(IncrementalResolveError::Resolve)?;
+
+        max_t = max_t.max(envelope.t);
+        delta_commit_size += resolved.size;
+        delta_asserts += resolved.asserts as u64;
+        delta_retracts += resolved.retracts as u64;
+        commit_count += 1;
+    }
+
+    tracing::info!(
+        commit_count,
+        records = chunk.records.len(),
+        max_t,
+        "V6 incremental resolve: commits resolved into chunk"
+    );
+
+    // Cache watermarks before potential root move.
+    let base_subject_watermarks = root.subject_watermarks.clone();
+    let base_string_watermark = root.string_watermark;
+
+    if chunk.records.is_empty() {
+        return Ok(IncrementalNoveltyV6 {
+            records: Vec::new(),
+            ops: Vec::new(),
+            base_root: root,
+            shared,
+            updated_watermarks: base_subject_watermarks,
+            updated_string_watermark: base_string_watermark,
+            new_subjects: Vec::new(),
+            new_strings: Vec::new(),
+            max_t,
+            delta_commit_size,
+            delta_asserts,
+            delta_retracts,
+            base_vector_counts,
+            base_numbig_counts,
+            fulltext_string_bytes: HashMap::new(),
+        });
+    }
+
+    // 7. Reconcile chunk-local IDs to global IDs (same algorithm as V5).
+    let reconcile = reconcile_chunk_to_global(
+        &chunk,
+        &subject_tree,
+        &string_tree,
+        &base_subject_watermarks,
+        base_string_watermark,
+    )?;
+
+    // 8. Remap fulltext hook entries.
+    let fulltext_string_bytes: HashMap<u32, Vec<u8>> = {
+        let chunk_forward = chunk.strings.forward_entries();
+        if let Some(ref mut ft) = shared.fulltext_hook {
+            let mut map = HashMap::new();
+            for entry in ft.entries_mut() {
+                let local_id = entry.string_id as usize;
+                let global_id = match reconcile.string_remap.get(local_id) {
+                    Some(&id) => id,
+                    None => {
+                        tracing::warn!(local_id, "fulltext entry string_id remap miss; skipping");
+                        entry.is_assert = false;
+                        entry.string_id = u32::MAX;
+                        continue;
+                    }
+                };
+                if entry.is_assert {
+                    if let Some(bytes) = chunk_forward.get(local_id) {
+                        map.entry(global_id).or_insert_with(|| bytes.clone());
+                    }
+                }
+                entry.string_id = global_id;
+            }
+            map
+        } else {
+            HashMap::new()
+        }
+    };
+
+    // 9. Remap all V1 records in-place, then convert to V2.
+    let mut v1_records = chunk.records;
+    for record in &mut v1_records {
+        remap_record(record, &reconcile.subject_remap, &reconcile.string_remap)?;
+    }
+
+    // Offset vector handles.
+    if !base_vector_counts.is_empty() {
+        for record in &mut v1_records {
+            if ObjKind::from_u8(record.o_kind) == ObjKind::VECTOR_ID {
+                let key = (record.g_id, record.p_id);
+                if let Some(&base_count) = base_vector_counts.get(&key) {
+                    record.o_key += base_count as u64;
+                }
+            }
+        }
+    }
+
+    // 10. Sort V1 records by (g_id, SPOT) — needed for the conversion step
+    //     which preserves sort order.
+    let spot_cmp = cmp_for_order(RunSortOrder::Spot);
+    v1_records.sort_unstable_by(|a, b| a.g_id.cmp(&b.g_id).then_with(|| spot_cmp(a, b)));
+
+    // 11. Convert V1 → V2 + extract ops.
+    let mut records = Vec::with_capacity(v1_records.len());
+    let mut ops = Vec::with_capacity(v1_records.len());
+    for v1 in &v1_records {
+        records.push(RunRecordV2::from_v1(v1, &o_type_registry));
+        ops.push(v1.op);
+    }
+
+    Ok(IncrementalNoveltyV6 {
+        records,
+        ops,
+        base_root: root,
+        shared,
+        new_subjects: reconcile.new_subjects,
+        new_strings: reconcile.new_strings,
+        updated_watermarks: reconcile.updated_watermarks,
+        updated_string_watermark: reconcile.updated_string_watermark,
+        max_t,
+        delta_commit_size,
+        delta_asserts,
+        delta_retracts,
+        base_vector_counts,
+        base_numbig_counts,
+        fulltext_string_bytes,
+    })
+}
+
+// ============================================================================
+// Internal: Commit Chain Walking (same as V5)
+// ============================================================================
+
+async fn walk_commit_chain_since(
+    cs: &dyn ContentStore,
+    head_id: &ContentId,
+    from_t: i64,
+) -> Result<Vec<ContentId>, IncrementalResolveError> {
+    let mut cids = Vec::new();
+    let mut current = Some(head_id.clone());
+
+    while let Some(cid) = current {
+        let bytes = cs.get(&cid).await.map_err(|e| {
+            IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
+        })?;
+        let envelope = fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
+            IncrementalResolveError::CommitChain(format!(
+                "failed to decode envelope for {}: {}",
+                cid, e
+            ))
+        })?;
+
+        if envelope.t <= from_t {
+            break;
+        }
+
+        current = envelope.previous_ref.map(|r| r.id);
+        cids.push(cid);
+    }
+
+    cids.reverse();
+    Ok(cids)
+}
+
+// ============================================================================
+// Internal: Reconciliation (reused from V5 — same algorithm)
+// ============================================================================
+
+use fluree_db_binary_index::dict::reverse_leaf::subject_reverse_key;
+use fluree_db_binary_index::dict::DictTreeReader;
+
+struct ReconcileResult {
+    subject_remap: Vec<u64>,
+    string_remap: Vec<u32>,
+    new_subjects: Vec<(u16, u64, Vec<u8>)>,
+    new_strings: Vec<(u32, Vec<u8>)>,
+    updated_watermarks: Vec<u64>,
+    updated_string_watermark: u32,
+}
+
+fn reconcile_chunk_to_global(
+    chunk: &RebuildChunk,
+    subject_tree: &DictTreeReader,
+    string_tree: &DictTreeReader,
+    subject_watermarks: &[u64],
+    string_watermark: u32,
+) -> Result<ReconcileResult, IncrementalResolveError> {
+    // Subject reconciliation.
+    let subject_entries = chunk.subjects.forward_entries();
+    let mut subject_remap = vec![0u64; subject_entries.len()];
+    let mut new_subjects = Vec::new();
+    let mut ns_next_local: HashMap<u16, u64> = HashMap::new();
+    let mut updated_watermarks = subject_watermarks.to_vec();
+
+    for (chunk_local_id, (ns_code, name_bytes)) in subject_entries.iter().enumerate() {
+        let reverse_key = subject_reverse_key(*ns_code, name_bytes);
+        let existing_id = subject_tree
+            .reverse_lookup(&reverse_key)
+            .map_err(IncrementalResolveError::Io)?;
+
+        let global_sid64 = match existing_id {
+            Some(sid64) => sid64,
+            None => {
+                let wm = if (*ns_code as usize) < updated_watermarks.len() {
+                    updated_watermarks[*ns_code as usize]
+                } else {
+                    updated_watermarks.resize(*ns_code as usize + 1, 0);
+                    0
+                };
+                let next = ns_next_local.entry(*ns_code).or_insert(wm + 1);
+                let local_id = *next;
+                *next += 1;
+                updated_watermarks[*ns_code as usize] = local_id;
+                let sid64 = SubjectId::new(*ns_code, local_id).as_u64();
+                new_subjects.push((*ns_code, local_id, name_bytes.clone()));
+                sid64
+            }
+        };
+        subject_remap[chunk_local_id] = global_sid64;
+    }
+
+    // String reconciliation.
+    let string_entries = chunk.strings.forward_entries();
+    let mut string_remap = vec![0u32; string_entries.len()];
+    let mut new_strings = Vec::new();
+    let mut next_string_id = string_watermark + 1;
+
+    for (chunk_local_id, value_bytes) in string_entries.iter().enumerate() {
+        let existing_id = string_tree
+            .reverse_lookup(value_bytes)
+            .map_err(IncrementalResolveError::Io)?;
+
+        let global_str_id = match existing_id {
+            Some(id) => id as u32,
+            None => {
+                let id = next_string_id;
+                next_string_id += 1;
+                new_strings.push((id, value_bytes.clone()));
+                id
+            }
+        };
+        string_remap[chunk_local_id] = global_str_id;
+    }
+
+    let updated_string_watermark = if next_string_id > string_watermark + 1 {
+        next_string_id - 1
+    } else {
+        string_watermark
+    };
+
+    // Enforce sort invariants for downstream consumers (forward pack builders).
+    // Strings are already sorted (sequential IDs from watermark+1).
+    debug_assert!(
+        new_strings.windows(2).all(|w| w[0].0 < w[1].0),
+        "new_strings must be sorted by string_id ascending"
+    );
+    // Subjects may be interleaved across namespaces; sort by (ns_code, local_id).
+    new_subjects.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    Ok(ReconcileResult {
+        subject_remap,
+        string_remap,
+        new_subjects,
+        new_strings,
+        updated_watermarks,
+        updated_string_watermark,
+    })
+}
+
+// ============================================================================
+// Internal: Record remap (same as V5)
+// ============================================================================
+
+fn remap_record(
+    record: &mut RunRecord,
+    subject_remap: &[u64],
+    string_remap: &[u32],
+) -> Result<(), IncrementalResolveError> {
+    use crate::run_index::resolve::resolver::ResolverError;
+
+    let local_s = record.s_id.as_u64() as usize;
+    let global_s = *subject_remap.get(local_s).ok_or_else(|| {
+        IncrementalResolveError::Resolve(ResolverError::Resolve(format!(
+            "subject remap out of range: local_id={}, remap_len={}",
+            local_s,
+            subject_remap.len()
+        )))
+    })?;
+    record.s_id = SubjectId::from_u64(global_s);
+
+    let o_kind = ObjKind::from_u8(record.o_kind);
+    if o_kind == ObjKind::REF_ID {
+        let local_o = record.o_key as usize;
+        let global_o = *subject_remap.get(local_o).ok_or_else(|| {
+            IncrementalResolveError::Resolve(ResolverError::Resolve(format!(
+                "ref object remap out of range: local_id={}, remap_len={}",
+                local_o,
+                subject_remap.len()
+            )))
+        })?;
+        record.o_key = global_o;
+    } else if o_kind == ObjKind::LEX_ID || o_kind == ObjKind::JSON_ID {
+        let local_str = ObjKey::from_u64(record.o_key).decode_u32_id() as usize;
+        let global_str = *string_remap.get(local_str).ok_or_else(|| {
+            IncrementalResolveError::Resolve(ResolverError::Resolve(format!(
+                "string remap out of range: local_id={}, remap_len={}",
+                local_str,
+                string_remap.len()
+            )))
+        })?;
+        record.o_key = ObjKey::encode_u32_id(global_str).as_u64();
+    }
+
+    Ok(())
+}

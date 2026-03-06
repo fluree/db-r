@@ -1132,6 +1132,115 @@ impl SharedResolverState {
         })
     }
 
+    /// Seed resolver state from an `IndexRootV6` (FIR6).
+    ///
+    /// Same logic as `from_index_root` — the V6 root has the same dict
+    /// fields (`namespace_codes`, `predicate_sids`, `graph_iris`,
+    /// `datatype_iris`, `language_tags`).
+    pub fn from_index_root_v6(
+        root: &fluree_db_binary_index::format::index_root_v6::IndexRootV6,
+    ) -> Result<Self, ResolverError> {
+        use fluree_db_core::value_id::ValueTypeTag;
+        use std::sync::Arc;
+
+        let ns_prefixes: HashMap<u16, String> = root
+            .namespace_codes
+            .iter()
+            .map(|(&code, prefix)| (code, prefix.clone()))
+            .collect();
+
+        let pred_iris: Vec<Arc<str>> = root
+            .predicate_sids
+            .iter()
+            .map(|(ns_code, suffix)| {
+                let prefix = ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+                let mut iri = String::with_capacity(prefix.len() + suffix.len());
+                iri.push_str(prefix);
+                iri.push_str(suffix);
+                Arc::from(iri.as_str())
+            })
+            .collect();
+        let predicates = super::global_dict::PredicateDict::from_ordered_iris(pred_iris);
+
+        let expected_txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri(&root.ledger_id);
+        if root.graph_iris.is_empty() || root.graph_iris[0] != expected_txn_meta {
+            return Err(ResolverError::Resolve(format!(
+                "graph_iris[0] must be txn-meta IRI '{}', got: {:?}",
+                expected_txn_meta,
+                root.graph_iris.first()
+            )));
+        }
+        let graph_iris: Vec<Arc<str>> = root
+            .graph_iris
+            .iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect();
+        let graphs = super::global_dict::PredicateDict::from_ordered_iris(graph_iris);
+
+        let reference = super::global_dict::new_datatype_dict();
+        if root.datatype_iris.len() < 14 {
+            return Err(ResolverError::Resolve(format!(
+                "datatype_iris has {} entries, expected at least 14 reserved",
+                root.datatype_iris.len()
+            )));
+        }
+        for i in 0..14u32 {
+            let expected = reference
+                .resolve(i)
+                .expect("reserved datatype missing from reference");
+            if root.datatype_iris[i as usize] != expected {
+                return Err(ResolverError::Resolve(format!(
+                    "datatype_iris[{}] mismatch: expected '{}', got '{}'",
+                    i, expected, root.datatype_iris[i as usize]
+                )));
+            }
+        }
+        let dt_iris: Vec<Arc<str>> = root
+            .datatype_iris
+            .iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect();
+        let datatypes = super::global_dict::PredicateDict::from_ordered_iris(dt_iris);
+
+        let lang_tags: Vec<Arc<str>> = root
+            .language_tags
+            .iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect();
+        let languages = super::global_dict::LanguageTagDict::from_ordered_tags(lang_tags);
+
+        let prefix_to_code: Vec<(&str, u16)> = ns_prefixes
+            .iter()
+            .map(|(&code, prefix)| (prefix.as_str(), code))
+            .collect();
+
+        let mut dt_tags = Vec::with_capacity(root.datatype_iris.len());
+        for (i, iri) in root.datatype_iris.iter().enumerate() {
+            if i < 14 {
+                let tag = fluree_db_core::DatatypeDictId(i as u16)
+                    .to_value_type_tag()
+                    .unwrap_or(ValueTypeTag::UNKNOWN);
+                dt_tags.push(tag);
+            } else {
+                let tag = split_iri_to_value_type_tag(iri, &prefix_to_code);
+                dt_tags.push(tag);
+            }
+        }
+
+        Ok(Self {
+            ns_prefixes,
+            predicates,
+            datatypes,
+            graphs,
+            languages,
+            numbigs: FxHashMap::default(),
+            vectors: FxHashMap::default(),
+            dt_tags,
+            spatial_hook: None,
+            fulltext_hook: None,
+        })
+    }
+
     /// Insert or look up a datatype, recording its ValueTypeTag deterministically.
     fn resolve_datatype(&mut self, ns_code: u16, name: &str) -> u32 {
         let prefix = self

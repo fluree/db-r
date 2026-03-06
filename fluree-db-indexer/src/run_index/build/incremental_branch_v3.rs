@@ -84,6 +84,13 @@ where
 {
     let order = config.order;
     let g_id = config.g_id;
+
+    // Catch mis-sorted novelty early — silent mis-slicing is brutal to debug.
+    debug_assert!(
+        novelty.windows(2).all(|w| cmp_v2_for_order(order)(&w[0], &w[1]) != std::cmp::Ordering::Greater),
+        "novelty must be sorted by the branch's sort order ({order:?})"
+    );
+
     let manifest = read_branch_v3_from_bytes(existing_branch_bytes)?;
     let cmp = cmp_v2_for_order(order);
 

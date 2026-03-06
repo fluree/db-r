@@ -160,17 +160,10 @@ where
 
         // Determine index format: V3 (FIR6) or V2 (IRB1).
         let use_v3 = resolve_use_v3(&config, &record);
-        if use_v3 {
-            tracing::info!(
-                "V3 index format detected, using full rebuild (incremental V3 deferred)"
-            );
-        }
 
         // Try incremental indexing if conditions are met.
-        // V3 skips incremental entirely (incremental V3 is deferred).
         let commit_gap = record.commit_t - record.index_t;
-        let can_incremental = !use_v3
-            && config.incremental_enabled
+        let can_incremental = config.incremental_enabled
             && record.index_head_id.is_some()
             && record.index_t > 0
             && commit_gap <= config.incremental_max_commits as i64;
@@ -180,9 +173,17 @@ where
                 from_t = record.index_t,
                 to_t = record.commit_t,
                 commit_gap = commit_gap,
+                v3 = use_v3,
                 "attempting incremental index"
             );
-            match incremental_index_from_root(storage, ledger_id, &record, config.clone()).await {
+
+            let incremental_result = if use_v3 {
+                incremental_index_v6(storage, ledger_id, &record, config.clone()).await
+            } else {
+                incremental_index_from_root(storage, ledger_id, &record, config.clone()).await
+            };
+
+            match incremental_result {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -193,8 +194,7 @@ where
                     );
                 }
             }
-        } else if !use_v3
-            && config.incremental_enabled
+        } else if config.incremental_enabled
             && record.index_head_id.is_some()
             && record.index_t > 0
         {
@@ -231,6 +231,22 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config, use_v3).await
+}
+
+/// V6 incremental index from an existing FIR6 root.
+///
+/// Loads the existing `IndexRootV6`, resolves only new commits, merges
+/// novelty into affected FLI3 leaves, and publishes a new FIR6 root.
+async fn incremental_index_v6<S>(
+    storage: &S,
+    ledger_id: &str,
+    record: &fluree_db_nameservice::NsRecord,
+    config: IndexerConfig,
+) -> Result<IndexResult>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    build::incremental_v6::incremental_index_v6(storage, ledger_id, record, config).await
 }
 
 /// Build an incremental index from an existing root, resolving only new commits.

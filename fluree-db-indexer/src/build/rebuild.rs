@@ -507,15 +507,7 @@ where
             // V1 SPOT/secondary + IRB1 root. The V2 path below is
             // completely unchanged.
             if use_v3 {
-                // Multi-graph guard: V3 build is currently graph-scoped (g_id=0).
-                // Named graphs require iterating over g_ids (deferred).
-                if shared.graphs.len() > 1 {
-                    tracing::warn!(
-                        graph_count = shared.graphs.len(),
-                        "V3 rebuild: named graphs present, falling back to V2"
-                    );
-                    // Fall through to V2 path below.
-                } else {
+                {
                     let _span_v3 = tracing::debug_span!("v3_rebuild").entered();
 
                     // Build OTypeRegistry from custom datatype IRIs.
@@ -526,36 +518,100 @@ where
                     let registry =
                         fluree_db_core::o_type_registry::OTypeRegistry::new(&custom_dt_iris);
 
-                    // V3 run dir for run files (separate from the main remap dir).
-                    let v3_run_dir = run_dir.join("v3_runs");
-                    std::fs::create_dir_all(&v3_run_dir)
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                    // Phase D-V3: Build FLI3/FBR3 from globally-remapped .fsc files.
-                    let v3_config = crate::V3BuildConfig {
-                        run_dir: v3_run_dir,
-                        index_dir: index_dir.clone(),
-                        g_id: 0,
-                        leaflet_target_rows: config.leaflet_rows,
-                        leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
-                        zstd_level: 1,
-                        run_budget_bytes: config.run_budget_bytes,
-                        progress: None,
+                    // Collect all graph IDs: g_id 0 (default) + named graphs (1+).
+                    // Graph IRI list maps dict_index → graph IRI, where g_id = dict_index + 1
+                    // (g_id=0 is always the default graph, g_id=1 is always txn-meta).
+                    let all_g_ids: Vec<u16> = {
+                        let mut ids = vec![0u16]; // default graph
+                        for g_idx in 0..shared.graphs.len() {
+                            let g_id = (g_idx + 1) as u16;
+                            if !ids.contains(&g_id) {
+                                ids.push(g_id);
+                            }
+                        }
+                        ids
                     };
 
-                    let v3_result = crate::build_v3_indexes_from_remapped_commits(
-                        &sorted_commit_infos,
-                        &registry,
-                        &v3_config,
-                    )
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    tracing::info!(
+                        graph_count = all_g_ids.len(),
+                        g_ids = ?all_g_ids,
+                        "V3 rebuild: building indexes for all graphs"
+                    );
+
+                    // Phase D-V3: Build FLI3/FBR3 per graph from globally-remapped .fsc files.
+                    // Each graph gets its own run dir and build call, then results are merged.
+                    let mut merged_order_results: Vec<(
+                        fluree_db_binary_index::format::run_record::RunSortOrder,
+                        crate::run_index::build::index_build_v2::IndexBuildV2Result,
+                    )> = Vec::new();
+                    let mut total_rows = 0u64;
+                    let mut total_remap_ms = 0u128;
+                    let mut total_build_ms = 0u128;
+
+                    for &g_id in &all_g_ids {
+                        let v3_run_dir = run_dir.join(format!("v3_runs_g{g_id}"));
+                        std::fs::create_dir_all(&v3_run_dir)
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        let v3_config = crate::V3BuildConfig {
+                            run_dir: v3_run_dir,
+                            index_dir: index_dir.clone(),
+                            g_id,
+                            leaflet_target_rows: config.leaflet_rows,
+                            leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
+                            zstd_level: 1,
+                            run_budget_bytes: config.run_budget_bytes,
+                            progress: None,
+                        };
+
+                        let v3_result = crate::build_v3_indexes_from_remapped_commits(
+                            &sorted_commit_infos,
+                            &registry,
+                            &v3_config,
+                        )
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        tracing::info!(
+                            g_id,
+                            total_rows = v3_result.total_rows,
+                            orders = v3_result.order_results.len(),
+                            remap_ms = v3_result.remap_elapsed.as_millis(),
+                            build_ms = v3_result.build_elapsed.as_millis(),
+                            "Phase D-V3: graph indexes built"
+                        );
+
+                        if g_id == 0 {
+                            total_rows = v3_result.total_rows;
+                        }
+                        total_remap_ms += v3_result.remap_elapsed.as_millis();
+                        total_build_ms += v3_result.build_elapsed.as_millis();
+
+                        // Merge order results: append graph results into matching orders.
+                        for (order, order_result) in v3_result.order_results {
+                            if let Some((_, existing)) =
+                                merged_order_results.iter_mut().find(|(o, _)| *o == order)
+                            {
+                                existing.graphs.extend(order_result.graphs);
+                                existing.total_rows += order_result.total_rows;
+                            } else {
+                                merged_order_results.push((order, order_result));
+                            }
+                        }
+                    }
+
+                    // Wrap merged results into a V3BuildResult for the upload path.
+                    let v3_result = crate::V3BuildResult {
+                        order_results: merged_order_results,
+                        total_rows,
+                        total_remapped: 0,
+                        remap_elapsed: std::time::Duration::from_millis(total_remap_ms as u64),
+                        build_elapsed: std::time::Duration::from_millis(total_build_ms as u64),
+                    };
 
                     tracing::info!(
                         total_rows = v3_result.total_rows,
-                        orders = v3_result.order_results.len(),
-                        remap_ms = v3_result.remap_elapsed.as_millis(),
-                        build_ms = v3_result.build_elapsed.as_millis(),
-                        "Phase D-V3 complete: V3 indexes built"
+                        graphs = all_g_ids.len(),
+                        "Phase D-V3 complete: all graph indexes built"
                     );
 
                     // Phase E-V3: Upload V3 artifacts to CAS.
