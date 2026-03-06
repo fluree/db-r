@@ -146,28 +146,25 @@ impl R2rmlScanOperator {
 
                 let val = FlakeValue::String(value.clone());
 
-                match dtc {
-                    Some(UnresolvedDatatypeConstraint::LangTag(lang)) => {
-                        Ok(Binding::lit_lang(val, lang.as_ref()))
-                    }
+                if let Some(UnresolvedDatatypeConstraint::LangTag(lang)) = dtc {
+                    return Ok(Binding::lit_lang(val, lang.as_ref()));
+                }
+
+                let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
+                let dt_sid = match dtc {
                     Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
-                        let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
-                        let dt_sid = ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
+                        ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
                             ctx.snapshot
                                 .encode_iri(xsd::STRING)
                                 .unwrap_or(xsd_string_fallback)
-                        });
-                        Ok(Binding::lit(val, dt_sid))
+                        })
                     }
-                    None => {
-                        let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
-                        let dt_sid = ctx
-                            .snapshot
-                            .encode_iri(xsd::STRING)
-                            .unwrap_or(xsd_string_fallback);
-                        Ok(Binding::lit(val, dt_sid))
-                    }
-                }
+                    _ => ctx
+                        .snapshot
+                        .encode_iri(xsd::STRING)
+                        .unwrap_or(xsd_string_fallback),
+                };
+                Ok(Binding::lit(val, dt_sid))
             }
         }
     }
