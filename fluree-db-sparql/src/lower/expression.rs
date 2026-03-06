@@ -8,6 +8,7 @@ use crate::ast::term::{Literal, LiteralValue};
 use fluree_db_core::FlakeValue;
 use fluree_db_query::ir::{Expression, FilterValue, Function};
 use fluree_db_query::parse::encode::IriEncoder;
+use fluree_vocab::xsd;
 
 use super::{LowerError, LoweringContext, Result};
 
@@ -284,6 +285,13 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     "http://www.opengis.net/def/function/geosparql/distance" => {
                         Function::GeofDistance
                     }
+                    // XSD datatype constructor (cast) functions — W3C SPARQL 1.1 §17.5
+                    xsd::BOOLEAN => Function::XsdBoolean,
+                    xsd::INTEGER => Function::XsdInteger,
+                    xsd::FLOAT => Function::XsdFloat,
+                    xsd::DOUBLE => Function::XsdDouble,
+                    xsd::DECIMAL => Function::XsdDecimal,
+                    xsd::STRING => Function::XsdString,
                     _ => Function::Custom(full_iri),
                 }
             }
