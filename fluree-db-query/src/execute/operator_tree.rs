@@ -20,12 +20,13 @@ use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, QueryOutput};
 use crate::project::ProjectOperator;
-use crate::sort::SortOperator;
+use crate::sort::{SortDirection, SortOperator};
 use crate::stats_query::StatsCountByPredicateOperator;
-use crate::triple::{Ref, Term};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::dependency::{compute_variable_deps, VariableDeps};
@@ -39,7 +40,7 @@ fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> b
     let gb = options.group_by[0];
 
     // Strict: only a single triple pattern plus order-preserving operators (FILTER/BIND).
-    let mut triple: Option<&crate::triple::TriplePattern> = None;
+    let mut triple: Option<&TriplePattern> = None;
     for p in &query.patterns {
         match p {
             Pattern::Triple(tp) => {
@@ -136,7 +137,7 @@ fn detect_predicate_group_by_object_count_topk(
 fn detect_predicate_object_count(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, VarId, crate::triple::Term, VarId)> {
+) -> Option<(Ref, VarId, Term, VarId)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
@@ -158,7 +159,7 @@ fn detect_predicate_object_count(
         Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
         _ => return None,
     };
-    if matches!(&tp.o, crate::triple::Term::Var(_)) {
+    if matches!(tp.o, Term::Var(_)) {
         return None;
     }
     // Loose semantics only (no explicit dt/lang constraint).
@@ -279,7 +280,7 @@ fn detect_stats_count_by_predicate(
 fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(VarId, Vec<(crate::triple::Ref, VarId)>, VarId)> {
+) -> Option<(VarId, Vec<(Ref, VarId)>, VarId)> {
     let select_vars = query.output.select_vars()?;
     if query.patterns.len() < 2 {
         return None;
@@ -304,7 +305,7 @@ fn detect_property_join_count_all(
 
     let mut subject_var: Option<VarId> = None;
     let mut preds: Vec<(Ref, VarId)> = Vec::with_capacity(query.patterns.len());
-    let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    let mut seen_obj: HashSet<VarId> = HashSet::new();
 
     for p in &query.patterns {
         let Pattern::Triple(tp) = p else {
@@ -450,10 +451,8 @@ fn build_grouping_operators(
     }
 
     // Validate aggregates
-    let group_by_set: std::collections::HashSet<VarId> =
-        options.group_by.iter().copied().collect();
-    let mut seen_output_vars: std::collections::HashSet<VarId> =
-        std::collections::HashSet::new();
+    let group_by_set: HashSet<VarId> = options.group_by.iter().copied().collect();
+    let mut seen_output_vars: HashSet<VarId> = HashSet::new();
 
     for spec in &options.aggregates {
         if let Some(input_var) = spec.input_var {
@@ -583,16 +582,15 @@ pub fn build_operator_tree(
 
     // Needed-vars for WHERE planning: derived from variable_deps when available,
     // otherwise treat all WHERE-bound vars as needed (wildcard/boolean/construct).
-    let needed_where_vars: std::collections::HashSet<VarId> =
-        if let Some(ref deps) = variable_deps {
-            deps.required_where_vars.iter().copied().collect()
-        } else {
-            let mut counts = std::collections::HashMap::new();
-            let mut vars = std::collections::HashSet::new();
-            collect_var_stats(&query.patterns, &mut counts, &mut vars);
-            vars.extend(counts.keys().copied());
-            vars
-        };
+    let needed_where_vars: HashSet<VarId> = if let Some(ref deps) = variable_deps {
+        deps.required_where_vars.iter().copied().collect()
+    } else {
+        let mut counts = HashMap::new();
+        let mut vars = HashSet::new();
+        collect_var_stats(&query.patterns, &mut counts, &mut vars);
+        vars.extend(counts.keys().copied());
+        vars
+    };
 
     let mut operator = build_where_operators_with_needed(
         &query.patterns,
@@ -634,15 +632,14 @@ pub fn build_operator_tree(
     }
 
     // Schema after grouping/aggregation/binds — used for ORDER BY + PROJECT validation.
-    let post_group_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
+    let post_group_schema = operator.schema().to_vec();
 
     // ORDER BY (before projection — may reference vars not in SELECT)
     if !options.order_by.is_empty() {
         // Disallow sorting on Grouped variables (non-key, non-aggregated) because
         // comparison is undefined.
-        let allowed_sort_vars: Option<std::collections::HashSet<VarId>> = if needs_grouping {
-            let mut allowed: std::collections::HashSet<VarId> =
-                options.group_by.iter().copied().collect();
+        let allowed_sort_vars: Option<HashSet<VarId>> = if needs_grouping {
+            let mut allowed: HashSet<VarId> = options.group_by.iter().copied().collect();
             allowed.extend(options.aggregates.iter().map(|a| a.output_var));
             Some(allowed)
         } else {
