@@ -310,7 +310,7 @@ impl LeafWriterV3 {
 
 // ── CID helpers ────────────────────────────────────────────────────────
 
-fn compute_cid_leaf(bytes: &[u8]) -> ContentId {
+pub fn compute_cid_leaf(bytes: &[u8]) -> ContentId {
     let hex_digest = fluree_db_core::sha256_hex(bytes);
     ContentId::from_hex_digest(
         fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF_V3,
@@ -319,7 +319,7 @@ fn compute_cid_leaf(bytes: &[u8]) -> ContentId {
     .expect("valid SHA-256 hex digest")
 }
 
-fn compute_cid_sidecar(bytes: &[u8]) -> ContentId {
+pub fn compute_cid_sidecar(bytes: &[u8]) -> ContentId {
     let hex_digest = fluree_db_core::sha256_hex(bytes);
     ContentId::from_hex_digest(
         fluree_db_core::content_kind::CODEC_FLUREE_HISTORY_SIDECAR,
@@ -330,21 +330,35 @@ fn compute_cid_sidecar(bytes: &[u8]) -> ContentId {
 
 // ── Leaf blob assembly ─────────────────────────────────────────────────
 
-fn build_leaf_blob(
+pub fn build_leaf_blob(
     order: RunSortOrder,
     leaflets: &[EncodedLeafletV3],
     history_seg_refs: &[HistorySegmentRef],
     first_record: &RunRecordV2,
     last_record: &RunRecordV2,
 ) -> Vec<u8> {
-    let leaflet_count = leaflets.len() as u32;
-    let total_rows: u64 = leaflets.iter().map(|l| l.row_count as u64).sum();
-
-    // Compute first/last keys for the leaf.
     let mut first_key = [0u8; ORDERED_KEY_V2_SIZE];
     let mut last_key = [0u8; ORDERED_KEY_V2_SIZE];
     write_ordered_key_v2(order, first_record, &mut first_key);
     write_ordered_key_v2(order, last_record, &mut last_key);
+    build_leaf_blob_raw_keys(order, leaflets, history_seg_refs, &first_key, &last_key)
+}
+
+/// Build a leaf blob using pre-computed ordered key bytes for first/last.
+///
+/// This is useful for incremental leaf assembly where the first/last keys
+/// are already available as raw `[u8; 26]` from leaflet directory entries.
+pub fn build_leaf_blob_raw_keys(
+    order: RunSortOrder,
+    leaflets: &[EncodedLeafletV3],
+    history_seg_refs: &[HistorySegmentRef],
+    first_key: &[u8; ORDERED_KEY_V2_SIZE],
+    last_key: &[u8; ORDERED_KEY_V2_SIZE],
+) -> Vec<u8> {
+    let leaflet_count = leaflets.len() as u32;
+    let total_rows: u64 = leaflets.iter().map(|l| l.row_count as u64).sum();
+    let first_key = *first_key;
+    let last_key = *last_key;
 
     // Pre-compute directory size.
     let dir_size = compute_directory_size(leaflets, history_seg_refs);
@@ -430,7 +444,7 @@ fn build_leaf_blob(
     buf
 }
 
-fn compute_directory_size(
+pub fn compute_directory_size(
     leaflets: &[EncodedLeafletV3],
     history_seg_refs: &[HistorySegmentRef],
 ) -> usize {

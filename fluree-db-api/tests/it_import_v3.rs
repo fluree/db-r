@@ -750,3 +750,315 @@ ex:alice schema:name "Alice" .
         "language tag should be preserved for novelty langString"
     );
 }
+
+// ============================================================================
+// E2E: import V3 → transact → rebuild → reload → query
+// ============================================================================
+
+/// Full cycle: import V3, transact, trigger V3 rebuild from commits,
+/// reload the ledger from the new FIR6 root, query the rebuilt index.
+///
+/// This verifies: `rebuild_index_from_commits(use_v3=true)` produces a
+/// valid FIR6 root that can be loaded and queried. The transacted data
+/// (Cam) must survive the rebuild because rebuild walks the full commit chain.
+#[tokio::test]
+async fn import_v3_rebuild_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice a ex:User ;
+    schema:name "Alice" ;
+    schema:age 42 .
+
+ex:bob a ex:User ;
+    schema:name "Bob" ;
+    schema:age 22 .
+"#;
+
+    let ttl_path = write_ttl(data_dir.path(), "rebuild.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Phase 1: Import with V3 format.
+    let _import_result = fluree
+        .create("test/v3-rebuild:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("V3 import should succeed");
+
+    // Phase 2: Transact a new entity (committed, not just overlay).
+    let ledger = fluree
+        .ledger("test/v3-rebuild:main")
+        .await
+        .expect("load V3 ledger");
+
+    let insert_data = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:cam",
+            "@type": "ex:User",
+            "schema:name": "Cam",
+            "schema:age": 34
+        }]
+    });
+
+    let txn_result = fluree
+        .insert(ledger, &insert_data)
+        .await
+        .expect("insert should succeed");
+    assert!(txn_result.receipt.flake_count > 0);
+
+    // Phase 3: Trigger V3 rebuild from commits.
+    // Get the nameservice record for the ledger.
+    use fluree_db_nameservice::NameService;
+    let ns_record = fluree
+        .nameservice()
+        .lookup("test/v3-rebuild:main")
+        .await
+        .expect("ns lookup")
+        .expect("ns record should exist");
+
+    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
+    indexer_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
+
+    let index_result = fluree_db_indexer::rebuild_index_from_commits(
+        fluree.storage(),
+        "test/v3-rebuild:main",
+        &ns_record,
+        indexer_config,
+        true, // use_v3
+    )
+    .await
+    .expect("V3 rebuild should succeed");
+
+    assert!(
+        index_result.index_t > 0,
+        "rebuild should produce an index with t > 0"
+    );
+
+    // Verify the rebuild produced a FIR6 root (not IRB1).
+    let fir6_files = find_files_with_magic(db_dir.path(), b"FIR6");
+    // There should be at least 2 FIR6 files now: one from import, one from rebuild.
+    assert!(
+        fir6_files.len() >= 2,
+        "expected at least 2 FIR6 roots (import + rebuild), found {}",
+        fir6_files.len()
+    );
+
+    // Phase 4: Publish the rebuilt root to nameservice so ledger() loads it.
+    use fluree_db_nameservice::Publisher;
+    fluree
+        .nameservice()
+        .publish_index(
+            "test/v3-rebuild:main",
+            index_result.index_t,
+            &index_result.root_id,
+        )
+        .await
+        .expect("publish rebuilt root");
+
+    // Phase 5: Reload the ledger from the rebuilt FIR6 root.
+    let rebuilt_ledger = fluree
+        .ledger("test/v3-rebuild:main")
+        .await
+        .expect("load rebuilt V3 ledger");
+
+    // Phase 6: Query the rebuilt index — should see all 3 users
+    // (Alice + Bob from import, Cam from the committed transaction).
+    let names_result = support::query_sparql(
+        &fluree,
+        &rebuilt_ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name WHERE { ?s schema:name ?name }
+        ORDER BY ?name
+        "#,
+    )
+    .await
+    .expect("query rebuilt V3 index");
+    let names_json = names_result
+        .to_sparql_json(&rebuilt_ledger.snapshot)
+        .expect("format sparql json");
+    let bindings = names_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Alice", "Bob", "Cam"],
+        "rebuilt V3 index should contain all 3 users (import + transacted)"
+    );
+
+    // Verify integer values survive rebuild.
+    let age_result = support::query_sparql(
+        &fluree,
+        &rebuilt_ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?age WHERE { ex:cam schema:age ?age }
+        "#,
+    )
+    .await
+    .expect("cam age after rebuild");
+    let age_json = age_result
+        .to_sparql_json(&rebuilt_ledger.snapshot)
+        .expect("format");
+    let age_bindings = age_json["results"]["bindings"]
+        .as_array()
+        .expect("array");
+    assert_eq!(age_bindings.len(), 1);
+    assert_eq!(age_bindings[0]["age"]["value"].as_str().unwrap(), "34");
+}
+
+/// Verify that V3 rebuild correctly filters retract-winners.
+///
+/// Import 2 entities, retract one via transaction, rebuild V3 → the retracted
+/// entity's triples should be absent from the rebuilt index.
+#[tokio::test]
+async fn import_v3_rebuild_filters_retracts() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:keep a ex:User ;
+    schema:name "Keep" .
+
+ex:remove a ex:User ;
+    schema:name "Remove" .
+"#;
+
+    let ttl_path = write_ttl(data_dir.path(), "retract.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    // Import with V3 format.
+    fluree
+        .create("test/v3-retract:main")
+        .import(&ttl_path)
+        .threads(1)
+        .memory_budget_mb(128)
+        .cleanup(false)
+        .index_format_version(3)
+        .execute()
+        .await
+        .expect("V3 import should succeed");
+
+    // Retract the "Remove" entity.
+    let ledger = fluree
+        .ledger("test/v3-retract:main")
+        .await
+        .expect("load V3 ledger");
+
+    let delete_data = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "where": {
+            "@id": "ex:remove",
+            "schema:name": "?name",
+            "@type": "?type"
+        },
+        "delete": {
+            "@id": "ex:remove",
+            "schema:name": "?name",
+            "@type": "?type"
+        }
+    });
+
+    let txn_result = fluree
+        .update(ledger, &delete_data)
+        .await
+        .expect("retract should succeed");
+    assert!(txn_result.receipt.flake_count > 0);
+
+    // Rebuild V3 from commits.
+    use fluree_db_nameservice::NameService;
+    let ns_record = fluree
+        .nameservice()
+        .lookup("test/v3-retract:main")
+        .await
+        .expect("ns lookup")
+        .expect("ns record should exist");
+
+    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
+    indexer_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
+
+    let index_result = fluree_db_indexer::rebuild_index_from_commits(
+        fluree.storage(),
+        "test/v3-retract:main",
+        &ns_record,
+        indexer_config,
+        true,
+    )
+    .await
+    .expect("V3 rebuild should succeed");
+
+    // Publish and reload.
+    use fluree_db_nameservice::Publisher;
+    fluree
+        .nameservice()
+        .publish_index(
+            "test/v3-retract:main",
+            index_result.index_t,
+            &index_result.root_id,
+        )
+        .await
+        .expect("publish rebuilt root");
+
+    let rebuilt_ledger = fluree
+        .ledger("test/v3-retract:main")
+        .await
+        .expect("load rebuilt V3 ledger");
+
+    // Query: only "Keep" should remain; "Remove" should be filtered out.
+    let names_result = support::query_sparql(
+        &fluree,
+        &rebuilt_ledger,
+        r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name WHERE { ?s schema:name ?name }
+        ORDER BY ?name
+        "#,
+    )
+    .await
+    .expect("query rebuilt V3 index");
+    let names_json = names_result
+        .to_sparql_json(&rebuilt_ledger.snapshot)
+        .expect("format sparql json");
+    let bindings = names_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .map(|b| b["name"]["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Keep"],
+        "rebuilt V3 index should only contain 'Keep' — 'Remove' should be filtered as retract-winner"
+    );
+}

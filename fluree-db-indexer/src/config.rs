@@ -3,6 +3,23 @@
 use crate::gc::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use std::path::PathBuf;
 
+/// Which index root format to produce during background indexing.
+///
+/// - `Auto`: detect from the existing root's CID codec. V3-imported ledgers
+///   (FIR6 root) rebuild as V3; V2 (IRB1) ledgers stay V2.
+/// - `V2`: force IRB1 root (legacy).
+/// - `V3`: force FIR6 root (columnar V3 format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexFormatVersion {
+    /// Detect from the existing root's CID codec.
+    #[default]
+    Auto,
+    /// Force V2 IRB1 root.
+    V2,
+    /// Force V3 FIR6 root.
+    V3,
+}
+
 /// Configuration for index building
 #[derive(Debug, Clone)]
 pub struct IndexerConfig {
@@ -109,6 +126,11 @@ pub struct IndexerConfig {
     ///
     /// Default: 10.
     pub leaflets_per_leaf: usize,
+
+    /// Which index format to produce during background indexing.
+    ///
+    /// Default: `Auto` (detect from existing root codec).
+    pub index_format_version: IndexFormatVersion,
 }
 
 /// Default run-sort budget: 256 MB.
@@ -136,6 +158,7 @@ impl Default for IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            index_format_version: IndexFormatVersion::default(),
         }
     }
 }
@@ -162,6 +185,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            index_format_version: IndexFormatVersion::default(),
         }
     }
 
@@ -181,6 +205,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            index_format_version: IndexFormatVersion::default(),
         }
     }
 
@@ -200,6 +225,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            index_format_version: IndexFormatVersion::default(),
         }
     }
 
@@ -254,6 +280,12 @@ impl IndexerConfig {
     /// Builder method to set the maximum concurrency for incremental branch updates
     pub fn with_incremental_max_concurrency(mut self, max_concurrency: usize) -> Self {
         self.incremental_max_concurrency = max_concurrency.max(1);
+        self
+    }
+
+    /// Builder method to set the index format version
+    pub fn with_index_format_version(mut self, version: IndexFormatVersion) -> Self {
+        self.index_format_version = version;
         self
     }
 }

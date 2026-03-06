@@ -46,16 +46,24 @@ pub trait MergeSourceV2 {
 // ============================================================================
 
 /// Buffered reader for V2 run files.
+///
+/// Auto-detects FRN2 file version: version 1 (no-op, 30-byte records) or
+/// version 2 (with-op, 31-byte records). When ops are present, they're
+/// returned via `peek_op()` in the `MergeSourceV2` impl.
 pub struct StreamingRunReaderV2 {
     file: BufReader<std::fs::File>,
     /// Kept for the sort_order accessor.
     pub header: RunFileHeaderV2,
     buffer: Vec<RunRecordV2>,
+    /// Parallel op buffer (only populated when `has_op` is true).
+    op_buffer: Vec<u8>,
     buf_pos: usize,
     remaining: u64,
     // For compressed blocks:
     block_raw: Vec<u8>,
     is_compressed: bool,
+    /// True when the run file is version 2 (31-byte records with op sideband).
+    has_op: bool,
 }
 
 impl StreamingRunReaderV2 {
@@ -70,6 +78,7 @@ impl StreamingRunReaderV2 {
         let header = RunFileHeaderV2::read_from(&header_buf)?;
 
         let is_compressed = (header.flags & RUN_FLAG_ZSTD_BLOCKS) != 0;
+        let has_op = header.version == RUN_V2_VERSION_WITH_OP;
         let record_count = header.record_count;
 
         let mut reader = Self {
@@ -77,9 +86,15 @@ impl StreamingRunReaderV2 {
             remaining: record_count,
             header,
             buffer: Vec::with_capacity(BUFFER_SIZE.min(record_count as usize)),
+            op_buffer: Vec::with_capacity(if has_op {
+                BUFFER_SIZE.min(record_count as usize)
+            } else {
+                0
+            }),
             buf_pos: 0,
             block_raw: Vec::new(),
             is_compressed,
+            has_op,
         };
 
         if reader.remaining > 0 {
@@ -91,24 +106,44 @@ impl StreamingRunReaderV2 {
 
     fn fill_buffer(&mut self) -> io::Result<()> {
         self.buffer.clear();
+        self.op_buffer.clear();
         self.buf_pos = 0;
 
         if self.remaining == 0 {
             return Ok(());
         }
 
+        let record_size = if self.has_op {
+            RECORD_V2_WITH_OP_WIRE_SIZE
+        } else {
+            RECORD_V2_WIRE_SIZE
+        };
+
         if !self.is_compressed {
             let to_read = (self.remaining as usize).min(BUFFER_SIZE);
-            let byte_count = to_read * RECORD_V2_WIRE_SIZE;
+            let byte_count = to_read * record_size;
             let mut raw = vec![0u8; byte_count];
             self.file.read_exact(&mut raw)?;
 
             self.buffer.reserve(to_read);
+            if self.has_op {
+                self.op_buffer.reserve(to_read);
+            }
             for i in 0..to_read {
-                let off = i * RECORD_V2_WIRE_SIZE;
-                let buf: &[u8; RECORD_V2_WIRE_SIZE] =
-                    raw[off..off + RECORD_V2_WIRE_SIZE].try_into().unwrap();
-                self.buffer.push(RunRecordV2::read_run_le(buf));
+                let off = i * record_size;
+                if self.has_op {
+                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] =
+                        raw[off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                            .try_into()
+                            .unwrap();
+                    let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
+                    self.buffer.push(rec);
+                    self.op_buffer.push(op);
+                } else {
+                    let buf: &[u8; RECORD_V2_WIRE_SIZE] =
+                        raw[off..off + RECORD_V2_WIRE_SIZE].try_into().unwrap();
+                    self.buffer.push(RunRecordV2::read_run_le(buf));
+                }
             }
             self.remaining -= to_read as u64;
         } else {
@@ -126,13 +161,26 @@ impl StreamingRunReaderV2 {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
             self.buffer.reserve(n_records);
+            if self.has_op {
+                self.op_buffer.reserve(n_records);
+            }
             for i in 0..n_records {
-                let off = i * RECORD_V2_WIRE_SIZE;
-                let buf: &[u8; RECORD_V2_WIRE_SIZE] = self.block_raw
-                    [off..off + RECORD_V2_WIRE_SIZE]
-                    .try_into()
-                    .unwrap();
-                self.buffer.push(RunRecordV2::read_run_le(buf));
+                let off = i * record_size;
+                if self.has_op {
+                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = self.block_raw
+                        [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
+                    self.buffer.push(rec);
+                    self.op_buffer.push(op);
+                } else {
+                    let buf: &[u8; RECORD_V2_WIRE_SIZE] = self.block_raw
+                        [off..off + RECORD_V2_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    self.buffer.push(RunRecordV2::read_run_le(buf));
+                }
             }
             self.remaining -= n_records as u64;
         }
@@ -158,6 +206,15 @@ impl MergeSourceV2 for StreamingRunReaderV2 {
     #[inline]
     fn is_exhausted(&self) -> bool {
         self.buf_pos >= self.buffer.len() && self.remaining == 0
+    }
+
+    #[inline]
+    fn peek_op(&self) -> u8 {
+        if self.has_op {
+            self.op_buffer.get(self.buf_pos).copied().unwrap_or(1)
+        } else {
+            1 // Default: assert (import path)
+        }
     }
 }
 

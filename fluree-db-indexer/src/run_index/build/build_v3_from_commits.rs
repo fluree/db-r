@@ -11,10 +11,12 @@
 use crate::run_index::build::index_build_v2::{
     build_all_indexes_v2, BuildAllV2Config, IndexBuildV2Result,
 };
-use crate::run_index::runs::run_writer_v2::{MultiOrderRunWriterV2, MultiOrderV2Config};
+use crate::run_index::runs::run_writer_v2::{
+    MultiOrderRunWriterV2, MultiOrderRunWriterV2WithOp, MultiOrderV2Config,
+};
 use crate::run_index::runs::spool::MmapStringRemap;
 use crate::run_index::runs::spool::MmapSubjectRemap;
-use crate::run_index::runs::spool_v2::remap_commit_to_runs_v2;
+use crate::run_index::runs::spool_v2::{remap_commit_to_runs_v2, remap_commit_to_runs_v2_with_op};
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use std::io;
@@ -141,6 +143,105 @@ pub fn build_v3_indexes_from_commits(
     let build_elapsed = build_start.elapsed();
 
     // Total rows from the POST result (canonical count — avoids double-counting).
+    let total_rows = order_results
+        .iter()
+        .find(|(o, _)| *o == RunSortOrder::Post)
+        .map(|(_, r)| r.total_rows)
+        .unwrap_or_else(|| {
+            order_results
+                .first()
+                .map(|(_, r)| r.total_rows)
+                .unwrap_or(0)
+        });
+
+    Ok(V3BuildResult {
+        order_results,
+        total_rows,
+        total_remapped,
+        remap_elapsed,
+        build_elapsed,
+    })
+}
+
+/// Build V3 indexes from globally-remapped sorted commit files (rebuild path).
+///
+/// Unlike [`build_v3_indexes_from_commits`], which takes `V3CommitInput` with
+/// per-chunk remap files, this function takes `SortedCommitInfo` entries whose
+/// `.fsc` files already contain globally-remapped IDs (Phase C applied remap
+/// in-memory). Uses `IdentitySubjectRemap` / `IdentityStringRemap` since
+/// no disk remap files exist.
+///
+/// Key differences from the import path:
+/// - Input: `&[SortedCommitInfo]` (not `&[V3CommitInput]`)
+/// - Remap: identity (global IDs already in place)
+/// - `skip_dedup: false` (rebuild may have retractions)
+/// - `skip_history: true` (sidecar production deferred to milestone 2)
+pub fn build_v3_indexes_from_remapped_commits(
+    commit_infos: &[crate::run_index::runs::spool::SortedCommitInfo],
+    registry: &OTypeRegistry,
+    config: &V3BuildConfig,
+) -> io::Result<V3BuildResult> {
+    use crate::run_index::runs::spool::{IdentityStringRemap, IdentitySubjectRemap};
+
+    // Phase 1: Remap sorted commits → V2 run files (with op) for all 4 orders.
+    // Since records are already globally remapped, use identity remap tables.
+    // The op byte (assert=1, retract=0) is preserved from V1 records so that
+    // the merge/build phase can filter out retract-winners.
+    let remap_start = Instant::now();
+
+    let orders = RunSortOrder::all_build_orders().to_vec();
+    let mut writer = MultiOrderRunWriterV2WithOp::new(MultiOrderV2Config {
+        total_budget_bytes: config.run_budget_bytes,
+        orders: orders.clone(),
+        base_run_dir: config.run_dir.clone(),
+    })?;
+
+    let s_remap = IdentitySubjectRemap;
+    let str_remap = IdentityStringRemap;
+    let lang_remap: &[u16] = &[]; // language IDs already global
+
+    let mut total_remapped = 0u64;
+    for info in commit_infos {
+        let count = remap_commit_to_runs_v2_with_op(
+            &info.path,
+            info.record_count,
+            &s_remap,
+            &str_remap,
+            lang_remap,
+            registry,
+            &mut writer,
+        )?;
+        total_remapped += count;
+
+        if let Some(ref ctr) = config.progress {
+            ctr.fetch_add(count, Ordering::Relaxed);
+        }
+    }
+
+    let _run_results = writer.finish()?;
+    let remap_elapsed = remap_start.elapsed();
+
+    // Phase 2: Build V3 indexes from run files.
+    let build_start = Instant::now();
+
+    let build_config = BuildAllV2Config {
+        base_run_dir: config.run_dir.clone(),
+        index_dir: config.index_dir.clone(),
+        leaflet_target_rows: config.leaflet_target_rows,
+        leaf_target_rows: config.leaf_target_rows,
+        zstd_level: config.zstd_level,
+        skip_dedup: false,  // Rebuild: must deduplicate (max-t wins).
+        skip_history: true, // Sidecar production deferred to milestone 2.
+        g_id: config.g_id,
+        progress: None, // Progress already reported during remap.
+    };
+
+    let order_results =
+        build_all_indexes_v2(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
+
+    let build_elapsed = build_start.elapsed();
+
+    // Total rows from the POST result (canonical count).
     let total_rows = order_results
         .iter()
         .find(|(o, _)| *o == RunSortOrder::Post)

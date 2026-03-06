@@ -2,7 +2,8 @@
 //!
 //! Walks the entire commit chain from genesis, resolves all commits into
 //! sorted run files, builds per-graph leaf/branch indexes for all sort
-//! orders, and writes an `IndexRootV5` (IRB1) descriptor to storage.
+//! orders, and writes an `IndexRootV5` (IRB1) or `IndexRootV6` (FIR6)
+//! descriptor to storage.
 
 use fluree_db_binary_index::{
     BinaryGarbageRef, BinaryIndexStore, BinaryPrevIndexRef, DictRefsV5, FulltextArenaRefV5,
@@ -43,6 +44,7 @@ pub async fn rebuild_index_from_commits<S>(
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
+    use_v3: bool,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -80,6 +82,7 @@ where
     let storage = storage.clone();
     let ledger_id = ledger_id.to_string();
     let prev_root_id = record.index_head_id.clone();
+    let commit_t = record.commit_t;
     let handle = tokio::runtime::Handle::current();
     let parent_span = tracing::Span::current();
 
@@ -496,6 +499,196 @@ where
                 "Phase C complete: dict merge done"
             );
             drop(_span_c);
+
+            // ---- V3 branch: build FLI3/FBR3 + FIR6 root ----
+            //
+            // If use_v3 is true, branch into the V3 build path here.
+            // This produces FLI3/FBR3 leaves + FIR6 root instead of
+            // V1 SPOT/secondary + IRB1 root. The V2 path below is
+            // completely unchanged.
+            if use_v3 {
+                // Multi-graph guard: V3 build is currently graph-scoped (g_id=0).
+                // Named graphs require iterating over g_ids (deferred).
+                if shared.graphs.len() > 1 {
+                    tracing::warn!(
+                        graph_count = shared.graphs.len(),
+                        "V3 rebuild: named graphs present, falling back to V2"
+                    );
+                    // Fall through to V2 path below.
+                } else {
+                    let _span_v3 = tracing::debug_span!("v3_rebuild").entered();
+
+                    // Build OTypeRegistry from custom datatype IRIs.
+                    let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize;
+                    let custom_dt_iris: Vec<String> = (reserved..shared.datatypes.len() as usize)
+                        .filter_map(|i| shared.datatypes.resolve(i as u32).map(|s| s.to_string()))
+                        .collect();
+                    let registry =
+                        fluree_db_core::o_type_registry::OTypeRegistry::new(&custom_dt_iris);
+
+                    // V3 run dir for run files (separate from the main remap dir).
+                    let v3_run_dir = run_dir.join("v3_runs");
+                    std::fs::create_dir_all(&v3_run_dir)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    // Phase D-V3: Build FLI3/FBR3 from globally-remapped .fsc files.
+                    let v3_config = crate::V3BuildConfig {
+                        run_dir: v3_run_dir,
+                        index_dir: index_dir.clone(),
+                        g_id: 0,
+                        leaflet_target_rows: config.leaflet_rows,
+                        leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
+                        zstd_level: 1,
+                        run_budget_bytes: config.run_budget_bytes,
+                        progress: None,
+                    };
+
+                    let v3_result = crate::build_v3_indexes_from_remapped_commits(
+                        &sorted_commit_infos,
+                        &registry,
+                        &v3_config,
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    tracing::info!(
+                        total_rows = v3_result.total_rows,
+                        orders = v3_result.order_results.len(),
+                        remap_ms = v3_result.remap_elapsed.as_millis(),
+                        build_ms = v3_result.build_elapsed.as_millis(),
+                        "Phase D-V3 complete: V3 indexes built"
+                    );
+
+                    // Phase E-V3: Upload V3 artifacts to CAS.
+                    let v3_uploaded =
+                        super::upload::upload_v3_indexes_to_cas(&storage, &ledger_id, &v3_result)
+                            .instrument(tracing::debug_span!("upload_v3_indexes"))
+                            .await?;
+
+                    // Phase F-V3: Upload dicts + assemble FIR6 root.
+                    let uploaded_dicts =
+                        upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes)
+                            .instrument(tracing::debug_span!("upload_dicts_v3"))
+                            .await?;
+
+                    // Build namespace codes BTreeMap from shared.ns_prefixes.
+                    let ns_codes: std::collections::BTreeMap<u16, String> = shared
+                        .ns_prefixes
+                        .iter()
+                        .map(|(&k, v)| (k, v.clone()))
+                        .collect();
+
+                    // Build predicate_sids from shared.predicates + PrefixTrie.
+                    let trie =
+                        fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
+                    let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
+                        .map(|p_id| {
+                            let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                            match trie.longest_match(iri) {
+                                Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                                None => (0u16, iri.to_string()),
+                            }
+                        })
+                        .collect();
+
+                    // Datatype and language tag lists for the root.
+                    let datatype_iris = uploaded_dicts.datatype_iris.clone();
+                    let language_tags = uploaded_dicts.language_tags.clone();
+
+                    // Graph arenas (numbig, vectors) — same conversion as V2 path.
+                    let dr = &uploaded_dicts.dict_refs;
+                    let mut graph_ids = std::collections::BTreeSet::new();
+                    for g_id_str in dr.numbig.keys() {
+                        if let Ok(g_id) = g_id_str.parse::<u16>() {
+                            graph_ids.insert(g_id);
+                        }
+                    }
+                    for g_id_str in dr.vectors.keys() {
+                        if let Ok(g_id) = g_id_str.parse::<u16>() {
+                            graph_ids.insert(g_id);
+                        }
+                    }
+                    let graph_arenas: Vec<GraphArenaRefsV5> = graph_ids
+                        .into_iter()
+                        .map(|g_id| {
+                            let g_id_str = g_id.to_string();
+                            let numbig: Vec<(u32, ContentId)> = dr
+                                .numbig
+                                .get(&g_id_str)
+                                .map(|m| {
+                                    m.iter()
+                                        .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let vectors: Vec<VectorDictRefV5> = dr
+                                .vectors
+                                .get(&g_id_str)
+                                .map(|m| {
+                                    m.iter()
+                                        .map(|(k, v)| VectorDictRefV5 {
+                                            p_id: k.parse::<u32>().unwrap_or(0),
+                                            manifest: v.manifest.clone(),
+                                            shards: v.shards.clone(),
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            GraphArenaRefsV5 {
+                                g_id,
+                                numbig,
+                                vectors,
+                                spatial: Vec::new(),
+                                fulltext: vec![],
+                            }
+                        })
+                        .collect();
+
+                    // Compute total_rows for stats.
+                    let total_rows = v3_result.total_rows;
+
+                    let fir6_inputs = super::root_assembly::Fir6Inputs {
+                        ledger_id: ledger_id.clone(),
+                        index_t: commit_t,
+                        namespace_codes: ns_codes,
+                        predicate_sids,
+                        uploaded_dicts,
+                        v3_uploaded,
+                        graph_arenas,
+                        datatype_iris,
+                        language_tags,
+                        total_commit_size,
+                        total_asserts,
+                        total_retracts,
+                    };
+
+                    let result = super::root_assembly::encode_and_write_root_v6(
+                        &storage,
+                        fir6_inputs,
+                        None, // GC chain deferred for V3 milestone.
+                        IndexStats {
+                            flake_count: total_rows as usize,
+                            leaf_count: v3_result
+                                .order_results
+                                .iter()
+                                .flat_map(|(_, r)| r.graphs.iter())
+                                .map(|g| g.leaf_infos.len())
+                                .sum(),
+                            branch_count: v3_result.order_results.len(),
+                            total_bytes: 0, // Will be filled from root_bytes.
+                        },
+                    )
+                    .await?;
+
+                    drop(_span_v3);
+
+                    // Clean up ephemeral tmp_import session directory.
+                    if let Err(e) = std::fs::remove_dir_all(&run_dir) {
+                        tracing::warn!(?run_dir, %e, "failed to clean up tmp_import session dir");
+                    }
+
+                    return Ok(result);
+                }
+            }
 
             // ---- Phase D: Build SPOT from sorted commits ----
             // Records are already remapped to global IDs, so use identity remaps.

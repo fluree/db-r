@@ -180,17 +180,66 @@ impl LedgerSnapshot {
         })
     }
 
-    /// Extract metadata from raw index root bytes (IRB1 binary format).
+    /// Extract metadata from raw index root bytes (IRB1 or FIR6 binary format).
     pub fn from_root_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 4 || &bytes[0..4] != b"IRB1" {
+        if bytes.len() < 4 {
+            return Err(Error::invalid_index("index root: too short"));
+        }
+        if &bytes[0..4] == b"FIR6" {
+            return Self::from_fir6_header(bytes);
+        }
+        if &bytes[0..4] != b"IRB1" {
             return Err(Error::invalid_index(
-                "index root: expected IRB1 magic bytes",
+                "index root: expected IRB1 or FIR6 magic bytes",
             ));
         }
         if bytes.len() < 24 {
             return Err(Error::invalid_index("IRB1: truncated root (< 24 bytes)"));
         }
         Self::from_irb1_header(bytes)
+    }
+
+    /// Extract minimal metadata from FIR6 root bytes.
+    ///
+    /// Reads: index_t, base_t, ledger_id from the FIR6 header.
+    /// Watermarks are left empty — they're populated later when
+    /// `BinaryIndexStoreV6::load_from_root_bytes` runs.
+    fn from_fir6_header(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 24 {
+            return Err(Error::invalid_index("FIR6: truncated root (< 24 bytes)"));
+        }
+        // Header: [4B magic][1B version][1B flags][2B pad][8B index_t][8B base_t]
+        let index_t = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
+        // base_t is at bytes[16..24] but LedgerSnapshot doesn't use it
+
+        // Ledger ID: u16-length-prefixed string after the 24-byte header.
+        // (write_str in index_root_v6.rs uses a u16 length prefix)
+        let mut pos = 24;
+        let ledger_id = if pos + 2 <= bytes.len() {
+            let len = u16::from_le_bytes(bytes[pos..pos + 2].try_into().unwrap()) as usize;
+            pos += 2;
+            if pos + len <= bytes.len() {
+                String::from_utf8_lossy(&bytes[pos..pos + len]).to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        Ok(Self {
+            ledger_id,
+            t: index_t,
+            version: 6, // FIR6
+            namespace_codes: crate::default_namespace_codes(),
+            stats: None,
+            schema: None,
+            schema_hierarchy_cache: OnceCell::new(),
+            subject_watermarks: Vec::new(),
+            string_watermark: 0,
+            range_provider: None,
+            graph_registry: GraphRegistry::default(),
+        })
     }
 
     /// Parse an IRB1 binary root to extract all metadata fields.

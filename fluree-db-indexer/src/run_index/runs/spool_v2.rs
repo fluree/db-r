@@ -4,7 +4,7 @@
 //! This is the bridge between the existing import parser (which produces V1
 //! spool records) and the V2 index build pipeline.
 
-use super::run_writer_v2::MultiOrderRunWriterV2;
+use super::run_writer_v2::{MultiOrderRunWriterV2, MultiOrderRunWriterV2WithOp};
 use super::spool::{remap_record, SpoolReader, StringRemap, SubjectRemap};
 use fluree_db_binary_index::format::run_record::RunRecord;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
@@ -77,6 +77,51 @@ pub fn remap_commit_to_runs_v2<S: SubjectRemap, R: StringRemap>(
             lang_remap_opt,
         )?;
         writer.push(v2_record)?;
+        count += 1;
+    }
+
+    debug_assert_eq!(
+        count, record_count,
+        "expected {record_count} records, got {count}"
+    );
+    Ok(count)
+}
+
+/// Read a V1 sorted commit file (.fsc), convert each record to V2 with op
+/// sideband, and write to a `MultiOrderRunWriterV2WithOp`.
+///
+/// Same as [`remap_commit_to_runs_v2`] but preserves the V1 record's `op`
+/// field (1=assert, 0=retract) through to the run file. Used by the rebuild
+/// path where retractions must survive into the merge phase.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn remap_commit_to_runs_v2_with_op<S: SubjectRemap, R: StringRemap>(
+    commit_path: &Path,
+    record_count: u64,
+    subject_remap: &S,
+    string_remap: &R,
+    lang_remap: &[u16],
+    registry: &OTypeRegistry,
+    writer: &mut MultiOrderRunWriterV2WithOp,
+) -> io::Result<u64> {
+    let reader = SpoolReader::open(commit_path, record_count)?;
+    let lang_remap_opt = if lang_remap.is_empty() {
+        None
+    } else {
+        Some(lang_remap)
+    };
+
+    let mut count = 0u64;
+    for result in reader {
+        let v1_record = result?;
+        let op = v1_record.op;
+        let v2_record = remap_v1_to_v2(
+            &v1_record,
+            registry,
+            subject_remap,
+            string_remap,
+            lang_remap_opt,
+        )?;
+        writer.push(v2_record, op)?;
         count += 1;
     }
 

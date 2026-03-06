@@ -40,7 +40,7 @@ pub mod spatial_hook;
 pub mod stats;
 
 // Re-export main types
-pub use config::IndexerConfig;
+pub use config::{IndexFormatVersion, IndexerConfig};
 pub use error::{IndexerError, Result};
 pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
@@ -61,12 +61,30 @@ pub use build::types::{UploadedDicts, UploadedIndexes, UploadedV3Indexes};
 
 // Re-export V3 build pipeline types
 pub use run_index::build::build_v3_from_commits::{
-    build_v3_indexes_from_commits, V3BuildConfig, V3BuildResult, V3CommitInput,
+    build_v3_indexes_from_commits, build_v3_indexes_from_remapped_commits, V3BuildConfig,
+    V3BuildResult, V3CommitInput,
 };
 
 use fluree_db_core::Storage;
-use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_nameservice::{NameService, NsRecord, Publisher};
 use tracing::Instrument;
+
+/// Resolve whether to use V3 index format based on config and existing root codec.
+///
+/// - `V3` → always V3
+/// - `V2` → always V2
+/// - `Auto` → detect from existing root's CID codec (FIR6 → V3, else V2)
+pub fn resolve_use_v3(config: &IndexerConfig, record: &NsRecord) -> bool {
+    match config.index_format_version {
+        IndexFormatVersion::V3 => true,
+        IndexFormatVersion::V2 => false,
+        IndexFormatVersion::Auto => record
+            .index_head_id
+            .as_ref()
+            .map(|id| id.codec() == fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT_V6)
+            .unwrap_or(false),
+    }
+}
 
 /// Result of building an index
 #[derive(Debug, Clone)]
@@ -140,9 +158,19 @@ where
             }
         }
 
-        // Try incremental indexing if conditions are met
+        // Determine index format: V3 (FIR6) or V2 (IRB1).
+        let use_v3 = resolve_use_v3(&config, &record);
+        if use_v3 {
+            tracing::info!(
+                "V3 index format detected, using full rebuild (incremental V3 deferred)"
+            );
+        }
+
+        // Try incremental indexing if conditions are met.
+        // V3 skips incremental entirely (incremental V3 is deferred).
         let commit_gap = record.commit_t - record.index_t;
-        let can_incremental = config.incremental_enabled
+        let can_incremental = !use_v3
+            && config.incremental_enabled
             && record.index_head_id.is_some()
             && record.index_t > 0
             && commit_gap <= config.incremental_max_commits as i64;
@@ -165,7 +193,10 @@ where
                     );
                 }
             }
-        } else if config.incremental_enabled && record.index_head_id.is_some() && record.index_t > 0
+        } else if !use_v3
+            && config.incremental_enabled
+            && record.index_head_id.is_some()
+            && record.index_t > 0
         {
             tracing::info!(
                 commit_gap = commit_gap,
@@ -174,7 +205,7 @@ where
             );
         }
 
-        rebuild_index_from_commits(storage, ledger_id, &record, config).await
+        rebuild_index_from_commits(storage, ledger_id, &record, config, use_v3).await
     }
     .instrument(span)
     .await
@@ -186,17 +217,20 @@ where
 /// the "already current" early-return check. Use this when you already have
 /// the `NsRecord` and want to force a rebuild (e.g., `reindex`).
 ///
+/// Automatically detects V3 vs V2 format from the config and existing root codec.
+///
 /// See [`build::rebuild::rebuild_index_from_commits`] for the full pipeline.
 pub async fn rebuild_index_from_commits<S>(
     storage: &S,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
+    use_v3: bool,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
-    build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config).await
+    build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config, use_v3).await
 }
 
 /// Build an incremental index from an existing root, resolving only new commits.

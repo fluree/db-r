@@ -374,6 +374,52 @@ pub fn write_ordered_key_v2(
     }
 }
 
+/// Parse a V2 ordered routing key back into a `RunRecordV2`.
+///
+/// Inverse of `write_ordered_key_v2`. Fields not stored in the key
+/// (`t`, `g_id`) are set to 0.
+#[inline]
+pub fn read_ordered_key_v2(order: RunSortOrder, buf: &[u8; ORDERED_KEY_V2_SIZE]) -> RunRecordV2 {
+    match order {
+        RunSortOrder::Spot => RunRecordV2 {
+            s_id: SubjectId(u64::from_be_bytes(buf[0..8].try_into().unwrap())),
+            p_id: u32::from_be_bytes(buf[8..12].try_into().unwrap()),
+            o_type: u16::from_be_bytes(buf[12..14].try_into().unwrap()),
+            o_key: u64::from_be_bytes(buf[14..22].try_into().unwrap()),
+            o_i: u32::from_be_bytes(buf[22..26].try_into().unwrap()),
+            t: 0,
+            g_id: 0,
+        },
+        RunSortOrder::Psot => RunRecordV2 {
+            p_id: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            s_id: SubjectId(u64::from_be_bytes(buf[4..12].try_into().unwrap())),
+            o_type: u16::from_be_bytes(buf[12..14].try_into().unwrap()),
+            o_key: u64::from_be_bytes(buf[14..22].try_into().unwrap()),
+            o_i: u32::from_be_bytes(buf[22..26].try_into().unwrap()),
+            t: 0,
+            g_id: 0,
+        },
+        RunSortOrder::Post => RunRecordV2 {
+            p_id: u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+            o_type: u16::from_be_bytes(buf[4..6].try_into().unwrap()),
+            o_key: u64::from_be_bytes(buf[6..14].try_into().unwrap()),
+            o_i: u32::from_be_bytes(buf[14..18].try_into().unwrap()),
+            s_id: SubjectId(u64::from_be_bytes(buf[18..26].try_into().unwrap())),
+            t: 0,
+            g_id: 0,
+        },
+        RunSortOrder::Opst => RunRecordV2 {
+            o_type: u16::from_be_bytes(buf[0..2].try_into().unwrap()),
+            o_key: u64::from_be_bytes(buf[2..10].try_into().unwrap()),
+            o_i: u32::from_be_bytes(buf[10..14].try_into().unwrap()),
+            p_id: u32::from_be_bytes(buf[14..18].try_into().unwrap()),
+            s_id: SubjectId(u64::from_be_bytes(buf[18..26].try_into().unwrap())),
+            t: 0,
+            g_id: 0,
+        },
+    }
+}
+
 /// Compare two V2 ordered keys by raw bytes (memcmp).
 #[inline]
 pub fn cmp_ordered_key_v2(

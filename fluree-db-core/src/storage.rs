@@ -522,6 +522,15 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
             format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
         }
         ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
+        // V3 index format artifacts
+        ContentKind::IndexRootV6 => format!("{}/index/roots/{}.fir6", prefix, hash_hex),
+        ContentKind::IndexLeafV3 => format!("{}/index/objects/leaves/{}.fli3", prefix, hash_hex),
+        ContentKind::IndexBranchV3 => {
+            format!("{}/index/objects/branches/{}.fbr3", prefix, hash_hex)
+        }
+        ContentKind::HistorySidecar => {
+            format!("{}/index/objects/history/{}.fhs1", prefix, hash_hex)
+        }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),
