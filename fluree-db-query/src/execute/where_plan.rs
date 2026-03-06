@@ -1022,52 +1022,41 @@ pub fn build_where_operators_seeded_with_needed(
                 i += 1;
             }
 
-            Pattern::Optional(_inner_patterns) => {
+            Pattern::Optional(inner_patterns) => {
                 // OPTIONAL with conjunctive semantics: all inner patterns must match together.
-                //
-                // The parser now creates separate Optional patterns for each node-map in
-                // `["optional", {node1}, {node2}]`, so by the time we get here, each Optional
-                // contains patterns from a SINGLE node-map (conjunctive group).
                 //
                 // Two paths:
                 // 1. Fast path: single triple pattern uses PatternOptionalBuilder (direct scan)
                 // 2. General path: multi-pattern uses PlanTreeOptionalBuilder (full operator tree)
                 let child = require_child(operator, "OPTIONAL pattern")?;
-
                 let augmented_rwv = augmented_at(i + 1);
                 let augmented_ref = augmented_rwv.as_deref();
+                let required_schema = Arc::from(child.schema().to_vec().into_boxed_slice());
 
-                if let Pattern::Optional(inner_patterns) = &patterns[i] {
-                    let required_schema = Arc::from(child.schema().to_vec().into_boxed_slice());
-
-                    // Fast path: single triple pattern
-                    if inner_patterns.len() == 1 {
-                        if let Some(inner_triple) = inner_patterns[0].as_triple().cloned() {
-                            operator = Some(Box::new(
-                                OptionalOperator::new(child, required_schema, inner_triple)
-                                    .with_out_schema(augmented_ref),
-                            ));
-                            i += 1;
-                            continue;
-                        }
+                // Fast path: single triple pattern
+                if let [single] = inner_patterns.as_slice() {
+                    if let Some(inner_triple) = single.as_triple().cloned() {
+                        operator = Some(Box::new(
+                            OptionalOperator::new(child, required_schema, inner_triple)
+                                .with_out_schema(augmented_ref),
+                        ));
+                        i += 1;
+                        continue;
                     }
-
-                    // General path: use PlanTreeOptionalBuilder for multi-pattern or
-                    // non-triple single patterns (VALUES, BIND, subquery, etc.)
-                    let builder = PlanTreeOptionalBuilder::new(
-                        required_schema.clone(),
-                        inner_patterns.clone(),
-                        stats.clone(),
-                    );
-                    operator = Some(Box::new(
-                        OptionalOperator::with_builder(child, required_schema, Box::new(builder))
-                            .with_out_schema(augmented_ref),
-                    ));
-                    i += 1;
-                    continue;
                 }
 
-                unreachable!("match arm ensures Pattern::Optional")
+                // General path: use PlanTreeOptionalBuilder for multi-pattern or
+                // non-triple single patterns (VALUES, BIND, subquery, etc.)
+                let builder = PlanTreeOptionalBuilder::new(
+                    required_schema.clone(),
+                    inner_patterns.clone(),
+                    stats.clone(),
+                );
+                operator = Some(Box::new(
+                    OptionalOperator::with_builder(child, required_schema, Box::new(builder))
+                        .with_out_schema(augmented_ref),
+                ));
+                i += 1;
             }
 
             Pattern::Union(branches) => {
