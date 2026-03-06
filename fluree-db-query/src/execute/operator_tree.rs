@@ -112,8 +112,7 @@ fn detect_predicate_group_by_object_count_topk(
     if agg.distinct {
         return None;
     }
-    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
-    if !is_count {
+    if !matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll) {
         return None;
     }
     if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
@@ -178,8 +177,7 @@ fn detect_predicate_object_count(
     if agg.distinct {
         return None;
     }
-    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
-    if !is_count {
+    if !matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll) {
         return None;
     }
     if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
