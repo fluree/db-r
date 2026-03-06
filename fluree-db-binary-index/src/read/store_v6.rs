@@ -631,6 +631,11 @@ impl BinaryIndexStoreV6 {
         self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
     }
 
+    /// Access the namespace codes table.
+    pub fn namespace_codes(&self) -> &HashMap<u16, String> {
+        &self.dicts.namespace_codes
+    }
+
     /// Access the o_type table.
     pub fn o_type_table(&self) -> &[OTypeTableEntry] {
         &self.o_type_table

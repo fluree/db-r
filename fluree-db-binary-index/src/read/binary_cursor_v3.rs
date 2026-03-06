@@ -22,6 +22,7 @@ use crate::read::types_v3::{cmp_row_vs_overlay_v3, OverlayOpV3};
 
 use super::column_loader::load_leaflet_columns;
 use super::column_types::{BinaryFilterV3, ColumnBatch, ColumnData, ColumnProjection};
+use super::replay_v3::replay_leaflet_v3;
 use super::store_v6::BinaryIndexStoreV6;
 
 // ============================================================================
@@ -62,6 +63,8 @@ pub struct BinaryCursorV3 {
 struct OpenLeaf {
     bytes: Vec<u8>,
     dir: DecodedLeafDirV3,
+    /// Sidecar bytes for history replay (fetched lazily per leaf).
+    sidecar_bytes: Option<Vec<u8>>,
 }
 
 impl BinaryCursorV3 {
@@ -149,6 +152,11 @@ impl BinaryCursorV3 {
         self.overlay_pos < self.leaf_overlay_end
     }
 
+    /// Whether time-travel replay is needed (to_t < index_t).
+    fn need_replay(&self) -> bool {
+        self.to_t < self.store.max_t()
+    }
+
     /// Whether any overlay ops remain globally (for overlay-only path).
     fn has_any_overlay(&self) -> bool {
         self.overlay_pos < self.overlay_ops.len()
@@ -220,7 +228,7 @@ impl BinaryCursorV3 {
                     }
 
                     // Load columns.
-                    let batch = if entry.row_count > 0 {
+                    let mut batch = if entry.row_count > 0 {
                         load_leaflet_columns(
                             &leaf.bytes,
                             entry,
@@ -231,6 +239,42 @@ impl BinaryCursorV3 {
                     } else {
                         ColumnBatch::empty()
                     };
+
+                    // Time-travel replay: if to_t < index_t, reconstruct leaflet state
+                    // at to_t using the history sidecar.
+                    if self.need_replay() {
+                        // Quick-skip: if this leaflet's history doesn't extend past to_t,
+                        // and no base rows have t > to_t, replay is unnecessary.
+                        let needs_leaflet_replay = entry.history_max_t > self.to_t as u32
+                            || batch_has_rows_above_t(&batch, self.to_t as u32);
+
+                        if needs_leaflet_replay && entry.history_len > 0 {
+                            if let Some(ref sc_bytes) = leaf.sidecar_bytes {
+                                use crate::format::history_sidecar::{
+                                    decode_history_segment, HistorySegmentRef,
+                                };
+                                let seg = HistorySegmentRef {
+                                    offset: entry.history_offset,
+                                    len: entry.history_len,
+                                    min_t: entry.history_min_t,
+                                    max_t: entry.history_max_t,
+                                };
+                                let history = decode_history_segment(sc_bytes, &seg);
+                                if let Some(replayed) =
+                                    replay_leaflet_v3(&batch, &history, self.to_t, self.order)
+                                {
+                                    batch = replayed;
+                                }
+                            }
+                        } else if needs_leaflet_replay {
+                            // No sidecar but base rows have t > to_t: filter them out.
+                            if let Some(replayed) =
+                                replay_leaflet_v3(&batch, &[], self.to_t, self.order)
+                            {
+                                batch = replayed;
+                            }
+                        }
+                    }
 
                     // Apply row-level filter.
                     let batch = if self.filter.is_empty() || batch.is_empty() {
@@ -286,7 +330,24 @@ impl BinaryCursorV3 {
             let header = decode_leaf_header_v3(&bytes)?;
             let dir = decode_leaf_dir_v3_with_base(&bytes, &header)?;
 
-            self.current_leaf = Some(OpenLeaf { bytes, dir });
+            // Fetch sidecar bytes if replay is needed and the leaf has a sidecar.
+            // Propagate fetch errors — a missing sidecar during time-travel
+            // would silently produce incorrect results.
+            let sidecar_bytes = if self.need_replay() {
+                if let Some(ref sc_cid) = self.branch.leaves[leaf_idx].sidecar_cid {
+                    Some(self.store.get_leaf_bytes_sync(sc_cid)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            self.current_leaf = Some(OpenLeaf {
+                bytes,
+                dir,
+                sidecar_bytes,
+            });
             self.current_leaflet_idx = 0;
         }
     }
@@ -545,6 +606,15 @@ fn push_overlay_row(
 
 /// Apply the filter to a batch, returning only matching rows.
 /// Returns the batch unchanged if all rows match (avoids copy).
+/// Check if any row in the batch has `t > t_target`.
+fn batch_has_rows_above_t(batch: &ColumnBatch, t_target: u32) -> bool {
+    match &batch.t {
+        ColumnData::Block(ts) => ts.iter().any(|&t| t > t_target),
+        ColumnData::Const(t) => *t > t_target,
+        ColumnData::AbsentDefault => false,
+    }
+}
+
 fn filter_batch(filter: &BinaryFilterV3, batch: &ColumnBatch) -> ColumnBatch {
     let mut matching: Vec<usize> = Vec::new();
     for i in 0..batch.row_count {

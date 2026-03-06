@@ -141,25 +141,40 @@ impl BinaryScanOperatorV3 {
             .map_or(0, |m| m + 1)
     }
 
-    /// Extract bound Sids from the pattern.
+    /// Extract bound Sids from the pattern, normalizing to the V6 store's
+    /// namespace encoding.
+    ///
+    /// SPARQL lowers IRIs to `Ref::Sid` / `Term::Sid` using the snapshot's
+    /// namespace codes, which may differ from the V6 store's codes after a
+    /// rebuild. Re-encoding through the store ensures the Sid matches decoded
+    /// values from the index.
     fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
         let s_sid = match &self.pattern.s {
-            Ref::Sid(s) => Some(s.clone()),
+            Ref::Sid(s) => Some(self.re_encode_sid(s)),
             Ref::Iri(iri) => Some(self.store.encode_iri(iri)),
             _ => None,
         };
         let p_sid = match &self.pattern.p {
-            Ref::Sid(s) => Some(s.clone()),
+            Ref::Sid(s) => Some(self.re_encode_sid(s)),
             Ref::Iri(iri) => Some(self.store.encode_iri(iri)),
             _ => None,
         };
         let o_val = match &self.pattern.o {
-            Term::Sid(sid) => Some(FlakeValue::Ref(sid.clone())),
+            Term::Sid(sid) => Some(FlakeValue::Ref(self.re_encode_sid(sid))),
             Term::Iri(iri) => Some(FlakeValue::Ref(self.store.encode_iri(iri))),
             Term::Value(v) => Some(v.clone()),
             Term::Var(_) => None,
         };
         (s_sid, p_sid, o_val)
+    }
+
+    /// Re-encode a Sid from the pattern's namespace space into the V6 store's
+    /// namespace space. Reconstructs the full IRI and re-encodes via the store's
+    /// prefix trie, ensuring namespace codes match decoded index values.
+    #[inline]
+    fn re_encode_sid(&self, sid: &Sid) -> Sid {
+        let iri = self.store.sid_to_iri(sid);
+        self.store.encode_iri(&iri)
     }
 
     /// Build a `BinaryFilterV3` from bound pattern terms.

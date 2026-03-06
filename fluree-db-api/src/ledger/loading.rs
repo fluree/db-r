@@ -79,6 +79,19 @@ where
 
                     store_v6.augment_namespace_codes(&state.snapshot.namespace_codes);
 
+                    // Augment the snapshot's namespace table with codes from
+                    // the V6 root. After a rebuild, the V6 root may have
+                    // namespace codes that the snapshot (loaded from the
+                    // commit chain) doesn't have. Without this, SPARQL result
+                    // formatting fails with UnknownNamespace errors.
+                    for (code, prefix) in store_v6.namespace_codes() {
+                        state
+                            .snapshot
+                            .namespace_codes
+                            .entry(*code)
+                            .or_insert_with(|| prefix.clone());
+                    }
+
                     let arc_store_v6 = Arc::new(store_v6);
 
                     // Attach V3 range provider so policy/SHACL/reasoner/property

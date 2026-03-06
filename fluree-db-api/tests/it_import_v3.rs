@@ -926,6 +926,30 @@ ex:bob a ex:User ;
         .expect("array");
     assert_eq!(age_bindings.len(), 1);
     assert_eq!(age_bindings[0]["age"]["value"].as_str().unwrap(), "34");
+
+    // Verify rdf:type query (POST index) works after rebuild.
+    let type_result = support::query_sparql(
+        &fluree,
+        &rebuilt_ledger,
+        r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s WHERE { ?s a ex:User }
+        ORDER BY ?s
+        "#,
+    )
+    .await
+    .expect("type query after rebuild");
+    let type_json = type_result
+        .to_sparql_json(&rebuilt_ledger.snapshot)
+        .expect("format sparql json");
+    let type_bindings = type_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(
+        type_bindings.len(),
+        3,
+        "expected 3 ex:User instances after rebuild (Alice + Bob + Cam)"
+    );
 }
 
 // ============================================================================
@@ -1162,12 +1186,29 @@ ex:bob a ex:User ;
         "Cam's age should be 34 after incremental"
     );
 
-    // NOTE: rdf:type queries (SELECT ?s WHERE { ?s a ex:User }) are deferred
-    // from this test. The rdf:type lookup uses a different query code path
-    // (PSOT predicate-bound scan) that has a pre-existing issue after rebuild
-    // or incremental — this is a query-path issue, not an incremental indexing
-    // issue. The core validation above (names + ages for new/existing subjects)
-    // confirms the incremental index is correct.
+    // Verify rdf:type query (POST index) works after incremental.
+    let type_result = support::query_sparql(
+        &fluree,
+        &incr_ledger,
+        r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s WHERE { ?s a ex:User }
+        ORDER BY ?s
+        "#,
+    )
+    .await
+    .expect("type query after incremental");
+    let type_json = type_result
+        .to_sparql_json(&incr_ledger.snapshot)
+        .expect("format sparql json");
+    let type_bindings = type_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(
+        type_bindings.len(),
+        3,
+        "expected 3 ex:User instances after incremental (Alice + Bob + Cam)"
+    );
 }
 
 /// Verify that V3 rebuild correctly filters retract-winners.
