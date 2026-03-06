@@ -941,11 +941,10 @@ fn parse_value_object(
         obj.get("@language").and_then(|l| l.as_str()).map(Arc::from);
 
     // Split @language into constant vs variable
-    let (constant_lang, lang_var): (Option<Arc<str>>, Option<Arc<str>>) =
-        match explicit_lang {
-            Some(ref l) if is_variable(l) => (None, Some(l.clone())),
-            other => (other, None),
-        };
+    let (constant_lang, lang_var): (Option<Arc<str>>, Option<Arc<str>>) = match explicit_lang {
+        Some(ref l) if is_variable(l) => (None, Some(l.clone())),
+        other => (other, None),
+    };
 
     // Validate: a value object cannot have both a constant non-langString @type and
     // any @language (constant or variable). Per JSON-LD spec §9.5 / RDF 1.1, @type
@@ -966,7 +965,11 @@ fn parse_value_object(
     // @language takes precedence (LangTag implies rdf:langString).
     let dtc = constant_lang
         .map(UnresolvedDatatypeConstraint::LangTag)
-        .or_else(|| explicit_dt.clone().map(UnresolvedDatatypeConstraint::Explicit));
+        .or_else(|| {
+            explicit_dt
+                .clone()
+                .map(UnresolvedDatatypeConstraint::Explicit)
+        });
 
     // Optional @t - Fluree-specific transaction time binding (must be a variable like "?t")
     let explicit_t_var: Option<Arc<str>> = if let Some(t_val) = obj.get("@t") {
