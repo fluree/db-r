@@ -34,8 +34,14 @@ use std::cmp::Ordering;
 
 use super::run_record::{RunRecord, RunSortOrder, LIST_INDEX_NONE};
 
-/// Wire format size of a V2 run record (no g_id).
+/// Wire format size of a V2 run record (no g_id, no op).
 pub const RECORD_V2_WIRE_SIZE: usize = 30;
+
+/// Wire format size of a V2 run record with op byte (no g_id).
+///
+/// Used by the rebuild pipeline where retract-winners must be identified.
+/// Import uses `RECORD_V2_WIRE_SIZE` (no op, all records are asserts).
+pub const RECORD_V2_WITH_OP_WIRE_SIZE: usize = 31;
 
 /// Wire format size of a V2 spool record (includes g_id).
 pub const SPOOL_V2_WIRE_SIZE: usize = 32;
@@ -156,6 +162,35 @@ impl RunRecordV2 {
             o_type: u16::from_le_bytes(buf[28..30].try_into().unwrap()),
             g_id: 0,
         }
+    }
+
+    /// Serialize to run wire format with op byte (31 bytes, no g_id).
+    ///
+    /// Used by the rebuild pipeline's run writer to preserve assert/retract identity.
+    #[inline]
+    pub fn write_run_le_with_op(&self, op: u8, buf: &mut [u8; RECORD_V2_WITH_OP_WIRE_SIZE]) {
+        buf[0..8].copy_from_slice(&self.s_id.as_u64().to_le_bytes());
+        buf[8..16].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.t.to_le_bytes());
+        buf[24..28].copy_from_slice(&self.o_i.to_le_bytes());
+        buf[28..30].copy_from_slice(&self.o_type.to_le_bytes());
+        buf[30] = op;
+    }
+
+    /// Deserialize from run wire format with op byte (31 bytes, no g_id).
+    #[inline]
+    pub fn read_run_le_with_op(buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE]) -> (Self, u8) {
+        let record = Self {
+            s_id: SubjectId(u64::from_le_bytes(buf[0..8].try_into().unwrap())),
+            o_key: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            p_id: u32::from_le_bytes(buf[16..20].try_into().unwrap()),
+            t: u32::from_le_bytes(buf[20..24].try_into().unwrap()),
+            o_i: u32::from_le_bytes(buf[24..28].try_into().unwrap()),
+            o_type: u16::from_le_bytes(buf[28..30].try_into().unwrap()),
+            g_id: 0,
+        };
+        (record, buf[30])
     }
 
     /// Serialize to spool wire format (32 bytes, includes g_id).

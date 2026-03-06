@@ -15,15 +15,20 @@
 //! ```
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
-use fluree_db_binary_index::format::run_record_v2::{RunRecordV2, RECORD_V2_WIRE_SIZE};
+use fluree_db_binary_index::format::run_record_v2::{
+    RunRecordV2, RECORD_V2_WIRE_SIZE, RECORD_V2_WITH_OP_WIRE_SIZE,
+};
 use std::io::{self, Write};
 use std::path::Path;
 
 /// Magic bytes for a V2 run file.
 pub const RUN_V2_MAGIC: [u8; 4] = *b"FRN2";
 
-/// V2 run file version.
+/// V2 run file version (30-byte records, no op).
 pub const RUN_V2_VERSION: u8 = 1;
+
+/// V2 run file version with op sideband (31-byte records: 30 record + 1 op).
+pub const RUN_V2_VERSION_WITH_OP: u8 = 2;
 
 /// Run file flags.
 const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
@@ -58,6 +63,11 @@ impl RunFileHeaderV2 {
         buf[32..64].fill(0); // reserved
     }
 
+    /// Returns true if this file uses the with-op wire format (version 2).
+    pub fn has_op(&self) -> bool {
+        self.version == RUN_V2_VERSION_WITH_OP
+    }
+
     pub fn read_from(buf: &[u8]) -> io::Result<Self> {
         if buf.len() < RUN_V2_HEADER_LEN {
             return Err(io::Error::new(
@@ -72,7 +82,7 @@ impl RunFileHeaderV2 {
             ));
         }
         let version = buf[4];
-        if version != RUN_V2_VERSION {
+        if version != RUN_V2_VERSION && version != RUN_V2_VERSION_WITH_OP {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("V2 run file: unsupported version {version}"),
@@ -181,6 +191,103 @@ pub fn write_run_file_v2(
     })
 }
 
+/// Write a sorted V2 run file with op sideband to disk.
+///
+/// `records` and `ops` are parallel arrays of equal length.
+/// Each record is written as 31 bytes (30 record + 1 op byte).
+/// The header version is set to `2` so readers can distinguish from
+/// version-1 (no-op) files.
+// Kept for: rebuild path where assert/retract ops must survive into the merge.
+// Use when: incremental rebuild pipeline is wired in.
+// Called by: RunWriterV2WithOp::flush_buffer and tests.
+// Note: #[allow] instead of #[expect] because Rust's dead_code lint transitivity
+// makes #[expect] unfulfilled when parent callers are also annotated.
+#[allow(dead_code)]
+pub(crate) fn write_run_file_v2_with_op(
+    path: &Path,
+    records: &[RunRecordV2],
+    ops: &[u8],
+    sort_order: RunSortOrder,
+    min_t: u32,
+    max_t: u32,
+) -> io::Result<RunFileInfoV2> {
+    debug_assert_eq!(records.len(), ops.len());
+
+    let raw = std::fs::File::create(path)?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            let _ = libc::fcntl(raw.as_raw_fd(), libc::F_NOCACHE, 1);
+        }
+    }
+    let mut file = io::BufWriter::new(raw);
+
+    let compress = std::env::var("FLUREE_RUN_ZSTD")
+        .ok()
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true);
+    let zstd_level = std::env::var("FLUREE_RUN_ZSTD_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(1);
+
+    let records_offset = RUN_V2_HEADER_LEN as u64;
+
+    let header = RunFileHeaderV2 {
+        version: RUN_V2_VERSION_WITH_OP,
+        sort_order,
+        flags: if compress { RUN_FLAG_ZSTD_BLOCKS } else { 0 },
+        record_count: records.len() as u64,
+        records_offset,
+        min_t,
+        max_t,
+    };
+    let mut header_buf = [0u8; RUN_V2_HEADER_LEN];
+    header.write_to(&mut header_buf);
+    file.write_all(&header_buf)?;
+
+    if !compress {
+        let mut rec_buf = [0u8; RECORD_V2_WITH_OP_WIRE_SIZE];
+        for (rec, &op) in records.iter().zip(ops.iter()) {
+            rec.write_run_le_with_op(op, &mut rec_buf);
+            file.write_all(&rec_buf)?;
+        }
+    } else {
+        const BLOCK_RECORDS: usize = 8192;
+        let mut raw_buf: Vec<u8> = Vec::with_capacity(BLOCK_RECORDS * RECORD_V2_WITH_OP_WIRE_SIZE);
+        let mut rec_buf = [0u8; RECORD_V2_WITH_OP_WIRE_SIZE];
+
+        let record_ops: Vec<(&RunRecordV2, &u8)> = records.iter().zip(ops.iter()).collect();
+
+        for chunk in record_ops.chunks(BLOCK_RECORDS) {
+            raw_buf.clear();
+            raw_buf.resize(chunk.len() * RECORD_V2_WITH_OP_WIRE_SIZE, 0u8);
+            for (i, &(rec, &op)) in chunk.iter().enumerate() {
+                rec.write_run_le_with_op(op, &mut rec_buf);
+                let off = i * RECORD_V2_WITH_OP_WIRE_SIZE;
+                raw_buf[off..off + RECORD_V2_WITH_OP_WIRE_SIZE].copy_from_slice(&rec_buf);
+            }
+
+            let compressed = zstd::bulk::compress(&raw_buf, zstd_level)?;
+            file.write_all(&(chunk.len() as u32).to_le_bytes())?;
+            file.write_all(&(raw_buf.len() as u32).to_le_bytes())?;
+            file.write_all(&(compressed.len() as u32).to_le_bytes())?;
+            file.write_all(&compressed)?;
+        }
+    }
+
+    file.flush()?;
+
+    Ok(RunFileInfoV2 {
+        path: path.to_path_buf(),
+        record_count: records.len() as u64,
+        sort_order,
+        min_t,
+        max_t,
+    })
+}
+
 /// Metadata about a written V2 run file.
 #[derive(Debug, Clone)]
 pub struct RunFileInfoV2 {
@@ -228,6 +335,53 @@ mod tests {
         assert_eq!(parsed.record_count, 500);
         assert_eq!(parsed.min_t, 1);
         assert_eq!(parsed.max_t, 42);
+    }
+
+    #[test]
+    fn header_version_with_op() {
+        let header = RunFileHeaderV2 {
+            version: RUN_V2_VERSION_WITH_OP,
+            sort_order: RunSortOrder::Spot,
+            flags: 0,
+            record_count: 10,
+            records_offset: 64,
+            min_t: 1,
+            max_t: 10,
+        };
+        assert!(header.has_op());
+
+        let mut buf = [0u8; RUN_V2_HEADER_LEN];
+        header.write_to(&mut buf);
+        let parsed = RunFileHeaderV2::read_from(&buf).unwrap();
+        assert!(parsed.has_op());
+        assert_eq!(parsed.version, RUN_V2_VERSION_WITH_OP);
+    }
+
+    #[test]
+    fn write_and_read_v2_with_op_run_file() {
+        let dir = std::env::temp_dir().join("fluree_test_run_v2_with_op");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_op.frn");
+
+        let records = vec![
+            make_rec(1, 1, OType::XSD_INTEGER.as_u16(), 10, 1),
+            make_rec(2, 1, OType::XSD_STRING.as_u16(), 20, 2),
+            make_rec(3, 2, OType::IRI_REF.as_u16(), 30, 3),
+        ];
+        let ops = vec![1u8, 0u8, 1u8]; // assert, retract, assert
+
+        let info =
+            write_run_file_v2_with_op(&path, &records, &ops, RunSortOrder::Spot, 1, 3).unwrap();
+        assert_eq!(info.record_count, 3);
+
+        // Read back header and verify version.
+        let data = std::fs::read(&path).unwrap();
+        let header = RunFileHeaderV2::read_from(&data).unwrap();
+        assert_eq!(header.record_count, 3);
+        assert!(header.has_op());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

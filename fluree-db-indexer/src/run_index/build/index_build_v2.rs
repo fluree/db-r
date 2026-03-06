@@ -131,12 +131,18 @@ pub fn build_index_v2(config: &IndexBuildV2Config) -> Result<IndexBuildV2Result,
     let mut progress_batch: u64 = 0;
 
     loop {
-        let record = if config.skip_dedup {
+        let result = if config.skip_dedup {
             merge.next_record()?
         } else {
             merge.next_deduped()?
         };
-        let Some(record) = record else { break };
+        let Some((record, op)) = result else { break };
+
+        // In the rebuild path, retract-winners (op == 0) should be
+        // filtered out so they don't appear in the final index.
+        if op == 0 {
+            continue;
+        }
 
         writer.push_record(record)?;
         total_rows += 1;

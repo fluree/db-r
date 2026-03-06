@@ -11,6 +11,7 @@ use std::io;
 
 struct HeapEntry {
     record: RunRecordV2,
+    op: u8,
     stream_idx: usize,
 }
 
@@ -32,6 +33,7 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
             if let Some(rec) = stream.peek() {
                 heap.push(HeapEntry {
                     record: *rec,
+                    op: stream.peek_op(),
                     stream_idx: idx,
                 });
             }
@@ -82,12 +84,17 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
     }
 
     /// Dequeue the next record in sort order (no dedup).
-    pub fn next_record(&mut self) -> io::Result<Option<RunRecordV2>> {
+    ///
+    /// Returns `(record, op)` where `op` is the operation byte
+    /// (`1` = assert, `0` = retract). For import-path sources that
+    /// carry no op, `op` defaults to `1`.
+    pub fn next_record(&mut self) -> io::Result<Option<(RunRecordV2, u8)>> {
         if self.heap.is_empty() {
             return Ok(None);
         }
 
         let winner = self.heap[0].record;
+        let winner_op = self.heap[0].op;
         let stream_idx = self.heap[0].stream_idx;
 
         // Advance the winning stream.
@@ -96,6 +103,7 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
         if let Some(next) = self.streams[stream_idx].peek() {
             self.heap[0] = HeapEntry {
                 record: *next,
+                op: self.streams[stream_idx].peek_op(),
                 stream_idx,
             };
             self.sift_down(0);
@@ -109,19 +117,20 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
             }
         }
 
-        Ok(Some(winner))
+        Ok(Some((winner, winner_op)))
     }
 
     /// Dequeue the next record with deduplication.
     ///
     /// When multiple records share the same identity, keeps the one with
     /// the highest `t` (merge tie-breaking). Non-winners are discarded.
+    /// The op byte of the winning record is preserved.
     ///
     /// For the import-only milestone, dedup is rarely needed (each fact
     /// appears once). This is kept for correctness in chunk-overlap edge cases.
-    pub fn next_deduped(&mut self) -> io::Result<Option<RunRecordV2>> {
-        let mut winner = match self.next_record()? {
-            Some(r) => r,
+    pub fn next_deduped(&mut self) -> io::Result<Option<(RunRecordV2, u8)>> {
+        let (mut winner, mut winner_op) = match self.next_record()? {
+            Some(pair) => pair,
             None => return Ok(None),
         };
 
@@ -130,13 +139,14 @@ impl<T: MergeSourceV2, F: Fn(&RunRecordV2, &RunRecordV2) -> Ordering> KWayMergeV
             if !same_identity_v2(&winner, peeked) {
                 break;
             }
-            let dup = self.next_record()?.unwrap();
+            let (dup, dup_op) = self.next_record()?.unwrap();
             if dup.t > winner.t {
                 winner = dup;
+                winner_op = dup_op;
             }
         }
 
-        Ok(Some(winner))
+        Ok(Some((winner, winner_op)))
     }
 
     pub fn is_exhausted(&self) -> bool {
@@ -177,6 +187,40 @@ mod tests {
         }
     }
 
+    /// In-memory merge source with explicit op bytes for testing.
+    struct VecSourceWithOp {
+        records: Vec<RunRecordV2>,
+        ops: Vec<u8>,
+        pos: usize,
+    }
+
+    impl VecSourceWithOp {
+        fn new(records: Vec<RunRecordV2>, ops: Vec<u8>) -> Self {
+            debug_assert_eq!(records.len(), ops.len());
+            Self {
+                records,
+                ops,
+                pos: 0,
+            }
+        }
+    }
+
+    impl MergeSourceV2 for VecSourceWithOp {
+        fn peek(&self) -> Option<&RunRecordV2> {
+            self.records.get(self.pos)
+        }
+        fn advance(&mut self) -> io::Result<()> {
+            self.pos += 1;
+            Ok(())
+        }
+        fn is_exhausted(&self) -> bool {
+            self.pos >= self.records.len()
+        }
+        fn peek_op(&self) -> u8 {
+            self.ops.get(self.pos).copied().unwrap_or(1)
+        }
+    }
+
     fn make_rec(s_id: u64, p_id: u32, o_key: u64, t: u32) -> RunRecordV2 {
         RunRecordV2 {
             s_id: SubjectId(s_id),
@@ -197,7 +241,8 @@ mod tests {
         let mut merge = KWayMergeV2::new(vec![s1, s2], cmp_v2_spot).unwrap();
 
         let mut results = Vec::new();
-        while let Some(rec) = merge.next_record().unwrap() {
+        while let Some((rec, op)) = merge.next_record().unwrap() {
+            assert_eq!(op, 1); // default op for VecSource
             results.push(rec.s_id.as_u64());
         }
         assert_eq!(results, vec![1, 2, 3, 4]);
@@ -210,8 +255,9 @@ mod tests {
         let s2 = VecSource::new(vec![make_rec(1, 1, 10, 5)]);
 
         let mut merge = KWayMergeV2::new(vec![s1, s2], cmp_v2_spot).unwrap();
-        let winner = merge.next_deduped().unwrap().unwrap();
+        let (winner, op) = merge.next_deduped().unwrap().unwrap();
         assert_eq!(winner.t, 5); // higher t wins
+        assert_eq!(op, 1); // default op
         assert!(merge.next_deduped().unwrap().is_none());
     }
 
@@ -229,8 +275,8 @@ mod tests {
         let s = VecSource::new(recs);
         let mut merge = KWayMergeV2::new(vec![s], cmp_v2_spot).unwrap();
 
-        let a = merge.next_deduped().unwrap().unwrap();
-        let b = merge.next_deduped().unwrap().unwrap();
+        let (a, _) = merge.next_deduped().unwrap().unwrap();
+        let (b, _) = merge.next_deduped().unwrap().unwrap();
         assert_ne!(a.o_type, b.o_type); // both emitted, not deduped
     }
 
@@ -241,5 +287,33 @@ mod tests {
         let mut merge = KWayMergeV2::new(vec![s1, s2], cmp_v2_spot).unwrap();
         assert!(merge.next_record().unwrap().is_none());
         assert!(merge.is_exhausted());
+    }
+
+    #[test]
+    fn dedup_preserves_op_of_winner() {
+        // Two sources with the same identity: s1 has t=1, s2 has t=5.
+        // s1 op=0 (retract), s2 op=1 (assert). Winner should be t=5 with op=1.
+        let s1 = VecSourceWithOp::new(vec![make_rec(1, 1, 10, 1)], vec![0]);
+        let s2 = VecSourceWithOp::new(vec![make_rec(1, 1, 10, 5)], vec![1]);
+
+        let mut merge = KWayMergeV2::new(vec![s1, s2], cmp_v2_spot).unwrap();
+        let (winner, op) = merge.next_deduped().unwrap().unwrap();
+        assert_eq!(winner.t, 5);
+        assert_eq!(op, 1); // winner's op
+        assert!(merge.next_deduped().unwrap().is_none());
+    }
+
+    #[test]
+    fn dedup_preserves_retract_op_of_winner() {
+        // Two sources with the same identity: s1 has t=1 op=1, s2 has t=5 op=0.
+        // Winner should be t=5 with op=0 (retract wins because higher t).
+        let s1 = VecSourceWithOp::new(vec![make_rec(1, 1, 10, 1)], vec![1]);
+        let s2 = VecSourceWithOp::new(vec![make_rec(1, 1, 10, 5)], vec![0]);
+
+        let mut merge = KWayMergeV2::new(vec![s1, s2], cmp_v2_spot).unwrap();
+        let (winner, op) = merge.next_deduped().unwrap().unwrap();
+        assert_eq!(winner.t, 5);
+        assert_eq!(op, 0); // retract-winner
+        assert!(merge.next_deduped().unwrap().is_none());
     }
 }
