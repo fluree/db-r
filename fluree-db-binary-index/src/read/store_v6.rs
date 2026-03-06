@@ -565,6 +565,28 @@ impl BinaryIndexStoreV6 {
         }
     }
 
+    /// Find all subject IDs whose suffix starts with `prefix` within a namespace.
+    ///
+    /// Uses a range scan on the reverse subject tree: scans the key range
+    /// `[ns_code || prefix, ns_code || prefix~)` where `~` (0x7E) sorts after
+    /// all printable ASCII. Returns the matching `(suffix_bytes, s_id)` pairs.
+    pub fn find_subjects_by_prefix(&self, ns_code: u16, prefix: &str) -> io::Result<Vec<u64>> {
+        match &self.dicts.subject_reverse_tree {
+            Some(tree) => {
+                let start_key =
+                    crate::dict::reverse_leaf::subject_reverse_key(ns_code, prefix.as_bytes());
+                // End key: prefix followed by 0xFF byte (sorts after all valid UTF-8).
+                let mut end_suffix = prefix.as_bytes().to_vec();
+                end_suffix.push(0xFF);
+                let end_key = crate::dict::reverse_leaf::subject_reverse_key(ns_code, &end_suffix);
+
+                let entries = tree.reverse_range_scan(&start_key, &end_key)?;
+                Ok(entries.into_iter().map(|(_, id)| id).collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Reverse string lookup: value → string_id.
     pub fn find_string_id(&self, value: &str) -> io::Result<Option<u32>> {
         match &self.dicts.string_reverse_tree {

@@ -217,6 +217,39 @@ impl<'a> ReverseLeaf<'a> {
             index: 0,
         }
     }
+
+    /// Collect all entries whose key is in `[start_key, end_key)`.
+    ///
+    /// Uses binary search to find the starting position, then scans forward.
+    pub fn scan_range(&self, start_key: &[u8], end_key: &[u8]) -> Vec<(&'a [u8], u64)> {
+        if self.entry_count == 0 {
+            return Vec::new();
+        }
+
+        // Binary search for the first entry >= start_key.
+        let n = self.entry_count as usize;
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.key_at(mid) < start_key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        // Scan forward collecting entries while key < end_key.
+        let mut results = Vec::new();
+        for i in lo..n {
+            let key = self.key_at(i);
+            if key >= end_key {
+                break;
+            }
+            results.push((key, self.id_at(i)));
+        }
+        results
+    }
 }
 
 /// Iterator over reverse leaf entries.

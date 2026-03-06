@@ -127,6 +127,54 @@ impl DictTreeReader {
         Ok(leaf.lookup(key))
     }
 
+    /// Range scan: find all entries whose key is in `[start_key, end_key)`.
+    ///
+    /// Scans across multiple B-tree leaves as needed. Returns `(key_bytes, id)` pairs
+    /// in sorted key order. Used for subject prefix scans (e.g., commit SHA lookup).
+    pub fn reverse_range_scan(
+        &self,
+        start_key: &[u8],
+        end_key: &[u8],
+    ) -> io::Result<Vec<(Vec<u8>, u64)>> {
+        if self.branch.leaves.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Find the first leaf that might contain start_key.
+        let start_leaf = match self.branch.find_leaf(start_key) {
+            Some(idx) => idx,
+            None => {
+                // start_key is before the first leaf or after the last.
+                // If the first leaf's first_key >= start_key, it might have matches.
+                if self.branch.leaves[0].first_key.as_slice() >= start_key {
+                    0
+                } else {
+                    return Ok(Vec::new());
+                }
+            }
+        };
+
+        let mut results = Vec::new();
+
+        for leaf_idx in start_leaf..self.branch.leaves.len() {
+            let leaf_entry = &self.branch.leaves[leaf_idx];
+
+            // If this leaf's first_key >= end_key, no more matches possible.
+            if leaf_entry.first_key.as_slice() >= end_key {
+                break;
+            }
+
+            let leaf_data = self.load_leaf(&leaf_entry.address)?;
+            let leaf = ReverseLeaf::from_bytes(&leaf_data)?;
+
+            for (key, id) in leaf.scan_range(start_key, end_key) {
+                results.push((key.to_vec(), id));
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Load leaf bytes from the configured source.
     ///
     /// For `LocalFiles` with a global cache: uses the cache (keyed by

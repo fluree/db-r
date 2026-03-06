@@ -257,7 +257,7 @@ fn sum_component_v6(
         t: 0,
         o_i: 0,
         o_type: 0,
-        g_id: g_id as u16,
+        g_id,
     };
     let max_key = RunRecordV2 {
         s_id: SubjectId(u64::MAX),
@@ -266,7 +266,7 @@ fn sum_component_v6(
         t: u32::MAX,
         o_i: u32::MAX,
         o_type: u16::MAX,
-        g_id: g_id as u16,
+        g_id,
     };
     let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
 
