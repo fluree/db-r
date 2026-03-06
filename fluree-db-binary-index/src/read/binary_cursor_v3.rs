@@ -13,14 +13,11 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::format::branch_v3::BranchManifestV3;
-use crate::format::leaf_v3::{
-    decode_leaf_dir_v3_with_base, decode_leaf_header_v3, DecodedLeafDirV3,
-};
 use crate::format::run_record::RunSortOrder;
 use crate::format::run_record_v2::cmp_v2_for_order;
 use crate::read::types_v3::{cmp_row_vs_overlay_v3, OverlayOpV3};
 
-use super::column_loader::{load_leaflet_columns, load_leaflet_columns_cached};
+use super::column_loader::load_columns_cached_via_handle;
 use super::column_types::{BinaryFilterV3, ColumnBatch, ColumnData, ColumnProjection};
 use super::replay_v3::replay_leaflet_v3;
 use super::store_v6::BinaryIndexStoreV6;
@@ -59,14 +56,9 @@ pub struct BinaryCursorV3 {
     to_t: i64,
 }
 
-/// Cached state for a leaf that's been fetched and decoded.
+/// State for a leaf that's been opened via `LeafHandle`.
 struct OpenLeaf {
-    bytes: Vec<u8>,
-    dir: DecodedLeafDirV3,
-    /// Sidecar bytes for history replay (fetched lazily per leaf).
-    sidecar_bytes: Option<Vec<u8>>,
-    /// Content-addressed leaf identity for cache keying.
-    leaf_id: u128,
+    handle: Box<dyn super::leaf_access::LeafHandle>,
 }
 
 impl BinaryCursorV3 {
@@ -213,8 +205,8 @@ impl BinaryCursorV3 {
             // If we have an open leaf, try the next leaflet in it.
             // We take the leaf temporarily to avoid borrow conflicts with &mut self.
             if let Some(leaf) = self.current_leaf.take() {
-                while self.current_leaflet_idx < leaf.dir.entries.len() {
-                    let entry = &leaf.dir.entries[self.current_leaflet_idx];
+                while self.current_leaflet_idx < leaf.handle.dir().entries.len() {
+                    let entry = &leaf.handle.dir().entries[self.current_leaflet_idx];
                     self.current_leaflet_idx += 1;
 
                     // Pre-skip by directory metadata (only when no overlay —
@@ -227,24 +219,21 @@ impl BinaryCursorV3 {
                         continue;
                     }
 
-                    // Load columns (cached when LeafletCache is available).
+                    // Load columns via LeafHandle (cached when LeafletCache is available).
                     let mut batch = if entry.row_count > 0 {
-                        let leaflet_idx = (self.current_leaflet_idx - 1) as u8;
+                        let leaflet_idx = self.current_leaflet_idx - 1;
                         if let Some(cache) = self.store.leaflet_cache() {
-                            load_leaflet_columns_cached(
-                                &leaf.bytes,
-                                entry,
-                                leaf.dir.payload_base,
+                            load_columns_cached_via_handle(
+                                leaf.handle.as_ref(),
+                                leaflet_idx,
                                 self.order,
                                 cache,
-                                leaf.leaf_id,
-                                leaflet_idx,
+                                leaf.handle.leaf_id(),
+                                leaflet_idx as u8,
                             )?
                         } else {
-                            load_leaflet_columns(
-                                &leaf.bytes,
-                                entry,
-                                leaf.dir.payload_base,
+                            leaf.handle.load_columns(
+                                leaflet_idx,
                                 &self.projection,
                                 self.order,
                             )?
@@ -262,17 +251,10 @@ impl BinaryCursorV3 {
                             || batch_has_rows_above_t(&batch, self.to_t as u32);
 
                         if needs_leaflet_replay && entry.history_len > 0 {
-                            if let Some(ref sc_bytes) = leaf.sidecar_bytes {
-                                use crate::format::history_sidecar::{
-                                    decode_history_segment, HistorySegmentRef,
-                                };
-                                let seg = HistorySegmentRef {
-                                    offset: entry.history_offset,
-                                    len: entry.history_len,
-                                    min_t: entry.history_min_t,
-                                    max_t: entry.history_max_t,
-                                };
-                                let history = decode_history_segment(sc_bytes, &seg);
+                            let history = leaf.handle.load_sidecar_segment(
+                                self.current_leaflet_idx - 1,
+                            )?;
+                            if !history.is_empty() {
                                 if let Some(replayed) =
                                     replay_leaflet_v3(&batch, &history, self.to_t, self.order)
                                 {
@@ -332,6 +314,7 @@ impl BinaryCursorV3 {
 
             let leaf_idx = self.current_leaf_idx;
             let leaf_cid = self.branch.leaves[leaf_idx].leaf_cid.clone();
+            let sidecar_cid = self.branch.leaves[leaf_idx].sidecar_cid.clone();
             self.current_leaf_idx += 1;
 
             // Slice overlay ops for this leaf (binary search on branch keys).
@@ -339,30 +322,13 @@ impl BinaryCursorV3 {
                 self.slice_overlay_for_leaf(leaf_idx);
             }
 
-            let bytes = self.store.get_leaf_bytes_sync(&leaf_cid)?;
-            let header = decode_leaf_header_v3(&bytes)?;
-            let dir = decode_leaf_dir_v3_with_base(&bytes, &header)?;
-
-            // Fetch sidecar bytes if replay is needed and the leaf has a sidecar.
-            // Propagate fetch errors — a missing sidecar during time-travel
-            // would silently produce incorrect results.
-            let sidecar_bytes = if self.need_replay() {
-                if let Some(ref sc_cid) = self.branch.leaves[leaf_idx].sidecar_cid {
-                    Some(self.store.get_leaf_bytes_sync(sc_cid)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_cid.to_bytes().as_ref());
-            self.current_leaf = Some(OpenLeaf {
-                bytes,
-                dir,
-                sidecar_bytes,
-                leaf_id,
-            });
+            // Open leaf via LeafHandle (auto-selects local vs range-read path).
+            let handle = self.store.open_leaf_handle(
+                &leaf_cid,
+                sidecar_cid.as_ref(),
+                self.need_replay(),
+            )?;
+            self.current_leaf = Some(OpenLeaf { handle });
             self.current_leaflet_idx = 0;
         }
     }

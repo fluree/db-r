@@ -138,6 +138,29 @@ pub trait StorageRead: Debug + Send + Sync {
         let _ = address;
         None
     }
+
+    /// Read a byte range from the object at the given address.
+    ///
+    /// The range is `[start, end)` in bytes. Returns the bytes within
+    /// the range, which may be shorter than requested if the object is
+    /// smaller than `range.end`.
+    ///
+    /// The default implementation fetches the full object and slices.
+    /// Backends that support native range reads (S3, HTTP) should override
+    /// for efficiency.
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        let full = self.read_bytes(address).await?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
+    }
 }
 
 /// Mutating storage operations
@@ -294,6 +317,25 @@ pub trait ContentStore: Debug + Send + Sync {
         let _ = id;
         None
     }
+
+    /// Retrieve a byte range from an object by CID.
+    ///
+    /// The range is `[start, end)` in bytes. Returns the bytes within
+    /// the range, which may be shorter than requested if the object is
+    /// smaller than `range.end`.
+    ///
+    /// The default implementation fetches the full object and slices.
+    /// Backends that support native range reads (S3, HTTP) should override
+    /// for efficiency.
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let full = self.get(id).await?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
+    }
 }
 
 // ============================================================================
@@ -359,6 +401,19 @@ impl ContentStore for MemoryContentStore {
             .expect("RwLock poisoned")
             .insert(id.clone(), bytes.to_vec());
         Ok(())
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let data = self.data.read().expect("RwLock poisoned");
+        let full = data
+            .get(id)
+            .ok_or_else(|| crate::error::Error::not_found(id.to_string()))?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
     }
 }
 
@@ -444,6 +499,15 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
         let address = self.cid_to_address(id).ok()?;
         self.storage.resolve_local_path(&address)
+    }
+
+    async fn get_range(
+        &self,
+        id: &ContentId,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        let address = self.cid_to_address(id)?;
+        self.storage.read_byte_range(&address, range).await
     }
 }
 
@@ -642,6 +706,23 @@ impl StorageRead for MemoryStorage {
             .cloned()
             .collect())
     }
+
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        let data = self.data.read().expect("RwLock poisoned");
+        let full = data
+            .get(address)
+            .ok_or_else(|| crate::error::Error::not_found(address))?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
+    }
 }
 
 #[async_trait]
@@ -793,6 +874,52 @@ impl StorageRead for FileStorage {
         } else {
             None
         }
+    }
+
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        let path = self.resolve_path(address)?;
+        let len = (range.end - range.start) as usize;
+        let mut buf = vec![0u8; len];
+        let file = std::fs::File::open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                crate::error::Error::not_found(format!("{}: {}", address, path.display()))
+            } else {
+                crate::error::Error::io(format!("Failed to open {}: {}", path.display(), e))
+            }
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            let n = file.read_at(&mut buf, range.start).map_err(|e| {
+                crate::error::Error::io(format!(
+                    "Failed to read range from {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            buf.truncate(n);
+        }
+        #[cfg(not(unix))]
+        {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = file;
+            file.seek(SeekFrom::Start(range.start)).map_err(|e| {
+                crate::error::Error::io(format!("Failed to seek {}: {}", path.display(), e))
+            })?;
+            let n = file.read(&mut buf).map_err(|e| {
+                crate::error::Error::io(format!(
+                    "Failed to read range from {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            buf.truncate(n);
+        }
+        Ok(buf)
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {

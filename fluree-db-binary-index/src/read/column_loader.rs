@@ -228,6 +228,32 @@ pub fn load_leaflet_columns_cached(
     })
 }
 
+/// Load columns from a V3 leaflet with `LeafletCache` support, via a [`LeafHandle`].
+///
+/// Same caching semantics as [`load_leaflet_columns_cached`], but delegates to
+/// [`LeafHandle::load_columns()`] on cache miss. This works transparently for
+/// both local (`FullBlobLeafHandle`) and remote (`RangeReadLeafHandle`) access.
+///
+/// Always decodes ALL columns on miss so the cached batch serves any projection.
+pub fn load_columns_cached_via_handle(
+    handle: &dyn super::leaf_access::LeafHandle,
+    leaflet_idx: usize,
+    order: RunSortOrder,
+    cache: &super::leaflet_cache::LeafletCache,
+    leaf_id: u128,
+    leaflet_idx_u8: u8,
+) -> io::Result<ColumnBatch> {
+    let key = super::leaflet_cache::V3BatchCacheKey {
+        leaf_id,
+        leaflet_idx: leaflet_idx_u8,
+    };
+
+    cache.try_get_or_decode_v3_batch(key, || {
+        let all = ColumnProjection::all();
+        handle.load_columns(leaflet_idx, &all, order)
+    })
+}
+
 // Re-export for convenience: callers use decode_leaf_dir_v3_with_base to get
 // the authoritative payload_base alongside the directory entries.
 pub use crate::format::leaf_v3::{decode_leaf_dir_v3_with_base, DecodedLeafDirV3};

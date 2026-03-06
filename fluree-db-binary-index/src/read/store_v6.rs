@@ -254,6 +254,92 @@ impl BinaryIndexStoreV6 {
             .map_err(|_| io::Error::other("leaf fetch thread panicked"))?
     }
 
+    // ── LeafHandle-based access ──────────────────────────────────────
+
+    /// Open a leaf for reading, choosing the optimal access strategy.
+    ///
+    /// - Local filesystem: returns `FullBlobLeafHandle` (OS page cache is optimal)
+    /// - Cached locally: returns `FullBlobLeafHandle` (read from disk cache)
+    /// - Remote (S3/etc): returns `RangeReadLeafHandle` (header+dir only, lazy
+    ///   column fetch via byte-range reads)
+    pub fn open_leaf_handle(
+        &self,
+        leaf_cid: &ContentId,
+        sidecar_cid: Option<&ContentId>,
+        need_replay: bool,
+    ) -> io::Result<Box<dyn super::leaf_access::LeafHandle>> {
+        use super::leaf_access::{
+            fetch_header_and_directory, FullBlobLeafHandle, RangeReadLeafHandle,
+        };
+
+        let cs = self
+            .cas
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no content store"))?;
+
+        let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_cid.to_bytes().as_ref());
+
+        // Fast path 1: local filesystem — full read is optimal (OS page cache).
+        if let Some(local_path) = cs.resolve_local_path(leaf_cid) {
+            let bytes = std::fs::read(local_path)?;
+            let sidecar = if need_replay {
+                self.fetch_sidecar_bytes_sync(sidecar_cid)?
+            } else {
+                None
+            };
+            return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+        }
+
+        // Fast path 2: locally cached — full read from disk cache.
+        let cache_path = self.cache_dir.join(leaf_cid.to_string());
+        if cache_path.exists() {
+            let bytes = std::fs::read(&cache_path)?;
+            let sidecar = if need_replay {
+                self.fetch_sidecar_bytes_sync(sidecar_cid)?
+            } else {
+                None
+            };
+            return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+        }
+
+        // Slow path: remote — use range reads for column-selective access.
+        let fetcher = Arc::new(ContentStoreRangeFetcher::new(
+            Arc::clone(cs),
+            self.cache_dir.clone(),
+        ));
+
+        let (dir, payload_base) =
+            fetch_header_and_directory(fetcher.as_ref(), leaf_cid)?;
+
+        let sc_cid = if need_replay {
+            sidecar_cid.cloned()
+        } else {
+            None
+        };
+
+        Ok(Box::new(RangeReadLeafHandle::new(
+            leaf_cid.clone(),
+            dir,
+            payload_base,
+            leaf_id,
+            fetcher as Arc<dyn super::leaf_access::RangeReadFetcher>,
+            sc_cid,
+        )))
+    }
+
+    /// Fetch sidecar bytes by CID (full object, sync).
+    fn fetch_sidecar_bytes_sync(
+        &self,
+        sidecar_cid: Option<&ContentId>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let sc_cid = match sidecar_cid {
+            Some(cid) => cid,
+            None => return Ok(None),
+        };
+        let bytes = self.get_leaf_bytes_sync(sc_cid)?;
+        Ok(Some(bytes))
+    }
+
     // ── Value decoding ─────────────────────────────────────────────
 
     /// Decode a value from `(o_type, o_key)` to `FlakeValue`.
@@ -994,4 +1080,94 @@ async fn load_per_graph_arenas(
     }
 
     Ok(result)
+}
+
+// ============================================================================
+// ContentStoreRangeFetcher
+// ============================================================================
+
+/// Sync-safe range fetcher backed by a `ContentStore`.
+///
+/// Bridges async `ContentStore::get_range()` to the synchronous cursor world
+/// using the same thread-spawn + `Handle::block_on()` pattern proven in
+/// `BinaryIndexStoreV6::get_leaf_bytes_sync()`.
+struct ContentStoreRangeFetcher {
+    cs: Arc<dyn ContentStore>,
+    cache_dir: PathBuf,
+}
+
+impl ContentStoreRangeFetcher {
+    fn new(cs: Arc<dyn ContentStore>, cache_dir: PathBuf) -> Self {
+        Self { cs, cache_dir }
+    }
+}
+
+impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
+    fn fetch_range(
+        &self,
+        id: &ContentId,
+        range: std::ops::Range<u64>,
+    ) -> io::Result<Vec<u8>> {
+        // Try local path first — positional read.
+        if let Some(local_path) = self.cs.resolve_local_path(id) {
+            let file = std::fs::File::open(local_path)?;
+            let len = (range.end - range.start) as usize;
+            let mut buf = vec![0u8; len];
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                let n = file.read_at(&mut buf, range.start)?;
+                buf.truncate(n);
+            }
+            #[cfg(not(unix))]
+            {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = file;
+                file.seek(SeekFrom::Start(range.start))?;
+                let n = file.read(&mut buf)?;
+                buf.truncate(n);
+            }
+            return Ok(buf);
+        }
+
+        // Check cache.
+        let cache_path = self.cache_dir.join(id.to_string());
+        if cache_path.exists() {
+            let file = std::fs::File::open(&cache_path)?;
+            let len = (range.end - range.start) as usize;
+            let mut buf = vec![0u8; len];
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                let n = file.read_at(&mut buf, range.start)?;
+                buf.truncate(n);
+            }
+            #[cfg(not(unix))]
+            {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = file;
+                file.seek(SeekFrom::Start(range.start))?;
+                let n = file.read(&mut buf)?;
+                buf.truncate(n);
+            }
+            return Ok(buf);
+        }
+
+        // Remote CAS: use async get_range via sync bridge.
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| io::Error::other("range fetch requires a Tokio runtime"))?;
+        let cs = Arc::clone(&self.cs);
+        let cid = id.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
+        std::thread::spawn(move || {
+            let result = handle.block_on(async {
+                cs.get_range(&cid, range)
+                    .await
+                    .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+            });
+            let _ = tx.send(result);
+        });
+        rx.recv()
+            .map_err(|_| io::Error::other("range fetch thread panicked"))?
+    }
 }

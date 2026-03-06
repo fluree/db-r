@@ -252,6 +252,35 @@ impl StorageRead for S3Storage {
         Ok(bytes)
     }
 
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, CoreError> {
+        let key = self.to_key(address)?;
+        let range_header = format!("bytes={}-{}", range.start, range.end.saturating_sub(1));
+
+        let response = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .range(range_header)
+            .send()
+            .await
+            .map_err(|e| map_s3_error_core(e, &key))?;
+
+        let bytes = response
+            .body
+            .collect()
+            .await
+            .map_err(|e| CoreError::io(format!("Failed to read S3 body: {}", e)))?
+            .into_bytes()
+            .to_vec();
+
+        Ok(bytes)
+    }
+
     async fn exists(&self, address: &str) -> std::result::Result<bool, CoreError> {
         let key = self.to_key(address)?;
 

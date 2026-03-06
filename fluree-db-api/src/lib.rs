@@ -269,6 +269,14 @@ impl StorageRead for AnyStorage {
         self.0.read_bytes_hint(address, hint).await
     }
 
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        self.0.read_byte_range(address, range).await
+    }
+
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.0.exists(address).await
     }
@@ -629,6 +637,18 @@ where
         }
     }
 
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        if Self::route_to_commit(address) {
+            self.commit.read_byte_range(address, range).await
+        } else {
+            self.index.read_byte_range(address, range).await
+        }
+    }
+
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         if Self::route_to_commit(address) {
             self.commit.exists(address).await
@@ -804,6 +824,14 @@ impl StorageRead for AddressIdentifierResolverStorage {
         hint: fluree_db_core::ReadHint,
     ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.route(address).read_bytes_hint(address, hint).await
+    }
+
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        self.route(address).read_byte_range(address, range).await
     }
 
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {

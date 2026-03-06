@@ -297,6 +297,10 @@ impl StorageRead for ProxyStorage {
         self.fetch_prefer_flakes(address).await
     }
 
+    // read_byte_range: uses default (full read + slice). ProxyStorage's HTTP
+    // protocol doesn't support Range headers yet — the default fallback is
+    // correct and safe. Future optimization: pass Range header through proxy.
+
     async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
         // Under PolicyEnforced, both AnyBytes and PreferLeafFlakes produce the same
         // result (flakes-first negotiation). The distinction is preserved for
