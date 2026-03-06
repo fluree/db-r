@@ -11,8 +11,8 @@ use super::value::ComparableValue;
 use crate::ir::{ArithmeticOp, CompareOp};
 
 use super::{
-    arithmetic, conditional, datetime, fluree, fulltext, geo, hash, logical, numeric, rdf, string,
-    types, uuid, vector,
+    arithmetic, cast, conditional, datetime, fluree, fulltext, geo, hash, logical, numeric, rdf,
+    string, types, uuid, vector,
 };
 
 impl Function {
@@ -133,15 +133,20 @@ impl Function {
             Function::T => fluree::eval_t(args, row),
             Function::Op => fluree::eval_op(args, row),
 
-            // Unknown function
+            // XSD datatype constructor (cast) functions — W3C SPARQL 1.1 §17.5
             Function::Custom(name) => match name.as_str() {
-                // SPARQL datatype constructor functions (subset)
-                //
-                // Some queries use `xsd:integer(<boolean>)` to count matches.
-                // Many SPARQL engines accept this and treat booleans as 0/1.
-                "http://www.w3.org/2001/XMLSchema#integer" => {
-                    numeric::eval_xsd_integer(args, row, ctx)
+                "http://www.w3.org/2001/XMLSchema#boolean" => {
+                    cast::eval_xsd_boolean(args, row, ctx)
                 }
+                "http://www.w3.org/2001/XMLSchema#integer" => {
+                    cast::eval_xsd_integer(args, row, ctx)
+                }
+                "http://www.w3.org/2001/XMLSchema#float" => cast::eval_xsd_float(args, row, ctx),
+                "http://www.w3.org/2001/XMLSchema#double" => cast::eval_xsd_double(args, row, ctx),
+                "http://www.w3.org/2001/XMLSchema#decimal" => {
+                    cast::eval_xsd_decimal(args, row, ctx)
+                }
+                "http://www.w3.org/2001/XMLSchema#string" => cast::eval_xsd_string(args, row, ctx),
                 _ => Err(QueryError::InvalidFilter(format!(
                     "Unknown function: {}",
                     name

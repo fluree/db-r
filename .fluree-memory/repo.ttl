@@ -790,3 +790,37 @@ mem:artifact-01kjtmmwxeeczkxyzjt4bn84sy a mem:Artifact ;
     mem:branch "fix/sparql/builtin-functions" ;
     mem:createdAt "2026-03-03T20:01:21.326479+00:00"^^xsd:dateTime ;
     mem:artifactKind "file" .
+
+mem:fact-01kk1qbna7qqqk6hck165kcjcy a mem:Fact ;
+    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06 on main)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 214/327 (65.4%) — up from 167/327 (51.1%) on 2026-03-03\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%) — ✅ #54 closed\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%) — ✅ #48 closed (PR #75)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- cast: 0/6 (0%) — #46\n- construct: 0/7 (0%) — #53\n\n1.1 failure count: 113 total (down from 160)\n\nClosed since last update: #48 (PR #75, merged 2026-03-04), #54 (PR #74, merged 2026-03-05)\nAlso in PR #74: partial fixes for #46 (xsd:integer), #47 (transitive-in-sequence), #61 (AGG(expr) desugaring)\n\nOpen: #46 (XSD casts), #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
+    mem:tag "compliance" ;
+    mem:tag "issue-55" ;
+    mem:tag "sparql" ;
+    mem:tag "status" ;
+    mem:tag "test-counts" ;
+    mem:tag "tracking" ;
+    mem:tag "w3c" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
+    mem:branch "main" ;
+    mem:supersedes mem:fact-01kjte1h3a7ws19tjrcy3m2v9f ;
+    mem:createdAt "2026-03-06T14:03:25.383373+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01kk1sq2xwmxsqe828pgk28svw a mem:Fact ;
+    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06 on fix/sparql-xsd-casts)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 225/327 (68.8%) — up from 214/327 (65.4%) after #46 fix\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%) — ✅ #54 closed\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%) — ✅ #48 closed (PR #75)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- cast: 6/6 (100%) — ✅ #46 (fix/sparql-xsd-casts branch)\n- construct: 0/7 (0%) — #53\n\nClosed since last update: #46 (PR pending)\nAlso closed: #48 (PR #75), #54 (PR #74)\n\nOpen: #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
+    mem:tag "compliance" ;
+    mem:tag "issue-55" ;
+    mem:tag "sparql" ;
+    mem:tag "status" ;
+    mem:tag "test-counts" ;
+    mem:tag "tracking" ;
+    mem:tag "w3c" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
+    mem:branch "main" ;
+    mem:supersedes mem:fact-01kk1qbna7qqqk6hck165kcjcy ;
+    mem:createdAt "2026-03-06T14:44:36.924914+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .

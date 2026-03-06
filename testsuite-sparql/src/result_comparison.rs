@@ -148,7 +148,30 @@ fn terms_match(
                 datatype: ad,
                 language: al,
             },
-        ) => ev == av && normalize_datatype(ed) == normalize_datatype(ad) && el == al,
+        ) => {
+            if el != al {
+                return false;
+            }
+            let ed_norm = normalize_datatype(ed);
+            let ad_norm = normalize_datatype(ad);
+            if ed_norm != ad_norm {
+                return false;
+            }
+            // Lexical match (fast path)
+            if ev == av {
+                return true;
+            }
+            // For numeric/boolean datatypes, compare by value (W3C allows non-canonical forms)
+            if let Some(dt) = ed_norm {
+                if is_numeric_datatype(dt) {
+                    return numeric_values_equal(ev, av, dt);
+                }
+                if dt == "http://www.w3.org/2001/XMLSchema#boolean" {
+                    return boolean_values_equal(ev, av);
+                }
+            }
+            false
+        }
         (RdfTerm::Iri(e), RdfTerm::Iri(a)) => e == a,
         _ => false, // Type mismatch
     }
@@ -159,6 +182,67 @@ fn normalize_datatype(dt: &Option<String>) -> Option<&str> {
     match dt.as_deref() {
         None | Some("http://www.w3.org/2001/XMLSchema#string") => None,
         Some(s) => Some(s),
+    }
+}
+
+const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+
+fn is_numeric_datatype(dt: &str) -> bool {
+    matches!(
+        dt.strip_prefix(XSD),
+        Some(
+            "integer" | "decimal" | "float" | "double" | "long" | "int" | "short" | "byte"
+                | "nonNegativeInteger" | "positiveInteger" | "nonPositiveInteger"
+                | "negativeInteger" | "unsignedLong" | "unsignedInt" | "unsignedShort"
+                | "unsignedByte"
+        )
+    )
+}
+
+/// Compare two boolean literal values by parsed value rather than lexical form.
+///
+/// XSD boolean has lexical forms: "true", "1" (both true), "false", "0" (both false).
+fn boolean_values_equal(a: &str, b: &str) -> bool {
+    let parse_bool = |s: &str| -> Option<bool> {
+        match s {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        }
+    };
+    match (parse_bool(a), parse_bool(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Compare two numeric literal values by parsed value rather than lexical form.
+fn numeric_values_equal(a: &str, b: &str, datatype: &str) -> bool {
+    let local = datatype.strip_prefix(XSD).unwrap_or(datatype);
+    match local {
+        "integer" | "long" | "int" | "short" | "byte" | "nonNegativeInteger"
+        | "positiveInteger" | "nonPositiveInteger" | "negativeInteger" | "unsignedLong"
+        | "unsignedInt" | "unsignedShort" | "unsignedByte" => {
+            a.parse::<i128>().ok() == b.parse::<i128>().ok()
+        }
+        "float" | "double" => {
+            let (pa, pb) = (a.parse::<f64>(), b.parse::<f64>());
+            match (pa, pb) {
+                (Ok(fa), Ok(fb)) => {
+                    if fa.is_nan() && fb.is_nan() {
+                        true
+                    } else {
+                        fa == fb
+                    }
+                }
+                _ => false,
+            }
+        }
+        "decimal" => {
+            // Parse as f64 for value comparison (covers "0" == "0.0", "1" == "1.0", etc.)
+            a.parse::<f64>().ok() == b.parse::<f64>().ok()
+        }
+        _ => false,
     }
 }
 
