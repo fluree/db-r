@@ -427,16 +427,13 @@ impl<'a> MappingExtractor<'a> {
             },
             Term::Literal {
                 value, language, ..
-            } => {
-                let language = language.as_ref().map(|l| l.to_string());
-                ObjectMap::Constant {
-                    value: ConstantValue::Literal {
-                        value: value.lexical(),
-                        datatype: None, // TODO: extract datatype
-                        language,
-                    },
-                }
-            }
+            } => ObjectMap::Constant {
+                value: ConstantValue::Literal {
+                    value: value.lexical(),
+                    datatype: None, // TODO: extract datatype
+                    language: language.as_ref().map(|l| l.to_string()),
+                },
+            },
             _ => ObjectMap::Constant {
                 value: ConstantValue::Literal {
                     value: "".to_string(),
