@@ -1090,9 +1090,9 @@ pub fn build_where_operators_seeded_with_needed(
             }
 
             // EXISTS and NOT EXISTS share the same operator, differing only by a boolean flag
-            Pattern::Exists(inner_patterns) | Pattern::NotExists(inner_patterns) => {
+            pat @ (Pattern::Exists(inner_patterns) | Pattern::NotExists(inner_patterns)) => {
                 let child = require_child(operator, "EXISTS pattern")?;
-                let negated = matches!(&patterns[i], Pattern::NotExists(_));
+                let negated = matches!(pat, Pattern::NotExists(_));
                 operator = Some(Box::new(ExistsOperator::new(
                     child,
                     inner_patterns.clone(),
