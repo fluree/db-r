@@ -743,10 +743,10 @@ mod tests {
         };
 
         let result = build_operator_tree(&query, &QueryOptions::default(), None);
-        match result {
-            Err(e) => assert!(e.to_string().contains("not found")),
-            Ok(_) => panic!("Expected error for invalid select var"),
-        }
+        let Err(e) = result else {
+            panic!("Expected error for invalid select var");
+        };
+        assert!(e.to_string().contains("not found"));
     }
 
     #[test]
@@ -760,13 +760,13 @@ mod tests {
             graph_select: None,
         };
 
-        let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var
+        let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]);
 
         let result = build_operator_tree(&query, &options, None);
-        match result {
-            Err(e) => assert!(e.to_string().contains("Sort variable")),
-            Ok(_) => panic!("Expected error for invalid sort var"),
-        }
+        let Err(e) = result else {
+            panic!("Expected error for invalid sort var");
+        };
+        assert!(e.to_string().contains("Sort variable"));
     }
 
     #[test]
