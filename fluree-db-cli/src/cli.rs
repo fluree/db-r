@@ -228,9 +228,13 @@ pub enum Commands {
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
 
-        /// Output format (json, table, csv, or tsv)
+        /// Output format (json, typed-json, table, csv, or tsv)
         #[arg(long, default_value = "table")]
         format: String,
+
+        /// Normalize arrays: always wrap multi-value properties in arrays (graph crawl only)
+        #[arg(long)]
+        normalize_arrays: bool,
 
         /// Benchmark mode: time execution only and print first 5 rows as a table (no full-result JSON formatting)
         #[arg(long)]
