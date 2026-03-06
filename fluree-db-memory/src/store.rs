@@ -35,8 +35,9 @@ fn compact_id(id: &str) -> String {
 }
 
 fn escape_sparql_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
+    let normalized = crate::turtle_io::normalize_unicode_quotes(s);
+    let mut out = String::with_capacity(normalized.len());
+    for c in normalized.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
