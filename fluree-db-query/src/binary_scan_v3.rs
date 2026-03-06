@@ -911,3 +911,68 @@ fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStoreV6) -> Option<OType> 
     let iri = store.sid_to_iri(dt_sid);
     fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
 }
+
+/// Simplified FlakeValue → (OType, o_key) translation for fast-path operators.
+///
+/// Uses default OType for each value variant (no dt_sid/lang context needed).
+/// Works for the common cases in bound-object count queries. Does not handle
+/// langString (no language tag available) or custom datatypes.
+pub(crate) fn value_to_otype_okey_simple(
+    val: &FlakeValue,
+    store: &BinaryIndexStoreV6,
+) -> Result<(OType, u64)> {
+    use fluree_db_core::value_id::ObjKey;
+
+    match val {
+        FlakeValue::Null => Ok((OType::NULL, 0)),
+        FlakeValue::Boolean(b) => Ok((OType::XSD_BOOLEAN, *b as u64)),
+        FlakeValue::Long(n) => Ok((OType::XSD_INTEGER, ObjKey::encode_i64(*n).as_u64())),
+        FlakeValue::Double(d) => {
+            if d.is_finite() {
+                ObjKey::encode_f64(*d)
+                    .map(|key| (OType::XSD_DOUBLE, key.as_u64()))
+                    .map_err(|_| {
+                        QueryError::execution("cannot encode f64 for V6 index".to_string())
+                    })
+            } else {
+                Err(QueryError::execution(
+                    "non-finite double in bound object".to_string(),
+                ))
+            }
+        }
+        FlakeValue::Ref(sid) => {
+            let s_id = store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("ref object not found in V6 dict".to_string())
+                })?;
+            Ok((OType::IRI_REF, s_id))
+        }
+        FlakeValue::String(s) => {
+            let str_id = store
+                .find_string_id(s)
+                .map_err(|e| QueryError::execution(format!("find_string_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("string value not found in V6 dict".to_string())
+                })?;
+            Ok((OType::XSD_STRING, str_id as u64))
+        }
+        FlakeValue::Date(d) => Ok((
+            OType::XSD_DATE,
+            ObjKey::encode_date(d.days_since_epoch()).as_u64(),
+        )),
+        FlakeValue::DateTime(dt) => Ok((
+            OType::XSD_DATE_TIME,
+            ObjKey::encode_datetime(dt.epoch_micros()).as_u64(),
+        )),
+        FlakeValue::Time(t) => Ok((
+            OType::XSD_TIME,
+            ObjKey::encode_time(t.micros_since_midnight()).as_u64(),
+        )),
+        _ => Err(QueryError::execution(format!(
+            "unsupported FlakeValue variant for V6 fast-path: {:?}",
+            val
+        ))),
+    }
+}

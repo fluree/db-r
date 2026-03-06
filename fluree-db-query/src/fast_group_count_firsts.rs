@@ -6,15 +6,24 @@ use crate::operator::{Operator, OperatorState};
 use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::format::column_block::ColumnId;
+use fluree_db_binary_index::format::leaf_v3::{
+    decode_leaf_dir_v3_with_base, decode_leaf_header_v3, LeafletDirEntryV3,
+};
+use fluree_db_binary_index::format::run_record_v2::{
+    cmp_v2_for_order, read_ordered_key_v2, RunRecordV2,
+};
+use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
 use fluree_db_binary_index::{
     decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, BinaryGraphView,
-    BinaryIndexStore, CachedRegion1, CachedRegion2, LeafEntry, LeafletCacheKey, LeafletHeader,
-    OverlayOp, RunRecord, RunSortOrder,
+    BinaryIndexStore, BinaryIndexStoreV6, CachedRegion1, CachedRegion2, ColumnProjection,
+    ColumnSet, LeafEntry, LeafletCacheKey, LeafletHeader, OverlayOp, RunRecord, RunSortOrder,
 };
+use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::value_id::ValueTypeTag;
-use fluree_db_core::StatsView;
+use fluree_db_core::{GraphId, StatsView};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -121,7 +130,9 @@ fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
 
 #[inline]
 fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
-    ctx.graph_view().is_none() || ctx.history_mode || ctx.policy_enforcer.is_some()
+    // Fast-path is available if either V5 or V6 store is loaded.
+    let has_store = ctx.graph_view().is_some() || ctx.binary_store_v6.is_some();
+    !has_store || ctx.history_mode || ctx.policy_enforcer.is_some()
 }
 
 /// Resolve a predicate [`Ref`] to its binary index `p_id`.
@@ -370,6 +381,8 @@ pub struct PredicateGroupCountFirstsOperator {
     fallback: Option<BoxedOperator>,
     /// Materialized results (already sorted and truncated to limit)
     results: Vec<(GroupKey, i64)>,
+    /// V6 results: (o_type, o_key, count). When present, used instead of `results`.
+    results_v6: Option<Vec<(u16, u64, i64)>>,
     /// Next result to emit
     pos: usize,
 }
@@ -394,6 +407,7 @@ impl PredicateGroupCountFirstsOperator {
             state: OperatorState::Created,
             fallback: None,
             results: Vec::new(),
+            results_v6: None,
             pos: 0,
         }
     }
@@ -465,10 +479,24 @@ impl Operator for PredicateGroupCountFirstsOperator {
             return self.open_fallback(ctx).await;
         }
 
+        // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
+        if ctx.overlay.is_none() {
+            if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
+                match group_count_v6(store_v6, ctx.binary_g_id, &self.predicate, self.limit) {
+                    Ok(v6_results) => {
+                        self.results_v6 = Some(v6_results);
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        // V6 path couldn't handle it — fall through to V5 or fallback.
+                    }
+                }
+            }
+        }
+
         let Some(gv) = ctx.graph_view() else {
-            // Defensive; should be handled by should_fallback().
-            self.state = OperatorState::Exhausted;
-            return Ok(());
+            // No V5 store available — use generic scan/aggregate fallback.
+            return self.open_fallback(ctx).await;
         };
         let store = gv.clone_store();
         let g_id = gv.g_id();
@@ -676,6 +704,64 @@ impl Operator for PredicateGroupCountFirstsOperator {
         if !self.state.can_next() {
             return Ok(None);
         }
+
+        // V6 results path: eagerly decode (o_type, o_key) → FlakeValue.
+        if let Some(v6_results) = &self.results_v6 {
+            if self.pos >= v6_results.len() {
+                self.state = OperatorState::Exhausted;
+                return Ok(None);
+            }
+            let store_v6 = ctx.binary_store_v6.as_ref().ok_or_else(|| {
+                QueryError::Internal("V6 group-count results but no V6 store".to_string())
+            })?;
+            let g_id = ctx.binary_g_id;
+            let p_id = resolve_predicate_id_v6(&self.predicate, store_v6)?;
+            let view = fluree_db_binary_index::BinaryGraphViewV3::new(Arc::clone(store_v6), g_id);
+
+            let batch_size = ctx.batch_size;
+            let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
+            let mut col_c: Vec<Binding> = Vec::with_capacity(batch_size);
+
+            while self.pos < v6_results.len() && col_o.len() < batch_size {
+                let (o_type, o_key, count) = v6_results[self.pos];
+                self.pos += 1;
+
+                if o_type == OType::IRI_REF.as_u16() {
+                    col_o.push(Binding::EncodedSid { s_id: o_key });
+                } else {
+                    let val = view
+                        .decode_value(o_type, o_key, p_id)
+                        .map_err(|e| QueryError::Internal(format!("V6 decode_value: {e}")))?;
+                    let dt = store_v6
+                        .resolve_datatype_sid(o_type)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
+                    let lang: Option<Arc<str>> = store_v6.resolve_lang_tag(o_type).map(Arc::from);
+                    col_o.push(Binding::Lit {
+                        val,
+                        dt,
+                        lang,
+                        t: None,
+                        op: None,
+                        p_id: None,
+                    });
+                }
+                col_c.push(Binding::Lit {
+                    val: fluree_db_core::FlakeValue::Long(count),
+                    dt: fluree_db_core::Sid::xsd_integer(),
+                    lang: None,
+                    t: None,
+                    op: None,
+                    p_id: None,
+                });
+            }
+
+            return Ok(Some(crate::binding::Batch::new(
+                self.schema.clone(),
+                vec![col_o, col_c],
+            )?));
+        }
+
+        // V5 results path.
         if self.pos >= self.results.len() {
             self.state = OperatorState::Exhausted;
             return Ok(None);
@@ -737,6 +823,7 @@ impl Operator for PredicateGroupCountFirstsOperator {
             op.close();
         }
         self.results.clear();
+        self.results_v6 = None;
         self.pos = 0;
     }
 
@@ -857,9 +944,29 @@ impl Operator for PredicateObjectCountFirstsOperator {
             return self.open_fallback(ctx).await;
         }
 
+        // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
+        if ctx.overlay.is_none() {
+            if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
+                match count_bound_object_v6(
+                    store_v6,
+                    ctx.binary_g_id,
+                    &self.predicate,
+                    &self.object,
+                ) {
+                    Ok(total) => {
+                        self.count = total;
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        // V6 path couldn't handle it — fall through to V5 or fallback.
+                    }
+                }
+            }
+        }
+
         let Some(gv) = ctx.graph_view() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(());
+            // No V5 store available — use generic scan/aggregate fallback.
+            return self.open_fallback(ctx).await;
         };
         let store = gv.clone_store();
         let g_id = gv.g_id();
@@ -1072,5 +1179,294 @@ impl Operator for PredicateObjectCountFirstsOperator {
 
     fn estimated_rows(&self) -> Option<usize> {
         Some(1)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V6 fast-path implementations
+// ---------------------------------------------------------------------------
+
+/// Extract the object prefix `(o_type, o_key)` from a V3 leaflet directory entry's
+/// `first_key` field, interpreted in POST order.
+#[inline]
+fn prefix_v6_from_entry(entry: &LeafletDirEntryV3) -> (u16, u64) {
+    let rec = read_ordered_key_v2(RunSortOrder::Post, &entry.first_key);
+    (rec.o_type, rec.o_key)
+}
+
+/// Resolve a predicate [`Ref`] to its V6 binary index `p_id`.
+fn resolve_predicate_id_v6(
+    predicate: &crate::triple::Ref,
+    store: &BinaryIndexStoreV6,
+) -> Result<u32> {
+    let sid = match predicate {
+        crate::triple::Ref::Sid(s) => s.clone(),
+        crate::triple::Ref::Iri(i) => store.encode_iri(i),
+        crate::triple::Ref::Var(_) => {
+            return Err(QueryError::Internal(
+                "fast-path requires bound predicate".to_string(),
+            ))
+        }
+    };
+    store
+        .sid_to_p_id(&sid)
+        .ok_or_else(|| QueryError::Internal("predicate not found in V6 dictionary".to_string()))
+}
+
+/// V6 fast-path: count rows for a bound `(predicate, object)` triple.
+///
+/// Scans the POST leaf range for the predicate, uses boundary-equality on
+/// `(o_type, o_key)` to skip whole leaflets, and decodes only `o_key` + `o_type`
+/// columns when needed.
+fn count_bound_object_v6(
+    store: &BinaryIndexStoreV6,
+    g_id: GraphId,
+    predicate: &crate::triple::Ref,
+    object: &Term,
+) -> Result<i64> {
+    let p_id = resolve_predicate_id_v6(predicate, store)?;
+
+    // Translate the bound object term into V6 (o_type, o_key).
+    let (target_o_type, target_o_key) = translate_term_to_v6(object, store, p_id, g_id)?;
+
+    let branch = store
+        .branch_for_order(g_id, RunSortOrder::Post)
+        .ok_or_else(|| QueryError::Internal("no POST branch for graph".to_string()))?;
+    let cmp = cmp_v2_for_order(RunSortOrder::Post);
+
+    let min_key = RunRecordV2 {
+        s_id: SubjectId(0),
+        o_key: target_o_key,
+        p_id,
+        t: 0,
+        o_i: 0,
+        o_type: target_o_type,
+        g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId(u64::MAX),
+        o_key: target_o_key,
+        p_id,
+        t: 0,
+        o_i: u32::MAX,
+        o_type: target_o_type,
+        g_id,
+    };
+    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+
+    let target_prefix = (target_o_type, target_o_key);
+    let mut total: i64 = 0;
+
+    for leaf_idx in leaf_range.clone() {
+        let leaf_entry = &branch.leaves[leaf_idx];
+        let bytes = store
+            .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
+            .map_err(|e| QueryError::Internal(format!("leaf fetch: {e}")))?;
+        let header =
+            decode_leaf_header_v3(&bytes).map_err(|e| QueryError::Internal(e.to_string()))?;
+        let dir = decode_leaf_dir_v3_with_base(&bytes, &header)
+            .map_err(|e| QueryError::Internal(e.to_string()))?;
+
+        for (i, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+
+            let prefix = prefix_v6_from_entry(entry);
+            if prefix < target_prefix {
+                continue;
+            }
+            if prefix > target_prefix {
+                break;
+            }
+
+            // Boundary-equality: check the next leaflet's first prefix.
+            let next_prefix = if i + 1 < dir.entries.len() {
+                Some(prefix_v6_from_entry(&dir.entries[i + 1]))
+            } else if leaf_idx + 1 < leaf_range.end {
+                let next_entry = &branch.leaves[leaf_idx + 1].first_key;
+                Some((next_entry.o_type, next_entry.o_key))
+            } else {
+                None
+            };
+
+            if next_prefix == Some(target_prefix) {
+                total += entry.row_count as i64;
+                continue;
+            }
+
+            // Decode columns and count matches.
+            let needs_o_type_col = entry.o_type_const.is_none();
+            let mut needed = ColumnSet::EMPTY;
+            needed.insert(ColumnId::OKey);
+            if needs_o_type_col {
+                needed.insert(ColumnId::OType);
+            }
+            let projection = ColumnProjection {
+                output: ColumnSet::EMPTY,
+                internal: needed,
+            };
+
+            let batch =
+                load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            for row in 0..batch.row_count {
+                let ot = entry
+                    .o_type_const
+                    .unwrap_or_else(|| batch.o_type.get_or(row, 0));
+                if ot == target_o_type && batch.o_key.get(row) == target_o_key {
+                    total += 1;
+                }
+            }
+        }
+    }
+
+    Ok(total)
+}
+
+/// V6 fast-path: GROUP BY ?o COUNT(?s) for a predicate.
+///
+/// Returns `Vec<(o_type, o_key, count)>` sorted by count descending, truncated to `limit`.
+fn group_count_v6(
+    store: &BinaryIndexStoreV6,
+    g_id: GraphId,
+    predicate: &crate::triple::Ref,
+    limit: usize,
+) -> Result<Vec<(u16, u64, i64)>> {
+    let p_id = resolve_predicate_id_v6(predicate, store)?;
+
+    let branch = store
+        .branch_for_order(g_id, RunSortOrder::Post)
+        .ok_or_else(|| QueryError::Internal("no POST branch for graph".to_string()))?;
+    let cmp = cmp_v2_for_order(RunSortOrder::Post);
+
+    let min_key = RunRecordV2 {
+        s_id: SubjectId(0),
+        o_key: 0,
+        p_id,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId(u64::MAX),
+        o_key: u64::MAX,
+        p_id,
+        t: 0,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id,
+    };
+    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+
+    let mut counts: HashMap<(u16, u64), i64> = HashMap::new();
+
+    for leaf_idx in leaf_range.clone() {
+        let leaf_entry = &branch.leaves[leaf_idx];
+        let bytes = store
+            .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
+            .map_err(|e| QueryError::Internal(format!("leaf fetch: {e}")))?;
+        let header =
+            decode_leaf_header_v3(&bytes).map_err(|e| QueryError::Internal(e.to_string()))?;
+        let dir = decode_leaf_dir_v3_with_base(&bytes, &header)
+            .map_err(|e| QueryError::Internal(e.to_string()))?;
+
+        for (i, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+
+            let prefix = prefix_v6_from_entry(entry);
+
+            // Boundary-equality: check if this leaflet is entirely one object value.
+            let next_prefix = if i + 1 < dir.entries.len() {
+                Some(prefix_v6_from_entry(&dir.entries[i + 1]))
+            } else if leaf_idx + 1 < leaf_range.end {
+                let next_entry = &branch.leaves[leaf_idx + 1].first_key;
+                Some((next_entry.o_type, next_entry.o_key))
+            } else {
+                None
+            };
+
+            if next_prefix == Some(prefix) {
+                // Entire leaflet is one object value.
+                *counts.entry(prefix).or_insert(0) += entry.row_count as i64;
+                continue;
+            }
+
+            // Decode columns and count per (o_type, o_key).
+            let needs_o_type_col = entry.o_type_const.is_none();
+            let mut needed = ColumnSet::EMPTY;
+            needed.insert(ColumnId::OKey);
+            if needs_o_type_col {
+                needed.insert(ColumnId::OType);
+            }
+            let projection = ColumnProjection {
+                output: ColumnSet::EMPTY,
+                internal: needed,
+            };
+
+            let batch =
+                load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            for row in 0..batch.row_count {
+                let ot = entry
+                    .o_type_const
+                    .unwrap_or_else(|| batch.o_type.get_or(row, 0));
+                let ok = batch.o_key.get(row);
+                *counts.entry((ot, ok)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Sort by count desc, truncate.
+    let mut rows: Vec<(u16, u64, i64)> = counts
+        .into_iter()
+        .map(|((ot, ok), c)| (ot, ok, c))
+        .collect();
+    rows.sort_unstable_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+    rows.truncate(limit);
+
+    Ok(rows)
+}
+
+/// Translate a bound object `Term` to V6 `(o_type, o_key)`.
+fn translate_term_to_v6(
+    term: &Term,
+    store: &BinaryIndexStoreV6,
+    _p_id: u32,
+    _g_id: GraphId,
+) -> Result<(u16, u64)> {
+    match term {
+        Term::Sid(sid) => {
+            let s_id = store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("bound object SID not found in V6 dict".to_string())
+                })?;
+            Ok((OType::IRI_REF.as_u16(), s_id))
+        }
+        Term::Iri(iri) => {
+            let s_id = store
+                .find_subject_id(iri)
+                .map_err(|e| QueryError::execution(format!("find_subject_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("bound object IRI not found in V6 dict".to_string())
+                })?;
+            Ok((OType::IRI_REF.as_u16(), s_id))
+        }
+        Term::Value(val) => {
+            // For literal values, we need the FlakeValue → (o_type, o_key) translation.
+            // Use the Sid-based dt info from the FlakeValue if available.
+            let (ot, ok) = crate::binary_scan_v3::value_to_otype_okey_simple(val, store)?;
+            Ok((ot.as_u16(), ok))
+        }
+        Term::Var(_) => Err(QueryError::InvalidQuery(
+            "fast-path requires a bound object".to_string(),
+        )),
     }
 }

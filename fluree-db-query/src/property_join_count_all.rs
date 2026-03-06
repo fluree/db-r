@@ -32,10 +32,12 @@ use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use async_trait::async_trait;
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
-    RunSortOrder,
+    sort_overlay_ops, BinaryCursor, BinaryCursorV3, BinaryFilter, BinaryFilterV3, BinaryGraphView,
+    BinaryIndexStore, BinaryIndexStoreV6, ColumnProjection, ColumnSet, DecodedBatch, RunSortOrder,
 };
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::FlakeValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -159,6 +161,64 @@ impl PropertyJoinCountAllOperator {
         Ok(Some(cursor))
     }
 
+    fn open_v6(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+        store_v6: &Arc<BinaryIndexStoreV6>,
+    ) -> Result<()> {
+        let g_id = ctx.binary_g_id;
+        let order = RunSortOrder::Psot;
+        let effective_to_t = ctx.to_t;
+
+        let mut streams: Vec<SubjectCountStreamV6> = Vec::with_capacity(self.patterns.len());
+        for tp in &self.patterns {
+            let Some(cursor) =
+                build_cursor_for_predicate_v6(ctx, store_v6, g_id, &tp.p, order, effective_to_t)?
+            else {
+                // Predicate absent → join result is empty → COUNT(*) = 0.
+                self.result = Some(0);
+                self.emitted = false;
+                self.state = OperatorState::Open;
+                return Ok(());
+            };
+            streams.push(SubjectCountStreamV6::new(cursor));
+        }
+
+        // N-way merge-join on subject ID (same algorithm as V5).
+        let mut curr: Vec<Option<(u64, u64)>> = Vec::with_capacity(streams.len());
+        for s in &mut streams {
+            curr.push(s.next_subject_count()?);
+        }
+
+        let mut total: u128 = 0;
+        loop {
+            if curr.iter().any(|c| c.is_none()) {
+                break;
+            }
+            let max_s = curr.iter().filter_map(|c| c.map(|(s, _)| s)).max().unwrap();
+            if curr.iter().all(|c| c.map(|(s, _)| s) == Some(max_s)) {
+                let product: u128 = curr.iter().map(|c| c.unwrap().1 as u128).product();
+                total = total.saturating_add(product);
+                for (i, s) in streams.iter_mut().enumerate() {
+                    curr[i] = s.next_subject_count()?;
+                }
+            } else {
+                for (i, s) in streams.iter_mut().enumerate() {
+                    if let Some((s_id, _)) = curr[i] {
+                        if s_id < max_s {
+                            curr[i] = s.next_subject_count()?;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.result = Some(total.min(i64::MAX as u128) as i64);
+        self.emitted = false;
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         // Fallback: compute COUNT(*) by running the normal property join + streaming count-all.
         //
@@ -275,16 +335,28 @@ impl Operator for PropertyJoinCountAllOperator {
         self.fallback = None;
 
         // Fast path is only available in the same execution mode as BinaryScanOperator.
-        let use_fast = ctx.has_binary_store()
-            && ctx
-                .binary_store
-                .as_ref()
-                .is_some_and(|s| ctx.to_t >= s.base_t())
-            && !ctx.history_mode
-            && ctx.from_t.is_none()
-            && !ctx.has_policy();
+        let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
 
-        if !use_fast {
+        if !allow_fast {
+            return self.open_fallback(ctx).await;
+        }
+
+        // Try V6 fast-path first.
+        if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
+            match self.open_v6(ctx, store_v6) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    // V6 path failed — fall through to V5.
+                }
+            }
+        }
+
+        let use_v5 = ctx
+            .binary_store
+            .as_ref()
+            .is_some_and(|s| ctx.to_t >= s.base_t());
+
+        if !use_v5 {
             return self.open_fallback(ctx).await;
         }
 
@@ -404,6 +476,194 @@ impl Operator for PropertyJoinCountAllOperator {
 
     fn estimated_rows(&self) -> Option<usize> {
         Some(1)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V6 fast-path helpers
+// ---------------------------------------------------------------------------
+
+/// Build a V6 PSOT cursor for a predicate, with overlay merge.
+fn build_cursor_for_predicate_v6(
+    ctx: &ExecutionContext<'_>,
+    store: &Arc<BinaryIndexStoreV6>,
+    g_id: fluree_db_core::GraphId,
+    pred_ref: &Ref,
+    order: RunSortOrder,
+    effective_to_t: i64,
+) -> Result<Option<BinaryCursorV3>> {
+    let pred_sid = match pred_ref {
+        Ref::Sid(s) => s.clone(),
+        Ref::Iri(i) => store.encode_iri(i),
+        Ref::Var(_) => {
+            return Err(QueryError::Internal(
+                "property-join count requires bound predicates".to_string(),
+            ))
+        }
+    };
+    let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
+        return Ok(None);
+    };
+
+    let Some(branch) = store.branch_for_order(g_id, order) else {
+        return Ok(None);
+    };
+    let branch = Arc::new(branch.clone());
+
+    let min_key = RunRecordV2 {
+        s_id: SubjectId(0),
+        o_key: 0,
+        p_id,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId(u64::MAX),
+        o_key: u64::MAX,
+        p_id,
+        t: 0,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id,
+    };
+
+    let filter = BinaryFilterV3 {
+        p_id: Some(p_id),
+        ..Default::default()
+    };
+
+    // Only need s_id column for counting.
+    let mut needed = ColumnSet::EMPTY;
+    needed.insert(fluree_db_binary_index::format::column_block::ColumnId::SId);
+    let projection = ColumnProjection {
+        output: needed,
+        internal: ColumnSet::EMPTY,
+    };
+
+    let mut cursor = BinaryCursorV3::new(
+        Arc::clone(store),
+        order,
+        branch,
+        &min_key,
+        &max_key,
+        filter,
+        projection,
+    );
+    cursor.set_to_t(effective_to_t);
+
+    // Overlay merge — pre-filter by predicate to avoid translating irrelevant flakes.
+    if ctx.overlay.is_some() {
+        let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
+            Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+        });
+        let mut ephemeral_preds = HashMap::new();
+        let mut next_ep = store.predicate_count();
+        let mut ops = Vec::new();
+
+        ctx.overlay().for_each_overlay_flake(
+            g_id,
+            fluree_db_core::IndexType::Psot,
+            None,
+            None,
+            true,
+            effective_to_t,
+            &mut |flake| {
+                // Pre-filter: only translate flakes for this predicate.
+                if flake.p != pred_sid {
+                    return;
+                }
+                match crate::binary_scan_v3::translate_one_flake_v3_pub(
+                    flake,
+                    store,
+                    Some(&dn),
+                    &mut ephemeral_preds,
+                    &mut next_ep,
+                ) {
+                    Ok(op) => ops.push(op),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "V6 property-join: failed to translate overlay flake");
+                    }
+                }
+            },
+        );
+
+        if !ops.is_empty() {
+            fluree_db_binary_index::read::types_v3::sort_overlay_ops_v3(&mut ops, order);
+            cursor.set_overlay_ops(ops);
+        }
+        cursor.set_epoch(ctx.overlay().epoch());
+    }
+
+    Ok(Some(cursor))
+}
+
+/// V6 streaming per-subject count view over a PSOT V3 cursor.
+struct SubjectCountStreamV6 {
+    cursor: BinaryCursorV3,
+    current: Option<fluree_db_binary_index::ColumnBatch>,
+    row: usize,
+}
+
+impl SubjectCountStreamV6 {
+    fn new(cursor: BinaryCursorV3) -> Self {
+        Self {
+            cursor,
+            current: None,
+            row: 0,
+        }
+    }
+
+    fn next_subject_count(&mut self) -> Result<Option<(u64, u64)>> {
+        let mut s_id: Option<u64> = None;
+        let mut count: u64 = 0;
+
+        loop {
+            if self
+                .current
+                .as_ref()
+                .is_none_or(|b| self.row >= b.row_count)
+            {
+                match self.cursor.next_batch() {
+                    Ok(Some(b)) => {
+                        self.current = Some(b);
+                        self.row = 0;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        return Err(QueryError::Internal(format!("V6 cursor: {}", e)));
+                    }
+                }
+            }
+
+            let batch = self.current.as_ref().unwrap();
+            if self.row >= batch.row_count {
+                continue;
+            }
+
+            let row_s = batch.s_id.get(self.row);
+            match s_id {
+                None => {
+                    s_id = Some(row_s);
+                    count = 1;
+                    self.row += 1;
+                }
+                Some(cur) if cur == row_s => {
+                    count += 1;
+                    self.row += 1;
+                }
+                Some(cur) => {
+                    return Ok(Some((cur, count)));
+                }
+            }
+        }
+
+        if let Some(cur) = s_id {
+            Ok(Some((cur, count)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
