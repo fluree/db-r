@@ -166,6 +166,8 @@ pub(crate) struct Fir6Inputs {
     /// Full query-time stats (HLL-derived cardinalities, per-graph properties).
     /// `None` if stats collection was skipped or deferred.
     pub db_stats: Option<fluree_db_core::index_stats::IndexStats>,
+    /// Schema hierarchy (rdfs:subClassOf / rdfs:subPropertyOf).
+    pub db_schema: Option<fluree_db_core::IndexSchema>,
     /// CAS reference for the serialized HLL sketch blob.
     pub sketch_ref: Option<ContentId>,
 }
@@ -228,7 +230,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         default_graph_orders,
         named_graphs: inputs.v3_uploaded.named_graphs,
         stats: inputs.db_stats,
-        schema: None,
+        schema: inputs.db_schema,
         prev_index: None,
         garbage: None,
         sketch_ref: inputs.sketch_ref,

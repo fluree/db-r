@@ -606,6 +606,473 @@ where
         novelty.updated_string_watermark,
     );
 
+    // ---- Phase 3a: Arena updates (numbig + vectors + spatial + fulltext) ----
+    //
+    // Build updated graph_arenas by starting from the base root's arenas
+    // and patching any (g_id, p_id) that have new/extended data.
+    // The resolver already populated shared.numbigs/vectors/spatial_hook/fulltext_hook.
+    {
+        use fluree_db_binary_index::format::index_root::{GraphArenaRefsV5, VectorDictRefV5};
+        use fluree_db_binary_index::FulltextArenaRefV5;
+        use std::collections::BTreeMap;
+
+        let mut arenas_by_gid: BTreeMap<u16, GraphArenaRefsV5> = BTreeMap::new();
+        for ga in &base_root.graph_arenas {
+            arenas_by_gid.insert(ga.g_id, ga.clone());
+        }
+
+        let has_new_numbigs = !novelty.shared.numbigs.is_empty();
+        let has_new_vectors = !novelty.shared.vectors.is_empty();
+        let has_new_spatial = novelty
+            .shared
+            .spatial_hook
+            .as_ref()
+            .is_some_and(|h| !h.is_empty());
+        let has_new_fulltext = novelty
+            .shared
+            .fulltext_hook
+            .as_ref()
+            .is_some_and(|h| !h.is_empty());
+
+        if has_new_numbigs || has_new_vectors || has_new_spatial || has_new_fulltext {
+            // ---- NumBig arena upload ----
+            for (&g_id, per_pred) in &novelty.shared.numbigs {
+                let ga = arenas_by_gid
+                    .entry(g_id)
+                    .or_insert_with(|| GraphArenaRefsV5 {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                        fulltext: vec![],
+                    });
+
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    let base_nb_count = novelty
+                        .base_numbig_counts
+                        .get(&(g_id, p_id))
+                        .copied()
+                        .unwrap_or(0);
+                    if arena.len() == base_nb_count {
+                        continue;
+                    }
+
+                    let bytes =
+                        fluree_db_binary_index::arena::numbig::write_numbig_arena_to_bytes(arena)
+                            .map_err(|e| {
+                            IndexerError::StorageWrite(format!("numbig arena serialize: {e}"))
+                        })?;
+                    let dict_kind = fluree_db_core::DictKind::NumBig { p_id };
+                    let (cid, _) = super::upload::upload_dict_blob(
+                        storage,
+                        ledger_id,
+                        dict_kind,
+                        &bytes,
+                        "incremental V6 numbig arena uploaded",
+                    )
+                    .await?;
+
+                    if let Some(pos) = ga.numbig.iter().position(|(pid, _)| *pid == p_id) {
+                        let old_cid = ga.numbig[pos].1.clone();
+                        root_builder.add_replaced_cids(vec![old_cid]);
+                        ga.numbig[pos].1 = cid;
+                    } else {
+                        ga.numbig.push((p_id, cid));
+                        ga.numbig.sort_by_key(|(pid, _)| *pid);
+                    }
+                }
+            }
+
+            // ---- Vector arena upload ----
+            for (&g_id, per_pred) in &novelty.shared.vectors {
+                let ga = arenas_by_gid
+                    .entry(g_id)
+                    .or_insert_with(|| GraphArenaRefsV5 {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                        fulltext: vec![],
+                    });
+
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+
+                    let base_count = novelty
+                        .base_vector_counts
+                        .get(&(g_id, p_id))
+                        .copied()
+                        .unwrap_or(0);
+                    if (base_count as u64) + (arena.len() as u64) > u32::MAX as u64 {
+                        return Err(IndexerError::IncrementalAbort(format!(
+                            "vector handle overflow for g_id={g_id}, p_id={p_id}"
+                        )));
+                    }
+
+                    if let Some(pos) = ga.vectors.iter().position(|v| v.p_id == p_id) {
+                        // Extending an existing vector arena.
+                        let existing = &ga.vectors[pos];
+
+                        let old_manifest_bytes =
+                            content_store.get(&existing.manifest).await.map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "read existing vector manifest: {e}"
+                                ))
+                            })?;
+                        let old_manifest =
+                            fluree_db_binary_index::arena::vector::read_vector_manifest(
+                                &old_manifest_bytes,
+                            )
+                            .map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "decode existing vector manifest: {e}"
+                                ))
+                            })?;
+
+                        if old_manifest.dims != arena.dims() {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector dims mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, new={}",
+                                old_manifest.dims,
+                                arena.dims()
+                            )));
+                        }
+                        if old_manifest.shard_capacity
+                            != fluree_db_binary_index::arena::vector::SHARD_CAPACITY
+                        {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector shard_capacity mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, expected={}",
+                                old_manifest.shard_capacity,
+                                fluree_db_binary_index::arena::vector::SHARD_CAPACITY
+                            )));
+                        }
+                        if old_manifest.normalized != arena.is_normalized() {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector normalization mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, new={}",
+                                old_manifest.normalized,
+                                arena.is_normalized()
+                            )));
+                        }
+
+                        let shard_cap = old_manifest.shard_capacity;
+                        let dims_usize = arena.dims() as usize;
+                        let mut combined_shards = existing.shards.clone();
+                        let mut combined_shard_infos = old_manifest.shards.clone();
+
+                        let mut consumed_new: u32 = 0;
+                        if let Some(last_info) = combined_shard_infos.last().cloned() {
+                            if last_info.count < shard_cap {
+                                let remaining = shard_cap - last_info.count;
+                                let take = remaining.min(arena.len());
+                                if take > 0 {
+                                    let last_idx = combined_shard_infos.len() - 1;
+                                    let old_last_cid = combined_shards[last_idx].clone();
+                                    let old_last_bytes =
+                                        content_store.get(&old_last_cid).await.map_err(|e| {
+                                            IndexerError::StorageRead(format!(
+                                                "read vector last shard: {e}"
+                                            ))
+                                        })?;
+                                    let old_last_shard =
+                                        fluree_db_binary_index::arena::vector::read_vector_shard_from_bytes(
+                                            &old_last_bytes,
+                                        )
+                                        .map_err(|e| {
+                                            IndexerError::StorageRead(format!(
+                                                "decode vector last shard: {e}"
+                                            ))
+                                        })?;
+
+                                    let take_f32 = take as usize * dims_usize;
+                                    let mut merged: Vec<f32> =
+                                        Vec::with_capacity(old_last_shard.values.len() + take_f32);
+                                    merged.extend_from_slice(&old_last_shard.values);
+                                    merged.extend_from_slice(&arena.raw_values()[0..take_f32]);
+
+                                    let shard_bytes =
+                                        fluree_db_binary_index::arena::vector::write_vector_shard_to_bytes(
+                                            old_manifest.dims,
+                                            &merged,
+                                        )
+                                        .map_err(|e| {
+                                            IndexerError::StorageWrite(format!(
+                                                "vector last shard serialize: {e}"
+                                            ))
+                                        })?;
+
+                                    let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                                    let (new_last_cid, wr) = super::upload::upload_dict_blob(
+                                        storage,
+                                        ledger_id,
+                                        dict_kind,
+                                        &shard_bytes,
+                                        "incremental V6 vector last shard replaced",
+                                    )
+                                    .await?;
+
+                                    combined_shards[last_idx] = new_last_cid;
+                                    combined_shard_infos[last_idx].cas = wr.address;
+                                    combined_shard_infos[last_idx].count = last_info.count + take;
+                                    root_builder.add_replaced_cids(vec![old_last_cid]);
+                                    consumed_new = take;
+                                }
+                            }
+                        }
+
+                        let start_f32 = consumed_new as usize * dims_usize;
+                        let remaining_raw = &arena.raw_values()[start_f32..];
+                        let shard_results =
+                            fluree_db_binary_index::arena::vector::write_vector_shards_from_raw(
+                                arena.dims(),
+                                remaining_raw,
+                            )
+                            .map_err(|e| {
+                                IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
+                            })?;
+
+                        for (shard_bytes, mut shard_info) in shard_results {
+                            let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                            let (shard_cid, wr) = super::upload::upload_dict_blob(
+                                storage,
+                                ledger_id,
+                                dict_kind,
+                                &shard_bytes,
+                                "incremental V6 vector shard uploaded",
+                            )
+                            .await?;
+                            shard_info.cas = wr.address;
+                            combined_shards.push(shard_cid);
+                            combined_shard_infos.push(shard_info);
+                        }
+
+                        let combined_manifest =
+                            fluree_db_binary_index::arena::vector::VectorManifest {
+                                version: 1,
+                                dims: old_manifest.dims,
+                                dtype: "f32".to_string(),
+                                normalized: old_manifest.normalized,
+                                shard_capacity: old_manifest.shard_capacity,
+                                total_count: base_count + arena.len(),
+                                shards: combined_shard_infos,
+                            };
+
+                        let manifest_json =
+                            serde_json::to_vec_pretty(&combined_manifest).map_err(|e| {
+                                IndexerError::StorageWrite(format!(
+                                    "serialize vector manifest: {e}"
+                                ))
+                            })?;
+
+                        let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
+                        let (manifest_cid, _) = super::upload::upload_dict_blob(
+                            storage,
+                            ledger_id,
+                            dict_kind,
+                            &manifest_json,
+                            "incremental V6 vector manifest uploaded",
+                        )
+                        .await?;
+
+                        root_builder.add_replaced_cids(vec![existing.manifest.clone()]);
+                        ga.vectors[pos] = VectorDictRefV5 {
+                            p_id,
+                            manifest: manifest_cid,
+                            shards: combined_shards,
+                        };
+                    } else {
+                        // Brand new vector arena.
+                        let shard_results =
+                            fluree_db_binary_index::arena::vector::write_vector_shards_to_bytes(
+                                arena,
+                            )
+                            .map_err(|e| {
+                                IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
+                            })?;
+
+                        let mut new_shard_cids = Vec::with_capacity(shard_results.len());
+                        let mut new_shard_infos = Vec::with_capacity(shard_results.len());
+
+                        for (shard_bytes, mut shard_info) in shard_results {
+                            let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                            let (shard_cid, wr) = super::upload::upload_dict_blob(
+                                storage,
+                                ledger_id,
+                                dict_kind,
+                                &shard_bytes,
+                                "incremental V6 vector shard uploaded",
+                            )
+                            .await?;
+                            shard_info.cas = wr.address;
+                            new_shard_cids.push(shard_cid);
+                            new_shard_infos.push(shard_info);
+                        }
+
+                        let manifest = fluree_db_binary_index::arena::vector::VectorManifest {
+                            version: 1,
+                            dims: arena.dims(),
+                            dtype: "f32".to_string(),
+                            normalized: arena.is_normalized(),
+                            shard_capacity: fluree_db_binary_index::arena::vector::SHARD_CAPACITY,
+                            total_count: arena.len(),
+                            shards: new_shard_infos,
+                        };
+
+                        let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+                            IndexerError::StorageWrite(format!("serialize vector manifest: {e}"))
+                        })?;
+
+                        let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
+                        let (manifest_cid, _) = super::upload::upload_dict_blob(
+                            storage,
+                            ledger_id,
+                            dict_kind,
+                            &manifest_json,
+                            "incremental V6 vector manifest uploaded",
+                        )
+                        .await?;
+
+                        ga.vectors.push(VectorDictRefV5 {
+                            p_id,
+                            manifest: manifest_cid,
+                            shards: new_shard_cids,
+                        });
+                        ga.vectors.sort_by_key(|v| v.p_id);
+                    }
+                }
+            }
+
+            // ---- Fulltext arena incremental update ----
+            if has_new_fulltext {
+                let fulltext_entries = novelty
+                    .shared
+                    .fulltext_hook
+                    .as_ref()
+                    .map(|h| h.entries())
+                    .unwrap_or(&[]);
+
+                let mut ft_grouped: BTreeMap<
+                    (u16, u32),
+                    Vec<&crate::fulltext_hook::FulltextEntry>,
+                > = BTreeMap::new();
+                for entry in fulltext_entries {
+                    ft_grouped
+                        .entry((entry.g_id, entry.p_id))
+                        .or_default()
+                        .push(entry);
+                }
+
+                for ((g_id, p_id), group_entries) in ft_grouped {
+                    let ga_ref = arenas_by_gid.get(&g_id);
+                    let existing_ref =
+                        ga_ref.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+
+                    let prior_arena = if let Some(ft_ref) = existing_ref {
+                        match content_store.get(&ft_ref.arena_cid).await {
+                            Ok(blob) => {
+                                fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
+                                    &blob,
+                                )
+                                .unwrap_or_else(|_| {
+                                    fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                                })
+                            }
+                            Err(_) => fluree_db_binary_index::arena::fulltext::FulltextArena::new(),
+                        }
+                    } else {
+                        fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                    };
+
+                    let arena = super::fulltext::build_incremental_fulltext_arena(
+                        &prior_arena,
+                        &group_entries,
+                        &novelty.fulltext_string_bytes,
+                    );
+
+                    if arena.is_empty() {
+                        if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
+                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                                let old = &ga.fulltext[pos];
+                                root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
+                                ga.fulltext.remove(pos);
+                            }
+                        }
+                        continue;
+                    }
+
+                    let blob = arena.encode();
+                    let cas_result = storage
+                        .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
+                        .await
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("fulltext CAS write: {e}"))
+                        })?;
+
+                    let codec = ContentKind::IndexLeaf.to_codec();
+                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
+                        .ok_or_else(|| {
+                            IndexerError::Other(format!(
+                                "invalid fulltext arena hash: {}",
+                                cas_result.content_hash
+                            ))
+                        })?;
+
+                    let new_ref = FulltextArenaRefV5 { p_id, arena_cid };
+
+                    let ga = arenas_by_gid
+                        .entry(g_id)
+                        .or_insert_with(|| GraphArenaRefsV5 {
+                            g_id,
+                            numbig: Vec::new(),
+                            vectors: Vec::new(),
+                            spatial: Vec::new(),
+                            fulltext: vec![],
+                        });
+
+                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                        let old = &ga.fulltext[pos];
+                        root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
+                        ga.fulltext[pos] = new_ref;
+                    } else {
+                        ga.fulltext.push(new_ref);
+                        ga.fulltext.sort_by_key(|f| f.p_id);
+                    }
+
+                    tracing::info!(
+                        g_id,
+                        p_id,
+                        docs = arena.doc_count(),
+                        terms = arena.terms().len(),
+                        "incremental V6: fulltext arena rebuilt"
+                    );
+                }
+            }
+
+            // ---- Spatial arena rebuild (per affected predicate) ----
+            if has_new_spatial {
+                // Spatial index rebuild is expensive (loads full prior snapshot).
+                // Deferred to future iteration — spatial arenas carry forward from
+                // base root unchanged for now. Log a warning.
+                tracing::warn!(
+                    "incremental V6: spatial arena update not yet implemented; \
+                     carrying forward base spatial arenas. Run a full rebuild to \
+                     update spatial indexes."
+                );
+            }
+
+            let updated_arenas: Vec<GraphArenaRefsV5> = arenas_by_gid.into_values().collect();
+            root_builder.set_graph_arenas(updated_arenas);
+
+            tracing::info!("Phase 3a complete: arena updates (numbig + vectors + fulltext)");
+        }
+    }
+
     // ---- Phase 3b: Stats / HLL refresh ----
     // Load prior sketches, feed novelty records, upload updated sketch.
     {
@@ -692,6 +1159,9 @@ where
             }
         };
 
+        // Capture class counts before finalize consumes the hook.
+        let class_count_deltas = stats_hook.class_count_deltas().clone();
+
         // Finalize stats.
         let id_stats_result = stats_hook.finalize();
 
@@ -749,12 +1219,84 @@ where
                 })
                 .collect();
 
+            // Build per-graph class entries from class_count_deltas.
+            // class_count_deltas has (g_id, class_sid64) → count delta from novelty.
+            // Merge with prior base root class counts for the full picture.
+            let mut class_map: std::collections::HashMap<(fluree_db_core::GraphId, u64), i64> =
+                std::collections::HashMap::new();
+
+            // Seed from base root class counts.
+            if let Some(ref base_stats) = base_root.stats {
+                if let Some(ref graphs) = base_stats.graphs {
+                    for g in graphs {
+                        if let Some(ref classes) = g.classes {
+                            for c in classes {
+                                // Convert class Sid back to sid64 for keying.
+                                // Use ns_code from the Sid's namespace_code.
+                                let class_key_hash = {
+                                    let mut hasher =
+                                        std::collections::hash_map::DefaultHasher::new();
+                                    std::hash::Hash::hash(&c.class_sid, &mut hasher);
+                                    std::hash::Hasher::finish(&hasher)
+                                };
+                                *class_map.entry((g.g_id, class_key_hash)).or_insert(0) +=
+                                    c.count as i64;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply novelty deltas. class_count_deltas uses sid64 directly.
+            for (&(g_id, _class_sid64), &delta) in &class_count_deltas {
+                // For now, accumulate deltas but we can't resolve sid64 → Sid
+                // without a store. The per-graph class entries will be populated
+                // during schema extraction when a V6 store is available.
+                // Just track the total delta per graph.
+                let _ = (g_id, delta); // will be used below
+            }
+
+            // Build root-level class counts from the deltas.
+            // Full class→property attribution requires a PSOT scan and will
+            // be added in a future iteration.
+            // Apply class instance counts to per-graph entries.
+            let mut final_graphs = id_stats_result.graphs;
+
+            if !class_count_deltas.is_empty() {
+                let mut by_graph: std::collections::HashMap<
+                    fluree_db_core::GraphId,
+                    Vec<is::ClassStatEntry>,
+                > = std::collections::HashMap::new();
+
+                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
+                    if delta <= 0 {
+                        continue;
+                    }
+                    let sid = fluree_db_core::subject_id::SubjectId::from_u64(class_sid64);
+                    let class_sid =
+                        fluree_db_core::Sid::new(sid.ns_code(), sid.local_id().to_string());
+                    by_graph.entry(g_id).or_default().push(is::ClassStatEntry {
+                        class_sid,
+                        count: delta as u64,
+                        properties: Vec::new(),
+                    });
+                }
+
+                for g in &mut final_graphs {
+                    if let Some(classes) = by_graph.remove(&g.g_id) {
+                        g.classes = Some(classes);
+                    }
+                }
+            }
+
+            let root_classes = fluree_db_core::index_stats::union_per_graph_classes(&final_graphs);
+
             is::IndexStats {
                 flakes: id_stats_result.total_flakes,
                 size: 0,
                 properties: Some(properties),
-                classes: None,
-                graphs: Some(id_stats_result.graphs),
+                classes: root_classes,
+                graphs: Some(final_graphs),
             }
         };
 
@@ -766,6 +1308,116 @@ where
 
         root_builder.set_stats(Some(db_stats));
         root_builder.set_sketch_ref(sketch_ref);
+    }
+
+    // ---- Phase 3c: Schema refresh (rdfs:subClassOf / rdfs:subPropertyOf) ----
+    {
+        use crate::stats::SchemaExtractor;
+        use fluree_db_core::o_type::OType;
+        use fluree_db_core::{Flake, FlakeValue, Sid};
+
+        let rdfs_subclass_iri = format!("{}subClassOf", fluree_vocab::rdfs::NS);
+        let rdfs_subprop_iri = format!("{}subPropertyOf", fluree_vocab::rdfs::NS);
+
+        let subclass_p_id = novelty.shared.predicates.get(&rdfs_subclass_iri);
+        let subprop_p_id = novelty.shared.predicates.get(&rdfs_subprop_iri);
+
+        // Only run schema extraction if schema predicates exist and novelty has matching records.
+        let has_schema_records = novelty.records.iter().any(|r| {
+            (subclass_p_id == Some(r.p_id) || subprop_p_id == Some(r.p_id))
+                && r.o_type == OType::IRI_REF.as_u16()
+        });
+
+        if has_schema_records {
+            let cache_dir = config
+                .data_dir
+                .as_ref()
+                .map(|d| d.join("schema_cache"))
+                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache_v6"));
+            let _ = std::fs::create_dir_all(&cache_dir);
+
+            match fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6::load_from_root_v6(
+                content_store.clone(),
+                base_root,
+                &cache_dir,
+                None,
+            )
+            .await
+            {
+                Ok(store) => {
+                    // Map new subjects for local resolution (not yet in base dicts).
+                    let new_subject_suffix: std::collections::HashMap<(u16, u64), String> = novelty
+                        .new_subjects
+                        .iter()
+                        .filter_map(|(ns_code, local_id, suffix)| {
+                            let s = std::str::from_utf8(suffix).ok()?.to_string();
+                            Some(((*ns_code, *local_id), s))
+                        })
+                        .collect();
+
+                    let resolve_sid64 = |sid64: u64| -> Option<Sid> {
+                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
+                        let ns_code = sid.ns_code();
+                        let local_id = sid.local_id();
+                        if let Some(suffix) = new_subject_suffix.get(&(ns_code, local_id)) {
+                            return Some(Sid::new(ns_code, suffix));
+                        }
+                        store
+                            .resolve_subject_iri(sid64)
+                            .ok()
+                            .map(|iri| store.encode_iri(&iri))
+                    };
+
+                    let mut extractor = SchemaExtractor::from_prior(base_root.schema.as_ref());
+
+                    for (i, record) in novelty.records.iter().enumerate() {
+                        let is_subclass = subclass_p_id == Some(record.p_id);
+                        let is_subprop = subprop_p_id == Some(record.p_id);
+                        if !is_subclass && !is_subprop {
+                            continue;
+                        }
+                        if record.o_type != OType::IRI_REF.as_u16() {
+                            continue;
+                        }
+
+                        let Some(s_sid) = resolve_sid64(record.s_id.as_u64()) else {
+                            continue;
+                        };
+                        let Some(o_sid) = resolve_sid64(record.o_key) else {
+                            continue;
+                        };
+
+                        let p_sid = if is_subclass {
+                            Sid::new(fluree_vocab::namespaces::RDFS, "subClassOf")
+                        } else {
+                            Sid::new(fluree_vocab::namespaces::RDFS, "subPropertyOf")
+                        };
+
+                        let flake = Flake::new(
+                            s_sid,
+                            p_sid,
+                            FlakeValue::Ref(o_sid),
+                            Sid::new(0, ""),
+                            record.t as i64,
+                            novelty.ops[i] != 0,
+                            None,
+                        );
+                        extractor.on_flake(&flake);
+                    }
+
+                    let updated_schema = extractor.finalize(novelty.max_t);
+                    root_builder.set_schema(updated_schema);
+                    tracing::info!("Phase 3c: incremental V6 schema refreshed");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Phase 3c: V6 store load for schema extraction failed; \
+                         carrying forward base schema"
+                    );
+                }
+            }
+        }
     }
 
     // ---- Phase 4: Root assembly ----

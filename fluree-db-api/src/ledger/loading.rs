@@ -95,15 +95,19 @@ where
                     // Extract stats from the FIR6 root if present.
                     // from_fir6_header() is a fast-path that doesn't parse stats;
                     // we do a full decode here to get them.
-                    if state.snapshot.stats.is_none() {
+                    if state.snapshot.stats.is_none() || state.snapshot.schema.is_none() {
                         if let Ok(root) =
                             fluree_db_binary_index::format::index_root_v6::IndexRootV6::decode(
                                 &bytes,
                             )
                         {
-                            if root.stats.is_some() {
+                            if root.stats.is_some() && state.snapshot.stats.is_none() {
                                 state.snapshot.stats = root.stats;
                                 tracing::debug!("loaded stats from FIR6 root");
+                            }
+                            if root.schema.is_some() && state.snapshot.schema.is_none() {
+                                state.snapshot.schema = root.schema;
+                                tracing::debug!("loaded schema from FIR6 root");
                             }
                         }
                     }

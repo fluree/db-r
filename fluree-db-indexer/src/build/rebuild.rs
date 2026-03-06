@@ -757,6 +757,12 @@ where
                         "Phase D-V3 stats: collected"
                     );
 
+                    // Schema extraction during rebuild requires SID resolution via
+                    // forward dicts (not yet uploaded at this point). Schema will be
+                    // populated during the first incremental index after rebuild,
+                    // matching V5 behavior.
+                    let db_schema: Option<fluree_db_core::IndexSchema> = None;
+
                     // Phase E-V3: Upload V3 artifacts to CAS.
                     let v3_uploaded =
                         super::upload::upload_v3_indexes_to_cas(&storage, &ledger_id, &v3_result)
@@ -859,6 +865,7 @@ where
                         total_asserts,
                         total_retracts,
                         db_stats: Some(db_stats),
+                        db_schema,
                         sketch_ref,
                     };
 
