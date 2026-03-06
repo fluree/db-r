@@ -606,6 +606,168 @@ where
         novelty.updated_string_watermark,
     );
 
+    // ---- Phase 3b: Stats / HLL refresh ----
+    // Load prior sketches, feed novelty records, upload updated sketch.
+    {
+        use crate::stats;
+
+        // Load prior sketches from the base root's sketch_ref (if present).
+        let prior_properties = if let Some(ref cid) = base_root.sketch_ref {
+            match stats::load_sketch_blob(content_store.as_ref(), cid).await {
+                Ok(Some(blob)) => match blob.into_properties() {
+                    Ok(props) => {
+                        tracing::debug!(
+                            entries = props.len(),
+                            "loaded prior HLL sketches for incremental refresh"
+                        );
+                        props
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to decode prior sketches, starting fresh");
+                        std::collections::HashMap::new()
+                    }
+                },
+                Ok(None) => {
+                    tracing::debug!(
+                        "sketch blob CID present but content not found, starting fresh"
+                    );
+                    std::collections::HashMap::new()
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load sketch blob, starting fresh");
+                    std::collections::HashMap::new()
+                }
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Seed hook with prior properties.
+        let rdf_type_p_id = novelty
+            .shared
+            .predicates
+            .get(fluree_vocab::rdf::TYPE)
+            .unwrap_or(u32::MAX);
+        let mut stats_hook = stats::IdStatsHook::with_prior_properties(prior_properties);
+        stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+
+        // Seed per-graph flake totals from base root stats.
+        if let Some(ref base_stats) = base_root.stats {
+            if let Some(ref graphs) = base_stats.graphs {
+                for g in graphs {
+                    *stats_hook.graph_flakes_mut().entry(g.g_id).or_insert(0) += g.flakes as i64;
+                }
+            }
+        }
+
+        // Feed all novelty records.
+        for (i, rec) in novelty.records.iter().enumerate() {
+            let op = novelty.ops[i];
+            let sr = stats::stats_record_from_v2(rec, op);
+            stats_hook.on_record(&sr);
+        }
+
+        // Upload HLL sketches (before finalize consumes the hook).
+        let sketch_ref = {
+            let sketch_blob =
+                stats::HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
+            if !sketch_blob.entries.is_empty() {
+                let sketch_bytes = sketch_blob
+                    .to_json_bytes()
+                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
+                let sketch_wr = storage
+                    .content_write_bytes(ContentKind::StatsSketch, ledger_id, &sketch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let cid = super::upload::cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                tracing::debug!(
+                    %cid,
+                    bytes = sketch_wr.size_bytes,
+                    entries = sketch_blob.entries.len(),
+                    "incremental V6: HLL sketch uploaded"
+                );
+                Some(cid)
+            } else {
+                None
+            }
+        };
+
+        // Finalize stats.
+        let id_stats_result = stats_hook.finalize();
+
+        // Build IndexStats with per-graph and aggregate properties.
+        let trie = fluree_db_core::PrefixTrie::from_namespace_codes(&novelty.shared.ns_prefixes);
+        let db_stats = {
+            use fluree_db_core::index_stats as is;
+
+            struct PropAgg {
+                count: u64,
+                ndv_values: u64,
+                ndv_subjects: u64,
+                last_modified_t: i64,
+                datatypes: Vec<(u8, u64)>,
+            }
+            let mut agg: std::collections::HashMap<u32, PropAgg> = std::collections::HashMap::new();
+            for g in &id_stats_result.graphs {
+                for p in &g.properties {
+                    let e = agg.entry(p.p_id).or_insert(PropAgg {
+                        count: 0,
+                        ndv_values: 0,
+                        ndv_subjects: 0,
+                        last_modified_t: 0,
+                        datatypes: Vec::new(),
+                    });
+                    e.count += p.count;
+                    e.ndv_values = e.ndv_values.max(p.ndv_values);
+                    e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                    e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                    for &(dt, cnt) in &p.datatypes {
+                        if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
+                            existing.1 += cnt;
+                        } else {
+                            e.datatypes.push((dt, cnt));
+                        }
+                    }
+                }
+            }
+            let properties: Vec<is::PropertyStatEntry> = agg
+                .into_iter()
+                .map(|(p_id, pa)| {
+                    let iri = novelty.shared.predicates.resolve(p_id).unwrap_or("");
+                    let (ns, name) = match trie.longest_match(iri) {
+                        Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                        None => (0u16, iri.to_string()),
+                    };
+                    is::PropertyStatEntry {
+                        sid: (ns, name),
+                        count: pa.count,
+                        ndv_values: pa.ndv_values,
+                        ndv_subjects: pa.ndv_subjects,
+                        last_modified_t: pa.last_modified_t,
+                        datatypes: pa.datatypes,
+                    }
+                })
+                .collect();
+
+            is::IndexStats {
+                flakes: id_stats_result.total_flakes,
+                size: 0,
+                properties: Some(properties),
+                classes: None,
+                graphs: Some(id_stats_result.graphs),
+            }
+        };
+
+        tracing::info!(
+            total_flakes = db_stats.flakes,
+            property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
+            "incremental V6: stats refreshed"
+        );
+
+        root_builder.set_stats(Some(db_stats));
+        root_builder.set_sketch_ref(sketch_ref);
+    }
+
     // ---- Phase 4: Root assembly ----
     root_builder.set_prev_index(Some(BinaryPrevIndexRef {
         t: base_root.index_t,

@@ -616,7 +616,10 @@ where
 
                     // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
                     // by reading all sorted commit files and feeding IdStatsHook.
-                    let dt_tags: &[fluree_db_core::value_id::ValueTypeTag] = &shared.dt_tags;
+                    //
+                    // IMPORTANT: use stats_record_from_v2 (V2 hashing) so sketches
+                    // are compatible with V6 incremental refresh. Convert V1 RunRecord
+                    // to V2 RunRecordV2 via the OTypeRegistry before hashing.
                     let rdf_type_p_id = shared
                         .predicates
                         .get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
@@ -631,10 +634,13 @@ where
                         for result in reader {
                             let record =
                                 result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                            let sr = run_index::spool::stats_record_for_remapped_run_record(
-                                &record,
-                                Some(dt_tags),
-                            );
+                            // Convert V1 → V2 so we use value_hash_v2 (compatible
+                            // with V6 incremental's stats_record_from_v2).
+                            let v2 =
+                                fluree_db_binary_index::format::run_record_v2::RunRecordV2::from_v1(
+                                    &record, &registry,
+                                );
+                            let sr = crate::stats::stats_record_from_v2(&v2, record.op);
                             stats_hook.on_record(&sr);
                         }
                     }

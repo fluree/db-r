@@ -24,8 +24,10 @@ pub use class_property::{
     ClassPropertyStatsResult,
 };
 pub use class_stats::{build_class_stat_entries, build_class_stats_json};
-pub use hashing::{subject_hash, value_hash};
-pub use id_hook::{GraphPropertyKey, IdPropertyHll, IdStatsHook, IdStatsResult, StatsRecord};
+pub use hashing::{subject_hash, value_hash, value_hash_v2};
+pub use id_hook::{
+    stats_record_from_v2, GraphPropertyKey, IdPropertyHll, IdStatsHook, IdStatsResult, StatsRecord,
+};
 pub use schema_extractor::{SchemaEntry, SchemaExtractor};
 pub use sketch_cas::{load_sketch_blob, HllPropertyEntry, HllSketchBlob};
 
