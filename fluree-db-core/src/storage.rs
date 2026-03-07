@@ -148,11 +148,7 @@ pub trait StorageRead: Debug + Send + Sync {
     /// The default implementation fetches the full object and slices.
     /// Backends that support native range reads (S3, HTTP) should override
     /// for efficiency.
-    async fn read_byte_range(
-        &self,
-        address: &str,
-        range: std::ops::Range<u64>,
-    ) -> Result<Vec<u8>> {
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let full = self.read_bytes(address).await?;
         let start = range.start as usize;
         let end = (range.end as usize).min(full.len());
@@ -501,11 +497,7 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
         self.storage.resolve_local_path(&address)
     }
 
-    async fn get_range(
-        &self,
-        id: &ContentId,
-        range: std::ops::Range<u64>,
-    ) -> Result<Vec<u8>> {
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let address = self.cid_to_address(id)?;
         self.storage.read_byte_range(&address, range).await
     }
@@ -707,11 +699,7 @@ impl StorageRead for MemoryStorage {
             .collect())
     }
 
-    async fn read_byte_range(
-        &self,
-        address: &str,
-        range: std::ops::Range<u64>,
-    ) -> Result<Vec<u8>> {
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let data = self.data.read().expect("RwLock poisoned");
         let full = data
             .get(address)
@@ -876,11 +864,7 @@ impl StorageRead for FileStorage {
         }
     }
 
-    async fn read_byte_range(
-        &self,
-        address: &str,
-        range: std::ops::Range<u64>,
-    ) -> Result<Vec<u8>> {
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let path = self.resolve_path(address)?;
         let len = (range.end - range.start) as usize;
         let mut buf = vec![0u8; len];

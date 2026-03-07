@@ -232,11 +232,8 @@ impl BinaryCursorV3 {
                                 leaflet_idx as u8,
                             )?
                         } else {
-                            leaf.handle.load_columns(
-                                leaflet_idx,
-                                &self.projection,
-                                self.order,
-                            )?
+                            leaf.handle
+                                .load_columns(leaflet_idx, &self.projection, self.order)?
                         }
                     } else {
                         ColumnBatch::empty()
@@ -251,9 +248,9 @@ impl BinaryCursorV3 {
                             || batch_has_rows_above_t(&batch, self.to_t as u32);
 
                         if needs_leaflet_replay && entry.history_len > 0 {
-                            let history = leaf.handle.load_sidecar_segment(
-                                self.current_leaflet_idx - 1,
-                            )?;
+                            let history = leaf
+                                .handle
+                                .load_sidecar_segment(self.current_leaflet_idx - 1)?;
                             if !history.is_empty() {
                                 if let Some(replayed) =
                                     replay_leaflet_v3(&batch, &history, self.to_t, self.order)
@@ -323,11 +320,9 @@ impl BinaryCursorV3 {
             }
 
             // Open leaf via LeafHandle (auto-selects local vs range-read path).
-            let handle = self.store.open_leaf_handle(
-                &leaf_cid,
-                sidecar_cid.as_ref(),
-                self.need_replay(),
-            )?;
+            let handle =
+                self.store
+                    .open_leaf_handle(&leaf_cid, sidecar_cid.as_ref(), self.need_replay())?;
             self.current_leaf = Some(OpenLeaf { handle });
             self.current_leaflet_idx = 0;
         }

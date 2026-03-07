@@ -1405,7 +1405,11 @@ mod tests {
         // Sketch present
         assert!(ids.contains(&sketch_cid), "missing sketch_cid");
         // Dict CIDs present (from minimal_root_v6)
-        assert!(ids.len() >= 5, "expected at least 5 CIDs, got {}", ids.len());
+        assert!(
+            ids.len() >= 5,
+            "expected at least 5 CIDs, got {}",
+            ids.len()
+        );
         // No duplicates (sorted + deduped)
         let mut sorted = ids.clone();
         sorted.sort();

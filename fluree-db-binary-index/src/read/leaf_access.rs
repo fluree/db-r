@@ -58,10 +58,7 @@ pub trait LeafHandle: Send + Sync {
     ///
     /// Uses the directory entry's `history_offset` and `history_len` to read
     /// only the relevant segment. Returns an empty vec if no history exists.
-    fn load_sidecar_segment(
-        &self,
-        leaflet_idx: usize,
-    ) -> io::Result<Vec<HistEntryV2>>;
+    fn load_sidecar_segment(&self, leaflet_idx: usize) -> io::Result<Vec<HistEntryV2>>;
 
     /// Access raw sidecar bytes (full blob, for handles that pre-fetched it).
     /// Returns `None` if no sidecar is available.
@@ -91,11 +88,7 @@ impl FullBlobLeafHandle {
     /// Create from raw leaf bytes and optional sidecar bytes.
     ///
     /// Parses the header and directory from the leaf bytes.
-    pub fn new(
-        bytes: Vec<u8>,
-        sidecar: Option<Vec<u8>>,
-        leaf_id: u128,
-    ) -> io::Result<Self> {
+    pub fn new(bytes: Vec<u8>, sidecar: Option<Vec<u8>>, leaf_id: u128) -> io::Result<Self> {
         let header = decode_leaf_header_v3(&bytes)?;
         let dir = decode_leaf_dir_v3_with_base(&bytes, &header)?;
         Ok(Self {
@@ -119,19 +112,10 @@ impl LeafHandle for FullBlobLeafHandle {
         order: RunSortOrder,
     ) -> io::Result<ColumnBatch> {
         let entry = &self.dir.entries[leaflet_idx];
-        load_leaflet_columns(
-            &self.bytes,
-            entry,
-            self.dir.payload_base,
-            projection,
-            order,
-        )
+        load_leaflet_columns(&self.bytes, entry, self.dir.payload_base, projection, order)
     }
 
-    fn load_sidecar_segment(
-        &self,
-        leaflet_idx: usize,
-    ) -> io::Result<Vec<HistEntryV2>> {
+    fn load_sidecar_segment(&self, leaflet_idx: usize) -> io::Result<Vec<HistEntryV2>> {
         let entry = &self.dir.entries[leaflet_idx];
         if entry.history_len == 0 {
             return Ok(Vec::new());
@@ -226,9 +210,7 @@ impl RangeReadLeafHandle {
 
     /// Compute the absolute byte range for a column block within the leaf blob.
     fn block_range(&self, entry: &LeafletDirEntryV3, block_ref: &ColumnBlockRef) -> Range<u64> {
-        let start = self.payload_base
-            + entry.payload_offset as u64
-            + block_ref.offset as u64;
+        let start = self.payload_base + entry.payload_offset as u64 + block_ref.offset as u64;
         let end = start + block_ref.compressed_len as u64;
         start..end
     }
@@ -321,8 +303,10 @@ impl LeafHandle for RangeReadLeafHandle {
         projection: &ColumnProjection,
         _order: RunSortOrder,
     ) -> io::Result<ColumnBatch> {
-        use crate::format::column_block::{decode_column_u16, decode_column_u32, decode_column_u64};
         use super::column_types::ColumnData;
+        use crate::format::column_block::{
+            decode_column_u16, decode_column_u32, decode_column_u64,
+        };
 
         let entry = &self.dir.entries[leaflet_idx];
         let row_count = entry.row_count as usize;
@@ -340,7 +324,10 @@ impl LeafHandle for RangeReadLeafHandle {
         if eff.contains(ColumnId::PId) && entry.p_const.is_none() {
             needed_fetches.push((ColumnId::PId, 4));
         }
-        if eff.contains(ColumnId::OType) && entry.o_type_const.is_none() && (entry.flags & FLAG_HAS_O_TYPE_COL != 0) {
+        if eff.contains(ColumnId::OType)
+            && entry.o_type_const.is_none()
+            && (entry.flags & FLAG_HAS_O_TYPE_COL != 0)
+        {
             needed_fetches.push((ColumnId::OType, 2));
         }
         if eff.contains(ColumnId::OI) && (entry.flags & FLAG_HAS_O_I != 0) {
@@ -361,7 +348,9 @@ impl LeafHandle for RangeReadLeafHandle {
         let mut fetched: Vec<FetchedData> = Vec::with_capacity(fetch_plan.len());
 
         for cf in &fetch_plan {
-            let bytes = self.fetcher.fetch_range(&self.leaf_cid, cf.fetch_range.clone())?;
+            let bytes = self
+                .fetcher
+                .fetch_range(&self.leaf_cid, cf.fetch_range.clone())?;
             fetched.push(FetchedData {
                 fetch_start: cf.fetch_range.start,
                 bytes,
@@ -382,14 +371,22 @@ impl LeafHandle for RangeReadLeafHandle {
                         if decoded.len() != row_count {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("{:?}: decoded {} values but leaflet has {} rows", col_id, decoded.len(), row_count),
+                                format!(
+                                    "{:?}: decoded {} values but leaflet has {} rows",
+                                    col_id,
+                                    decoded.len(),
+                                    row_count
+                                ),
                             ));
                         }
                         return Ok(decoded);
                     }
                 }
             }
-            Err(io::Error::new(io::ErrorKind::InvalidData, format!("missing column block for {:?}", col_id)))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing column block for {:?}", col_id),
+            ))
         };
 
         let find_and_decode_u32 = |col_id: ColumnId| -> io::Result<Vec<u32>> {
@@ -405,14 +402,22 @@ impl LeafHandle for RangeReadLeafHandle {
                         if decoded.len() != row_count {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("{:?}: decoded {} values but leaflet has {} rows", col_id, decoded.len(), row_count),
+                                format!(
+                                    "{:?}: decoded {} values but leaflet has {} rows",
+                                    col_id,
+                                    decoded.len(),
+                                    row_count
+                                ),
                             ));
                         }
                         return Ok(decoded);
                     }
                 }
             }
-            Err(io::Error::new(io::ErrorKind::InvalidData, format!("missing column block for {:?}", col_id)))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing column block for {:?}", col_id),
+            ))
         };
 
         let find_and_decode_u16_col = |col_id: ColumnId| -> io::Result<Vec<u16>> {
@@ -428,14 +433,22 @@ impl LeafHandle for RangeReadLeafHandle {
                         if decoded.len() != row_count {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("{:?}: decoded {} values but leaflet has {} rows", col_id, decoded.len(), row_count),
+                                format!(
+                                    "{:?}: decoded {} values but leaflet has {} rows",
+                                    col_id,
+                                    decoded.len(),
+                                    row_count
+                                ),
                             ));
                         }
                         return Ok(decoded);
                     }
                 }
             }
-            Err(io::Error::new(io::ErrorKind::InvalidData, format!("missing column block for {:?}", col_id)))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing column block for {:?}", col_id),
+            ))
         };
 
         // Build ColumnBatch using the same logic as column_loader.rs.
@@ -503,10 +516,7 @@ impl LeafHandle for RangeReadLeafHandle {
         })
     }
 
-    fn load_sidecar_segment(
-        &self,
-        leaflet_idx: usize,
-    ) -> io::Result<Vec<HistEntryV2>> {
+    fn load_sidecar_segment(&self, leaflet_idx: usize) -> io::Result<Vec<HistEntryV2>> {
         use crate::format::history_sidecar::HIST_ENTRY_V2_SIZE;
 
         let entry = &self.dir.entries[leaflet_idx];
@@ -531,8 +541,7 @@ impl LeafHandle for RangeReadLeafHandle {
         if bytes.len() < 4 {
             return Ok(Vec::new());
         }
-        let entry_count =
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let entry_count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
         let mut entries = Vec::with_capacity(entry_count);
         let mut pos = 4;
         for _ in 0..entry_count {
@@ -695,9 +704,7 @@ mod tests {
         assert_eq!(handle.dir().entries.len(), 1);
 
         let proj = ColumnProjection::all();
-        let batch = handle
-            .load_columns(0, &proj, RunSortOrder::Post)
-            .unwrap();
+        let batch = handle.load_columns(0, &proj, RunSortOrder::Post).unwrap();
 
         assert_eq!(batch.row_count, 5);
         assert!(batch.p_id.is_const());
@@ -720,8 +727,7 @@ mod tests {
         let fetcher = Arc::new(fetcher);
 
         // Fetch header + directory.
-        let (dir, payload_base) =
-            fetch_header_and_directory(fetcher.as_ref(), &leaf_cid).unwrap();
+        let (dir, payload_base) = fetch_header_and_directory(fetcher.as_ref(), &leaf_cid).unwrap();
 
         let handle = RangeReadLeafHandle::new(
             leaf_cid,
@@ -733,9 +739,7 @@ mod tests {
         );
 
         let proj = ColumnProjection::all();
-        let batch = handle
-            .load_columns(0, &proj, RunSortOrder::Post)
-            .unwrap();
+        let batch = handle.load_columns(0, &proj, RunSortOrder::Post).unwrap();
 
         assert_eq!(batch.row_count, 5);
         assert!(batch.p_id.is_const());
@@ -755,8 +759,7 @@ mod tests {
         fetcher.insert(&leaf_cid, leaf_bytes);
         let fetcher = Arc::new(fetcher);
 
-        let (dir, payload_base) =
-            fetch_header_and_directory(fetcher.as_ref(), &leaf_cid).unwrap();
+        let (dir, payload_base) = fetch_header_and_directory(fetcher.as_ref(), &leaf_cid).unwrap();
 
         // Clear request log after directory fetch.
         fetcher.requests.lock().unwrap().clear();
@@ -776,9 +779,7 @@ mod tests {
             internal: ColumnSet::EMPTY,
         };
 
-        let batch = handle
-            .load_columns(0, &proj, RunSortOrder::Post)
-            .unwrap();
+        let batch = handle.load_columns(0, &proj, RunSortOrder::Post).unwrap();
 
         assert_eq!(batch.row_count, 5);
         assert!(matches!(batch.s_id, ColumnData::Block(_)));
@@ -788,7 +789,11 @@ mod tests {
 
         // Should have made range-read requests (coalesced into potentially 1).
         let reqs = fetcher.request_count();
-        assert!(reqs >= 1, "expected at least 1 range-read request, got {}", reqs);
+        assert!(
+            reqs >= 1,
+            "expected at least 1 range-read request, got {}",
+            reqs
+        );
     }
 
     #[test]
@@ -866,10 +871,12 @@ mod tests {
         // Verify the fetcher received a range request for the sidecar.
         let reqs = fetcher.requests.lock().unwrap();
         let sidecar_key = sidecar_cid.to_string();
-        let sidecar_reqs: Vec<_> = reqs.iter()
-            .filter(|(id, _)| *id == sidecar_key)
-            .collect();
-        assert_eq!(sidecar_reqs.len(), 1, "expected exactly 1 sidecar range request");
+        let sidecar_reqs: Vec<_> = reqs.iter().filter(|(id, _)| *id == sidecar_key).collect();
+        assert_eq!(
+            sidecar_reqs.len(),
+            1,
+            "expected exactly 1 sidecar range request"
+        );
         // The range should be just the segment, not the full sidecar.
         let (_, range) = &sidecar_reqs[0];
         assert_eq!(range.start, seg.offset);
@@ -881,17 +888,15 @@ mod tests {
         use crate::format::history_sidecar::HistSidecarBuilder;
 
         // Build sidecar with entries.
-        let hist_entries = vec![
-            HistEntryV2 {
-                s_id: SubjectId(2),
-                p_id: 3,
-                o_type: OType::XSD_STRING.as_u16(),
-                o_key: 200,
-                o_i: u32::MAX,
-                t: 10,
-                op: 1, // assert
-            },
-        ];
+        let hist_entries = vec![HistEntryV2 {
+            s_id: SubjectId(2),
+            p_id: 3,
+            o_type: OType::XSD_STRING.as_u16(),
+            o_key: 200,
+            o_i: u32::MAX,
+            t: 10,
+            op: 1, // assert
+        }];
         let mut builder = HistSidecarBuilder::new();
         builder.start_leaflet();
         for entry in &hist_entries {
@@ -907,11 +912,9 @@ mod tests {
         let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_cid.to_bytes().as_ref());
 
         // FullBlobLeafHandle path.
-        let mut full_handle = FullBlobLeafHandle::new(
-            leaf_bytes.clone(),
-            Some(sidecar_bytes.clone()),
-            leaf_id,
-        ).unwrap();
+        let mut full_handle =
+            FullBlobLeafHandle::new(leaf_bytes.clone(), Some(sidecar_bytes.clone()), leaf_id)
+                .unwrap();
         // Patch history fields.
         let seg = &seg_refs[0];
         full_handle.dir.entries[0].history_offset = seg.offset;

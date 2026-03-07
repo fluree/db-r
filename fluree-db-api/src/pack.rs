@@ -252,8 +252,7 @@ pub async fn compute_missing_index_artifacts<C: ContentStore>(
                 }
                 // Expand the have root's branches too, so shared leaves are subtracted.
                 let have_branch_cids = extract_branch_cids(&have_bytes);
-                let have_branch_leaf_ids =
-                    expand_branch_leaf_cids(store, &have_branch_cids).await;
+                let have_branch_leaf_ids = expand_branch_leaf_cids(store, &have_branch_cids).await;
                 for cid in have_branch_leaf_ids {
                     want_set.remove(&cid);
                 }

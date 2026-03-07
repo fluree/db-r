@@ -824,8 +824,10 @@ ex:bob a ex:User ;
         .expect("ns lookup")
         .expect("ns record should exist");
 
-    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
-    indexer_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
+    let indexer_config = fluree_db_indexer::IndexerConfig {
+        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
+        ..Default::default()
+    };
 
     let index_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),
@@ -1000,8 +1002,10 @@ ex:bob a ex:User ;
         .expect("ns lookup")
         .expect("ns record");
 
-    let mut rebuild_config = fluree_db_indexer::IndexerConfig::default();
-    rebuild_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
+    let rebuild_config = fluree_db_indexer::IndexerConfig {
+        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
+        ..Default::default()
+    };
 
     let rebuild_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),
@@ -1059,10 +1063,12 @@ ex:bob a ex:User ;
         .expect("ns lookup")
         .expect("ns record");
 
-    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
-    indexer_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
-    indexer_config.incremental_enabled = true;
-    indexer_config.incremental_max_commits = 100;
+    let indexer_config = fluree_db_indexer::IndexerConfig {
+        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
+        incremental_enabled: true,
+        incremental_max_commits: 100,
+        ..Default::default()
+    };
 
     // Verify we have a commit gap (index_t < commit_t) and an existing root.
     assert!(
@@ -1275,8 +1281,10 @@ ex:remove a ex:User ;
         .expect("ns lookup")
         .expect("ns record should exist");
 
-    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
-    indexer_config.index_format_version = fluree_db_indexer::IndexFormatVersion::V3;
+    let indexer_config = fluree_db_indexer::IndexerConfig {
+        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
+        ..Default::default()
+    };
 
     let index_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),

@@ -308,8 +308,7 @@ impl BinaryIndexStoreV6 {
             self.cache_dir.clone(),
         ));
 
-        let (dir, payload_base) =
-            fetch_header_and_directory(fetcher.as_ref(), leaf_cid)?;
+        let (dir, payload_base) = fetch_header_and_directory(fetcher.as_ref(), leaf_cid)?;
 
         let sc_cid = if need_replay {
             sidecar_cid.cloned()
@@ -1103,11 +1102,7 @@ impl ContentStoreRangeFetcher {
 }
 
 impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
-    fn fetch_range(
-        &self,
-        id: &ContentId,
-        range: std::ops::Range<u64>,
-    ) -> io::Result<Vec<u8>> {
+    fn fetch_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> io::Result<Vec<u8>> {
         // Try local path first — positional read.
         if let Some(local_path) = self.cs.resolve_local_path(id) {
             let file = std::fs::File::open(local_path)?;
