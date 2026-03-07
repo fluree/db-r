@@ -24,6 +24,7 @@ members = [
     "fluree-db-credential",
     "fluree-db-api",
     "fluree-db-storage-aws",
+    "fluree-db-storage-ipfs",
     "fluree-db-iceberg",
     "fluree-db-tabular",
     "fluree-db-r2rml",

@@ -258,9 +258,12 @@ pub async fn format_results_async(
 
     // Graph crawl queries use async formatter with DB access
     if result.graph_select.is_some() {
-        if config.format != OutputFormat::JsonLd {
+        if !matches!(
+            config.format,
+            OutputFormat::JsonLd | OutputFormat::TypedJson
+        ) {
             return Err(FormatError::InvalidBinding(
-                "Graph crawl select only supports JSON-LD output format".to_string(),
+                "Graph crawl select only supports JSON-LD and TypedJson output formats".to_string(),
             ));
         }
         // For cross-ledger queries (connection/dataset), the result carries a

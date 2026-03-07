@@ -409,6 +409,15 @@ impl<'a> ExecutionContext<'a> {
         self.snapshot.encode_iri(iri)
     }
 
+    /// Encode an IRI to a SID, returning `None` if no registered namespace
+    /// prefix matches (does NOT fall back to the EMPTY namespace).
+    ///
+    /// Use this for runtime IRI resolution where unknown namespaces should
+    /// remain as IRI strings rather than silently mapping to namespace 0.
+    pub fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
+        self.snapshot.encode_iri_strict(iri)
+    }
+
     /// Decode a SID to an IRI using the database's namespace codes
     pub fn decode_sid(&self, sid: &Sid) -> Option<String> {
         self.snapshot.decode_sid(sid)

@@ -117,7 +117,8 @@
 
 - [Operations](operations/README.md)
   - [Configuration](operations/configuration.md)
-  - [Storage modes (memory/file/AWS)](operations/storage.md)
+  - [Storage modes (memory/file/AWS/IPFS)](operations/storage.md)
+  - [IPFS storage](operations/ipfs-storage.md)
   - [DynamoDB nameservice](operations/dynamodb-guide.md)
   - [Query peers and replication](operations/query-peers.md)
   - [Telemetry and logging](operations/telemetry.md)

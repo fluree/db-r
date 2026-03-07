@@ -118,6 +118,236 @@ async fn seed_books(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
         .ledger
 }
 
+// =========================================================================
+// SPARQL Property Path Tests: Inverse (^) and Alternative (|)
+// =========================================================================
+
+/// Seed a knows-chain for SPARQL property path tests.
+///
+/// Graph: a→b, b→c, b→d, d→e
+async fn sparql_seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:b","ex:knows":[{"@id":"ex:c"},{"@id":"ex:d"}]},
+            {"@id":"ex:d","ex:knows":{"@id":"ex:e"}}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence (/)
+// =========================================================================
+
+/// Seed chain data for SPARQL sequence tests.
+///
+/// Graph: alice --friend--> bob --friend--> carol
+///        alice --name--> "Alice"
+///        bob   --name--> "Bob"
+///        carol --name--> "Carol"
+///        alice --parent--> bob
+///        bob   --parent--> carol
+async fn sparql_seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:friend": {"@id": "ex:bob"},
+                "ex:parent": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:friend": {"@id": "ex:carol"},
+                "ex:parent": {"@id": "ex:carol"}
+            },
+            {
+                "@id": "ex:carol",
+                "ex:name": "Carol"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence-in-Alternative
+// =========================================================================
+
+/// Seed data for alternative-of-sequences tests.
+///
+/// Graph:
+///   ex:alice --ex:friend--> ex:bob
+///   ex:alice --ex:colleague--> ex:carol
+///   ex:bob   --ex:name--> "Bob"
+///   ex:carol --ex:name--> "Carol"
+async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:alice","ex:friend":{"@id":"ex:bob"},"ex:colleague":{"@id":"ex:carol"}},
+            {"@id":"ex:bob","ex:name":"Bob"},
+            {"@id":"ex:carol","ex:name":"Carol"}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// =============================================================================
+// SPARQL Alternative-in-Sequence distribution tests
+// =============================================================================
+
+async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:nick": "Ali",
+                "ex:friend": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:nick": "Bobby"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+// ============================================================================
+// Custom namespace STR() and full-IRI predicate matching
+// ============================================================================
+
+/// Seed data with a custom namespace that is NOT one of the default W3C namespaces.
+async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {
+                "@id": "ex:item1",
+                "@type": "ex:Item",
+                "cust:packageType": "premium",
+                "cust:category": "electronics"
+            },
+            {
+                "@id": "ex:item2",
+                "@type": "ex:Item",
+                "cust:packageType": "standard",
+                "cust:category": "books"
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert custom ns data")
+        .ledger
+}
+
+// =============================================================================
+// Bug regression: exact user repro — overlapping namespace prefixes + ref values
+// =============================================================================
+
+/// Seed ledger with exact data from the user's bug report.
+///
+/// Uses overlapping namespace prefixes (`https://taxo.cbcrc.ca/ns/` and
+/// `https://taxo.cbcrc.ca/id/`) and ref-valued custom predicates.
+async fn seed_exact_repro(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "skos": "http://www.w3.org/2004/02/skos/core#",
+            "skosxl": "http://www.w3.org/2008/05/skos-xl#",
+            "cust": "https://taxo.cbcrc.ca/ns/",
+            "cbc": "https://taxo.cbcrc.ca/id/"
+        },
+        "@graph": [
+            {
+                "@id": "cust:assocType/coverage",
+                "skosxl:prefLabel": {
+                    "@id": "cbc:label/assocType-coverage-en",
+                    "@type": "skosxl:Label",
+                    "skosxl:literalForm": {"@value": "Coverage Package", "@language": "en"}
+                }
+            },
+            {
+                "@id": "cbc:assoc/coverage-001",
+                "@type": "cust:CoveragePackage",
+                "cust:associationType": {"@id": "cust:assocType/coverage"},
+                "cust:anchor": {"@id": "https://taxo.cbcrc.ca/id/e9235fd0-c1fc-4f9e-828b-b933922b5764"},
+                "cust:member": [
+                    {"@id": "https://taxo.cbcrc.ca/id/5b33544d-d6cf-413b-915f-f1f084ba11c7"},
+                    {"@id": "https://taxo.cbcrc.ca/id/0476a33f-bcfc-459e-8b6b-e78baa81be3b"}
+                ]
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert exact repro data")
+        .ledger
+}
+
+// =========================================================================
+// Built-in Function Coverage: multi-byte chars, TIMEZONE, UUID, isNumeric,
+// language-tag preservation
+// =========================================================================
+
+/// Seed dataset with multi-byte strings, datetime, and decimal values for
+/// built-in function tests.
+async fn seed_builtin_fn_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:sushi",
+                "ex:label": "食べ物",
+                "ex:note": {"@value": "Hola mundo", "@language": "es"},
+                "ex:price": {"@value": "12.50", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-06-15T10:30:00Z", "@type": "xsd:dateTime"}
+            },
+            {
+                "@id": "ex:beer",
+                "ex:label": "Ölympics",
+                "ex:note": {"@value": "Good stuff", "@language": "en"},
+                "ex:price": {"@value": "7.99", "@type": "xsd:decimal"},
+                "ex:created": {"@value": "2024-01-20T14:00:00+05:30", "@type": "xsd:dateTime"}
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("seed builtin fn data")
+        .ledger
+}
+
 #[tokio::test]
 async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
     assert_index_defaults();
@@ -1278,26 +1508,6 @@ async fn sparql_concat_with_langtag_argument() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Inverse (^) and Alternative (|)
-// =========================================================================
-
-/// Seed a knows-chain for SPARQL property path tests.
-///
-/// Graph: a→b, b→c, b→d, d→e
-async fn sparql_seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
-            {"@id":"ex:b","ex:knows":[{"@id":"ex:c"},{"@id":"ex:d"}]},
-            {"@id":"ex:d","ex:knows":{"@id":"ex:e"}}
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_inverse_object_var() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1462,44 +1672,6 @@ async fn sparql_property_path_nested_alternative_under_transitive_errors() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Sequence (/)
-// =========================================================================
-
-/// Seed chain data for SPARQL sequence tests.
-///
-/// Graph: alice --friend--> bob --friend--> carol
-///        alice --name--> "Alice"
-///        bob   --name--> "Bob"
-///        carol --name--> "Carol"
-///        alice --parent--> bob
-///        bob   --parent--> carol
-async fn sparql_seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {
-                "@id": "ex:alice",
-                "ex:name": "Alice",
-                "ex:friend": {"@id": "ex:bob"},
-                "ex:parent": {"@id": "ex:bob"}
-            },
-            {
-                "@id": "ex:bob",
-                "ex:name": "Bob",
-                "ex:friend": {"@id": "ex:carol"},
-                "ex:parent": {"@id": "ex:carol"}
-            },
-            {
-                "@id": "ex:carol",
-                "ex:name": "Carol"
-            }
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_sequence_two_step() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1646,30 +1818,6 @@ async fn sparql_property_path_inverse_zero_or_more() {
     );
 }
 
-// =========================================================================
-// SPARQL Property Path Tests: Sequence-in-Alternative
-// =========================================================================
-
-/// Seed data for alternative-of-sequences tests.
-///
-/// Graph:
-///   ex:alice --ex:friend--> ex:bob
-///   ex:alice --ex:colleague--> ex:carol
-///   ex:bob   --ex:name--> "Bob"
-///   ex:carol --ex:name--> "Carol"
-async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {"@id":"ex:alice","ex:friend":{"@id":"ex:bob"},"ex:colleague":{"@id":"ex:carol"}},
-            {"@id":"ex:bob","ex:name":"Bob"},
-            {"@id":"ex:carol","ex:name":"Carol"}
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
-}
-
 #[tokio::test]
 async fn sparql_property_path_alternative_of_sequences() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1716,31 +1864,6 @@ async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Alice", "Bob"]))
     );
-}
-
-// =============================================================================
-// SPARQL Alternative-in-Sequence distribution tests
-// =============================================================================
-
-async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-    let insert = json!({
-        "@context": {"ex":"http://example.org/"},
-        "@graph": [
-            {
-                "@id": "ex:alice",
-                "ex:name": "Alice",
-                "ex:nick": "Ali",
-                "ex:friend": {"@id": "ex:bob"}
-            },
-            {
-                "@id": "ex:bob",
-                "ex:name": "Bob",
-                "ex:nick": "Bobby"
-            }
-        ]
-    });
-    fluree.insert(ledger0, &insert).await.unwrap().ledger
 }
 
 #[tokio::test]
@@ -1846,42 +1969,6 @@ async fn sparql_property_path_inverse_of_alternative() {
         normalize_rows(&jsonld),
         normalize_rows(&json!(["ex:alice"]))
     );
-}
-
-// ============================================================================
-// Custom namespace STR() and full-IRI predicate matching
-// ============================================================================
-
-/// Seed data with a custom namespace that is NOT one of the default W3C namespaces.
-async fn seed_custom_ns(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-
-    let insert = json!({
-        "@context": {
-            "cust": "https://taxo.cbcrc.ca/ns/",
-            "ex": "http://example.org/ns/"
-        },
-        "@graph": [
-            {
-                "@id": "ex:item1",
-                "@type": "ex:Item",
-                "cust:packageType": "premium",
-                "cust:category": "electronics"
-            },
-            {
-                "@id": "ex:item2",
-                "@type": "ex:Item",
-                "cust:packageType": "standard",
-                "cust:category": "books"
-            }
-        ]
-    });
-
-    fluree
-        .insert(ledger0, &insert)
-        .await
-        .expect("insert custom ns data")
-        .ledger
 }
 
 /// STR() on a custom-namespace predicate variable must return the full IRI,
@@ -2019,53 +2106,6 @@ async fn sparql_prefix_shorthand_matches_custom_namespace() {
         "Expected 'standard', got: {:?}",
         rows
     );
-}
-
-// =============================================================================
-// Bug regression: exact user repro — overlapping namespace prefixes + ref values
-// =============================================================================
-
-/// Seed ledger with exact data from the user's bug report.
-///
-/// Uses overlapping namespace prefixes (`https://taxo.cbcrc.ca/ns/` and
-/// `https://taxo.cbcrc.ca/id/`) and ref-valued custom predicates.
-async fn seed_exact_repro(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-
-    let insert = json!({
-        "@context": {
-            "skos": "http://www.w3.org/2004/02/skos/core#",
-            "skosxl": "http://www.w3.org/2008/05/skos-xl#",
-            "cust": "https://taxo.cbcrc.ca/ns/",
-            "cbc": "https://taxo.cbcrc.ca/id/"
-        },
-        "@graph": [
-            {
-                "@id": "cust:assocType/coverage",
-                "skosxl:prefLabel": {
-                    "@id": "cbc:label/assocType-coverage-en",
-                    "@type": "skosxl:Label",
-                    "skosxl:literalForm": {"@value": "Coverage Package", "@language": "en"}
-                }
-            },
-            {
-                "@id": "cbc:assoc/coverage-001",
-                "@type": "cust:CoveragePackage",
-                "cust:associationType": {"@id": "cust:assocType/coverage"},
-                "cust:anchor": {"@id": "https://taxo.cbcrc.ca/id/e9235fd0-c1fc-4f9e-828b-b933922b5764"},
-                "cust:member": [
-                    {"@id": "https://taxo.cbcrc.ca/id/5b33544d-d6cf-413b-915f-f1f084ba11c7"},
-                    {"@id": "https://taxo.cbcrc.ca/id/0476a33f-bcfc-459e-8b6b-e78baa81be3b"}
-                ]
-            }
-        ]
-    });
-
-    fluree
-        .insert(ledger0, &insert)
-        .await
-        .expect("insert exact repro data")
-        .ledger
 }
 
 /// Bug 1 repro: custom namespace predicate without rdf:type returns 0 rows.
@@ -2208,44 +2248,336 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
     );
 }
 
-// =========================================================================
-// Built-in Function Coverage: multi-byte chars, TIMEZONE, UUID, isNumeric,
-// language-tag preservation
-// =========================================================================
+/// W3C negation test: MINUS with FILTER in subtree (subset-by-exclusion-minus-1)
+///
+/// Reproduces the W3C test where MINUS subtree patterns are executed with
+/// empty seed (fresh scope) and must produce results from a full scan.
+#[tokio::test]
+async fn sparql_minus_with_filter_in_subtree() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:minus");
 
-/// Seed dataset with multi-byte strings, datetime, and decimal values for
-/// built-in function tests.
-async fn seed_builtin_fn_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, ledger_id);
-
+    // Seed data equivalent to subsetByExcl.ttl
     let insert = json!({
         "@context": {
-            "ex": "http://example.org/ns/",
-            "xsd": "http://www.w3.org/2001/XMLSchema#"
+            "ex": "http://example.org/ns/"
         },
         "@graph": [
-            {
-                "@id": "ex:sushi",
-                "ex:label": "食べ物",
-                "ex:note": {"@value": "Hola mundo", "@language": "es"},
-                "ex:price": {"@value": "12.50", "@type": "xsd:decimal"},
-                "ex:created": {"@value": "2024-06-15T10:30:00Z", "@type": "xsd:dateTime"}
-            },
-            {
-                "@id": "ex:beer",
-                "ex:label": "Ölympics",
-                "ex:note": {"@value": "Good stuff", "@language": "en"},
-                "ex:price": {"@value": "7.99", "@type": "xsd:decimal"},
-                "ex:created": {"@value": "2024-01-20T14:00:00+05:30", "@type": "xsd:dateTime"}
-            }
+            {"@id": "ex:lifeForm1", "@type": ["ex:Mammal", "ex:Animal"]},
+            {"@id": "ex:lifeForm2", "@type": ["ex:Reptile", "ex:Animal"]},
+            {"@id": "ex:lifeForm3", "@type": ["ex:Insect", "ex:Animal"]}
         ]
     });
 
-    fluree
+    let ledger = fluree
         .insert(ledger0, &insert)
         .await
-        .expect("seed builtin fn data")
-        .ledger
+        .expect("insert lifeforms");
+
+    // Query: keep animals that are NOT Reptile or Insect (via MINUS)
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?animal WHERE {
+            ?animal a ex:Animal
+            MINUS {
+                ?animal a ?type
+                FILTER(?type = ex:Reptile || ?type = ex:Insect)
+            }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("MINUS query should succeed");
+    let jsonld = result
+        .to_jsonld(&ledger.ledger.snapshot)
+        .expect("to_jsonld");
+
+    // Only lifeForm1 (Mammal) should remain
+    let rows = normalize_rows(&jsonld);
+    assert_eq!(rows.len(), 1, "Expected 1 result, got: {rows:?}");
+    let row_str = serde_json::to_string(&rows[0]).unwrap();
+    assert!(
+        row_str.contains("lifeForm1"),
+        "Expected lifeForm1 (Mammal), got: {rows:?}",
+    );
+}
+
+/// Simpler MINUS test: basic anti-join without FILTER in subtree
+#[tokio::test]
+async fn sparql_minus_basic_anti_join() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:basic");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:lifeForm1", "@type": ["ex:Mammal", "ex:Animal"]},
+            {"@id": "ex:lifeForm2", "@type": ["ex:Reptile", "ex:Animal"]},
+            {"@id": "ex:lifeForm3", "@type": ["ex:Insect", "ex:Animal"]}
+        ]
+    });
+
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert lifeforms");
+
+    // Simple MINUS: remove animals that are insects
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?animal WHERE {
+            ?animal a ex:Animal
+            MINUS { ?animal a ex:Insect }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("basic MINUS query should succeed");
+    let jsonld = result
+        .to_jsonld(&ledger.ledger.snapshot)
+        .expect("to_jsonld");
+
+    // lifeForm1 and lifeForm2 should remain (lifeForm3 is Insect, removed)
+    let rows = normalize_rows(&jsonld);
+    assert_eq!(rows.len(), 2, "Expected 2 results, got: {:?}", rows);
+}
+
+/// Test compound FILTER NOT EXISTS inside MINUS subtree (subset-02 pattern).
+///
+/// Verifies that NOT EXISTS inside an OR expression works correctly when
+/// used within a MINUS block. The MINUS should remove set pairs where s1
+/// has a member that s2 doesn't.
+#[tokio::test]
+async fn sparql_minus_compound_not_exists() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-nex");
+
+    // Minimal set data: two sets with overlapping members
+    // set_a = {1, 2}, set_b = {1}
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // MINUS with compound FILTER: remove pairs where s1 has a member not in s2
+    // (OR with NOT EXISTS), also removing self-pairs via s1=s2 clause.
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 WHERE {
+            ?s1 a ex:Set .
+            ?s2 a ex:Set .
+            MINUS {
+                ?s1 a ex:Set .
+                ?s2 a ex:Set .
+                ?s1 ex:member ?x .
+                FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
+            }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("compound NOT EXISTS MINUS query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    // Expected: only (set_b, set_a) should remain.
+    // - (set_a, set_a): removed by MINUS (s1=s2 with member)
+    // - (set_a, set_b): removed (a has member 2 which b doesn't → NOT EXISTS true)
+    // - (set_b, set_a): set_b only has {1}, a has {1,2} ⊃ {1} → all b's members in a
+    //   FILTER: b≠a → check NOT EXISTS {a member 1} → a has 1 → false → OR = false
+    //   No MINUS row passes → pair NOT removed → KEPT
+    // - (set_b, set_b): removed by MINUS (s1=s2 with member)
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    assert_eq!(
+        bindings.len(),
+        1,
+        "Expected 1 result (set_b subset of set_a), got: {bindings:?}"
+    );
+}
+
+/// Test that compound FILTER NOT EXISTS evaluates correctly (no MINUS wrapper).
+///
+/// Isolates whether Expression::Exists evaluation works in compound expressions.
+#[tokio::test]
+async fn sparql_compound_filter_not_exists_standalone() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-nex-standalone");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // This is the MINUS subtree from subset-02, run as a standalone query.
+    // Should return rows where s1=s2 OR s2 doesn't have member x.
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set .
+            ?s2 a ex:Set .
+            ?s1 ex:member ?x .
+            FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("compound filter query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+
+    // Expected rows (s1, s2, x):
+    // (a, a, 1) — s1=s2 → true
+    // (a, a, 2) — s1=s2 → true
+    // (a, b, 2) — a≠b, NOT EXISTS {b :member 2} → true → true
+    // (b, a, 1) — b≠a, NOT EXISTS {a :member 1} → false → false (skip)
+    // (b, b, 1) — s1=s2 → true
+    // Total: 4 rows
+    assert_eq!(
+        bindings.len(),
+        4,
+        "Expected 4 results from compound NOT EXISTS filter, got: {bindings:?}"
+    );
+}
+
+/// Compound FILTER NOT EXISTS — exercises the async EXISTS pre-evaluation path.
+///
+/// Verifies that `FILTER(false || NOT EXISTS { ... })` produces the same
+/// result as standalone `FILTER NOT EXISTS { ... }`.
+#[tokio::test]
+async fn sparql_compound_filter_not_exists_equals_standalone() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:compound-vs-standalone");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/ns/" },
+        "@graph": [
+            {"@id": "ex:set_a", "@type": "ex:Set", "ex:member": [1, 2]},
+            {"@id": "ex:set_b", "@type": "ex:Set", "ex:member": [1]}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
+
+    // Standalone NOT EXISTS: s2 does NOT have member x
+    let standalone = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
+            FILTER NOT EXISTS { ?s2 ex:member ?x }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, standalone)
+        .await
+        .expect("standalone NOT EXISTS");
+    let json = result.to_sparql_json(&ledger.ledger.snapshot).unwrap();
+    let standalone_count = json["results"]["bindings"].as_array().unwrap().len();
+    // Only (set_a, set_b, 2) — set_b doesn't have member 2
+    assert_eq!(standalone_count, 1, "standalone NOT EXISTS");
+
+    // Compound: false || NOT EXISTS should produce the same result
+    let compound = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?s1 ?s2 ?x WHERE {
+            ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
+            FILTER ( false || NOT EXISTS { ?s2 ex:member ?x } )
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, compound)
+        .await
+        .expect("compound NOT EXISTS");
+    let json = result.to_sparql_json(&ledger.ledger.snapshot).unwrap();
+    let compound_count = json["results"]["bindings"].as_array().unwrap().len();
+    assert_eq!(
+        compound_count, standalone_count,
+        "compound (false || NOT EXISTS) should equal standalone NOT EXISTS"
+    );
+}
+
+/// Test that SELECT * with empty results still produces a variable header.
+///
+/// W3C requires that `head.vars` includes the query's projected variables
+/// even when the result set is empty. This tests the VarRegistry fallback
+/// in the SPARQL JSON formatter.
+#[tokio::test]
+async fn sparql_wildcard_header_with_empty_results() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "negation:empty-wildcard");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/ns/" },
+        "@graph": [
+            {"@id": "ex:a", "@type": "ex:Thing"}
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert).await.expect("insert data");
+
+    // SELECT * with a condition that matches nothing
+    let query = r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT * WHERE {
+            ?x ex:nonExistentProperty ?y
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger.ledger, query)
+        .await
+        .expect("empty wildcard query should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.ledger.snapshot)
+        .expect("to_sparql_json");
+
+    // Should have variables in head even with 0 results
+    let head_vars = sparql_json["head"]["vars"]
+        .as_array()
+        .expect("head.vars array");
+    assert!(
+        !head_vars.is_empty(),
+        "SELECT * with empty results should still have variables in head.vars, got: {sparql_json}"
+    );
+
+    // Should have 0 bindings
+    let bindings = sparql_json["results"]["bindings"]
+        .as_array()
+        .expect("bindings array");
+    assert_eq!(bindings.len(), 0, "Should have 0 results");
 }
 
 #[tokio::test]

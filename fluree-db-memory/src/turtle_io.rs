@@ -347,12 +347,35 @@ fn mem_local_id(id: &str) -> &str {
     }
 }
 
-/// Escape special characters for Turtle string literals.
+/// Normalize Unicode quotation marks to their ASCII equivalents.
 ///
-/// Handles: `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`, carriage return → `\r`.
-pub fn escape_turtle_string(s: &str) -> String {
+/// LLMs frequently produce smart/curly quotes (`"` `"` `'` `'` etc.) which are
+/// not valid Turtle string delimiters. This replaces them with ASCII `"` or `'`
+/// so that `escape_turtle_string` can then escape them properly.
+pub fn normalize_unicode_quotes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
+        match ch {
+            // Double quote variants → ASCII "
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{00AB}' | '\u{00BB}' => {
+                out.push('"')
+            }
+            // Single quote variants → ASCII '
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => out.push('\''),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Escape special characters for Turtle string literals.
+///
+/// First normalizes Unicode smart quotes to ASCII equivalents, then escapes:
+/// `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`, carriage return → `\r`.
+pub fn escape_turtle_string(s: &str) -> String {
+    let normalized = normalize_unicode_quotes(s);
+    let mut out = String::with_capacity(normalized.len());
+    for ch in normalized.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
@@ -451,6 +474,31 @@ mod tests {
         assert_eq!(escape_turtle_string("line1\nline2"), "line1\\nline2");
         assert_eq!(escape_turtle_string("path\\to"), "path\\\\to");
         assert_eq!(escape_turtle_string("a\tb"), "a\\tb");
+    }
+
+    #[test]
+    fn normalize_smart_quotes() {
+        // Double smart quotes → escaped ASCII "
+        assert_eq!(
+            escape_turtle_string("he said \u{201C}hi\u{201D}"),
+            "he said \\\"hi\\\""
+        );
+        // Single smart quotes → ASCII '
+        assert_eq!(escape_turtle_string("it\u{2019}s"), "it's");
+        // Low-9 and guillemets
+        assert_eq!(
+            escape_turtle_string("\u{201E}quoted\u{201F}"),
+            "\\\"quoted\\\""
+        );
+        assert_eq!(
+            escape_turtle_string("\u{00AB}guillemets\u{00BB}"),
+            "\\\"guillemets\\\""
+        );
+        // Mixed: smart quotes inside real content
+        assert_eq!(
+            escape_turtle_string("error: \u{201C}not found\u{201D}"),
+            "error: \\\"not found\\\""
+        );
     }
 
     #[test]
