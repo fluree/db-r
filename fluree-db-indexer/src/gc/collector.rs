@@ -28,19 +28,28 @@ struct IndexChainEntry {
     garbage_id: Option<ContentId>,
 }
 
-/// Extract the GC-relevant fields from an IRB1 index root blob.
+/// Extract the GC-relevant fields from an index root blob (FIR6 or IRB1).
 ///
 /// Returns `(index_t, prev_index_id, garbage_id)`.
 fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
+    // Try V6 (FIR6) first, fall back to V5 (IRB1).
+    if bytes.len() >= 4 && &bytes[0..4] == b"FIR6" {
+        let v6 = fluree_db_binary_index::IndexRootV6::decode(bytes).map_err(|e| {
+            crate::error::IndexerError::Serialization(format!("index root FIR6: {e}"))
+        })?;
+        let prev_id = v6.prev_index.map(|p| p.id);
+        let garbage_id = v6.garbage.map(|g| g.id);
+        return Ok((v6.index_t, prev_id, garbage_id));
+    }
     let v5 = fluree_db_binary_index::IndexRootV5::decode(bytes).map_err(|e| {
-        crate::error::IndexerError::Serialization(format!("index root: expected IRB1: {e}"))
+        crate::error::IndexerError::Serialization(format!("index root IRB1: {e}"))
     })?;
     let prev_id = v5.prev_index.map(|p| p.id);
     let garbage_id = v5.garbage.map(|g| g.id);
     Ok((v5.index_t, prev_id, garbage_id))
 }
 
-/// Derive a storage address from a ContentId.
+/// Derive a storage address from a ContentId using an explicit kind.
 fn derive_address(
     cid: &ContentId,
     kind: ContentKind,
@@ -48,6 +57,15 @@ fn derive_address(
     ledger_id: &str,
 ) -> String {
     fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex())
+}
+
+/// Derive a storage address from a ContentId using its embedded content kind.
+///
+/// Falls back to `ContentKind::IndexRoot` if the CID has no recognized kind
+/// (shouldn't happen in practice, but keeps GC tolerant).
+fn derive_address_from_cid(cid: &ContentId, storage_method: &str, ledger_id: &str) -> String {
+    let kind = cid.content_kind().unwrap_or(ContentKind::IndexRoot);
+    derive_address(cid, kind, storage_method, ledger_id)
 }
 
 /// Walk the prev-index chain starting from the current root CID.
@@ -67,12 +85,7 @@ async fn walk_prev_index_chain<S: Storage>(
     let mut current_id = current_root_id.clone();
 
     loop {
-        let address = derive_address(
-            &current_id,
-            ContentKind::IndexRoot,
-            storage_method,
-            ledger_id,
-        );
+        let address = derive_address_from_cid(&current_id, storage_method, ledger_id);
 
         // Load the db-root - if this fails on the first entry, propagate error.
         // For subsequent entries (prev_index links), treat as end of chain.
@@ -296,12 +309,8 @@ where
         }
 
         // Delete the old db-root
-        let root_addr = derive_address(
-            &entry_to_delete.root_id,
-            ContentKind::IndexRoot,
-            storage_method,
-            ledger_id,
-        );
+        let root_addr =
+            derive_address_from_cid(&entry_to_delete.root_id, storage_method, ledger_id);
         if let Err(e) = storage.delete(&root_addr).await {
             tracing::debug!(
                 address = %root_addr,

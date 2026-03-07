@@ -32,6 +32,7 @@ pub use format::index_root::{
     InlineOrderRouting, NamedGraphRouting, PackBranchEntry, SpatialArenaRefV5, VectorDictRef,
     VectorDictRefV5,
 };
+pub use format::index_root_v6::IndexRootV6;
 pub use format::leaf::read_leaf_header;
 pub use format::leaflet::{decode_leaflet_region1, decode_leaflet_region2, LeafletHeader};
 pub use format::run_record::{cmp_for_order, cmp_psot, cmp_spot, RunRecord, RunSortOrder};

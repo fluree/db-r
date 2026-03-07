@@ -819,7 +819,7 @@ mod tests {
         let mut builder = HistSidecarBuilder::new();
         builder.start_leaflet();
         for entry in &hist_entries {
-            builder.push_entry(entry.clone());
+            builder.push_entry(*entry);
         }
         let (sidecar_bytes, seg_refs) = builder.build();
         let sidecar_cid = fluree_db_core::ContentId::new(
@@ -895,7 +895,7 @@ mod tests {
         let mut builder = HistSidecarBuilder::new();
         builder.start_leaflet();
         for entry in &hist_entries {
-            builder.push_entry(entry.clone());
+            builder.push_entry(*entry);
         }
         let (sidecar_bytes, seg_refs) = builder.build();
         let sidecar_cid = fluree_db_core::ContentId::new(

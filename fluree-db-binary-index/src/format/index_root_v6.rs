@@ -877,6 +877,79 @@ impl IndexRootV6 {
             sketch_ref,
         })
     }
+    /// Collect all CAS content-artifact CIDs referenced by this root.
+    ///
+    /// Includes: dict artifacts, leaf CIDs + sidecar CIDs (default graph inline),
+    /// branch CIDs (named graphs), numbig, vectors, spatial, fulltext, sketch.
+    /// Does NOT include the root's own CID or the garbage manifest CID.
+    pub fn all_cas_ids(&self) -> Vec<ContentId> {
+        let mut ids = Vec::new();
+
+        // Forward dict pack CIDs
+        for entry in &self.dict_refs.forward_packs.string_fwd_packs {
+            ids.push(entry.pack_cid.clone());
+        }
+        for (_, ns_packs) in &self.dict_refs.forward_packs.subject_fwd_ns_packs {
+            for entry in ns_packs {
+                ids.push(entry.pack_cid.clone());
+            }
+        }
+
+        // Reverse dict tree CIDs
+        for tree in [
+            &self.dict_refs.subject_reverse,
+            &self.dict_refs.string_reverse,
+        ] {
+            ids.push(tree.branch.clone());
+            ids.extend(tree.leaves.iter().cloned());
+        }
+
+        // Per-graph arenas (numbig, vectors, spatial, fulltext)
+        for ga in &self.graph_arenas {
+            for (_, cid) in &ga.numbig {
+                ids.push(cid.clone());
+            }
+            for vdr in &ga.vectors {
+                ids.push(vdr.manifest.clone());
+                ids.extend(vdr.shards.iter().cloned());
+            }
+            for sar in &ga.spatial {
+                ids.push(sar.root_cid.clone());
+                ids.push(sar.manifest.clone());
+                ids.push(sar.arena.clone());
+                ids.extend(sar.leaflets.iter().cloned());
+            }
+            for ftr in &ga.fulltext {
+                ids.push(ftr.arena_cid.clone());
+            }
+        }
+
+        // Default graph inline leaves + sidecars (V6-specific: sidecar CIDs)
+        for dgo in &self.default_graph_orders {
+            for leaf in &dgo.leaves {
+                ids.push(leaf.leaf_cid.clone());
+                if let Some(ref sidecar) = leaf.sidecar_cid {
+                    ids.push(sidecar.clone());
+                }
+            }
+        }
+
+        // Named graph branch CIDs
+        for ng in &self.named_graphs {
+            for (_, branch_cid) in &ng.orders {
+                ids.push(branch_cid.clone());
+            }
+        }
+
+        // Sketch
+        if let Some(ref sketch) = self.sketch_ref {
+            ids.push(sketch.clone());
+        }
+
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 }
 
 // ============================================================================
@@ -1272,5 +1345,71 @@ mod tests {
             custom.datatype_iri.as_deref(),
             Some("http://example.org/myType")
         );
+    }
+
+    #[test]
+    fn all_cas_ids_includes_leaves_and_sidecars() {
+        use crate::format::branch_v3::LeafEntryV3;
+
+        let leaf_cid = ContentId::new(fluree_db_core::ContentKind::IndexLeaf, b"leaf1");
+        let sidecar_cid = ContentId::new(fluree_db_core::ContentKind::HistorySidecar, b"sc1");
+        let leaf_no_sc = ContentId::new(fluree_db_core::ContentKind::IndexLeaf, b"leaf2");
+        let branch_cid = ContentId::new(fluree_db_core::ContentKind::IndexBranch, b"br1");
+        let sketch_cid = ContentId::new(fluree_db_core::ContentKind::Commit, b"sketch1");
+
+        let zero_key = RunRecordV2 {
+            s_id: SubjectId::from(0u64),
+            o_key: 0,
+            p_id: 0,
+            t: 0,
+            o_i: 0,
+            o_type: 0,
+            g_id: 0,
+        };
+
+        let mut root = minimal_root_v6();
+        root.default_graph_orders = vec![DefaultGraphOrderV3 {
+            order: RunSortOrder::Spot,
+            leaves: vec![
+                LeafEntryV3 {
+                    first_key: zero_key,
+                    last_key: zero_key,
+                    row_count: 10,
+                    leaf_cid: leaf_cid.clone(),
+                    sidecar_cid: Some(sidecar_cid.clone()),
+                },
+                LeafEntryV3 {
+                    first_key: zero_key,
+                    last_key: zero_key,
+                    row_count: 5,
+                    leaf_cid: leaf_no_sc.clone(),
+                    sidecar_cid: None,
+                },
+            ],
+        }];
+        root.named_graphs = vec![NamedGraphRoutingV3 {
+            g_id: 1,
+            orders: vec![(RunSortOrder::Spot, branch_cid.clone())],
+        }];
+        root.sketch_ref = Some(sketch_cid.clone());
+
+        let ids = root.all_cas_ids();
+
+        // Leaf CIDs present
+        assert!(ids.contains(&leaf_cid), "missing leaf_cid");
+        assert!(ids.contains(&leaf_no_sc), "missing leaf without sidecar");
+        // Sidecar CID present
+        assert!(ids.contains(&sidecar_cid), "missing sidecar_cid");
+        // Branch CID present
+        assert!(ids.contains(&branch_cid), "missing branch_cid");
+        // Sketch present
+        assert!(ids.contains(&sketch_cid), "missing sketch_cid");
+        // Dict CIDs present (from minimal_root_v6)
+        assert!(ids.len() >= 5, "expected at least 5 CIDs, got {}", ids.len());
+        // No duplicates (sorted + deduped)
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(ids.len(), sorted.len(), "all_cas_ids has duplicates");
     }
 }
