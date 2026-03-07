@@ -41,9 +41,8 @@ fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<Co
         let garbage_id = v6.garbage.map(|g| g.id);
         return Ok((v6.index_t, prev_id, garbage_id));
     }
-    let v5 = fluree_db_binary_index::IndexRootV5::decode(bytes).map_err(|e| {
-        crate::error::IndexerError::Serialization(format!("index root IRB1: {e}"))
-    })?;
+    let v5 = fluree_db_binary_index::IndexRootV5::decode(bytes)
+        .map_err(|e| crate::error::IndexerError::Serialization(format!("index root IRB1: {e}")))?;
     let prev_id = v5.prev_index.map(|p| p.id);
     let garbage_id = v5.garbage.map(|g| g.id);
     Ok((v5.index_t, prev_id, garbage_id))
