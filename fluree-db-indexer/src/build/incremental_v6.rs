@@ -8,16 +8,14 @@
 //! ## Phases
 //!
 //! 1. **Resolve**: Load V6 root, walk new commits, produce `RunRecordV2` + ops
-//! 2. **Branch updates**: For each (graph, order), sort novelty by order,
-//!    fetch existing branch, call `update_branch_v3`, upload new blobs
-//! 3. **Dict updates**: Update reverse trees + forward packs for new subjects/strings
-//! 4. **Root assembly**: `IncrementalRootBuilderV6` → encode → CAS write → publish
-//!
-//! Deferred to later iterations:
-//! - Arena updates (numbig, vectors, spatial, fulltext)
-//! - Stats / HLL refresh
-//! - Schema refresh (rdfs:subClassOf / rdfs:subPropertyOf)
-//! - Named graph support (currently default graph only)
+//! 2. **Branch updates**: For each (graph, order) — including named graphs —
+//!    sort novelty by order, fetch existing branch, call `update_branch_v3`,
+//!    upload new blobs
+//! 3. **Arena updates**: NumBig, Vector, Spatial, Fulltext — patch affected
+//!    (g_id, p_id) arenas, carry forward unchanged ones by CID.
+//!    Stats / HLL refresh. Schema refresh (rdfs:subClassOf / rdfs:subPropertyOf).
+//! 4. **Dict updates**: Update reverse trees + forward packs for new subjects/strings
+//! 5. **Root assembly**: `IncrementalRootBuilderV6` → encode → CAS write → publish
 
 use std::sync::Arc;
 
@@ -612,7 +610,9 @@ where
     // and patching any (g_id, p_id) that have new/extended data.
     // The resolver already populated shared.numbigs/vectors/spatial_hook/fulltext_hook.
     {
-        use fluree_db_binary_index::format::index_root::{GraphArenaRefsV5, VectorDictRefV5};
+        use fluree_db_binary_index::format::index_root::{
+            GraphArenaRefsV5, SpatialArenaRefV5, VectorDictRefV5,
+        };
         use fluree_db_binary_index::FulltextArenaRefV5;
         use std::collections::BTreeMap;
 
@@ -1055,21 +1055,255 @@ where
             }
 
             // ---- Spatial arena rebuild (per affected predicate) ----
+            //
+            // For each (g_id, p_id) with novelty spatial entries, rebuild the
+            // spatial index from scratch: load all prior entries from the existing
+            // snapshot, combine with novelty, build + upload a new index.
+            // Unchanged spatial arenas carry forward by CID.
             if has_new_spatial {
-                // Spatial index rebuild is expensive (loads full prior snapshot).
-                // Deferred to future iteration — spatial arenas carry forward from
-                // base root unchanged for now. Log a warning.
-                tracing::warn!(
-                    "incremental V6: spatial arena update not yet implemented; \
-                     carrying forward base spatial arenas. Run a full rebuild to \
-                     update spatial indexes."
-                );
+                let spatial_entries = novelty
+                    .shared
+                    .spatial_hook
+                    .as_ref()
+                    .map(|h| h.entries())
+                    .unwrap_or(&[]);
+
+                // Group novelty entries by (g_id, p_id).
+                let mut grouped: BTreeMap<(u16, u32), Vec<&crate::spatial_hook::SpatialEntry>> =
+                    BTreeMap::new();
+                for entry in spatial_entries {
+                    grouped
+                        .entry((entry.g_id, entry.p_id))
+                        .or_default()
+                        .push(entry);
+                }
+
+                for ((g_id, p_id), new_entries) in grouped {
+                    let pred_iri = novelty
+                        .shared
+                        .predicates
+                        .resolve(p_id)
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let config = fluree_db_spatial::SpatialCreateConfig::new(
+                        format!("spatial:g{}p{}", g_id, p_id),
+                        ledger_id.to_string(),
+                        pred_iri.clone(),
+                    );
+                    let mut builder = fluree_db_spatial::SpatialIndexBuilder::new(config);
+
+                    // Load prior entries from the existing spatial snapshot (if any).
+                    let ga = arenas_by_gid.get(&g_id);
+                    let existing_ref = ga.and_then(|a| a.spatial.iter().find(|s| s.p_id == p_id));
+                    let mut prior_count = 0u64;
+
+                    if let Some(sp_ref) = existing_ref {
+                        // Load the SpatialIndexRoot + snapshot from CAS.
+                        let root_bytes =
+                            content_store.get(&sp_ref.root_cid).await.map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "spatial root load for g{}:p{}: {e}",
+                                    g_id, p_id
+                                ))
+                            })?;
+                        let spatial_root: fluree_db_spatial::SpatialIndexRoot =
+                            serde_json::from_slice(&root_bytes).map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "spatial root decode for g{}:p{}: {e}",
+                                    g_id, p_id
+                                ))
+                            })?;
+
+                        // Pre-fetch all blobs for the sync load_from_cas closure.
+                        let mut blob_cache: std::collections::HashMap<String, Vec<u8>> =
+                            std::collections::HashMap::new();
+                        for cid in [&sp_ref.manifest, &sp_ref.arena] {
+                            let bytes = content_store.get(cid).await.map_err(|e| {
+                                IndexerError::StorageRead(format!("spatial blob fetch: {e}"))
+                            })?;
+                            blob_cache.insert(cid.digest_hex(), bytes);
+                        }
+                        for leaflet_cid in &sp_ref.leaflets {
+                            let bytes = content_store.get(leaflet_cid).await.map_err(|e| {
+                                IndexerError::StorageRead(format!("spatial leaflet fetch: {e}"))
+                            })?;
+                            blob_cache.insert(leaflet_cid.digest_hex(), bytes);
+                        }
+
+                        let cache_arc = std::sync::Arc::new(blob_cache);
+                        match fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(
+                            spatial_root,
+                            move |hash| {
+                                cache_arc.get(hash).cloned().ok_or_else(|| {
+                                    fluree_db_spatial::error::SpatialError::ChunkNotFound(
+                                        hash.to_string(),
+                                    )
+                                })
+                            },
+                        ) {
+                            Ok(snapshot) => {
+                                let all_entries = snapshot
+                                    .cell_index()
+                                    .scan_range(0, u64::MAX)
+                                    .unwrap_or_default();
+                                for ce in &all_entries {
+                                    if let Some(arena_entry) = snapshot.arena().get(ce.geo_handle) {
+                                        if let Ok(wkt_str) = std::str::from_utf8(&arena_entry.wkt) {
+                                            let _ = builder.add_geometry(
+                                                ce.subject_id,
+                                                wkt_str,
+                                                ce.t,
+                                                ce.is_assert(),
+                                            );
+                                            prior_count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                return Err(IndexerError::IncrementalAbort(format!(
+                                    "spatial snapshot load failed for g_id={g_id}, \
+                                     p_id={p_id}: {e}; falling back to full rebuild \
+                                     for correctness"
+                                )));
+                            }
+                        }
+                    }
+
+                    // Feed novelty entries.
+                    for entry in &new_entries {
+                        let _ = builder.add_geometry(
+                            entry.subject_id,
+                            &entry.wkt,
+                            entry.t,
+                            entry.is_assert,
+                        );
+                    }
+
+                    let build_result = builder.build().map_err(|e| {
+                        IndexerError::Other(format!("spatial build g{}:p{}: {e}", g_id, p_id))
+                    })?;
+
+                    if build_result.entries.is_empty() {
+                        continue;
+                    }
+
+                    // Upload via the same two-phase pattern as the full build.
+                    let mut pending_blobs: Vec<(String, Vec<u8>)> = Vec::new();
+                    let write_result = build_result
+                        .write_to_cas(|bytes| {
+                            use sha2::{Digest, Sha256};
+                            let hash_hex = hex::encode(Sha256::digest(bytes));
+                            pending_blobs.push((hash_hex.clone(), bytes.to_vec()));
+                            Ok(hash_hex)
+                        })
+                        .map_err(|e| IndexerError::Other(format!("spatial CAS build: {e}")))?;
+
+                    for (_hash, blob_bytes) in &pending_blobs {
+                        storage
+                            .content_write_bytes(ContentKind::SpatialIndex, ledger_id, blob_bytes)
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    }
+
+                    // Build CIDs.
+                    let spatial_codec = ContentKind::SpatialIndex.to_codec();
+                    let root_json = serde_json::to_vec(&write_result.root)
+                        .map_err(|e| IndexerError::Other(format!("spatial root serialize: {e}")))?;
+                    let root_cas = storage
+                        .content_write_bytes(ContentKind::SpatialIndex, ledger_id, &root_json)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let root_cid =
+                        ContentId::from_hex_digest(spatial_codec, &root_cas.content_hash)
+                            .ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial root hash for g_id={g_id}, p_id={p_id}: {}",
+                                    root_cas.content_hash
+                                ))
+                            })?;
+                    let manifest_cid =
+                        ContentId::from_hex_digest(spatial_codec, &write_result.manifest_address)
+                            .ok_or_else(|| {
+                            IndexerError::StorageWrite(format!(
+                                "invalid spatial manifest hash for g_id={g_id}, p_id={p_id}: {}",
+                                write_result.manifest_address
+                            ))
+                        })?;
+                    let arena_cid =
+                        ContentId::from_hex_digest(spatial_codec, &write_result.arena_address)
+                            .ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial arena hash for g_id={g_id}, p_id={p_id}: {}",
+                                    write_result.arena_address
+                                ))
+                            })?;
+                    let leaflet_cids: Vec<ContentId> = write_result
+                        .leaflet_addresses
+                        .iter()
+                        .enumerate()
+                        .map(|(i, h)| {
+                            ContentId::from_hex_digest(spatial_codec, h).ok_or_else(|| {
+                                IndexerError::StorageWrite(format!(
+                                    "invalid spatial leaflet hash [{i}] for \
+                                     g_id={g_id}, p_id={p_id}: {h}"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let new_ref = SpatialArenaRefV5 {
+                        p_id,
+                        root_cid,
+                        manifest: manifest_cid,
+                        arena: arena_cid,
+                        leaflets: leaflet_cids,
+                    };
+
+                    // Replace or insert in graph arenas.
+                    let ga = arenas_by_gid
+                        .entry(g_id)
+                        .or_insert_with(|| GraphArenaRefsV5 {
+                            g_id,
+                            numbig: Vec::new(),
+                            vectors: Vec::new(),
+                            spatial: Vec::new(),
+                            fulltext: vec![],
+                        });
+
+                    if let Some(pos) = ga.spatial.iter().position(|s| s.p_id == p_id) {
+                        // GC old spatial CIDs.
+                        let old = &ga.spatial[pos];
+                        root_builder.add_replaced_cids(vec![
+                            old.root_cid.clone(),
+                            old.manifest.clone(),
+                            old.arena.clone(),
+                        ]);
+                        root_builder.add_replaced_cids(old.leaflets.clone());
+                        ga.spatial[pos] = new_ref;
+                    } else {
+                        ga.spatial.push(new_ref);
+                        ga.spatial.sort_by_key(|s| s.p_id);
+                    }
+
+                    tracing::info!(
+                        g_id,
+                        p_id,
+                        predicate = %pred_iri,
+                        prior_entries = prior_count,
+                        novelty_entries = new_entries.len(),
+                        "incremental V6: spatial index rebuilt for (graph, predicate)"
+                    );
+                }
             }
 
             let updated_arenas: Vec<GraphArenaRefsV5> = arenas_by_gid.into_values().collect();
             root_builder.set_graph_arenas(updated_arenas);
 
-            tracing::info!("Phase 3a complete: arena updates (numbig + vectors + fulltext)");
+            tracing::info!(
+                "Phase 3a complete: arena updates (numbig + vectors + fulltext + spatial)"
+            );
         }
     }
 
