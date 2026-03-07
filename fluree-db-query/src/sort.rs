@@ -33,7 +33,9 @@ fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Bin
             i_val,
             t,
         } => {
-            let val = gv.decode_value(*o_kind, *o_key, *p_id).ok()?;
+            let val = gv
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                .ok()?;
             match val {
                 FlakeValue::Ref(sid) => Some(Binding::Sid(sid)),
                 other => {

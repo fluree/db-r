@@ -126,19 +126,13 @@ pub struct GraphDb {
     reasoning_precedence: ReasoningModePrecedence,
 
     // ========================================================================
-    // Binary index store (optional, v2 only)
+    // Binary index store (optional)
     // ========================================================================
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
     /// When set, `ScanOperator` uses this for direct columnar scans
     /// via `BinaryScanOperator`.
     pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
-
-    /// V6 binary columnar index store for V3 format scans.
-    ///
-    /// When set, takes priority over `binary_store` (V5) for query execution.
-    pub(crate) binary_store_v6:
-        Option<Arc<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>>,
 
     /// Dictionary novelty layer for binary scan subject/string lookups.
     pub(crate) dict_novelty: Option<Arc<DictNovelty>>,
@@ -224,7 +218,6 @@ impl GraphDb {
             reasoning: None,
             reasoning_precedence: ReasoningModePrecedence::default(),
             binary_store: None,
-            binary_store_v6: None,
             dict_novelty: None,
             default_context: None,
             ledger_config: None,
@@ -260,12 +253,6 @@ impl GraphDb {
             .binary_store
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
-        // Extract binary_store_v6 from LedgerState's TypeErasedStore
-        gdb.binary_store_v6 = ledger.binary_store_v6.as_ref().and_then(|te| {
-            Arc::clone(&te.0)
-                .downcast::<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>()
-                .ok()
-        });
         gdb.default_context = ledger.default_context.clone();
         gdb
     }
@@ -347,16 +334,11 @@ impl GraphDb {
             base.ledger_id(),
         );
         gdb.dict_novelty = Some(base.dict_novelty.clone());
-        // Carry binary stores from the base ledger state
+        // Carry binary store from the base ledger state
         gdb.binary_store = base
             .binary_store
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
-        gdb.binary_store_v6 = base.binary_store_v6.as_ref().and_then(|te| {
-            Arc::clone(&te.0)
-                .downcast::<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>()
-                .ok()
-        });
         Ok(gdb)
     }
 
@@ -383,16 +365,11 @@ impl GraphDb {
             base.t(),
             base.ledger_id(),
         );
-        // Carry binary stores from the base ledger state
+        // Carry binary store from the base ledger state
         gdb.binary_store = base
             .binary_store
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
-        gdb.binary_store_v6 = base.binary_store_v6.as_ref().and_then(|te| {
-            Arc::clone(&te.0)
-                .downcast::<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>()
-                .ok()
-        });
         gdb
     }
 }
@@ -456,15 +433,6 @@ impl GraphDb {
     /// Attach a binary index store for `BinaryScanOperator`.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>) -> Self {
         self.binary_store = Some(store);
-        self
-    }
-
-    /// Attach a V6 binary index store for V3 format scans.
-    pub fn with_binary_store_v6(
-        mut self,
-        store: Arc<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>,
-    ) -> Self {
-        self.binary_store_v6 = Some(store);
         self
     }
 

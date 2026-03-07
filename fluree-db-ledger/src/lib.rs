@@ -110,11 +110,6 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
-    /// Type-erased V6 binary index store (concrete type: `Arc<BinaryIndexStoreV6>`).
-    ///
-    /// Set by `Fluree::ledger()` when a V6 (FIR6) binary index is available.
-    /// Takes priority over `binary_store` (V5) for query execution.
-    pub binary_store_v6: Option<TypeErasedStore>,
     /// Default JSON-LD @context for this ledger.
     ///
     /// Captured from turtle @prefix declarations during import and augmented
@@ -182,7 +177,6 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
-                    binary_store_v6: None,
                     default_context: None,
                     spatial_indexes: None,
                 });
@@ -200,7 +194,6 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
-            binary_store_v6: None,
             default_context: None,
             spatial_indexes: None,
         })
@@ -290,7 +283,6 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
-            binary_store_v6: None,
             default_context: None,
             spatial_indexes: None,
         }
@@ -580,89 +572,28 @@ mod tests {
         )
     }
 
-    /// Helper: build minimal IRB1 root bytes for testing.
+    /// Helper: build minimal FIR6 root bytes for testing.
     ///
-    /// Only populates ledger_id, index_t, and namespace_codes.
-    /// All other sections are empty/zero.
-    fn build_test_irb1(ledger_id: &str, index_t: i64, ns_codes: &[(u16, &str)]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"IRB1"); // magic
-        buf.push(3); // version (v3: per-graph arenas)
+    /// Only populates ledger_id and index_t — enough for `from_fir6_header`.
+    fn build_test_fir6(ledger_id: &str, index_t: i64) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64);
+        buf.extend_from_slice(b"FIR6"); // magic
+        buf.push(1); // version
         buf.push(0); // flags (no optional sections)
         buf.extend_from_slice(&0u16.to_le_bytes()); // pad
         buf.extend_from_slice(&index_t.to_le_bytes()); // index_t
         buf.extend_from_slice(&0i64.to_le_bytes()); // base_t
-
-        // Ledger ID
+                                                    // Ledger ID (u16 length prefix + UTF-8 bytes)
         let lid = ledger_id.as_bytes();
         buf.extend_from_slice(&(lid.len() as u16).to_le_bytes());
         buf.extend_from_slice(lid);
-
-        buf.push(0); // subject_id_encoding = Narrow
-
-        // Namespace codes
-        buf.extend_from_slice(&(ns_codes.len() as u16).to_le_bytes());
-        for &(code, prefix) in ns_codes {
-            buf.extend_from_slice(&code.to_le_bytes());
-            let pb = prefix.as_bytes();
-            buf.extend_from_slice(&(pb.len() as u16).to_le_bytes());
-            buf.extend_from_slice(pb);
-        }
-
-        // Predicate SIDs (empty)
-        buf.extend_from_slice(&0u32.to_le_bytes());
-
-        // Small dict inlines: graph_iris, datatype_iris, language_tags (all empty)
-        for _ in 0..3 {
-            buf.extend_from_slice(&0u16.to_le_bytes());
-        }
-
-        // Dict refs (v3 format): forward packs + 2 reverse trees (no flat numbig/vectors)
-        let dummy_cid = ContentId::new(ContentKind::IndexRoot, b"dummy");
-        let cid_bytes = dummy_cid.to_bytes();
-        // String forward packs (0 packs)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        // Subject forward packs (0 namespaces)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        // Subject reverse tree: branch CID + 0 leaves
-        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&cid_bytes);
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        // String reverse tree: branch CID + 0 leaves
-        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&cid_bytes);
-        buf.extend_from_slice(&0u32.to_le_bytes());
-
-        // Per-graph arenas (v3: 0 graphs with arenas)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-
-        // Watermarks (empty)
-        buf.extend_from_slice(&0u16.to_le_bytes()); // 0 subject watermarks
-        buf.extend_from_slice(&0u32.to_le_bytes()); // string_watermark = 0
-
-        // Cumulative commit stats (3x u64 = 0)
-        for _ in 0..3 {
-            buf.extend_from_slice(&0u64.to_le_bytes());
-        }
-
-        // Default graph routing (0 orders)
-        buf.push(0);
-
-        // Named graph routing (0 graphs)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-
         buf
     }
 
-    /// Helper: store IRB1 root bytes via the content store and return the CID.
-    async fn store_index_root(
-        storage: &MemoryStorage,
-        ledger_id: &str,
-        index_t: i64,
-        ns_codes: &[(u16, &str)],
-    ) -> ContentId {
+    /// Helper: store FIR6 root bytes via the content store and return the CID.
+    async fn store_index_root(storage: &MemoryStorage, ledger_id: &str, index_t: i64) -> ContentId {
         let store = content_store_for(storage.clone(), ledger_id);
-        let bytes = build_test_irb1(ledger_id, index_t, ns_codes);
+        let bytes = build_test_fir6(ledger_id, index_t);
         store.put(ContentKind::IndexRoot, &bytes).await.unwrap()
     }
 
@@ -763,8 +694,8 @@ mod tests {
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
 
-        // Create an IRB1 index root at t=1 and store via CAS
-        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, ""), (1, "@")]).await;
+        // Create an FIR6 index root at t=1 and store via CAS
+        let index_cid = store_index_root(&storage, "test:main", 1).await;
         let store = content_store_for(storage.clone(), "test:main");
 
         // Apply the index
@@ -785,8 +716,8 @@ mod tests {
 
         let mut state = LedgerState::new(snapshot, novelty);
 
-        // Create an IRB1 root for a different ledger, but store under test:main's CAS space
-        let bytes = build_test_irb1("other:ledger", 1, &[(0, "")]);
+        // Create an FIR6 root for a different ledger, but store under test:main's CAS space
+        let bytes = build_test_fir6("other:ledger", 1);
         let store = content_store_for(storage.clone(), "test:main");
         let index_cid = store.put(ContentKind::IndexRoot, &bytes).await.unwrap();
 
@@ -799,8 +730,8 @@ mod tests {
     async fn test_apply_index_stale() {
         let storage = MemoryStorage::new();
 
-        // Create an IRB1 root at t=2
-        let index_cid_t2 = store_index_root(&storage, "test:main", 2, &[(0, "")]).await;
+        // Create an FIR6 root at t=2
+        let index_cid_t2 = store_index_root(&storage, "test:main", 2).await;
 
         // Load the LedgerSnapshot from CAS for current state
         let store = content_store_for(storage.clone(), "test:main");
@@ -810,8 +741,8 @@ mod tests {
         let mut state = LedgerState::new(snapshot, novelty);
         assert_eq!(state.index_t(), 2);
 
-        // Create an older IRB1 root at t=1
-        let index_cid_t1 = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
+        // Create an older FIR6 root at t=1
+        let index_cid_t1 = store_index_root(&storage, "test:main", 1).await;
 
         // Should fail with stale index error
         let cs = content_store_for(storage.clone(), "test:main");
@@ -823,8 +754,8 @@ mod tests {
     async fn test_apply_index_equal_t_noop() {
         let storage = MemoryStorage::new();
 
-        // Create an IRB1 root at t=1
-        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
+        // Create an FIR6 root at t=1
+        let index_cid = store_index_root(&storage, "test:main", 1).await;
 
         // Load LedgerSnapshot from CAS
         let store = content_store_for(storage.clone(), "test:main");
@@ -833,9 +764,11 @@ mod tests {
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(snapshot, novelty);
 
-        // Create another IRB1 root at same t (different bytes produce different CID)
-        let index_cid_same =
-            store_index_root(&storage, "test:main", 1, &[(0, ""), (99, "extra")]).await;
+        // Create another FIR6 root at same t (append extra bytes to produce different CID)
+        let store2 = content_store_for(storage.clone(), "test:main");
+        let mut bytes2 = build_test_fir6("test:main", 1);
+        bytes2.extend_from_slice(b"extra-padding");
+        let index_cid_same = store2.put(ContentKind::IndexRoot, &bytes2).await.unwrap();
 
         // Should succeed as no-op (equal t)
         let cs = content_store_for(storage.clone(), "test:main");

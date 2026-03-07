@@ -23,7 +23,9 @@ pub use class_property::{
     batch_lookup_subject_classes, compute_class_property_stats_parallel, ClassPropertyExtractor,
     ClassPropertyStatsResult,
 };
-pub use class_stats::{build_class_stat_entries, build_class_stats_json};
+pub use class_stats::{
+    build_class_stat_entries, build_class_stats_json, SpotClassStats, DT_REF_ID,
+};
 pub use hashing::{subject_hash, value_hash, value_hash_v2};
 pub use id_hook::{
     stats_record_from_v2, GraphPropertyKey, IdPropertyHll, IdStatsHook, IdStatsResult, StatsRecord,

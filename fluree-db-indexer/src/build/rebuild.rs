@@ -2,25 +2,18 @@
 //!
 //! Walks the entire commit chain from genesis, resolves all commits into
 //! sorted run files, builds per-graph leaf/branch indexes for all sort
-//! orders, and writes an `IndexRootV5` (IRB1) or `IndexRootV6` (FIR6)
-//! descriptor to storage.
+//! orders, and writes an `IndexRoot` (FIR6) descriptor to storage.
 
-use fluree_db_binary_index::{
-    BinaryGarbageRef, BinaryIndexStore, BinaryPrevIndexRef, DictRefsV5, FulltextArenaRefV5,
-    GraphArenaRefsV5, IndexRootV5, RunRecord, RunSortOrder, SpatialArenaRefV5, VectorDictRefV5,
-};
-use fluree_db_core::{ContentId, ContentKind, ContentStore, GraphId, Storage};
+use fluree_db_binary_index::{GraphArenaRefs, RunRecord, VectorDictRef};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
 
 use crate::error::{IndexerError, Result};
 use crate::run_index;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
-use super::spatial::build_and_upload_spatial_indexes;
 use super::upload::cid_from_write;
-use super::upload::upload_indexes_to_cas;
 use super::upload_dicts::upload_dicts_from_disk;
 
-use crate::gc;
 use tracing::Instrument;
 
 ///
@@ -44,7 +37,6 @@ pub async fn rebuild_index_from_commits<S>(
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-    use_v3: bool,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -81,7 +73,7 @@ where
     // Capture values for the blocking task
     let storage = storage.clone();
     let ledger_id = ledger_id.to_string();
-    let prev_root_id = record.index_head_id.clone();
+    let _prev_root_id = record.index_head_id.clone();
     let commit_t = record.commit_t;
     let handle = tokio::runtime::Handle::current();
     let parent_span = tracing::Span::current();
@@ -241,7 +233,7 @@ where
             // Remap spatial entries' chunk-local subject IDs → global sid64.
             // The spatial hook accumulated entries with chunk-local s_id values;
             // spatial_chunk_ranges[ci] = (start, end) into entries for chunk ci.
-            let spatial_entries: Vec<crate::spatial_hook::SpatialEntry> = {
+            let _spatial_entries: Vec<crate::spatial_hook::SpatialEntry> = {
                 let mut all_entries = shared
                     .spatial_hook
                     .take()
@@ -270,7 +262,7 @@ where
             // Remap fulltext entries' chunk-local string IDs → global string IDs.
             // The fulltext hook accumulated entries with chunk-local string_id values;
             // fulltext_chunk_ranges[ci] = (start, end) into entries for chunk ci.
-            let fulltext_entries: Vec<crate::fulltext_hook::FulltextEntry> = {
+            let _fulltext_entries: Vec<crate::fulltext_hook::FulltextEntry> = {
                 let mut all_entries = shared
                     .fulltext_hook
                     .take()
@@ -500,507 +492,124 @@ where
             );
             drop(_span_c);
 
-            // ---- V3 branch: build FLI3/FBR3 + FIR6 root ----
-            //
-            // If use_v3 is true, branch into the V3 build path here.
-            // This produces FLI3/FBR3 leaves + FIR6 root instead of
-            // V1 SPOT/secondary + IRB1 root. The V2 path below is
-            // completely unchanged.
-            if use_v3 {
-                {
-                    let _span_v3 = tracing::debug_span!("v3_rebuild").entered();
+            // ---- Build FLI3/FBR3 + FIR6 root ----
+            let _span_v3 = tracing::debug_span!("v3_rebuild").entered();
 
-                    // Build OTypeRegistry from custom datatype IRIs.
-                    let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize;
-                    let custom_dt_iris: Vec<String> = (reserved..shared.datatypes.len() as usize)
-                        .filter_map(|i| shared.datatypes.resolve(i as u32).map(|s| s.to_string()))
-                        .collect();
-                    let registry =
-                        fluree_db_core::o_type_registry::OTypeRegistry::new(&custom_dt_iris);
+            // Build OTypeRegistry from custom datatype IRIs.
+            let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize;
+            let custom_dt_iris: Vec<String> = (reserved..shared.datatypes.len() as usize)
+                .filter_map(|i| shared.datatypes.resolve(i as u32).map(|s| s.to_string()))
+                .collect();
+            let registry = fluree_db_core::o_type_registry::OTypeRegistry::new(&custom_dt_iris);
 
-                    // Collect all graph IDs: g_id 0 (default) + named graphs (1+).
-                    // Graph IRI list maps dict_index → graph IRI, where g_id = dict_index + 1
-                    // (g_id=0 is always the default graph, g_id=1 is always txn-meta).
-                    let all_g_ids: Vec<u16> = {
-                        let mut ids = vec![0u16]; // default graph
-                        for g_idx in 0..shared.graphs.len() {
-                            let g_id = (g_idx + 1) as u16;
-                            if !ids.contains(&g_id) {
-                                ids.push(g_id);
-                            }
-                        }
-                        ids
-                    };
-
-                    tracing::info!(
-                        graph_count = all_g_ids.len(),
-                        g_ids = ?all_g_ids,
-                        "V3 rebuild: building indexes for all graphs"
-                    );
-
-                    // Phase D-V3: Build FLI3/FBR3 per graph from globally-remapped .fsc files.
-                    // Each graph gets its own run dir and build call, then results are merged.
-                    let mut merged_order_results: Vec<(
-                        fluree_db_binary_index::format::run_record::RunSortOrder,
-                        crate::run_index::build::index_build_v2::IndexBuildV2Result,
-                    )> = Vec::new();
-                    let mut total_rows = 0u64;
-                    let mut total_remap_ms = 0u128;
-                    let mut total_build_ms = 0u128;
-
-                    for &g_id in &all_g_ids {
-                        let v3_run_dir = run_dir.join(format!("v3_runs_g{g_id}"));
-                        std::fs::create_dir_all(&v3_run_dir)
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        let v3_config = crate::V3BuildConfig {
-                            run_dir: v3_run_dir,
-                            index_dir: index_dir.clone(),
-                            g_id,
-                            leaflet_target_rows: config.leaflet_rows,
-                            leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
-                            zstd_level: 1,
-                            run_budget_bytes: config.run_budget_bytes,
-                            progress: None,
-                        };
-
-                        let v3_result = crate::build_v3_indexes_from_remapped_commits(
-                            &sorted_commit_infos,
-                            &registry,
-                            &v3_config,
-                        )
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        tracing::info!(
-                            g_id,
-                            total_rows = v3_result.total_rows,
-                            orders = v3_result.order_results.len(),
-                            remap_ms = v3_result.remap_elapsed.as_millis(),
-                            build_ms = v3_result.build_elapsed.as_millis(),
-                            "Phase D-V3: graph indexes built"
-                        );
-
-                        if g_id == 0 {
-                            total_rows = v3_result.total_rows;
-                        }
-                        total_remap_ms += v3_result.remap_elapsed.as_millis();
-                        total_build_ms += v3_result.build_elapsed.as_millis();
-
-                        // Merge order results: append graph results into matching orders.
-                        for (order, order_result) in v3_result.order_results {
-                            if let Some((_, existing)) =
-                                merged_order_results.iter_mut().find(|(o, _)| *o == order)
-                            {
-                                existing.graphs.extend(order_result.graphs);
-                                existing.total_rows += order_result.total_rows;
-                            } else {
-                                merged_order_results.push((order, order_result));
-                            }
-                        }
+            // Collect all graph IDs: g_id 0 (default) + named graphs (1+).
+            // Graph IRI list maps dict_index → graph IRI, where g_id = dict_index + 1
+            // (g_id=0 is always the default graph, g_id=1 is always txn-meta).
+            let all_g_ids: Vec<u16> = {
+                let mut ids = vec![0u16]; // default graph
+                for g_idx in 0..shared.graphs.len() {
+                    let g_id = (g_idx + 1) as u16;
+                    if !ids.contains(&g_id) {
+                        ids.push(g_id);
                     }
+                }
+                ids
+            };
 
-                    // Wrap merged results into a V3BuildResult for the upload path.
-                    let v3_result = crate::V3BuildResult {
-                        order_results: merged_order_results,
-                        total_rows,
-                        total_remapped: 0,
-                        remap_elapsed: std::time::Duration::from_millis(total_remap_ms as u64),
-                        build_elapsed: std::time::Duration::from_millis(total_build_ms as u64),
-                    };
+            tracing::info!(
+                graph_count = all_g_ids.len(),
+                g_ids = ?all_g_ids,
+                "V3 rebuild: building indexes for all graphs"
+            );
 
-                    tracing::info!(
-                        total_rows = v3_result.total_rows,
-                        graphs = all_g_ids.len(),
-                        "Phase D-V3 complete: all graph indexes built"
-                    );
+            // Phase D-V3: Build FLI3/FBR3 per graph from globally-remapped .fsc files.
+            // Each graph gets its own run dir and build call, then results are merged.
+            let mut merged_order_results: Vec<(
+                fluree_db_binary_index::format::run_record::RunSortOrder,
+                crate::run_index::build::index_build::IndexBuildResult,
+            )> = Vec::new();
+            let mut total_rows = 0u64;
+            let mut total_remap_ms = 0u128;
+            let mut total_build_ms = 0u128;
 
-                    // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
-                    // by reading all sorted commit files and feeding IdStatsHook.
-                    //
-                    // IMPORTANT: use stats_record_from_v2 (V2 hashing) so sketches
-                    // are compatible with V6 incremental refresh. Convert V1 RunRecord
-                    // to V2 RunRecordV2 via the OTypeRegistry before hashing.
-                    let rdf_type_p_id = shared
-                        .predicates
-                        .get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+            for &g_id in &all_g_ids {
+                let v3_run_dir = run_dir.join(format!("v3_runs_g{g_id}"));
+                std::fs::create_dir_all(&v3_run_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-                    let mut stats_hook = crate::stats::IdStatsHook::new();
-                    stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+                let v3_config = crate::BuildConfig {
+                    run_dir: v3_run_dir,
+                    index_dir: index_dir.clone(),
+                    g_id,
+                    leaflet_target_rows: config.leaflet_rows,
+                    leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
+                    zstd_level: 1,
+                    run_budget_bytes: config.run_budget_bytes,
+                    progress: None,
+                };
 
-                    for info in &sorted_commit_infos {
-                        let reader = run_index::SpoolReader::open(&info.path, info.record_count)
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let v3_result = crate::build_indexes_from_remapped_commits(
+                    &sorted_commit_infos,
+                    &registry,
+                    &v3_config,
+                )
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-                        for result in reader {
-                            let record =
-                                result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                            // Convert V1 → V2 so we use value_hash_v2 (compatible
-                            // with V6 incremental's stats_record_from_v2).
-                            let v2 =
-                                fluree_db_binary_index::format::run_record_v2::RunRecordV2::from_v1(
-                                    &record, &registry,
-                                );
-                            let sr = crate::stats::stats_record_from_v2(&v2, record.op);
-                            stats_hook.on_record(&sr);
-                        }
+                tracing::info!(
+                    g_id,
+                    total_rows = v3_result.total_rows,
+                    orders = v3_result.order_results.len(),
+                    remap_ms = v3_result.remap_elapsed.as_millis(),
+                    build_ms = v3_result.build_elapsed.as_millis(),
+                    "Phase D-V3: graph indexes built"
+                );
+
+                if g_id == 0 {
+                    total_rows = v3_result.total_rows;
+                }
+                total_remap_ms += v3_result.remap_elapsed.as_millis();
+                total_build_ms += v3_result.build_elapsed.as_millis();
+
+                // Merge order results: append graph results into matching orders.
+                for (order, order_result) in v3_result.order_results {
+                    if let Some((_, existing)) =
+                        merged_order_results.iter_mut().find(|(o, _)| *o == order)
+                    {
+                        existing.graphs.extend(order_result.graphs);
+                        existing.total_rows += order_result.total_rows;
+                    } else {
+                        merged_order_results.push((order, order_result));
                     }
-
-                    // Upload HLL sketches to CAS (must happen before finalize
-                    // consumes the hook).
-                    let sketch_ref = {
-                        let sketch_blob = crate::stats::HllSketchBlob::from_properties(
-                            commit_t,
-                            stats_hook.properties(),
-                        );
-                        if !sketch_blob.entries.is_empty() {
-                            let sketch_bytes = sketch_blob.to_json_bytes().map_err(|e| {
-                                IndexerError::StorageWrite(format!("sketch serialize: {e}"))
-                            })?;
-                            let sketch_wr = storage
-                                .content_write_bytes(
-                                    ContentKind::StatsSketch,
-                                    &ledger_id,
-                                    &sketch_bytes,
-                                )
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                            let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
-                            tracing::info!(
-                                %cid,
-                                bytes = sketch_wr.size_bytes,
-                                entries = sketch_blob.entries.len(),
-                                "Phase D-V3 stats: HLL sketch uploaded"
-                            );
-                            Some(cid)
-                        } else {
-                            None
-                        }
-                    };
-
-                    let id_stats_result = stats_hook.finalize();
-
-                    // Build the full IndexStats for the FIR6 root.
-                    let trie_for_stats =
-                        fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
-                    let db_stats = {
-                        use fluree_db_core::index_stats as is;
-
-                        // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
-                        // Aggregate across graphs by p_id.
-                        struct PropAgg {
-                            count: u64,
-                            ndv_values: u64,
-                            ndv_subjects: u64,
-                            last_modified_t: i64,
-                            datatypes: Vec<(u8, u64)>,
-                        }
-                        let mut agg: std::collections::HashMap<u32, PropAgg> =
-                            std::collections::HashMap::new();
-                        for g in &id_stats_result.graphs {
-                            for p in &g.properties {
-                                let e = agg.entry(p.p_id).or_insert(PropAgg {
-                                    count: 0,
-                                    ndv_values: 0,
-                                    ndv_subjects: 0,
-                                    last_modified_t: 0,
-                                    datatypes: Vec::new(),
-                                });
-                                e.count += p.count;
-                                e.ndv_values = e.ndv_values.max(p.ndv_values);
-                                e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
-                                e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
-                                for &(dt, cnt) in &p.datatypes {
-                                    if let Some(existing) =
-                                        e.datatypes.iter_mut().find(|(d, _)| *d == dt)
-                                    {
-                                        existing.1 += cnt;
-                                    } else {
-                                        e.datatypes.push((dt, cnt));
-                                    }
-                                }
-                            }
-                        }
-                        let properties: Vec<is::PropertyStatEntry> = agg
-                            .into_iter()
-                            .map(|(p_id, pa)| {
-                                let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                                let (ns, name) = match trie_for_stats.longest_match(iri) {
-                                    Some((code, prefix_len)) => {
-                                        (code, iri[prefix_len..].to_string())
-                                    }
-                                    None => (0u16, iri.to_string()),
-                                };
-                                is::PropertyStatEntry {
-                                    sid: (ns, name),
-                                    count: pa.count,
-                                    ndv_values: pa.ndv_values,
-                                    ndv_subjects: pa.ndv_subjects,
-                                    last_modified_t: pa.last_modified_t,
-                                    datatypes: pa.datatypes,
-                                }
-                            })
-                            .collect();
-
-                        is::IndexStats {
-                            flakes: id_stats_result.total_flakes,
-                            size: 0,
-                            properties: Some(properties),
-                            classes: None, // Class stats deferred (requires batched PSOT).
-                            graphs: Some(id_stats_result.graphs),
-                        }
-                    };
-
-                    tracing::info!(
-                        total_flakes = db_stats.flakes,
-                        property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
-                        graph_count = db_stats.graphs.as_ref().map_or(0, |g| g.len()),
-                        "Phase D-V3 stats: collected"
-                    );
-
-                    // Schema extraction during rebuild requires SID resolution via
-                    // forward dicts (not yet uploaded at this point). Schema will be
-                    // populated during the first incremental index after rebuild,
-                    // matching V5 behavior.
-                    let db_schema: Option<fluree_db_core::IndexSchema> = None;
-
-                    // Phase E-V3: Upload V3 artifacts to CAS.
-                    let v3_uploaded =
-                        super::upload::upload_v3_indexes_to_cas(&storage, &ledger_id, &v3_result)
-                            .instrument(tracing::debug_span!("upload_v3_indexes"))
-                            .await?;
-
-                    // Phase F-V3: Upload dicts + assemble FIR6 root.
-                    let uploaded_dicts =
-                        upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes)
-                            .instrument(tracing::debug_span!("upload_dicts_v3"))
-                            .await?;
-
-                    // Build namespace codes BTreeMap from shared.ns_prefixes.
-                    let ns_codes: std::collections::BTreeMap<u16, String> = shared
-                        .ns_prefixes
-                        .iter()
-                        .map(|(&k, v)| (k, v.clone()))
-                        .collect();
-
-                    // Build predicate_sids from shared.predicates + PrefixTrie.
-                    let trie =
-                        fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
-                    let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
-                        .map(|p_id| {
-                            let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                            match trie.longest_match(iri) {
-                                Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                                None => (0u16, iri.to_string()),
-                            }
-                        })
-                        .collect();
-
-                    // Datatype and language tag lists for the root.
-                    let datatype_iris = uploaded_dicts.datatype_iris.clone();
-                    let language_tags = uploaded_dicts.language_tags.clone();
-
-                    // Graph arenas (numbig, vectors) — same conversion as V2 path.
-                    let dr = &uploaded_dicts.dict_refs;
-                    let mut graph_ids = std::collections::BTreeSet::new();
-                    for g_id_str in dr.numbig.keys() {
-                        if let Ok(g_id) = g_id_str.parse::<u16>() {
-                            graph_ids.insert(g_id);
-                        }
-                    }
-                    for g_id_str in dr.vectors.keys() {
-                        if let Ok(g_id) = g_id_str.parse::<u16>() {
-                            graph_ids.insert(g_id);
-                        }
-                    }
-                    let graph_arenas: Vec<GraphArenaRefsV5> = graph_ids
-                        .into_iter()
-                        .map(|g_id| {
-                            let g_id_str = g_id.to_string();
-                            let numbig: Vec<(u32, ContentId)> = dr
-                                .numbig
-                                .get(&g_id_str)
-                                .map(|m| {
-                                    m.iter()
-                                        .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let vectors: Vec<VectorDictRefV5> = dr
-                                .vectors
-                                .get(&g_id_str)
-                                .map(|m| {
-                                    m.iter()
-                                        .map(|(k, v)| VectorDictRefV5 {
-                                            p_id: k.parse::<u32>().unwrap_or(0),
-                                            manifest: v.manifest.clone(),
-                                            shards: v.shards.clone(),
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            GraphArenaRefsV5 {
-                                g_id,
-                                numbig,
-                                vectors,
-                                spatial: Vec::new(),
-                                fulltext: vec![],
-                            }
-                        })
-                        .collect();
-
-                    // Compute total_rows for stats.
-                    let total_rows = v3_result.total_rows;
-
-                    let fir6_inputs = super::root_assembly::Fir6Inputs {
-                        ledger_id: ledger_id.clone(),
-                        index_t: commit_t,
-                        namespace_codes: ns_codes,
-                        predicate_sids,
-                        uploaded_dicts,
-                        v3_uploaded,
-                        graph_arenas,
-                        datatype_iris,
-                        language_tags,
-                        total_commit_size,
-                        total_asserts,
-                        total_retracts,
-                        db_stats: Some(db_stats),
-                        db_schema,
-                        sketch_ref,
-                    };
-
-                    let result = super::root_assembly::encode_and_write_root_v6(
-                        &storage,
-                        fir6_inputs,
-                        None, // GC chain deferred for V3 milestone.
-                        IndexStats {
-                            flake_count: total_rows as usize,
-                            leaf_count: v3_result
-                                .order_results
-                                .iter()
-                                .flat_map(|(_, r)| r.graphs.iter())
-                                .map(|g| g.leaf_infos.len())
-                                .sum(),
-                            branch_count: v3_result.order_results.len(),
-                            total_bytes: 0, // Will be filled from root_bytes.
-                        },
-                    )
-                    .await?;
-
-                    drop(_span_v3);
-
-                    // Clean up ephemeral tmp_import session directory.
-                    if let Err(e) = std::fs::remove_dir_all(&run_dir) {
-                        tracing::warn!(?run_dir, %e, "failed to clean up tmp_import session dir");
-                    }
-
-                    return Ok(result);
                 }
             }
 
-            // ---- Phase D: Build SPOT from sorted commits ----
-            // Records are already remapped to global IDs, so use identity remaps.
-            let p_width = fluree_db_binary_index::format::leaflet::p_width_for_max(
-                shared.predicates.len().saturating_sub(1),
-            );
-            if shared.datatypes.len() > 256 {
-                return Err(IndexerError::StorageWrite(format!(
-                    "datatype dictionary too large for u8 encoding ({} > 256)",
-                    shared.datatypes.len()
-                )));
-            }
-            let dt_width: u8 = 1; // datatypes u8-encoded (validated above)
-
-            // Build ClassBitsetTable from .types sidecars (IDs are already global).
-            let identity_remap = run_index::spool::IdentitySubjectRemap;
-            let bitset_inputs: Vec<(&std::path::Path, &run_index::spool::IdentitySubjectRemap)> =
-                sorted_commit_infos
-                    .iter()
-                    .filter_map(|info| {
-                        info.types_map_path
-                            .as_ref()
-                            .map(|p| (p.as_path(), &identity_remap))
-                    })
-                    .collect();
-
-            let class_bitset = if !bitset_inputs.is_empty() {
-                let table = run_index::ClassBitsetTable::build_from_type_maps(&bitset_inputs)
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                tracing::info!(
-                    classes = table.class_count(),
-                    "class bitset table built for SPOT merge"
-                );
-                Some(table)
-            } else {
-                None
+            // Wrap merged results into a BuildResult for the upload path.
+            let v3_result = crate::BuildResult {
+                order_results: merged_order_results,
+                total_rows,
+                total_remapped: 0,
+                remap_elapsed: std::time::Duration::from_millis(total_remap_ms as u64),
+                build_elapsed: std::time::Duration::from_millis(total_build_ms as u64),
             };
-
-            let spot_inputs: Vec<
-                run_index::SortedCommitInput<
-                    run_index::spool::IdentitySubjectRemap,
-                    run_index::spool::IdentityStringRemap,
-                >,
-            > = sorted_commit_infos
-                .iter()
-                .map(|info| run_index::SortedCommitInput {
-                    commit_path: info.path.clone(),
-                    subject_remap: run_index::spool::IdentitySubjectRemap,
-                    string_remap: run_index::spool::IdentityStringRemap,
-                    lang_remap: vec![], // language tags are global, no remap needed
-                })
-                .collect();
-
-            let spot_config = run_index::SpotFromCommitsConfig {
-                index_dir: index_dir.clone(),
-                p_width,
-                dt_width,
-                leaflet_rows: config.leaflet_rows,
-                leaflets_per_leaf: config.leaflets_per_leaf,
-                zstd_level: 1,
-                progress: None,
-                skip_dedup: false,   // rebuild needs dedup
-                skip_region3: false, // rebuild needs history journal
-                rdf_type_p_id: Some(rdf_type_p_id),
-                class_bitset,
-            };
-
-            let (spot_result, spot_class_stats) =
-                run_index::build_spot_from_sorted_commits(spot_inputs, spot_config)
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             tracing::info!(
-                graphs = spot_result.graphs.len(),
-                total_rows = spot_result.graphs.iter().map(|g| g.total_rows).sum::<u64>(),
-                "Phase D complete: SPOT built"
+                total_rows = v3_result.total_rows,
+                graphs = all_g_ids.len(),
+                "Phase D-V3 complete: all graph indexes built"
             );
 
-            // ---- Phase E: Build secondary indexes (PSOT/POST/OPST) ----
-            // Read sorted commit files, partition records by graph, collect
-            // per-property HLL stats, then build per-graph secondary indexes.
+            // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
+            // by reading all sorted commit files and feeding IdStatsHook.
             //
-            // Each graph's indexes live in their own directory — the run wire
-            // format (34 bytes) does not carry g_id because it is implicit
-            // from the directory path. We use g_id_override in IndexBuildConfig
-            // so the index builder creates the correct graph_{g_id}/ output.
-
-            let dt_tags: &[fluree_db_core::value_id::ValueTypeTag] = &shared.dt_tags;
+            // IMPORTANT: use stats_record_from_v2 (V2 hashing) so sketches
+            // are compatible with V6 incremental refresh. Convert V1 RunRecord
+            // to V2 RunRecordV2 via the OTypeRegistry before hashing.
+            let rdf_type_p_id = shared
+                .predicates
+                .get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
 
             let mut stats_hook = crate::stats::IdStatsHook::new();
             stats_hook.set_rdf_type_p_id(rdf_type_p_id);
-
-            let secondary_orders = RunSortOrder::secondary_orders();
-            let phase_e_start = std::time::Instant::now();
-
-            // E.1: Read sorted commit files, partition by g_id, collect stats,
-            //      and write per-graph run files via MultiOrderRunWriter.
-            let _span_e12 = tracing::debug_span!("secondary_partition").entered();
-            let remap_dir = run_dir.join("remap");
-            std::fs::create_dir_all(&remap_dir)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            let mut graph_writers: std::collections::BTreeMap<u16, run_index::MultiOrderRunWriter> =
-                std::collections::BTreeMap::new();
-            let mut lang_dict = shared.languages.clone();
 
             for info in &sorted_commit_infos {
                 let reader = run_index::SpoolReader::open(&info.path, info.record_count)
@@ -1008,311 +617,177 @@ where
 
                 for result in reader {
                     let record = result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                    // Collect per-property HLL stats from globally-remapped records.
-                    let sr = run_index::spool::stats_record_for_remapped_run_record(
-                        &record,
-                        Some(dt_tags),
+                    // Convert V1 → V2 so we use value_hash_v2 (compatible
+                    // with V6 incremental's stats_record_from_v2).
+                    let v2 = fluree_db_binary_index::format::run_record_v2::RunRecordV2::from_v1(
+                        &record, &registry,
                     );
+                    let sr = crate::stats::stats_record_from_v2(&v2, record.op);
                     stats_hook.on_record(&sr);
+                }
+            }
 
-                    // Push to per-graph writer (creates lazily on first record).
-                    let g_id = record.g_id;
-                    let writer = match graph_writers.entry(g_id) {
-                        std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
-                        std::collections::btree_map::Entry::Vacant(e) => {
-                            let graph_run_dir = remap_dir.join(format!("graph_{g_id}"));
-                            let mo_config = run_index::MultiOrderConfig {
-                                orders: secondary_orders.to_vec(),
-                                base_run_dir: graph_run_dir,
-                                total_budget_bytes: config.run_budget_bytes,
-                            };
-                            let w = run_index::MultiOrderRunWriter::new(mo_config)
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                            e.insert(w)
+            // Upload HLL sketches to CAS (must happen before finalize
+            // consumes the hook).
+            let sketch_ref = {
+                let sketch_blob =
+                    crate::stats::HllSketchBlob::from_properties(commit_t, stats_hook.properties());
+                if !sketch_blob.entries.is_empty() {
+                    let sketch_bytes = sketch_blob.to_json_bytes().map_err(|e| {
+                        IndexerError::StorageWrite(format!("sketch serialize: {e}"))
+                    })?;
+                    let sketch_wr = storage
+                        .content_write_bytes(ContentKind::StatsSketch, &ledger_id, &sketch_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                    tracing::info!(
+                        %cid,
+                        bytes = sketch_wr.size_bytes,
+                        entries = sketch_blob.entries.len(),
+                        "Phase D-V3 stats: HLL sketch uploaded"
+                    );
+                    Some(cid)
+                } else {
+                    None
+                }
+            };
+
+            let id_stats_result = stats_hook.finalize();
+
+            // Build the full IndexStats for the FIR6 root.
+            let trie_for_stats =
+                fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
+            let db_stats = {
+                use fluree_db_core::index_stats as is;
+
+                // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
+                // Aggregate across graphs by p_id.
+                struct PropAgg {
+                    count: u64,
+                    ndv_values: u64,
+                    ndv_subjects: u64,
+                    last_modified_t: i64,
+                    datatypes: Vec<(u8, u64)>,
+                }
+                let mut agg: std::collections::HashMap<u32, PropAgg> =
+                    std::collections::HashMap::new();
+                for g in &id_stats_result.graphs {
+                    for p in &g.properties {
+                        let e = agg.entry(p.p_id).or_insert(PropAgg {
+                            count: 0,
+                            ndv_values: 0,
+                            ndv_subjects: 0,
+                            last_modified_t: 0,
+                            datatypes: Vec::new(),
+                        });
+                        e.count += p.count;
+                        e.ndv_values = e.ndv_values.max(p.ndv_values);
+                        e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                        e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                        for &(dt, cnt) in &p.datatypes {
+                            if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
+                                existing.1 += cnt;
+                            } else {
+                                e.datatypes.push((dt, cnt));
+                            }
                         }
-                    };
-                    writer
-                        .push(record, &mut lang_dict)
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                }
-            }
-
-            // E.2: Flush per-graph writers → per-graph run files.
-            let mut graph_run_results: std::collections::BTreeMap<
-                u16,
-                Vec<(RunSortOrder, run_index::RunWriterResult)>,
-            > = std::collections::BTreeMap::new();
-
-            for (g_id, writer) in graph_writers {
-                let results = writer
-                    .finish(&mut lang_dict)
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                graph_run_results.insert(g_id, results);
-            }
-            drop(_span_e12);
-
-            // E.3: Build per-graph secondary indexes from the run files.
-            let mut secondary_results: Vec<(RunSortOrder, run_index::IndexBuildResult)> =
-                Vec::new();
-
-            for &order in secondary_orders {
-                let mut all_graph_results: Vec<run_index::GraphIndexResult> = Vec::new();
-                let mut total_rows: u64 = 0;
-
-                for (&g_id, results) in &graph_run_results {
-                    let order_result = results.iter().find(|(o, _)| *o == order);
-                    let Some((_, writer_result)) = order_result else {
-                        continue;
-                    };
-                    if writer_result.run_files.is_empty() {
-                        continue;
                     }
-
-                    let run_paths: Vec<std::path::PathBuf> = writer_result
-                        .run_files
-                        .iter()
-                        .map(|rf| rf.path.clone())
-                        .collect();
-
-                    let config = run_index::IndexBuildConfig {
-                        run_dir: remap_dir
-                            .join(format!("graph_{g_id}"))
-                            .join(order.dir_name()),
-                        dicts_dir: run_dir.clone(),
-                        index_dir: index_dir.clone(),
-                        sort_order: order,
-                        leaflet_rows: config.leaflet_rows,
-                        leaflets_per_leaf: config.leaflets_per_leaf,
-                        zstd_level: 1,
-                        persist_lang_dict: false,
-                        progress: None,
-                        skip_dedup: false,
-                        skip_region3: false,
-                        g_id_override: Some(g_id),
-                    };
-
-                    let result = run_index::build_index_from_run_paths(config, run_paths)
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                    total_rows += result.total_rows;
-                    all_graph_results.extend(result.graphs);
                 }
-
-                secondary_results.push((
-                    order,
-                    run_index::IndexBuildResult {
-                        graphs: all_graph_results,
-                        total_rows,
-                        index_dir: index_dir.clone(),
-                        elapsed: phase_e_start.elapsed(),
-                    },
-                ));
-            }
-
-            // Combine SPOT + secondary results.
-            let mut build_results: Vec<(RunSortOrder, run_index::IndexBuildResult)> = Vec::new();
-            build_results.push((RunSortOrder::Spot, spot_result));
-            build_results.extend(secondary_results);
-
-            let total_records: u64 = build_results
-                .iter()
-                .filter(|(o, _)| *o == RunSortOrder::Spot)
-                .flat_map(|(_, r)| r.graphs.iter())
-                .map(|g| g.total_rows)
-                .sum();
-
-            tracing::info!(
-                secondary_count = build_results.len() - 1,
-                "Phase E complete: secondary indexes built"
-            );
-
-            // ---- Phase E.5: Build spatial indexes from collected geometry entries ----
-            let spatial_arena_refs: Vec<(GraphId, Vec<SpatialArenaRefV5>)> = {
-                if spatial_entries.is_empty() {
-                    vec![]
-                } else {
-                    build_and_upload_spatial_indexes(
-                        &spatial_entries,
-                        &shared.predicates,
-                        &ledger_id,
-                        &storage,
-                    )
-                    .await?
-                }
-            };
-
-            // ---- Phase E.6: Build fulltext arenas from collected entries ----
-            let fulltext_arena_refs: Vec<(GraphId, Vec<FulltextArenaRefV5>)> = {
-                if fulltext_entries.is_empty() {
-                    vec![]
-                } else {
-                    super::fulltext::build_and_upload_fulltext_arenas(
-                        &fulltext_entries,
-                        &string_merge,
-                        &ledger_id,
-                        &storage,
-                    )
-                    .await?
-                }
-            };
-
-            // ---- Phase F: Upload artifacts to CAS and write v4 root ----
-
-            // F.1: Load store for max_t / base_t / namespace_codes
-            let cache = std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(64));
-            let store = BinaryIndexStore::load(&run_dir, &index_dir, cache)
-                .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-
-            // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).
-            let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
-                .map(|p_id| {
-                    let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                    let sid = store.encode_iri(iri);
-                    (sid.namespace_code, sid.name.as_ref().to_string())
-                })
-                .collect();
-
-            // F.2: Upload dictionary artifacts to CAS
-            // The rebuild pipeline uses SharedResolverState instead of GlobalDicts,
-            // so we use upload_dicts_from_disk which reads the flat files we already wrote.
-            let dict_addresses =
-                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, store.namespace_codes())
-                    .instrument(tracing::debug_span!("upload_dicts"))
-                    .await?;
-
-            // F.3: Upload index artifacts (branches + leaves) to CAS.
-            // Default graph (g_id=0): leaves uploaded, branch NOT (inline in root).
-            // Named graphs: both branches and leaves uploaded.
-            let uploaded_indexes = upload_indexes_to_cas(&storage, &ledger_id, &build_results)
-                .instrument(tracing::debug_span!("upload_indexes"))
-                .await?;
-
-            // F.4: Build HLL sketch blob and IndexStats from IdStatsHook + class stats.
-            let _span_f = tracing::debug_span!("build_index_root").entered();
-
-            // Create sketch blob BEFORE finalize_with_aggregate_properties() consumes
-            // the hook. This borrows properties() which is consumed by finalize.
-            let sketch_blob = crate::stats::HllSketchBlob::from_properties(
-                store.max_t(),
-                stats_hook.properties(),
-            );
-            let sketch_ref = if !sketch_blob.entries.is_empty() {
-                let sketch_bytes = sketch_blob
-                    .to_json_bytes()
-                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
-                let sketch_wr = storage
-                    .content_write_bytes(ContentKind::StatsSketch, &ledger_id, &sketch_bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
-                tracing::debug!(
-                    %cid,
-                    bytes = sketch_wr.size_bytes,
-                    entries = sketch_blob.entries.len(),
-                    "HLL sketch blob uploaded"
-                );
-                Some(cid)
-            } else {
-                None
-            };
-            let index_stats: fluree_db_core::index_stats::IndexStats = {
-                let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
-                    stats_hook.finalize_with_aggregate_properties();
-
-                // Per-graph stats (already the correct type).
-                let mut graphs = id_result.graphs;
-
-                // Aggregate properties: convert from p_id-keyed to SID-keyed.
-                let properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
-                    .iter()
-                    .filter_map(|p| {
-                        let sid = predicate_sids.get(p.p_id as usize)?;
-                        Some(fluree_db_core::index_stats::PropertyStatEntry {
-                            sid: (sid.0, sid.1.clone()),
-                            count: p.count,
-                            ndv_values: p.ndv_values,
-                            ndv_subjects: p.ndv_subjects,
-                            last_modified_t: p.last_modified_t,
-                            datatypes: p.datatypes.clone(),
-                        })
+                let properties: Vec<is::PropertyStatEntry> = agg
+                    .into_iter()
+                    .map(|(p_id, pa)| {
+                        let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                        let (ns, name) = match trie_for_stats.longest_match(iri) {
+                            Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                            None => (0u16, iri.to_string()),
+                        };
+                        is::PropertyStatEntry {
+                            sid: (ns, name),
+                            count: pa.count,
+                            ndv_values: pa.ndv_values,
+                            ndv_subjects: pa.ndv_subjects,
+                            last_modified_t: pa.last_modified_t,
+                            datatypes: pa.datatypes,
+                        }
                     })
                     .collect();
 
-                // Class stats from SPOT merge (per-graph).
-                let mut per_graph_classes = if let Some(ref cs) = spot_class_stats {
-                    crate::stats::build_class_stat_entries(
-                        cs,
-                        &predicate_sids,
-                        &shared.dt_tags,
-                        &dict_addresses.language_tags,
-                        &run_dir,
-                        store.namespace_codes(),
-                    )
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                } else {
-                    std::collections::HashMap::new()
-                };
-
-                // Inject per-graph class stats into each GraphStatsEntry.
-                for g in &mut graphs {
-                    g.classes = per_graph_classes.remove(&g.g_id);
-                }
-
-                // Derive root-level classes as union of all per-graph classes.
-                let classes = fluree_db_core::index_stats::union_per_graph_classes(&graphs);
-
-                tracing::info!(
-                    property_stats = properties.len(),
-                    graph_count = graphs.len(),
-                    class_count = classes.as_ref().map_or(0, |c| c.len()),
-                    total_flakes = id_result.total_flakes,
-                    "stats collected from IdStatsHook"
-                );
-
-                fluree_db_core::index_stats::IndexStats {
-                    flakes: id_result.total_flakes,
-                    size: total_commit_size,
-                    properties: if properties.is_empty() {
-                        None
-                    } else {
-                        Some(properties)
-                    },
-                    classes,
-                    graphs: Some(graphs),
+                is::IndexStats {
+                    flakes: id_stats_result.total_flakes,
+                    size: 0,
+                    properties: Some(properties),
+                    classes: None, // Class stats deferred (requires batched PSOT).
+                    graphs: Some(id_stats_result.graphs),
                 }
             };
 
-            // F.5: Convert DictRefs (string-keyed maps) → DictRefsV5 + GraphArenaRefsV5.
-            //
-            // numbig and vectors are now per-graph in DictRefs.
-            let (dict_refs_v5, graph_arenas) = {
-                let dr = dict_addresses.dict_refs;
+            tracing::info!(
+                total_flakes = db_stats.flakes,
+                property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
+                graph_count = db_stats.graphs.as_ref().map_or(0, |g| g.len()),
+                "Phase D-V3 stats: collected"
+            );
 
-                let dict_refs = DictRefsV5 {
-                    forward_packs: dr.forward_packs,
-                    subject_reverse: dr.subject_reverse,
-                    string_reverse: dr.string_reverse,
-                };
+            // Schema extraction during rebuild requires SID resolution via
+            // forward dicts (not yet uploaded at this point). Schema will be
+            // populated during the first incremental index after rebuild,
+            // matching V5 behavior.
+            let db_schema: Option<fluree_db_core::IndexSchema> = None;
 
-                // Collect all graph IDs that have numbig or vector arenas.
+            // Phase E-V3: Upload V3 artifacts to CAS.
+            let v3_uploaded =
+                super::upload::upload_indexes_to_cas(&storage, &ledger_id, &v3_result)
+                    .instrument(tracing::debug_span!("upload_v3_indexes"))
+                    .await?;
+
+            // Phase F-V3: Upload dicts + assemble FIR6 root.
+            let uploaded_dicts =
+                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes)
+                    .instrument(tracing::debug_span!("upload_dicts_v3"))
+                    .await?;
+
+            // Build namespace codes BTreeMap from shared.ns_prefixes.
+            let ns_codes: std::collections::BTreeMap<u16, String> = shared
+                .ns_prefixes
+                .iter()
+                .map(|(&k, v)| (k, v.clone()))
+                .collect();
+
+            // Build predicate_sids from shared.predicates + PrefixTrie.
+            let trie = fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
+            let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
+                .map(|p_id| {
+                    let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                    match trie.longest_match(iri) {
+                        Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                        None => (0u16, iri.to_string()),
+                    }
+                })
+                .collect();
+
+            // Datatype and language tag lists for the root.
+            let datatype_iris = uploaded_dicts.datatype_iris.clone();
+            let language_tags = uploaded_dicts.language_tags.clone();
+
+            // Graph arenas (numbig, vectors) — build from uploaded_dicts CIDs.
+            let graph_arenas: Vec<GraphArenaRefs> = {
                 let mut graph_ids = std::collections::BTreeSet::new();
-                for g_id_str in dr.numbig.keys() {
+                for g_id_str in uploaded_dicts.numbig.keys() {
                     if let Ok(g_id) = g_id_str.parse::<u16>() {
                         graph_ids.insert(g_id);
                     }
                 }
-                for g_id_str in dr.vectors.keys() {
+                for g_id_str in uploaded_dicts.vectors.keys() {
                     if let Ok(g_id) = g_id_str.parse::<u16>() {
                         graph_ids.insert(g_id);
                     }
                 }
-
-                let mut arenas: Vec<GraphArenaRefsV5> = graph_ids
+                graph_ids
                     .into_iter()
                     .map(|g_id| {
                         let g_id_str = g_id.to_string();
-                        let numbig: Vec<(u32, ContentId)> = dr
+                        let numbig: Vec<(u32, ContentId)> = uploaded_dicts
                             .numbig
                             .get(&g_id_str)
                             .map(|m| {
@@ -1321,20 +796,12 @@ where
                                     .collect()
                             })
                             .unwrap_or_default();
-                        let vectors: Vec<VectorDictRefV5> = dr
+                        let vectors: Vec<VectorDictRef> = uploaded_dicts
                             .vectors
                             .get(&g_id_str)
-                            .map(|m| {
-                                m.iter()
-                                    .map(|(k, v)| VectorDictRefV5 {
-                                        p_id: k.parse::<u32>().unwrap_or(0),
-                                        manifest: v.manifest.clone(),
-                                        shards: v.shards.clone(),
-                                    })
-                                    .collect()
-                            })
+                            .map(|m| m.values().cloned().collect())
                             .unwrap_or_default();
-                        GraphArenaRefsV5 {
+                        GraphArenaRefs {
                             g_id,
                             numbig,
                             vectors,
@@ -1342,178 +809,56 @@ where
                             fulltext: vec![],
                         }
                     })
-                    .collect();
-                // Merge spatial arena refs into graph arenas.
-                for (g_id, spatial_refs) in spatial_arena_refs {
-                    if let Some(ga) = arenas.iter_mut().find(|ga| ga.g_id == g_id) {
-                        ga.spatial = spatial_refs;
-                    } else {
-                        arenas.push(GraphArenaRefsV5 {
-                            g_id,
-                            numbig: vec![],
-                            vectors: vec![],
-                            spatial: spatial_refs,
-                            fulltext: vec![],
-                        });
-                    }
-                }
-                // Merge fulltext arena refs into graph arenas.
-                for (g_id, ft_refs) in fulltext_arena_refs {
-                    if let Some(ga) = arenas.iter_mut().find(|ga| ga.g_id == g_id) {
-                        ga.fulltext = ft_refs;
-                    } else {
-                        arenas.push(GraphArenaRefsV5 {
-                            g_id,
-                            numbig: vec![],
-                            vectors: vec![],
-                            spatial: vec![],
-                            fulltext: ft_refs,
-                        });
-                    }
-                }
-
-                (dict_refs, arenas)
+                    .collect()
             };
 
-            // F.6: Build IndexRootV5 (binary IRB1) from upload results.
-            let ns_codes: std::collections::BTreeMap<u16, String> = store
-                .namespace_codes()
-                .iter()
-                .map(|(&k, v)| (k, v.clone()))
-                .collect();
+            // Compute total_rows for stats.
+            let total_rows = v3_result.total_rows;
 
-            let mut root = IndexRootV5 {
+            let fir6_inputs = super::root_assembly::Fir6Inputs {
                 ledger_id: ledger_id.clone(),
-                index_t: store.max_t(),
-                base_t: store.base_t(),
-                subject_id_encoding: dict_addresses.subject_id_encoding,
+                index_t: commit_t,
                 namespace_codes: ns_codes,
                 predicate_sids,
-                graph_iris: dict_addresses.graph_iris,
-                datatype_iris: dict_addresses.datatype_iris,
-                language_tags: dict_addresses.language_tags,
-                dict_refs: dict_refs_v5,
-                subject_watermarks: dict_addresses.subject_watermarks,
-                string_watermark: dict_addresses.string_watermark,
+                uploaded_dicts,
+                v3_uploaded,
+                graph_arenas,
+                datatype_iris,
+                language_tags,
                 total_commit_size,
                 total_asserts,
                 total_retracts,
-                graph_arenas,
-                default_graph_orders: uploaded_indexes.default_graph_orders,
-                named_graphs: uploaded_indexes.named_graphs,
-                stats: Some(index_stats),
-                schema: None, // schema: requires predicate definitions (future)
-                prev_index: None,
-                garbage: None,
+                db_stats: Some(db_stats),
+                db_schema,
                 sketch_ref,
             };
 
-            // F.7: Compute garbage and link prev_index for GC chain.
-            //
-            // Strategy: use all_cas_ids() on both old and new roots to
-            // compute the set difference. Both sides use the same enumeration.
-            //
-            // IRB1-only: decode the previous root to compute garbage set difference.
-            // If the previous root cannot be decoded, GC chain starts fresh here.
-            if let Some(prev_id) = prev_root_id.as_ref() {
-                let prev_bytes = content_store.get(prev_id).await.ok();
-                let prev_cas_ids: Option<(i64, Vec<ContentId>)> =
-                    prev_bytes.as_deref().and_then(|b| {
-                        IndexRootV5::decode(b)
-                            .ok()
-                            .map(|v5| (v5.index_t, v5.all_cas_ids()))
-                    });
+            let result = super::root_assembly::encode_and_write_root_v6(
+                &storage,
+                fir6_inputs,
+                None, // GC chain deferred for V3 milestone.
+                IndexStats {
+                    flake_count: total_rows as usize,
+                    leaf_count: v3_result
+                        .order_results
+                        .iter()
+                        .flat_map(|(_, r)| r.graphs.iter())
+                        .map(|g| g.leaf_infos.len())
+                        .sum(),
+                    branch_count: v3_result.order_results.len(),
+                    total_bytes: 0, // Will be filled from root_bytes.
+                },
+            )
+            .await?;
 
-                if let Some((prev_t, old_ids_vec)) = prev_cas_ids {
-                    let old_ids: std::collections::HashSet<ContentId> =
-                        old_ids_vec.into_iter().collect();
-                    let new_ids: std::collections::HashSet<ContentId> =
-                        root.all_cas_ids().into_iter().collect();
-                    let garbage_cids: Vec<ContentId> =
-                        old_ids.difference(&new_ids).cloned().collect();
+            drop(_span_v3);
 
-                    let garbage_count = garbage_cids.len();
-
-                    let garbage_strings: Vec<String> =
-                        garbage_cids.iter().map(|c| c.to_string()).collect();
-                    root.garbage = gc::write_garbage_record(
-                        &storage,
-                        &ledger_id,
-                        store.max_t(),
-                        garbage_strings,
-                    )
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                    .map(|id| BinaryGarbageRef { id });
-
-                    root.prev_index = Some(BinaryPrevIndexRef {
-                        t: prev_t,
-                        id: prev_id.clone(),
-                    });
-
-                    tracing::info!(
-                        prev_t,
-                        garbage_count,
-                        "GC chain linked to previous index root"
-                    );
-                }
-            }
-
-            tracing::info!(
-                index_t = root.index_t,
-                base_t = root.base_t,
-                default_orders = root.default_graph_orders.len(),
-                named_graphs = root.named_graphs.len(),
-                "binary index built (IRB1), writing CAS root"
-            );
-
-            // F.8: Encode IRB1 root and write to CAS.
-            let root_bytes = root.encode();
-            let write_result = storage
-                .content_write_bytes(
-                    fluree_db_core::ContentKind::IndexRoot,
-                    &ledger_id,
-                    &root_bytes,
-                )
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            drop(_span_f);
-
-            // Clean up ephemeral tmp_import session directory
+            // Clean up ephemeral tmp_import session directory.
             if let Err(e) = std::fs::remove_dir_all(&run_dir) {
                 tracing::warn!(?run_dir, %e, "failed to clean up tmp_import session dir");
             }
 
-            // Compute stats from build results
-            let total_leaves: usize = build_results
-                .iter()
-                .flat_map(|(_, r)| r.graphs.iter())
-                .map(|g| g.leaf_count as usize)
-                .sum();
-
-            // Derive ContentId from the root's content hash
-            let root_id = fluree_db_core::ContentId::from_hex_digest(
-                fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
-                &write_result.content_hash,
-            )
-            .ok_or_else(|| {
-                IndexerError::StorageWrite(format!(
-                    "invalid content_hash from write result: {}",
-                    write_result.content_hash
-                ))
-            })?;
-
-            Ok(IndexResult {
-                root_id,
-                index_t: root.index_t,
-                ledger_id: ledger_id.to_string(),
-                stats: IndexStats {
-                    flake_count: total_records as usize,
-                    leaf_count: total_leaves,
-                    branch_count: build_results.len(),
-                    total_bytes: root_bytes.len(),
-                },
-            })
+            Ok(result)
         })
     })
     .await

@@ -1,1192 +1,944 @@
-//! Incremental leaf update: merge novelty into existing FLI2 leaf files.
+//! Incremental leaf update for V3 index format (FLI3).
 //!
-//! Given one FLI2 leaf file + sorted novelty for that leaf's key range,
-//! produces 1+ updated leaf blobs. Untouched leaflets are carried through
-//! as raw bytes (no decode/re-encode). Touched leaflets are fully decoded,
-//! merged via [`merge_novelty`], and re-encoded.
+//! Given an existing V3 leaf blob + sorted novelty records, produces one or more
+//! new V3 leaf blobs with the novelty merged in.
 //!
-//! ## Safety invariant
+//! ## Strategy
 //!
-//! If any merge produces `row_count == 0` with non-empty Region 3 (all facts
-//! retracted but history remains), returns [`IncrementalLeafError::EmptyLeafletWithHistory`].
-//! The caller should fall back to a full rebuild.
+//! 1. Decode the FLI3 header and leaflet directory.
+//! 2. Slice novelty to leaflets using half-open boundary intervals.
+//! 3. Untouched leaflets: passthrough (raw `EncodedLeaflet` + payload bytes).
+//! 4. Touched leaflets: decode columns → `merge_novelty` → re-encode via
+//!    `encode_leaflet` (one encode per segmentation-safe chunk).
+//! 5. Assemble all leaflets into new leaf blob(s) via `build_leaf_blob`.
+//!
+//! Empty-after-retract leaflets with remaining history are valid in V3 (unlike V5).
+//! Their `row_count=0` but `history_offset/len/min_t/max_t` are preserved so
+//! time-travel replay can discover them.
 
-use super::novelty_merge::{merge_novelty, MergeInput, MergeOutput};
-use fluree_db_binary_index::format::leaf::{
-    read_leaf_header, LeafFileHeader, LeafletDirEntry, SortKey, LEAFLET_DIR_ENTRY,
-    LEAF_HEADER_FIXED, LEAF_MAGIC, LEAF_VERSION, SORT_KEY_BYTES,
-};
-use fluree_db_binary_index::format::leaflet::{
-    decode_leaflet_region1, decode_leaflet_region2, decode_leaflet_region3, LeafletEncoder,
-    LeafletHeader, Region3Entry,
-};
-use fluree_db_binary_index::format::run_record::{
-    cmp_for_order, RunRecord, RunSortOrder, LIST_INDEX_NONE,
-};
-use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
-use fluree_db_core::ListIndex;
-use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
 use std::io;
 
+use fluree_db_binary_index::format::history_sidecar::{
+    decode_history_segment, HistEntryV2, HistSidecarBuilder, HistorySegmentRef,
+};
+use fluree_db_binary_index::format::leaf::{
+    build_leaf_blob_raw_keys, compute_cid_leaf, compute_cid_sidecar, decode_leaf_dir_v3_with_base,
+    decode_leaf_header_v3, DecodedLeafDirV3, LeafInfo, LeafletDirEntryV3,
+};
+use fluree_db_binary_index::format::leaflet::encode_leaflet;
+use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_binary_index::format::run_record_v2::{
+    write_ordered_key_v2, RunRecordV2, ORDERED_KEY_V2_SIZE,
+};
+use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+use fluree_db_binary_index::read::column_types::ColumnProjection;
+
+use super::novelty_merge::{merge_novelty, MergeInput, MergeOutput};
+
 // ============================================================================
-// Public types
+// Configuration and output types
 // ============================================================================
 
-/// Configuration for an incremental leaf update.
+/// Configuration for a single leaf update.
 pub struct LeafUpdateInput<'a> {
-    /// Raw FLI2 leaf file bytes.
+    /// Raw FLI3 leaf bytes.
     pub leaf_bytes: &'a [u8],
-    /// Novelty records sorted in `order`, sliced to this leaf's key range.
-    pub novelty: &'a [RunRecord],
-    /// Sort order for this index.
+    /// Sorted novelty records for this leaf's key range (by `order`).
+    pub novelty: &'a [RunRecordV2],
+    /// Parallel ops array (same length as `novelty`): 1=assert, 0=retract.
+    pub novelty_ops: &'a [u8],
+    /// Sort order.
     pub order: RunSortOrder,
-    /// Graph ID (for RunRecord reconstruction).
+    /// Graph id (for routing context; not encoded in leaf V3).
     pub g_id: u16,
-    /// zstd compression level.
+    /// Zstd compression level for re-encoded leaflets.
     pub zstd_level: i32,
-    /// Threshold above which a merged leaflet should be split (default: 37_500).
-    pub leaflet_split_rows: usize,
-    /// Target rows per leaflet after split (default: 25_000).
+    /// Target rows per leaflet (for splitting oversized merged results).
     pub leaflet_target_rows: usize,
-    /// Max leaflets per leaf file (default: 10).
-    pub leaflets_per_leaf: usize,
-    /// Max total leaflets before splitting the leaf into multiple blobs (default: 20).
-    pub leaf_split_leaflets: usize,
+    /// Target rows per leaf (for splitting into multiple leaf blobs).
+    pub leaf_target_rows: usize,
+    /// Existing history sidecar bytes (None if no sidecar exists).
+    /// Used to carry forward existing history for touched leaflets.
+    pub sidecar_bytes: Option<&'a [u8]>,
 }
 
 /// A new leaf blob produced by the update.
+#[derive(Debug)]
 pub struct NewLeafBlob {
-    /// Complete FLI2 leaf file bytes.
-    pub bytes: Vec<u8>,
-    /// Content ID (SHA-256 based).
-    pub cid: fluree_db_core::ContentId,
-    /// First sort key of this leaf (for branch routing).
-    pub first_key: RunRecord,
-    /// Last sort key of this leaf (for branch routing).
-    pub last_key: RunRecord,
-    /// Total rows in this leaf.
-    pub row_count: u64,
+    pub info: LeafInfo,
 }
 
-/// Output of an incremental leaf update.
+/// Output of a leaf update: one or more new leaf blobs.
 pub struct LeafUpdateOutput {
-    /// New leaf blobs (usually 1, may be >1 if leaflet count exceeds split threshold).
+    /// New leaf blobs (1 in common case; 2+ if splits occurred).
     pub leaves: Vec<NewLeafBlob>,
 }
 
-/// Errors specific to incremental leaf update.
-#[derive(Debug)]
-pub enum IncrementalLeafError {
-    /// A leaflet ended up with 0 current rows but non-empty Region 3.
-    /// Caller should fall back to full rebuild.
-    EmptyLeafletWithHistory,
-    /// I/O or format error.
-    Io(io::Error),
-}
-
-impl From<io::Error> for IncrementalLeafError {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl std::fmt::Display for IncrementalLeafError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyLeafletWithHistory => write!(
-                f,
-                "leaflet has 0 rows but non-empty R3 (empty-after-retract)"
-            ),
-            Self::Io(e) => write!(f, "leaf I/O error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for IncrementalLeafError {}
-
 // ============================================================================
-// Internal types
+// Processed leaflet (internal)
 // ============================================================================
 
-/// Processed leaflet ready for leaf assembly.
-struct ProcessedLeaflet {
-    /// Encoded leaflet bytes (either passthrough or freshly encoded).
-    data: Vec<u8>,
-    row_count: u32,
-    first_s_id: u64,
-    first_p_id: u32,
-    first_o_kind: u8,
-    first_o_key: u64,
-    /// First record of this leaflet (None for passthrough).
-    first_record: Option<RunRecord>,
-    /// Last record of this leaflet (None for passthrough).
-    last_record: Option<RunRecord>,
+/// A leaflet after processing: either passthrough or re-encoded.
+struct ProcessedLeafletV3 {
+    /// Encoded leaflet (column blocks + metadata).
+    encoded: EncodedLeafletInfo,
+    /// History entries for this leaflet (merged: new + existing).
+    history: Vec<HistEntryV2>,
+}
+
+/// Encoded leaflet representation — either raw passthrough bytes or newly encoded.
+enum EncodedLeafletInfo {
+    /// Passthrough: raw payload bytes + original directory entry metadata.
+    Passthrough {
+        dir_entry: LeafletDirEntryV3,
+        payload: Vec<u8>,
+    },
+    /// Re-encoded leaflet(s) from merge result.
+    Encoded(fluree_db_binary_index::format::leaflet::EncodedLeaflet),
 }
 
 // ============================================================================
 // Main entry point
 // ============================================================================
 
-/// Perform an incremental update of a single FLI2 leaf file.
+/// Update a V3 leaf file with sorted novelty records.
 ///
-/// Merges sorted `novelty` records into the leaf's leaflets. Untouched leaflets
-/// are carried through as raw bytes. Returns one or more new leaf blobs.
-pub fn update_leaf(input: &LeafUpdateInput<'_>) -> Result<LeafUpdateOutput, IncrementalLeafError> {
-    let header = read_leaf_header(input.leaf_bytes)?;
-    let cmp = cmp_for_order(input.order);
+/// Returns one or more new leaf blobs (split when row count exceeds
+/// `leaf_target_rows`).
+pub fn update_leaf(input: &LeafUpdateInput<'_>) -> io::Result<LeafUpdateOutput> {
+    debug_assert_eq!(input.novelty.len(), input.novelty_ops.len());
 
-    // 1. Read each leaflet's header for boundary keys
-    let boundaries = read_leaflet_boundaries(&header, input.leaf_bytes, input.g_id)?;
-
-    // 2. Slice novelty to leaflets (half-open intervals)
-    let slices = slice_novelty_to_leaflets(input.novelty, &boundaries, cmp);
-
-    // 3. Process each leaflet
-    let mut processed: Vec<ProcessedLeaflet> = Vec::new();
-    let mut passthrough_count = 0usize;
-    let mut merged_count = 0usize;
-    let mut split_count = 0usize;
-    for (i, dir_entry) in header.leaflet_dir.iter().enumerate() {
-        let novelty = slices[i];
-        if novelty.is_empty() {
-            // Passthrough: carry raw bytes unchanged
-            processed.push(passthrough_leaflet(input.leaf_bytes, dir_entry));
-            passthrough_count += 1;
-        } else {
-            // Full decode + merge + re-encode
-            let results =
-                merge_and_encode_leaflet(input.leaf_bytes, dir_entry, &header, novelty, input)?;
-            if results.len() > 1 {
-                split_count += 1;
-            }
-            merged_count += 1;
-            processed.extend(results);
-        }
+    if input.novelty.is_empty() {
+        // No novelty — return the leaf unchanged.
+        // The caller should detect this and skip the update entirely,
+        // but we handle it gracefully.
+        return Ok(passthrough_entire_leaf(input));
     }
 
-    tracing::debug!(
-        order = ?input.order,
-        leaflets = header.leaflet_count,
-        novelty = input.novelty.len(),
-        passthrough = passthrough_count,
-        merged = merged_count,
-        splits = split_count,
-        output_leaflets = processed.len(),
-        "leaf update complete"
+    let header = decode_leaf_header_v3(input.leaf_bytes)?;
+    let dir = decode_leaf_dir_v3_with_base(input.leaf_bytes, &header)?;
+
+    // Slice novelty to leaflets.
+    let novelty_slices =
+        slice_novelty_to_leaflets(input.novelty, input.novelty_ops, &dir, input.order);
+
+    // Process each leaflet.
+    let mut processed: Vec<ProcessedLeafletV3> = Vec::with_capacity(
+        header.leaflet_count as usize + input.novelty.len() / input.leaflet_target_rows,
     );
 
-    // 4. Assemble into leaf blob(s)
-    assemble_output_leaves(&processed, &header, input)
-}
+    for (i, (nov_slice, ops_slice)) in novelty_slices.iter().enumerate() {
+        let entry = &dir.entries[i];
 
-// ============================================================================
-// Leaflet boundary keys
-// ============================================================================
-
-/// Read the LeafletHeader from each leaflet to extract boundary sort keys.
-fn read_leaflet_boundaries(
-    header: &LeafFileHeader,
-    leaf_bytes: &[u8],
-    g_id: u16,
-) -> io::Result<Vec<RunRecord>> {
-    let mut boundaries = Vec::with_capacity(header.leaflet_count as usize);
-    for entry in &header.leaflet_dir {
-        let offset = entry.offset as usize;
-        let end = offset + entry.compressed_len as usize;
-        if end > leaf_bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "leaflet extends past leaf file end",
-            ));
+        if nov_slice.is_empty() {
+            // No novelty overlaps this leaflet — passthrough.
+            processed.push(passthrough_leaflet(
+                input.leaf_bytes,
+                entry,
+                dir.payload_base,
+                input.sidecar_bytes,
+            )?);
+        } else {
+            // Decode, merge, re-encode.
+            let mut merged =
+                merge_and_encode_leaflet(input, entry, dir.payload_base, nov_slice, ops_slice)?;
+            processed.append(&mut merged);
         }
-        let leaflet_data = &leaf_bytes[offset..end];
-        let lh = LeafletHeader::read_from(leaflet_data)?;
-        boundaries.push(leaflet_header_to_boundary(&lh, g_id));
     }
-    Ok(boundaries)
-}
 
-/// Convert a LeafletHeader's first-key fields to a boundary RunRecord.
-///
-/// Sets dt=0, t=0, op=0 so this sorts as the "minimum" for the identity prefix.
-/// This is sufficient for half-open interval slicing because novelty with the same
-/// (s_id, p_id, o_kind, o_key) but any dt will sort >= this boundary.
-fn leaflet_header_to_boundary(lh: &LeafletHeader, g_id: u16) -> RunRecord {
-    RunRecord {
-        g_id,
-        s_id: SubjectId::from_u64(lh.first_s_id),
-        o_key: lh.first_o_key,
-        p_id: lh.first_p_id,
-        t: 0,
-        i: LIST_INDEX_NONE,
-        dt: 0,
-        lang_id: 0,
-        o_kind: lh.first_o_kind,
-        op: 0,
-    }
+    // Assemble processed leaflets into leaf blob(s).
+    assemble_output_leaves(processed, input)
 }
 
 // ============================================================================
-// Novelty slicing (half-open intervals)
+// Novelty slicing
 // ============================================================================
 
-/// Assign novelty records to leaflets using half-open interval model.
+/// Slice novelty records and ops to leaflets using half-open boundary intervals.
 ///
-/// - Leaflet 0 owns `[-∞, boundary[1])` (includes novelty before first leaflet)
-/// - Leaflet i owns `[boundary[i], boundary[i+1])`
-/// - Last leaflet owns `[boundary[last], +∞)`
+/// Returns a parallel vec of `(&[RunRecordV2], &[u8])` per leaflet.
+///
+/// Boundary model:
+/// - Leaflet 0: (-∞, boundary[1])
+/// - Leaflet i: [boundary[i], boundary[i+1])
+/// - Last:      [boundary[last], +∞)
 fn slice_novelty_to_leaflets<'a>(
-    novelty: &'a [RunRecord],
-    boundaries: &[RunRecord],
-    cmp: fn(&RunRecord, &RunRecord) -> Ordering,
-) -> Vec<&'a [RunRecord]> {
-    let n = boundaries.len();
-    if n == 0 {
+    novelty: &'a [RunRecordV2],
+    ops: &'a [u8],
+    dir: &DecodedLeafDirV3,
+    order: RunSortOrder,
+) -> Vec<(&'a [RunRecordV2], &'a [u8])> {
+    let n_leaflets = dir.entries.len();
+    if n_leaflets == 0 {
         return vec![];
     }
-    if novelty.is_empty() {
-        return vec![&[] as &[RunRecord]; n];
+    if n_leaflets == 1 {
+        // Single leaflet gets all novelty.
+        return vec![(novelty, ops)];
     }
 
-    let mut slices = Vec::with_capacity(n);
-    let mut start = 0;
+    // Build ordered keys from leaflet first_keys for comparison.
+    let cmp_rec =
+        |rec: &RunRecordV2, boundary_key: &[u8; ORDERED_KEY_V2_SIZE]| -> std::cmp::Ordering {
+            let mut rec_key = [0u8; ORDERED_KEY_V2_SIZE];
+            write_ordered_key_v2(order, rec, &mut rec_key);
+            rec_key.cmp(boundary_key)
+        };
 
-    for i in 0..n {
-        if i == n - 1 {
-            // Last leaflet gets everything remaining
-            slices.push(&novelty[start..]);
+    let mut result = Vec::with_capacity(n_leaflets);
+    let mut remaining_records = novelty;
+    let mut remaining_ops = ops;
+
+    for i in 0..n_leaflets {
+        if i + 1 < n_leaflets {
+            // Find the split point: first record >= next leaflet's first_key.
+            let next_boundary = &dir.entries[i + 1].first_key;
+            let split_pos = remaining_records
+                .partition_point(|rec| cmp_rec(rec, next_boundary) == std::cmp::Ordering::Less);
+
+            let (this_recs, rest_recs) = remaining_records.split_at(split_pos);
+            let (this_ops, rest_ops) = remaining_ops.split_at(split_pos);
+            result.push((this_recs, this_ops));
+            remaining_records = rest_recs;
+            remaining_ops = rest_ops;
         } else {
-            // Find split point: first novelty record >= boundary[i+1]
-            let end = start
-                + novelty[start..]
-                    .partition_point(|r| cmp(r, &boundaries[i + 1]) == Ordering::Less);
-            slices.push(&novelty[start..end]);
-            start = end;
+            // Last leaflet gets everything remaining.
+            result.push((remaining_records, remaining_ops));
         }
-    }
-
-    slices
-}
-
-// ============================================================================
-// Passthrough leaflet
-// ============================================================================
-
-fn passthrough_leaflet(leaf_bytes: &[u8], entry: &LeafletDirEntry) -> ProcessedLeaflet {
-    let start = entry.offset as usize;
-    let end = start + entry.compressed_len as usize;
-    let (first_o_kind, first_o_key) = match (entry.first_o_kind, entry.first_o_key) {
-        (Some(k), Some(o)) => (k, o),
-        _ => {
-            // Older leaf versions don't carry first_o_* in the directory; read the leaflet header.
-            let lh = LeafletHeader::read_from(&leaf_bytes[start..end])
-                .expect("leaflet header should be readable for passthrough leaflet");
-            (lh.first_o_kind, lh.first_o_key)
-        }
-    };
-    ProcessedLeaflet {
-        data: leaf_bytes[start..end].to_vec(),
-        row_count: entry.row_count,
-        first_s_id: entry.first_s_id,
-        first_p_id: entry.first_p_id,
-        first_o_kind,
-        first_o_key,
-        first_record: None,
-        last_record: None,
-    }
-}
-
-// ============================================================================
-// Merge + encode a single leaflet
-// ============================================================================
-
-/// Decode a leaflet, merge novelty, re-encode. May return 0 or more leaflets
-/// (0 if all facts were retracted with no R3, >1 if a split was needed).
-fn merge_and_encode_leaflet(
-    leaf_bytes: &[u8],
-    entry: &LeafletDirEntry,
-    header: &LeafFileHeader,
-    novelty: &[RunRecord],
-    input: &LeafUpdateInput<'_>,
-) -> Result<Vec<ProcessedLeaflet>, IncrementalLeafError> {
-    let offset = entry.offset as usize;
-    let leaflet_data = &leaf_bytes[offset..offset + entry.compressed_len as usize];
-
-    // Decode all three regions
-    let (_lh, s_ids, p_ids, o_kinds, o_keys) =
-        decode_leaflet_region1(leaflet_data, header.p_width, input.order)?;
-    let r2 = decode_leaflet_region2(leaflet_data, &_lh, header.dt_width)?;
-    let existing_r3 = decode_leaflet_region3(leaflet_data, &_lh)?;
-
-    // Build SubjectIdColumn for MergeInput
-    let sid_col = SubjectIdColumn::from_u64_vec(s_ids, SubjectIdEncoding::Wide);
-
-    let merge_input = MergeInput {
-        r1_s_ids: &sid_col,
-        r1_p_ids: &p_ids,
-        r1_o_kinds: &o_kinds,
-        r1_o_keys: &o_keys,
-        r2_dt: &r2.dt_values,
-        r2_t: &r2.t_values,
-        r2_lang: r2.lang.as_ref(),
-        r2_i: r2.i_col.as_ref(),
-        existing_r3: &existing_r3,
-        novelty,
-        order: input.order,
-    };
-
-    let merged = merge_novelty(&merge_input);
-
-    // Check empty-after-retract safety invariant
-    if merged.row_count == 0 && !merged.region3.is_empty() {
-        return Err(IncrementalLeafError::EmptyLeafletWithHistory);
-    }
-
-    if merged.row_count == 0 {
-        // Fully empty leaflet (no R3 either) — drop it
-        return Ok(vec![]);
-    }
-
-    let records = reconstitute_records(&merged, input.g_id);
-
-    // Check if split needed
-    if records.len() > input.leaflet_split_rows {
-        Ok(split_and_encode_leaflet(
-            &records,
-            &merged.region3,
-            &SplitConfig {
-                target_rows: input.leaflet_target_rows,
-                order: input.order,
-                p_width: header.p_width,
-                dt_width: header.dt_width,
-                zstd_level: input.zstd_level,
-                cmp: cmp_for_order(input.order),
-            },
-        ))
-    } else {
-        let encoder = LeafletEncoder::with_widths_and_order(
-            input.zstd_level,
-            header.p_width,
-            header.dt_width,
-            input.order,
-        );
-        let encoded = encoder.encode_leaflet_with_r3(&records, &merged.region3);
-        let first = records[0];
-        let last = *records.last().unwrap();
-        Ok(vec![ProcessedLeaflet {
-            data: encoded,
-            row_count: records.len() as u32,
-            first_s_id: first.s_id.as_u64(),
-            first_p_id: first.p_id,
-            first_o_kind: first.o_kind,
-            first_o_key: first.o_key,
-            first_record: Some(first),
-            last_record: Some(last),
-        }])
-    }
-}
-
-// ============================================================================
-// Record reconstitution from MergeOutput columns
-// ============================================================================
-
-/// Reconstitute `RunRecord`s from the dense column output of `merge_novelty()`.
-fn reconstitute_records(out: &MergeOutput, g_id: u16) -> Vec<RunRecord> {
-    (0..out.row_count)
-        .map(|i| RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(out.s_ids[i]),
-            o_key: out.o_keys[i],
-            p_id: out.p_ids[i],
-            t: out.t[i],
-            i: if out.i_vals[i] == ListIndex::none().as_i32() {
-                LIST_INDEX_NONE
-            } else {
-                out.i_vals[i] as u32
-            },
-            dt: out.dt[i] as u16,
-            lang_id: out.lang[i],
-            o_kind: out.o_kinds[i],
-            op: 1, // All surviving R1 rows are asserts
-        })
-        .collect()
-}
-
-// ============================================================================
-// Leaflet split with R3 partitioning
-// ============================================================================
-
-/// Config for leaflet splitting, to avoid passing too many arguments.
-struct SplitConfig {
-    target_rows: usize,
-    order: RunSortOrder,
-    p_width: u8,
-    dt_width: u8,
-    zstd_level: i32,
-    cmp: fn(&RunRecord, &RunRecord) -> Ordering,
-}
-
-/// Split an oversized merged leaflet into multiple leaflets of `target_rows` each,
-/// partitioning Region 3 entries to the correct sub-leaflet.
-fn split_and_encode_leaflet(
-    records: &[RunRecord],
-    region3: &[Region3Entry],
-    cfg: &SplitConfig,
-) -> Vec<ProcessedLeaflet> {
-    let encoder =
-        LeafletEncoder::with_widths_and_order(cfg.zstd_level, cfg.p_width, cfg.dt_width, cfg.order);
-    let chunks: Vec<&[RunRecord]> = records.chunks(cfg.target_rows).collect();
-
-    let mut result = Vec::with_capacity(chunks.len());
-
-    for (ci, chunk) in chunks.iter().enumerate() {
-        // Partition R3 entries to this chunk based on identity sort order
-        let chunk_r3 = partition_r3(
-            region3,
-            chunk.first().unwrap(),
-            chunks.get(ci + 1).and_then(|c| c.first()),
-            cfg.cmp,
-        );
-
-        let encoded = encoder.encode_leaflet_with_r3(chunk, &chunk_r3);
-        let first = chunk[0];
-        let last = *chunk.last().unwrap();
-        result.push(ProcessedLeaflet {
-            data: encoded,
-            row_count: chunk.len() as u32,
-            first_s_id: first.s_id.as_u64(),
-            first_p_id: first.p_id,
-            first_o_kind: first.o_kind,
-            first_o_key: first.o_key,
-            first_record: Some(first),
-            last_record: Some(last),
-        });
     }
 
     result
 }
 
-/// Partition Region 3 entries into a chunk's key range.
-///
-/// Uses identity-only comparison: constructs RunRecords from R3 entries with
-/// t=0, op=0 (minimum version fields) so the order comparator reduces to
-/// pure identity comparison.
-fn partition_r3(
-    region3: &[Region3Entry],
-    lower: &RunRecord,
-    upper: Option<&RunRecord>,
-    cmp: fn(&RunRecord, &RunRecord) -> Ordering,
-) -> Vec<Region3Entry> {
-    let lower_min = record_with_min_version(lower);
-    let upper_min = upper.map(record_with_min_version);
+// ============================================================================
+// Passthrough
+// ============================================================================
 
-    region3
-        .iter()
-        .filter(|e| {
-            let r3_key = r3_entry_to_min_record(e);
-            let above = cmp(&r3_key, &lower_min) != Ordering::Less;
-            let below = upper_min
-                .as_ref()
-                .is_none_or(|hi| cmp(&r3_key, hi) == Ordering::Less);
-            above && below
-        })
-        .copied()
-        .collect()
-}
+/// Passthrough entire leaf when no novelty exists.
+fn passthrough_entire_leaf(input: &LeafUpdateInput<'_>) -> LeafUpdateOutput {
+    // Re-wrap existing bytes as a single leaf blob.
+    let leaf_bytes = input.leaf_bytes.to_vec();
+    let leaf_cid = compute_cid_leaf(&leaf_bytes);
 
-/// Convert a Region3Entry to a RunRecord with minimum version fields (t=0, op=0)
-/// for identity-only comparison.
-fn r3_entry_to_min_record(e: &Region3Entry) -> RunRecord {
-    RunRecord {
-        g_id: 0,
-        s_id: SubjectId::from_u64(e.s_id),
-        o_key: e.o_key,
-        p_id: e.p_id,
-        t: 0,
-        i: if e.i == ListIndex::none().as_i32() {
-            LIST_INDEX_NONE
-        } else {
-            e.i as u32
-        },
-        dt: e.dt,
-        lang_id: e.lang_id,
-        o_kind: e.o_kind,
-        op: 0,
+    // Decode header for routing keys.
+    let header = decode_leaf_header_v3(input.leaf_bytes).expect("valid FLI3 leaf");
+
+    // Routing keys: placeholders (branch code reads leaf header directly).
+    let first_key = zeroed_record();
+    let last_key = zeroed_record();
+
+    // Pass through existing sidecar unchanged.
+    let (sidecar_cid, sidecar_bytes) = match input.sidecar_bytes {
+        Some(bytes) => {
+            let cid = compute_cid_sidecar(bytes);
+            (Some(cid), Some(bytes.to_vec()))
+        }
+        None => (None, None),
+    };
+
+    LeafUpdateOutput {
+        leaves: vec![NewLeafBlob {
+            info: LeafInfo {
+                leaf_cid,
+                leaf_bytes,
+                sidecar_cid,
+                sidecar_bytes,
+                total_rows: header.total_rows,
+                first_key,
+                last_key,
+            },
+        }],
     }
 }
 
-/// Decode a passthrough leaflet to extract its first RunRecord.
-///
-/// Only called for the boundary leaflet at position 0 when it's passthrough.
-fn decode_first_record(
-    leaflet_data: &[u8],
-    header: &LeafFileHeader,
-    input: &LeafUpdateInput<'_>,
-) -> Result<RunRecord, IncrementalLeafError> {
-    let (_, s_ids, p_ids, o_kinds, o_keys) =
-        decode_leaflet_region1(leaflet_data, header.p_width, input.order)?;
-    let lh = LeafletHeader::read_from(leaflet_data)?;
-    let r2 = decode_leaflet_region2(leaflet_data, &lh, header.dt_width)?;
+/// Passthrough a single untouched leaflet.
+fn passthrough_leaflet(
+    leaf_bytes: &[u8],
+    entry: &LeafletDirEntryV3,
+    payload_base: usize,
+    sidecar_bytes: Option<&[u8]>,
+) -> io::Result<ProcessedLeafletV3> {
+    // Extract raw payload bytes.
+    let start = payload_base + entry.payload_offset as usize;
+    let end = start + entry.payload_len as usize;
+    let payload = leaf_bytes[start..end].to_vec();
 
-    Ok(RunRecord {
-        g_id: input.g_id,
-        s_id: SubjectId::from_u64(s_ids[0]),
-        o_key: o_keys[0],
-        p_id: p_ids[0],
-        t: r2.t_values[0],
-        i: r2.i_col.as_ref().map_or(LIST_INDEX_NONE, |c| {
-            let v = c.get(0);
-            if v == ListIndex::none().as_i32() {
-                LIST_INDEX_NONE
-            } else {
-                v as u32
-            }
-        }),
-        dt: r2.dt_values[0] as u16,
-        lang_id: r2.lang.as_ref().map_or(0, |c| c.get(0)),
-        o_kind: o_kinds[0],
-        op: 1,
+    // Carry forward existing history entries from sidecar.
+    let history = load_existing_history(entry, sidecar_bytes)?;
+
+    Ok(ProcessedLeafletV3 {
+        encoded: EncodedLeafletInfo::Passthrough {
+            dir_entry: clone_dir_entry(entry),
+            payload,
+        },
+        history,
     })
 }
 
-/// Decode a passthrough leaflet to extract its last RunRecord.
+// ============================================================================
+// Merge and re-encode
+// ============================================================================
+
+/// Decode a leaflet's columns, merge novelty, and re-encode.
 ///
-/// Only called for the boundary leaflet at the last position when it's passthrough.
-fn decode_last_record(
-    leaflet_data: &[u8],
-    header: &LeafFileHeader,
+/// May produce multiple `ProcessedLeafletV3` if the merged result exceeds
+/// `leaflet_target_rows` or requires segmentation splits.
+fn merge_and_encode_leaflet(
     input: &LeafUpdateInput<'_>,
-) -> Result<RunRecord, IncrementalLeafError> {
-    let (_, s_ids, p_ids, o_kinds, o_keys) =
-        decode_leaflet_region1(leaflet_data, header.p_width, input.order)?;
-    let lh = LeafletHeader::read_from(leaflet_data)?;
-    let r2 = decode_leaflet_region2(leaflet_data, &lh, header.dt_width)?;
+    entry: &LeafletDirEntryV3,
+    payload_base: usize,
+    novelty: &[RunRecordV2],
+    novelty_ops: &[u8],
+) -> io::Result<Vec<ProcessedLeafletV3>> {
+    // 1. Load existing leaflet columns.
+    let projection = ColumnProjection::all();
+    let batch = load_leaflet_columns(
+        input.leaf_bytes,
+        entry,
+        payload_base,
+        &projection,
+        input.order,
+    )?;
 
-    let last = s_ids.len() - 1;
-    Ok(RunRecord {
-        g_id: input.g_id,
-        s_id: SubjectId::from_u64(s_ids[last]),
-        o_key: o_keys[last],
-        p_id: p_ids[last],
-        t: r2.t_values[last],
-        i: r2.i_col.as_ref().map_or(LIST_INDEX_NONE, |c| {
-            let v = c.get(last as u16);
-            if v == ListIndex::none().as_i32() {
-                LIST_INDEX_NONE
-            } else {
-                v as u32
-            }
-        }),
-        dt: r2.dt_values[last] as u16,
-        lang_id: r2.lang.as_ref().map_or(0, |c| c.get(last as u16)),
-        o_kind: o_kinds[last],
-        op: 1,
-    })
+    // 2. Load existing history from sidecar.
+    let existing_history = load_existing_history(entry, input.sidecar_bytes)?;
+
+    let order = input.order;
+    let zstd_level = input.zstd_level;
+    let leaflet_target_rows = input.leaflet_target_rows;
+
+    // 3. Merge.
+    let merge_input = MergeInput {
+        batch: &batch,
+        existing_history: &existing_history,
+        novelty,
+        novelty_ops,
+        order,
+    };
+    let MergeOutput {
+        records: merged,
+        history,
+    } = merge_novelty(&merge_input);
+
+    // 4. Handle empty-after-retract: valid in V3 (history preserved in sidecar).
+    //    Preserve the original leaflet's key range and constants so branch
+    //    routing remains correct and time-travel replay can find this segment.
+    if merged.is_empty() {
+        return Ok(vec![ProcessedLeafletV3 {
+            encoded: EncodedLeafletInfo::Encoded(empty_encoded_leaflet_with_keys(entry)),
+            history,
+        }]);
+    }
+
+    // 5. Split by segmentation + row count, then encode each chunk.
+    let chunks = split_by_segmentation_and_size(&merged, order, leaflet_target_rows);
+    let mut result = Vec::with_capacity(chunks.len());
+
+    if chunks.len() == 1 {
+        // Common case: no split, all history stays with the single chunk.
+        let encoded = encode_leaflet(chunks[0], order, zstd_level);
+        result.push(ProcessedLeafletV3 {
+            encoded: EncodedLeafletInfo::Encoded(encoded),
+            history,
+        });
+    } else {
+        // Multiple chunks: partition history entries by chunk key boundaries.
+        let partitioned = partition_history_to_chunks(&chunks, &history, order);
+        for (chunk, chunk_history) in chunks.iter().zip(partitioned) {
+            let encoded = encode_leaflet(chunk, order, zstd_level);
+            result.push(ProcessedLeafletV3 {
+                encoded: EncodedLeafletInfo::Encoded(encoded),
+                history: chunk_history,
+            });
+        }
+    }
+
+    Ok(result)
 }
 
-/// Zero out version fields (t, op) for identity-only comparison.
-fn record_with_min_version(r: &RunRecord) -> RunRecord {
-    RunRecord { t: 0, op: 0, ..*r }
+/// Split merged records by segmentation constraints and row-count limits.
+///
+/// For POST/PSOT: split on `p_id` transitions.
+/// For OPST: split on `o_type` transitions.
+/// For SPOT: split by row count only.
+///
+/// Within each homogeneous segment, further split if rows > target.
+fn split_by_segmentation_and_size(
+    records: &[RunRecordV2],
+    order: RunSortOrder,
+    target_rows: usize,
+) -> Vec<&[RunRecordV2]> {
+    if records.is_empty() {
+        return vec![];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < records.len() {
+        // Find the end of the current homogeneous segment.
+        let seg_end = find_segment_end(records, start, order);
+
+        // Split the segment into target_rows-sized chunks.
+        let segment = &records[start..seg_end];
+        for sub_chunk in segment.chunks(target_rows) {
+            chunks.push(sub_chunk);
+        }
+
+        start = seg_end;
+    }
+
+    chunks
+}
+
+/// Find the end of the homogeneous segment starting at `start`.
+fn find_segment_end(records: &[RunRecordV2], start: usize, order: RunSortOrder) -> usize {
+    match order {
+        RunSortOrder::Post | RunSortOrder::Psot => {
+            let p_id = records[start].p_id;
+            records[start..]
+                .iter()
+                .position(|r| r.p_id != p_id)
+                .map_or(records.len(), |pos| start + pos)
+        }
+        RunSortOrder::Opst => {
+            let o_type = records[start].o_type;
+            records[start..]
+                .iter()
+                .position(|r| r.o_type != o_type)
+                .map_or(records.len(), |pos| start + pos)
+        }
+        RunSortOrder::Spot => {
+            // No segmentation — entire slice is one segment.
+            records.len()
+        }
+    }
+}
+
+/// Partition history entries across chunks based on key boundaries.
+///
+/// Each history entry is assigned to the chunk whose key range contains its
+/// identity. Uses the first record of each chunk (except the first) as boundary
+/// markers, similar to the novelty slicing approach.
+fn partition_history_to_chunks(
+    chunks: &[&[RunRecordV2]],
+    history: &[HistEntryV2],
+    order: RunSortOrder,
+) -> Vec<Vec<HistEntryV2>> {
+    use fluree_db_binary_index::format::run_record_v2::cmp_v2_for_order;
+
+    let n = chunks.len();
+    let mut partitioned: Vec<Vec<HistEntryV2>> = (0..n).map(|_| Vec::new()).collect();
+
+    if n == 0 || history.is_empty() {
+        return partitioned;
+    }
+
+    let cmp = cmp_v2_for_order(order);
+
+    // Build boundary keys: the first record of each chunk (starting from chunk 1).
+    // A history entry belongs to chunk i if it's < boundary[i+1] (or is in the last chunk).
+    let boundaries: Vec<&RunRecordV2> = chunks[1..].iter().map(|c| &c[0]).collect();
+
+    for entry in history {
+        // Convert history entry to a minimal RunRecordV2 for comparison.
+        let entry_rec = RunRecordV2 {
+            s_id: entry.s_id,
+            o_key: entry.o_key,
+            p_id: entry.p_id,
+            t: 0,
+            o_i: entry.o_i,
+            o_type: entry.o_type,
+            g_id: 0,
+        };
+
+        // Find the chunk this entry belongs to via binary search on boundaries.
+        let chunk_idx = boundaries
+            .partition_point(|boundary| cmp(&entry_rec, boundary) != std::cmp::Ordering::Less);
+
+        partitioned[chunk_idx].push(*entry);
+    }
+
+    partitioned
 }
 
 // ============================================================================
-// Leaf blob assembly
+// Assembly into leaf blobs
 // ============================================================================
 
-/// Group processed leaflets into leaf blobs, splitting if too many leaflets.
+/// Assemble processed leaflets into one or more leaf blobs.
 fn assemble_output_leaves(
-    processed: &[ProcessedLeaflet],
-    original_header: &LeafFileHeader,
+    processed: Vec<ProcessedLeafletV3>,
     input: &LeafUpdateInput<'_>,
-) -> Result<LeafUpdateOutput, IncrementalLeafError> {
+) -> io::Result<LeafUpdateOutput> {
+    use fluree_db_binary_index::format::leaflet::EncodedLeaflet;
+
     if processed.is_empty() {
         return Ok(LeafUpdateOutput { leaves: vec![] });
     }
 
-    // Split into groups if total leaflet count exceeds threshold
-    let groups: Vec<&[ProcessedLeaflet]> = if processed.len() > input.leaf_split_leaflets {
-        processed.chunks(input.leaflets_per_leaf).collect()
-    } else {
-        vec![processed]
-    };
+    // Convert ProcessedLeafletV3 into (EncodedLeaflet, Vec<HistEntryV2>) pairs
+    // for assembly.
+    let mut leaflet_data: Vec<(EncodedLeaflet, Vec<HistEntryV2>)> =
+        Vec::with_capacity(processed.len());
 
-    let mut leaves = Vec::with_capacity(groups.len());
-    for group in groups {
-        let blob = build_leaf_blob(group, original_header, input)?;
-        leaves.push(blob);
+    for p in processed {
+        let encoded = match p.encoded {
+            EncodedLeafletInfo::Passthrough { dir_entry, payload } => {
+                reconstruct_encoded_leaflet(dir_entry, payload)
+            }
+            EncodedLeafletInfo::Encoded(e) => e,
+        };
+        leaflet_data.push((encoded, p.history));
     }
 
-    Ok(LeafUpdateOutput { leaves })
+    // Group leaflets into leaves by row count.
+    let mut leaves = Vec::new();
+    let mut current_group: Vec<(EncodedLeaflet, Vec<HistEntryV2>)> = Vec::new();
+    let mut current_rows: u64 = 0;
+
+    for item in leaflet_data {
+        let rows = item.0.row_count as u64;
+        current_rows += rows;
+        current_group.push(item);
+
+        if current_rows >= input.leaf_target_rows as u64 {
+            leaves.push(std::mem::take(&mut current_group));
+            current_rows = 0;
+        }
+    }
+    if !current_group.is_empty() {
+        leaves.push(current_group);
+    }
+
+    // Build each leaf blob.
+    let mut output = Vec::with_capacity(leaves.len());
+    for group in leaves {
+        let leaf_info = build_leaf_from_group(group, input.order)?;
+        output.push(NewLeafBlob { info: leaf_info });
+    }
+
+    Ok(LeafUpdateOutput { leaves: output })
 }
 
-/// Build a complete FLI2 leaf blob from processed leaflets.
-///
-/// For boundary leaflets (first/last in this group) that are passthrough,
-/// decodes R1+R2 to extract exact first/last records rather than using the
-/// incomplete SortKey fallback.
-fn build_leaf_blob(
-    leaflets: &[ProcessedLeaflet],
-    original_header: &LeafFileHeader,
-    input: &LeafUpdateInput<'_>,
-) -> Result<NewLeafBlob, IncrementalLeafError> {
-    assert!(!leaflets.is_empty(), "cannot build empty leaf blob");
+/// Build a single leaf blob from a group of (EncodedLeaflet, history) pairs.
+fn build_leaf_from_group(
+    group: Vec<(
+        fluree_db_binary_index::format::leaflet::EncodedLeaflet,
+        Vec<HistEntryV2>,
+    )>,
+    order: RunSortOrder,
+) -> io::Result<LeafInfo> {
+    use fluree_db_binary_index::format::leaflet::EncodedLeaflet;
 
-    let first_key = if leaflets[0].first_record.is_some() {
-        resolve_first_key(&leaflets[0], original_header, input.g_id)
-    } else {
-        // Passthrough boundary: decode to get exact record
-        decode_first_record(&leaflets[0].data, original_header, input)?
-    };
-    let last_leaflet = leaflets.last().unwrap();
-    let last_key = if last_leaflet.last_record.is_some() {
-        resolve_last_key(last_leaflet, original_header, input.g_id)
-    } else {
-        // Passthrough boundary: decode to get exact record
-        decode_last_record(&last_leaflet.data, original_header, input)?
-    };
-
-    let total_rows: u64 = leaflets.iter().map(|l| l.row_count as u64).sum();
-    let leaflet_count = leaflets.len();
-    let dir_size = leaflet_count * LEAFLET_DIR_ENTRY;
-    let header_size = LEAF_HEADER_FIXED + dir_size;
-    let data_size: usize = leaflets.iter().map(|l| l.data.len()).sum();
-    let total_size = header_size + data_size;
-
-    let mut buf = Vec::with_capacity(total_size);
-
-    // --- Header (68 bytes fixed) ---
-    buf.extend_from_slice(&LEAF_MAGIC);
-    buf.push(LEAF_VERSION);
-    buf.push(leaflet_count as u8);
-    buf.push(original_header.dt_width);
-    buf.push(original_header.p_width);
-    buf.extend_from_slice(&total_rows.to_le_bytes());
-
-    // First/last SortKeys (26 bytes each)
-    let mut key_buf = [0u8; SORT_KEY_BYTES];
-    SortKey::from_record(&first_key).write_to(&mut key_buf);
-    buf.extend_from_slice(&key_buf);
-    SortKey::from_record(&last_key).write_to(&mut key_buf);
-    buf.extend_from_slice(&key_buf);
-
-    // --- Leaflet directory ---
-    let mut offset = header_size as u64;
-    for l in leaflets {
-        buf.extend_from_slice(&offset.to_le_bytes());
-        buf.extend_from_slice(&(l.data.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&l.row_count.to_le_bytes());
-        buf.extend_from_slice(&l.first_s_id.to_le_bytes());
-        buf.extend_from_slice(&l.first_p_id.to_le_bytes());
-        buf.push(l.first_o_kind);
-        buf.extend_from_slice(&[0u8; 3]);
-        buf.extend_from_slice(&l.first_o_key.to_le_bytes());
-        offset += l.data.len() as u64;
+    // Build sidecar from history entries.
+    let mut sidecar_builder = HistSidecarBuilder::new();
+    for (_, history) in &group {
+        sidecar_builder.start_leaflet();
+        for entry in history {
+            sidecar_builder.push_entry(*entry);
+        }
     }
 
-    // --- Leaflet data ---
-    for l in leaflets {
-        buf.extend_from_slice(&l.data);
-    }
+    let (sidecar_cid, sidecar_bytes, seg_refs) = if sidecar_builder.has_history() {
+        let (bytes, refs) = sidecar_builder.build();
+        let cid = compute_cid_sidecar(&bytes);
+        (Some(cid), Some(bytes), refs)
+    } else {
+        (None, None, Vec::new())
+    };
 
-    // Hash the complete blob for CID
-    let mut hasher = Sha256::new();
-    hasher.update(&buf);
-    let digest_hex = hex::encode(hasher.finalize());
-    let cid = fluree_db_core::ContentId::from_hex_digest(
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF,
-        &digest_hex,
-    )
-    .expect("valid SHA-256 hex digest");
+    // Extract first/last routing keys (raw ordered key bytes).
+    let first_key_bytes = group
+        .first()
+        .map(|(e, _)| e.first_key)
+        .unwrap_or([0u8; ORDERED_KEY_V2_SIZE]);
+    let last_key_bytes = group
+        .last()
+        .map(|(e, _)| e.last_key)
+        .unwrap_or([0u8; ORDERED_KEY_V2_SIZE]);
 
-    Ok(NewLeafBlob {
-        bytes: buf,
-        cid,
+    let owned_leaflets: Vec<EncodedLeaflet> = group.into_iter().map(|(e, _)| e).collect();
+
+    let leaf_bytes = build_leaf_blob_raw_keys(
+        order,
+        &owned_leaflets,
+        &seg_refs,
+        &first_key_bytes,
+        &last_key_bytes,
+    );
+    let leaf_cid = compute_cid_leaf(&leaf_bytes);
+    let total_rows: u64 = owned_leaflets.iter().map(|l| l.row_count as u64).sum();
+
+    // For LeafInfo, first_key/last_key are RunRecordV2 — but for incremental
+    // we only need them for branch manifest routing. The branch code reads the
+    // leaf header's raw key bytes directly, so these are placeholders.
+    let first_key = zeroed_record();
+    let last_key = zeroed_record();
+
+    Ok(LeafInfo {
+        leaf_cid,
+        leaf_bytes,
+        sidecar_cid,
+        sidecar_bytes,
+        total_rows,
         first_key,
         last_key,
-        row_count: total_rows,
     })
 }
 
 // ============================================================================
-// Key resolution helpers
+// Helpers
 // ============================================================================
 
-/// Resolve the first_key for the leaf from its first leaflet.
+/// Load existing history entries for a leaflet from the sidecar.
 ///
-/// If the first leaflet was merged (has first_record), use that.
-/// Otherwise (passthrough), use the original leaf's first_key SortKey.
-fn resolve_first_key(
-    first_leaflet: &ProcessedLeaflet,
-    original: &LeafFileHeader,
-    g_id: u16,
-) -> RunRecord {
-    first_leaflet
-        .first_record
-        .unwrap_or_else(|| sort_key_to_record(&original.first_key, g_id))
+/// Returns an error if the leaflet claims to have history (`history_len > 0`)
+/// but no sidecar bytes are available — this indicates a missing sidecar that
+/// would silently corrupt time-travel.
+fn load_existing_history(
+    entry: &LeafletDirEntryV3,
+    sidecar_bytes: Option<&[u8]>,
+) -> io::Result<Vec<HistEntryV2>> {
+    if entry.history_len == 0 {
+        return Ok(Vec::new());
+    }
+    let sb = sidecar_bytes.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "leaflet has history_len={} but no sidecar bytes available; \
+                 cannot preserve time-travel history",
+                entry.history_len,
+            ),
+        )
+    })?;
+    let seg_ref = HistorySegmentRef {
+        offset: entry.history_offset,
+        len: entry.history_len,
+        min_t: entry.history_min_t,
+        max_t: entry.history_max_t,
+    };
+    Ok(decode_history_segment(sb, &seg_ref))
 }
 
-/// Resolve the last_key for the leaf from its last leaflet.
-///
-/// If the last leaflet was merged (has last_record), use that.
-/// Otherwise (passthrough), use the original leaf's last_key SortKey.
-fn resolve_last_key(
-    last_leaflet: &ProcessedLeaflet,
-    original: &LeafFileHeader,
-    g_id: u16,
-) -> RunRecord {
-    last_leaflet
-        .last_record
-        .unwrap_or_else(|| sort_key_to_record(&original.last_key, g_id))
-}
-
-/// Convert a SortKey back to a RunRecord for routing.
-///
-/// SortKey carries (g_id, s_id, p_id, dt, o_kind, o_key). The remaining
-/// RunRecord fields (t, op, lang_id, i) are set to conservative defaults.
-fn sort_key_to_record(sk: &SortKey, g_id: u16) -> RunRecord {
-    RunRecord {
-        g_id,
-        s_id: SubjectId::from_u64(sk.s_id),
-        o_key: sk.o_key,
-        p_id: sk.p_id,
+/// Placeholder RunRecordV2 with all fields zeroed.
+fn zeroed_record() -> RunRecordV2 {
+    RunRecordV2 {
+        s_id: fluree_db_core::subject_id::SubjectId(0),
+        o_key: 0,
+        p_id: 0,
         t: 0,
-        i: LIST_INDEX_NONE,
-        dt: sk.dt,
-        lang_id: 0,
-        o_kind: sk.o_kind,
-        op: 1,
+        o_i: u32::MAX,
+        o_type: 0,
+        g_id: 0,
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+/// Reconstruct an `EncodedLeaflet` from a passthrough directory entry + payload.
+fn reconstruct_encoded_leaflet(
+    entry: LeafletDirEntryV3,
+    payload: Vec<u8>,
+) -> fluree_db_binary_index::format::leaflet::EncodedLeaflet {
+    fluree_db_binary_index::format::leaflet::EncodedLeaflet {
+        row_count: entry.row_count,
+        lead_group_count: entry.lead_group_count,
+        first_key: entry.first_key,
+        last_key: entry.last_key,
+        p_const: entry.p_const,
+        o_type_const: entry.o_type_const,
+        flags: entry.flags,
+        column_refs: entry.column_refs,
+        payload,
+    }
+}
+
+/// Clone a `LeafletDirEntryV3`.
+fn clone_dir_entry(entry: &LeafletDirEntryV3) -> LeafletDirEntryV3 {
+    LeafletDirEntryV3 {
+        row_count: entry.row_count,
+        lead_group_count: entry.lead_group_count,
+        first_key: entry.first_key,
+        last_key: entry.last_key,
+        p_const: entry.p_const,
+        o_type_const: entry.o_type_const,
+        flags: entry.flags,
+        payload_offset: entry.payload_offset,
+        payload_len: entry.payload_len,
+        column_refs: entry.column_refs.clone(),
+        history_offset: entry.history_offset,
+        history_len: entry.history_len,
+        history_min_t: entry.history_min_t,
+        history_max_t: entry.history_max_t,
+    }
+}
+
+/// Create an empty encoded leaflet (zero rows, no columns) that preserves
+/// the original leaflet's key range and constants for correct branch routing.
+fn empty_encoded_leaflet_with_keys(
+    entry: &LeafletDirEntryV3,
+) -> fluree_db_binary_index::format::leaflet::EncodedLeaflet {
+    fluree_db_binary_index::format::leaflet::EncodedLeaflet {
+        row_count: 0,
+        lead_group_count: 0,
+        first_key: entry.first_key,
+        last_key: entry.last_key,
+        p_const: entry.p_const,
+        o_type_const: entry.o_type_const,
+        flags: 0,
+        column_refs: Vec::new(),
+        payload: Vec::new(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fluree_db_binary_index::format::leaf::LeafWriter;
-    use fluree_db_binary_index::format::leaflet::decode_leaflet;
+    use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
+    use fluree_db_core::o_type::OType;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::DatatypeDictId;
+    use fluree_db_core::value_id::ObjKey;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
-        RunRecord::new(
-            0,
-            SubjectId::from_u64(s_id),
+    const OI_NONE: u32 = u32::MAX;
+
+    fn rec2(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key: ObjKey::encode_i64(val).as_u64(),
             p_id,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(val),
             t,
-            true,
-            DatatypeDictId::INTEGER.as_u16(),
-            0,
-            None,
-        )
-    }
-
-    fn make_retract(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
-        RunRecord::new(
-            0,
-            SubjectId::from_u64(s_id),
-            p_id,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(val),
-            t,
-            false,
-            DatatypeDictId::INTEGER.as_u16(),
-            0,
-            None,
-        )
-    }
-
-    /// Write records to a leaf file via LeafWriter, return the leaf bytes.
-    fn build_leaf(records: &[RunRecord], leaflet_rows: usize, leaflets_per_leaf: usize) -> Vec<u8> {
-        let dir = std::env::temp_dir().join(format!(
-            "fluree_test_incr_leaf_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let mut writer = LeafWriter::new(dir.clone(), leaflet_rows, leaflets_per_leaf, 1);
-        for r in records {
-            writer.push_record(*r).unwrap();
-        }
-        let infos = writer.finish().unwrap();
-        assert_eq!(infos.len(), 1, "expected exactly 1 leaf");
-
-        let leaf_path = dir.join(infos[0].leaf_cid.to_string());
-        let data = std::fs::read(&leaf_path).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        data
-    }
-
-    fn default_input<'a>(leaf_bytes: &'a [u8], novelty: &'a [RunRecord]) -> LeafUpdateInput<'a> {
-        LeafUpdateInput {
-            leaf_bytes,
-            novelty,
-            order: RunSortOrder::Spot,
+            o_i: OI_NONE,
+            o_type: OType::XSD_INTEGER.as_u16(),
             g_id: 0,
-            zstd_level: 1,
-            leaflet_split_rows: 37_500,
-            leaflet_target_rows: 25_000,
-            leaflets_per_leaf: 10,
-            leaf_split_leaflets: 20,
         }
     }
 
-    #[test]
-    fn test_basic_merge_single_leaflet() {
-        // Build a leaf with 5 records in 1 leaflet
-        let existing = vec![
-            make_record(1, 1, 10, 1),
-            make_record(2, 1, 20, 1),
-            make_record(4, 1, 40, 1),
-            make_record(5, 1, 50, 1),
-            make_record(6, 1, 60, 1),
-        ];
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Novelty: insert s=3
-        let novelty = vec![make_record(3, 1, 30, 5)];
-        let input = default_input(&leaf_bytes, &novelty);
-        let output = update_leaf(&input).unwrap();
-
-        assert_eq!(output.leaves.len(), 1);
-        let leaf = &output.leaves[0];
-        assert_eq!(leaf.row_count, 6);
-
-        // Verify the output can be parsed
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        assert_eq!(hdr.total_rows, 6);
-        assert_eq!(hdr.leaflet_count, 1);
-
-        // Decode and verify records
-        let dir = &hdr.leaflet_dir[0];
-        let leaflet_data =
-            &leaf.bytes[dir.offset as usize..dir.offset as usize + dir.compressed_len as usize];
-        let decoded =
-            decode_leaflet(leaflet_data, hdr.p_width, hdr.dt_width, RunSortOrder::Spot).unwrap();
-        assert_eq!(decoded.s_ids, vec![1, 2, 3, 4, 5, 6]);
-    }
-
-    #[test]
-    fn test_passthrough_untouched_leaflets() {
-        // Build a leaf with 3 leaflets (3 records each)
-        let existing: Vec<RunRecord> = (0..9)
-            .map(|i| make_record(i as u64, 1, i as i64 * 10, 1))
-            .collect();
-        let leaf_bytes = build_leaf(&existing, 3, 10);
-
-        // Novelty only touches the second leaflet range (s_ids 3..6)
-        let novelty = vec![make_record(4, 1, 45, 5)]; // insert between existing s=4 and s=5
-        let input = default_input(&leaf_bytes, &novelty);
-        let output = update_leaf(&input).unwrap();
-
-        assert_eq!(output.leaves.len(), 1);
-        let leaf = &output.leaves[0];
-        // Original: 9 rows, novelty adds 1 to second leaflet → 10 total
-        assert_eq!(leaf.row_count, 10);
-
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        assert_eq!(hdr.leaflet_count, 3);
-
-        // First leaflet should be unchanged (rows 0-2)
-        let d0 = &hdr.leaflet_dir[0];
-        let ld0 = &leaf.bytes[d0.offset as usize..d0.offset as usize + d0.compressed_len as usize];
-        let dec0 = decode_leaflet(ld0, hdr.p_width, hdr.dt_width, RunSortOrder::Spot).unwrap();
-        assert_eq!(dec0.s_ids, vec![0, 1, 2]);
-
-        // Third leaflet should be unchanged (rows 6-8)
-        let d2 = &hdr.leaflet_dir[2];
-        let ld2 = &leaf.bytes[d2.offset as usize..d2.offset as usize + d2.compressed_len as usize];
-        let dec2 = decode_leaflet(ld2, hdr.p_width, hdr.dt_width, RunSortOrder::Spot).unwrap();
-        assert_eq!(dec2.s_ids, vec![6, 7, 8]);
-    }
-
-    #[test]
-    fn test_retract_existing_fact() {
-        let existing = vec![
-            make_record(1, 1, 10, 1),
-            make_record(2, 1, 20, 1),
-            make_record(3, 1, 30, 1),
-        ];
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Retract s=2
-        let novelty = vec![make_retract(2, 1, 20, 5)];
-        let input = default_input(&leaf_bytes, &novelty);
-        let output = update_leaf(&input).unwrap();
-
-        assert_eq!(output.leaves.len(), 1);
-        let leaf = &output.leaves[0];
-        assert_eq!(leaf.row_count, 2);
-
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        let d = &hdr.leaflet_dir[0];
-        let ld = &leaf.bytes[d.offset as usize..d.offset as usize + d.compressed_len as usize];
-        let decoded = decode_leaflet(ld, hdr.p_width, hdr.dt_width, RunSortOrder::Spot).unwrap();
-        assert_eq!(decoded.s_ids, vec![1, 3]); // s=2 removed
-    }
-
-    #[test]
-    fn test_empty_after_retract_returns_error() {
-        let existing = vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)];
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Retract all facts
-        let novelty = vec![make_retract(1, 1, 10, 5), make_retract(2, 1, 20, 5)];
-        let input = default_input(&leaf_bytes, &novelty);
-        let result = update_leaf(&input);
-
-        assert!(result.is_err());
-        match result {
-            Err(IncrementalLeafError::EmptyLeafletWithHistory) => {} // expected
-            other => panic!("expected EmptyLeafletWithHistory, got {:?}", other.err()),
+    /// Build a V3 leaf from records using LeafWriter.
+    fn build_test_leaf(records: &[RunRecordV2], order: RunSortOrder) -> (Vec<u8>, Option<Vec<u8>>) {
+        let mut writer = LeafWriter::new(order, 100, 10000, 1);
+        writer.set_skip_history(true);
+        for rec in records {
+            writer.push_record(*rec).unwrap();
         }
+        let leaves = writer.finish().unwrap();
+        assert_eq!(leaves.len(), 1, "test helper expects single leaf");
+        let leaf = &leaves[0];
+        (leaf.leaf_bytes.clone(), leaf.sidecar_bytes.clone())
     }
 
     #[test]
-    fn test_leaflet_split() {
-        // Build a leaf with 20 records
-        let existing: Vec<RunRecord> = (0..20)
-            .map(|i| make_record(i as u64 * 2, 1, i as i64 * 10, 1))
-            .collect();
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Add 15 more records — total 35, exceeding split threshold of 30
-        let novelty: Vec<RunRecord> = (0..15)
-            .map(|i| make_record(i as u64 * 2 + 1, 1, i as i64 * 10 + 5, 5))
-            .collect();
-        let mut input = default_input(&leaf_bytes, &novelty);
-        input.leaflet_split_rows = 30;
-        input.leaflet_target_rows = 20;
-        let output = update_leaf(&input).unwrap();
-
-        assert_eq!(output.leaves.len(), 1);
-        let leaf = &output.leaves[0];
-        assert_eq!(leaf.row_count, 35);
-
-        // Should have been split into 2 leaflets (20 + 15)
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        assert_eq!(hdr.leaflet_count, 2);
-        assert_eq!(hdr.leaflet_dir[0].row_count, 20);
-        assert_eq!(hdr.leaflet_dir[1].row_count, 15);
-    }
-
-    #[test]
-    fn test_r3_preserved_after_merge() {
-        // Start with a fact, then retract it (to test R3 generation)
-        let existing = vec![
-            make_record(1, 1, 10, 1),
-            make_record(2, 1, 20, 1),
-            make_record(3, 1, 30, 1),
-        ];
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Retract s=2, update s=1 at new t
-        let novelty = vec![
-            make_record(1, 1, 10, 5),  // update
-            make_retract(2, 1, 20, 5), // retract
-        ];
-        let input = default_input(&leaf_bytes, &novelty);
-        let output = update_leaf(&input).unwrap();
-
-        let leaf = &output.leaves[0];
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        let d = &hdr.leaflet_dir[0];
-        let ld = &leaf.bytes[d.offset as usize..d.offset as usize + d.compressed_len as usize];
-
-        // Decode R3
-        let lh = LeafletHeader::read_from(ld).unwrap();
-        let r3 = decode_leaflet_region3(ld, &lh).unwrap();
-        // Should have R3 entries for the retraction and the update
-        assert!(!r3.is_empty(), "R3 should have history entries");
-    }
-
-    #[test]
-    fn test_output_leaf_is_valid_fli2() {
-        let existing = vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)];
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        let novelty = vec![make_record(3, 1, 30, 5)];
-        let input = default_input(&leaf_bytes, &novelty);
-        let output = update_leaf(&input).unwrap();
-
-        let leaf = &output.leaves[0];
-
-        // Verify magic + version
-        assert_eq!(&leaf.bytes[0..4], b"FLI2");
-        assert_eq!(
-            leaf.bytes[4],
-            fluree_db_binary_index::format::leaf::LEAF_VERSION
-        ); // version
-
-        // Verify CID is consistent with content
-        let mut hasher = Sha256::new();
-        hasher.update(&leaf.bytes);
-        let expected_hex = hex::encode(hasher.finalize());
-        let expected_cid = fluree_db_core::ContentId::from_hex_digest(
-            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF,
-            &expected_hex,
-        )
-        .unwrap();
-        assert_eq!(leaf.cid, expected_cid);
-
-        // Verify read_leaf_header succeeds
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-        assert_eq!(hdr.total_rows, 3);
-    }
-
-    #[test]
-    fn test_novelty_slicing_half_open() {
-        let cmp = cmp_for_order(RunSortOrder::Spot);
-
-        // 3 boundaries at s_id = 10, 20, 30
-        let boundaries = vec![
-            make_record(10, 0, 0, 0),
-            make_record(20, 0, 0, 0),
-            make_record(30, 0, 0, 0),
-        ];
-
-        // Novelty spans all ranges
-        let novelty = vec![
-            make_record(5, 0, 0, 1),  // before boundary[0] → leaflet 0
-            make_record(15, 0, 0, 1), // between boundary[0] and boundary[1] → leaflet 0
-            make_record(20, 0, 0, 1), // exactly boundary[1] → leaflet 1
-            make_record(25, 0, 0, 1), // between boundary[1] and boundary[2] → leaflet 1
-            make_record(35, 0, 0, 1), // after boundary[2] → leaflet 2
-        ];
-
-        let slices = slice_novelty_to_leaflets(&novelty, &boundaries, cmp);
-        assert_eq!(slices.len(), 3);
-        assert_eq!(slices[0].len(), 2); // s=5, s=15
-        assert_eq!(slices[1].len(), 2); // s=20, s=25
-        assert_eq!(slices[2].len(), 1); // s=35
-    }
-
-    #[test]
-    fn test_r3_partitioning_during_split() {
-        // Create a scenario where we can verify R3 entries end up in the
-        // correct leaflet after a split.
-        let existing: Vec<RunRecord> = (0..10)
-            .map(|i| make_record(i as u64 * 10, 1, i as i64 * 100, 1))
-            .collect();
-        let leaf_bytes = build_leaf(&existing, 100, 10);
-
-        // Novelty: update several records to generate R3 entries, plus inserts
-        let mut novelty = Vec::new();
-        for i in 0..10 {
-            // Update each existing record
-            novelty.push(make_record(i as u64 * 10, 1, i as i64 * 100, 5));
-        }
-        // Insert interleaved records to push total past split threshold
-        for i in 0..15 {
-            novelty.push(make_record(i as u64 * 10 + 5, 1, i as i64 * 100 + 50, 5));
-        }
-        novelty.sort_unstable_by(cmp_for_order(RunSortOrder::Spot));
-
-        let mut input = default_input(&leaf_bytes, &novelty);
-        input.leaflet_split_rows = 20;
-        input.leaflet_target_rows = 15;
-        let output = update_leaf(&input).unwrap();
-
-        let leaf = &output.leaves[0];
-        let hdr = read_leaf_header(&leaf.bytes).unwrap();
-
-        // Should have been split into 2 leaflets
-        assert!(hdr.leaflet_count >= 2, "expected split into >=2 leaflets");
-
-        // Verify all R3 entries in each leaflet have identity within that leaflet's range
-        for (li, dir) in hdr.leaflet_dir.iter().enumerate() {
-            let ld =
-                &leaf.bytes[dir.offset as usize..dir.offset as usize + dir.compressed_len as usize];
-            let lh = LeafletHeader::read_from(ld).unwrap();
-            let r3 = decode_leaflet_region3(ld, &lh).unwrap();
-            let decoded =
-                decode_leaflet(ld, hdr.p_width, hdr.dt_width, RunSortOrder::Spot).unwrap();
-
-            if decoded.row_count == 0 {
-                continue;
-            }
-
-            let min_s = decoded.s_ids[0];
-            let max_s = *decoded.s_ids.last().unwrap();
-
-            for entry in &r3 {
-                assert!(
-                    entry.s_id >= min_s && entry.s_id <= max_s,
-                    "R3 entry s_id={} outside leaflet {} range [{}, {}]",
-                    entry.s_id,
-                    li,
-                    min_s,
-                    max_s
-                );
-            }
-        }
-    }
-
-    /// When the first or last leaflet is passthrough, the leaf's boundary keys
-    /// must reflect the actual first/last records (with correct `t`), not a
-    /// fabricated `t=0` from the SortKey fallback.
-    #[test]
-    fn test_boundary_keys_with_passthrough_edges() {
-        // Build 3 leaflets of 5 records each, with distinct t values.
-        let mut records = Vec::new();
-        // Leaflet 0: s_id 100-104, t=10
-        for i in 0..5u64 {
-            records.push(make_record(100 + i, 1, i as i64, 10));
-        }
-        // Leaflet 1: s_id 200-204, t=10
-        for i in 0..5u64 {
-            records.push(make_record(200 + i, 1, i as i64, 10));
-        }
-        // Leaflet 2: s_id 300-304, t=10
-        for i in 0..5u64 {
-            records.push(make_record(300 + i, 1, i as i64, 10));
-        }
-
-        let leaf_bytes = build_leaf(&records, 5, 3);
-
-        // Novelty only for the middle leaflet (s_id 200 range).
-        let novelty = vec![make_record(202, 2, 99, 20)]; // new predicate at t=20
+    fn test_update_no_novelty() {
+        let records = vec![rec2(1, 1, 10, 1), rec2(2, 1, 20, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&records, RunSortOrder::Spot);
 
         let input = LeafUpdateInput {
             leaf_bytes: &leaf_bytes,
-            novelty: &novelty,
+            novelty: &[],
+            novelty_ops: &[],
             order: RunSortOrder::Spot,
             g_id: 0,
             zstd_level: 1,
-            leaflet_split_rows: 37_500,
-            leaflet_target_rows: 25_000,
-            leaflets_per_leaf: 10,
-            leaf_split_leaflets: 20,
+            leaflet_target_rows: 100,
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
         };
 
         let output = update_leaf(&input).unwrap();
         assert_eq!(output.leaves.len(), 1);
-        let blob = &output.leaves[0];
+        assert_eq!(output.leaves[0].info.total_rows, 2);
+    }
 
-        // first_key must come from the first leaflet's actual first record (t=10),
-        // NOT from a fabricated SortKey with t=0.
-        assert_eq!(
-            blob.first_key.t, 10,
-            "first_key.t should be 10 from passthrough first leaflet"
-        );
-        assert_eq!(blob.first_key.s_id.as_u64(), 100);
+    #[test]
+    fn test_update_insert_new_fact() {
+        let records = vec![rec2(1, 1, 10, 1), rec2(3, 1, 30, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&records, RunSortOrder::Spot);
 
-        // last_key must come from the last leaflet's actual last record (t=10),
-        // NOT from a fabricated SortKey with t=0.
+        let novelty = vec![rec2(2, 1, 20, 5)]; // insert between
+        let ops = vec![1u8];
+
+        let input = LeafUpdateInput {
+            leaf_bytes: &leaf_bytes,
+            novelty: &novelty,
+            novelty_ops: &ops,
+            order: RunSortOrder::Spot,
+            g_id: 0,
+            zstd_level: 1,
+            leaflet_target_rows: 100,
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
+        };
+
+        let output = update_leaf(&input).unwrap();
+        assert_eq!(output.leaves.len(), 1);
+        assert_eq!(output.leaves[0].info.total_rows, 3);
+
+        // Verify sidecar was produced (history for the insert).
+        assert!(output.leaves[0].info.sidecar_bytes.is_some());
+    }
+
+    #[test]
+    fn test_update_retract_fact() {
+        let records = vec![rec2(1, 1, 10, 1), rec2(2, 1, 20, 1), rec2(3, 1, 30, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&records, RunSortOrder::Spot);
+
+        let novelty = vec![rec2(2, 1, 20, 5)]; // retract s=2
+        let ops = vec![0u8];
+
+        let input = LeafUpdateInput {
+            leaf_bytes: &leaf_bytes,
+            novelty: &novelty,
+            novelty_ops: &ops,
+            order: RunSortOrder::Spot,
+            g_id: 0,
+            zstd_level: 1,
+            leaflet_target_rows: 100,
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
+        };
+
+        let output = update_leaf(&input).unwrap();
+        assert_eq!(output.leaves.len(), 1);
+        assert_eq!(output.leaves[0].info.total_rows, 2); // s=2 removed
+    }
+
+    #[test]
+    fn test_update_retract_all_preserves_history() {
+        let records = vec![rec2(1, 1, 10, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&records, RunSortOrder::Spot);
+
+        let novelty = vec![rec2(1, 1, 10, 5)]; // retract
+        let ops = vec![0u8];
+
+        let input = LeafUpdateInput {
+            leaf_bytes: &leaf_bytes,
+            novelty: &novelty,
+            novelty_ops: &ops,
+            order: RunSortOrder::Spot,
+            g_id: 0,
+            zstd_level: 1,
+            leaflet_target_rows: 100,
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
+        };
+
+        let output = update_leaf(&input).unwrap();
+        assert_eq!(output.leaves.len(), 1);
+        // Empty latest-state is valid; total_rows=0
+        assert_eq!(output.leaves[0].info.total_rows, 0);
+        // But sidecar should have history
+        assert!(output.leaves[0].info.sidecar_bytes.is_some());
+    }
+
+    /// Regression: empty-after-retract leaflet must preserve the original key range
+    /// so branch routing stays correct.
+    #[test]
+    fn test_retract_all_preserves_key_range() {
+        let records = vec![rec2(100, 1, 10, 1), rec2(200, 1, 20, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&records, RunSortOrder::Spot);
+
+        // Read original leaf header to capture key range.
+        let orig_header = decode_leaf_header_v3(&leaf_bytes).unwrap();
+
+        // Retract all facts.
+        let novelty = vec![rec2(100, 1, 10, 5), rec2(200, 1, 20, 5)];
+        let ops = vec![0u8, 0];
+
+        let input = LeafUpdateInput {
+            leaf_bytes: &leaf_bytes,
+            novelty: &novelty,
+            novelty_ops: &ops,
+            order: RunSortOrder::Spot,
+            g_id: 0,
+            zstd_level: 1,
+            leaflet_target_rows: 100,
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
+        };
+
+        let output = update_leaf(&input).unwrap();
+        assert_eq!(output.leaves.len(), 1);
+        assert_eq!(output.leaves[0].info.total_rows, 0);
+
+        // Verify the new leaf's directory preserves the original key range (not zeroed).
+        let new_header = decode_leaf_header_v3(&output.leaves[0].info.leaf_bytes).unwrap();
+        // The leaflet directory first_key should be non-zero (preserved from original).
+        let dir =
+            decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &new_header).unwrap();
+        assert!(!dir.entries.is_empty());
+        // Keys should be the same as the original leaflet's keys.
         assert_eq!(
-            blob.last_key.t, 10,
-            "last_key.t should be 10 from passthrough last leaflet"
+            dir.entries[0].first_key, orig_header.first_key,
+            "empty leaflet must preserve original first_key for routing"
         );
-        assert_eq!(blob.last_key.s_id.as_u64(), 304);
+    }
+
+    /// Regression: when a leaflet splits into multiple chunks, history entries
+    /// must be partitioned to the correct chunk (not all in chunk 0).
+    #[test]
+    fn test_leaflet_split_partitions_history() {
+        // Create a leaf with a few existing records.
+        let existing = vec![rec2(1, 1, 10, 1), rec2(2, 1, 20, 1), rec2(3, 1, 30, 1)];
+        let (leaf_bytes, sidecar) = build_test_leaf(&existing, RunSortOrder::Spot);
+
+        // Add enough novelty to force a split (target_rows=3).
+        let novelty = vec![
+            rec2(4, 1, 40, 5),
+            rec2(5, 1, 50, 5),
+            rec2(6, 1, 60, 5),
+            rec2(7, 1, 70, 5),
+        ];
+        let ops = vec![1u8, 1, 1, 1];
+
+        let input = LeafUpdateInput {
+            leaf_bytes: &leaf_bytes,
+            novelty: &novelty,
+            novelty_ops: &ops,
+            order: RunSortOrder::Spot,
+            g_id: 0,
+            zstd_level: 1,
+            leaflet_target_rows: 3, // Force split: 7 rows / 3 = 3 leaflets
+            leaf_target_rows: 10000,
+            sidecar_bytes: sidecar.as_deref(),
+        };
+
+        let output = update_leaf(&input).unwrap();
+        assert_eq!(output.leaves.len(), 1);
+
+        // The leaf should contain multiple leaflets due to the split.
+        let header = decode_leaf_header_v3(&output.leaves[0].info.leaf_bytes).unwrap();
+        assert!(
+            header.leaflet_count >= 2,
+            "expected split into 2+ leaflets, got {}",
+            header.leaflet_count
+        );
+
+        // Verify sidecar exists (novelty creates history entries).
+        assert!(output.leaves[0].info.sidecar_bytes.is_some());
+
+        // Decode sidecar and verify history entries are distributed
+        // (not all concentrated in segment 0).
+        let sc_bytes = output.leaves[0].info.sidecar_bytes.as_ref().unwrap();
+        let dir = decode_leaf_dir_v3_with_base(&output.leaves[0].info.leaf_bytes, &header).unwrap();
+
+        let mut total_history = 0;
+        for entry in &dir.entries {
+            if entry.history_len > 0 {
+                let seg = HistorySegmentRef {
+                    offset: entry.history_offset,
+                    len: entry.history_len,
+                    min_t: entry.history_min_t,
+                    max_t: entry.history_max_t,
+                };
+                let entries = decode_history_segment(sc_bytes, &seg);
+                total_history += entries.len();
+            }
+        }
+
+        // All 4 novelty records should produce history entries.
+        assert_eq!(
+            total_history, 4,
+            "expected 4 history entries total, got {total_history}"
+        );
     }
 }

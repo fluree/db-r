@@ -7,7 +7,7 @@ use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::format::column_block::ColumnId;
-use fluree_db_binary_index::format::leaf_v3::{
+use fluree_db_binary_index::format::leaf::{
     decode_leaf_dir_v3_with_base, decode_leaf_header_v3, LeafletDirEntryV3,
 };
 use fluree_db_binary_index::format::run_record_v2::{
@@ -16,15 +16,14 @@ use fluree_db_binary_index::format::run_record_v2::{
 use fluree_db_binary_index::read::column_loader::{
     load_leaflet_columns, load_leaflet_columns_cached,
 };
+// V5 leaflet internals (LeafletHeader, decode_leaflet_region1/2, read_leaf_header,
+// CachedRegion1, CachedRegion2) have been removed. V5 fast-paths that directly
+// accessed raw leaflet bytes are stubbed with todo!("V3 leaflet fast-path").
 use fluree_db_binary_index::{
-    decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, BinaryGraphView,
-    BinaryIndexStore, BinaryIndexStoreV6, CachedRegion1, CachedRegion2, ColumnProjection,
-    ColumnSet, LeafEntry, LeafletCacheKey, LeafletHeader, OverlayOp, RunRecord, RunSortOrder,
+    BinaryGraphView, BinaryIndexStore, ColumnProjection, ColumnSet, OverlayOp, RunSortOrder,
 };
 use fluree_db_core::o_type::OType;
-use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
-use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::value_id::ValueTypeTag;
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{GraphId, StatsView};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,98 +32,67 @@ use std::sync::Arc;
 // Shared types
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 struct FactKey {
     s_id: u64,
-    o_kind: u8,
+    o_type: u16,
     o_key: u64,
-    dt: u16,
-    lang_id: u16,
-    i_val: i32,
+    o_i: u32,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 enum GroupKey {
     Ref(u64),
-    Lit {
-        o_kind: u8,
-        o_key: u64,
-        dt_id: u16,
-        lang_id: u16,
-    },
+    Lit { o_type: u16, o_key: u64 },
 }
 
 // ---------------------------------------------------------------------------
 // Shared free functions (extracted from duplicate `impl` methods)
 // ---------------------------------------------------------------------------
 
+// Kept for: V3 leaflet fast-path port of group-count and bound-object-count operators.
+// Use when: the V3 fast-path is implemented to replace the current fallback-to-scan path.
+// How: these functions implement overlay delta merging and group-key accumulation
+// that will be needed by any direct-leaflet-scan optimization.
+#[allow(dead_code)]
 fn overlay_ops_for_ctx(ctx: &ExecutionContext<'_>, gv: &BinaryGraphView) -> Vec<OverlayOp> {
     let Some(overlay) = ctx.overlay else {
         return Vec::new();
     };
-    let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-        Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-    });
-    let dict_gv = BinaryGraphView::new(gv.clone_store(), gv.g_id());
-    let mut dict_ov = crate::dict_overlay::DictOverlay::new(dict_gv, dn);
-    crate::binary_scan::translate_overlay_flakes(overlay, &mut dict_ov, ctx.to_t, gv.g_id())
+    crate::binary_scan::translate_overlay_flakes(
+        overlay,
+        &gv.clone_store(),
+        ctx.dict_novelty.as_ref(),
+        ctx.to_t,
+        gv.g_id(),
+    )
 }
 
+#[expect(dead_code)]
 #[inline]
-fn group_key_for_fact(key: &FactKey, single_dt_id: Option<u16>) -> GroupKey {
-    if key.o_kind == ObjKind::REF_ID.as_u8() {
+fn group_key_for_fact(key: &FactKey) -> GroupKey {
+    if key.o_type == OType::IRI_REF.as_u16() {
         GroupKey::Ref(key.o_key)
-    } else if let Some(dt_id) = single_dt_id {
-        GroupKey::Lit {
-            o_kind: key.o_kind,
-            o_key: key.o_key,
-            dt_id,
-            lang_id: 0,
-        }
     } else {
         GroupKey::Lit {
-            o_kind: key.o_kind,
+            o_type: key.o_type,
             o_key: key.o_key,
-            dt_id: key.dt,
-            lang_id: key.lang_id,
         }
     }
 }
 
-fn read_leaflet_first(
-    leaf_mmap: &[u8],
-    dir: &fluree_db_binary_index::format::leaf::LeafletDirEntry,
-) -> std::io::Result<LeafletHeader> {
-    let end = dir.offset as usize + dir.compressed_len as usize;
-    let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
-    LeafletHeader::read_from(leaflet_bytes)
-}
+// V5 leaflet first-record helpers (read_leaflet_first, prefix_from_leaflet_first,
+// prefix_from_dir_or_leaflet, prefix_from_run_record) have been removed.
+// The V5 fast-path that used them is stubbed below with todo!("V3 leaflet fast-path").
 
-fn prefix_from_leaflet_first(lh: &LeafletHeader) -> (u32, u8, u64) {
-    (lh.first_p_id, lh.first_o_kind, lh.first_o_key)
-}
-
-fn prefix_from_dir_or_leaflet(
-    leaf_mmap: &[u8],
-    dir: &fluree_db_binary_index::format::leaf::LeafletDirEntry,
-) -> std::io::Result<(u32, u8, u64)> {
-    if let (Some(k), Some(o)) = (dir.first_o_kind, dir.first_o_key) {
-        Ok((dir.first_p_id, k, o))
-    } else {
-        // Older leaf versions: fall back to reading the leaflet header.
-        let lh = read_leaflet_first(leaf_mmap, dir)?;
-        Ok(prefix_from_leaflet_first(&lh))
-    }
-}
-
-fn prefix_from_run_record(rec: &RunRecord) -> (u32, u8, u64) {
-    (rec.p_id, rec.o_kind, rec.o_key)
-}
-
+#[expect(dead_code)]
 fn add_count(map: &mut HashMap<GroupKey, i64>, key: GroupKey, add: i64) {
     *map.entry(key).or_insert(0) += add;
 }
 
+#[expect(dead_code)]
 #[inline]
 fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
     QueryError::execution(format!("{where_}: {e}"))
@@ -133,11 +101,12 @@ fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
 #[inline]
 fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
     // Fast-path is available if either V5 or V6 store is loaded.
-    let has_store = ctx.graph_view().is_some() || ctx.binary_store_v6.is_some();
+    let has_store = ctx.graph_view().is_some() || ctx.binary_store.is_some();
     !has_store || ctx.history_mode || ctx.policy_enforcer.is_some()
 }
 
 /// Resolve a predicate [`Ref`] to its binary index `p_id`.
+#[expect(dead_code)]
 fn resolve_predicate_id(
     predicate: &crate::triple::Ref,
     store: &BinaryIndexStore,
@@ -156,134 +125,16 @@ fn resolve_predicate_id(
     }
 }
 
-/// Open a leaf file (with cache-miss retry), mmap it, and read the header.
-fn open_and_read_leaf(
-    store: &BinaryIndexStore,
-    leaf_entry: &LeafEntry,
-) -> Result<(
-    memmap2::Mmap,
-    fluree_db_binary_index::format::leaf::LeafFileHeader,
-)> {
-    let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
-        QueryError::execution(format!("leaf {} has no resolved path", leaf_entry.leaf_cid))
-    })?;
-
-    let file = match std::fs::File::open(leaf_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            store
-                .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)
-                .map_err(|e| io_to_query("ensure_index_leaf_cached", e))?;
-            std::fs::File::open(leaf_path).map_err(|e| io_to_query("open leaf after cache", e))?
-        }
-        Err(e) => return Err(io_to_query("open leaf", e)),
-    };
-    let leaf_mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| io_to_query("mmap leaf", e))? };
-    let leaf_header =
-        read_leaf_header(&leaf_mmap).map_err(|e| io_to_query("read leaf header", e))?;
-
-    Ok((leaf_mmap, leaf_header))
-}
-
-/// Decoded Region 1 columns needed for counting.
-///
-/// The `header` is `Some` only on a cache miss (needed for Region 2 decode).
-struct DecodedR1 {
-    header: Option<LeafletHeader>,
-    p_ids: Arc<[u32]>,
-    o_kinds: Arc<[u8]>,
-    o_keys: Arc<[u64]>,
-}
-
-/// Decode Region 1 with leaflet cache lookup/insert.
-fn decode_r1_cached(
-    leaflet_bytes: &[u8],
-    leaf_header: &fluree_db_binary_index::format::leaf::LeafFileHeader,
-    cache: Option<&fluree_db_binary_index::LeafletCache>,
-    cache_key: &LeafletCacheKey,
-) -> Result<DecodedR1> {
-    if let Some(c) = cache {
-        if let Some(cached) = c.get_r1(cache_key) {
-            return Ok(DecodedR1 {
-                header: None,
-                p_ids: cached.p_ids,
-                o_kinds: cached.o_kinds,
-                o_keys: cached.o_keys,
-            });
-        }
-    }
-
-    let (lh, s_ids, p_ids, o_kinds, o_keys) =
-        decode_leaflet_region1(leaflet_bytes, leaf_header.p_width, RunSortOrder::Post)
-            .map_err(|e| io_to_query("decode leaflet region1", e))?;
-
-    let row_count = lh.row_count as usize;
-    let p_ids = Arc::from(p_ids.into_boxed_slice());
-    let o_kinds = Arc::from(o_kinds.into_boxed_slice());
-    let o_keys = Arc::from(o_keys.into_boxed_slice());
-
-    if let Some(c) = cache {
-        let cached = CachedRegion1 {
-            s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
-            p_ids: Arc::clone(&p_ids),
-            o_kinds: Arc::clone(&o_kinds),
-            o_keys: Arc::clone(&o_keys),
-            row_count,
-        };
-        c.get_or_decode_r1(cache_key.clone(), || cached);
-    }
-
-    Ok(DecodedR1 {
-        header: Some(lh),
-        p_ids,
-        o_kinds,
-        o_keys,
-    })
-}
-
-/// Decode Region 2 with leaflet cache lookup/insert.
-///
-/// `leaflet_header` is the header from Region 1 decode (if available from a cache miss).
-/// If `None` (R1 was a cache hit), re-reads the header from `leaflet_bytes`.
-fn decode_r2_cached(
-    leaflet_bytes: &[u8],
-    leaflet_header: Option<&LeafletHeader>,
-    leaf_header: &fluree_db_binary_index::format::leaf::LeafFileHeader,
-    cache: Option<&fluree_db_binary_index::LeafletCache>,
-    cache_key: &LeafletCacheKey,
-) -> Result<CachedRegion2> {
-    if let Some(c) = cache {
-        if let Some(cached) = c.get_r2(cache_key) {
-            return Ok(cached);
-        }
-    }
-
-    let lh = match leaflet_header {
-        Some(h) => h,
-        None => &LeafletHeader::read_from(leaflet_bytes)
-            .map_err(|e| io_to_query("re-read leaflet header for r2", e))?,
-    };
-    let decoded = decode_leaflet_region2(leaflet_bytes, lh, leaf_header.dt_width)
-        .map_err(|e| io_to_query("decode leaflet region2", e))?;
-
-    let r2 = CachedRegion2 {
-        dt_values: Arc::from(decoded.dt_values.into_boxed_slice()),
-        t_values: Arc::from(decoded.t_values.into_boxed_slice()),
-        lang: decoded.lang,
-        i_col: decoded.i_col,
-    };
-
-    if let Some(c) = cache {
-        c.get_or_decode_r2(cache_key.clone(), || r2.clone());
-    }
-
-    Ok(r2)
-}
+// V5 helpers removed: open_and_read_leaf, DecodedR1, decode_r1_cached, decode_r2_cached.
+// These used V5 APIs (resolved_path, ensure_index_leaf_cached, read_leaf_header,
+// LeafFileHeader, LeafletHeader, decode_leaflet_region1/2, CachedRegion1/2).
+// The V5 fast-paths that used them are stubbed with todo!("V3 leaflet fast-path").
 
 /// Merge novelty overlay deltas into an accumulator.
 ///
 /// Translates overlay ops, filters by `p_id` and an additional caller-supplied `filter`,
 /// then replays assert/retract ops in time order and calls `apply_delta` for each net change.
+#[expect(dead_code)]
 fn merge_overlay_deltas<F, A>(
     ctx: &ExecutionContext<'_>,
     gv: &BinaryGraphView,
@@ -309,11 +160,9 @@ fn merge_overlay_deltas<F, A>(
             (
                 FactKey {
                     s_id: op.s_id,
-                    o_kind: op.o_kind,
+                    o_type: op.o_type,
                     o_key: op.o_key,
-                    dt: op.dt,
-                    lang_id: op.lang_id,
-                    i_val: op.i_val,
+                    o_i: op.o_i,
                 },
                 op.t,
                 op.op,
@@ -376,6 +225,9 @@ pub struct PredicateGroupCountFirstsOperator {
     /// LIMIT k (top-k by count)
     limit: usize,
     /// Optional stats view used to detect single-datatype predicates.
+    // Kept for: V3 leaflet fast-path may use stats for single-datatype optimization.
+    // Use when: V3 direct-leaflet-scan fast-path is implemented.
+    #[expect(dead_code)]
     stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
@@ -483,8 +335,13 @@ impl Operator for PredicateGroupCountFirstsOperator {
 
         // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
         if ctx.overlay.is_none() {
-            if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
-                match group_count_v6(store_v6, ctx.binary_g_id, &self.predicate, self.limit) {
+            if let Some(binary_index_store) = ctx.binary_store.as_ref() {
+                match group_count_v6(
+                    binary_index_store,
+                    ctx.binary_g_id,
+                    &self.predicate,
+                    self.limit,
+                ) {
                     Ok(v6_results) => {
                         self.results_v6 = Some(v6_results);
                         return Ok(());
@@ -496,200 +353,10 @@ impl Operator for PredicateGroupCountFirstsOperator {
             }
         }
 
-        let Some(gv) = ctx.graph_view() else {
-            // No V5 store available — use generic scan/aggregate fallback.
-            return self.open_fallback(ctx).await;
-        };
-        let store = gv.clone_store();
-        let g_id = gv.g_id();
-
-        let p_id =
-            resolve_predicate_id(&self.predicate, &store, "predicate group-count fast-path")?;
-
-        let single_dt_id: Option<u16> = self.stats.as_ref().and_then(|stats| {
-            let gp = stats.get_graph_property(g_id, p_id)?;
-            if gp.datatypes.len() != 1 {
-                return None;
-            }
-            let (tag, _count) = gp.datatypes[0];
-            if tag == ValueTypeTag::LANG_STRING {
-                return None;
-            }
-            tag.to_reserved_dict_id().map(|dt| dt.as_u16())
-        });
-
-        // Build a leaf range for POST where p_id is fixed and everything else is wildcard.
-        let min_key = RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(0),
-            p_id,
-            dt: 0,
-            o_kind: ObjKind::MIN.as_u8(),
-            op: 0,
-            o_key: 0,
-            t: 0,
-            lang_id: 0,
-            i: 0,
-        };
-        let max_key = RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(u64::MAX),
-            p_id,
-            dt: u16::MAX,
-            o_kind: ObjKind::MAX.as_u8(),
-            op: 1,
-            o_key: u64::MAX,
-            t: u32::MAX,
-            lang_id: u16::MAX,
-            i: u32::MAX,
-        };
-
-        let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Post) else {
-            self.state = OperatorState::Exhausted;
-            return Ok(());
-        };
-
-        let cmp = fluree_db_binary_index::cmp_for_order(RunSortOrder::Post);
-        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
-
-        let mut counts: HashMap<GroupKey, i64> = HashMap::new();
-        let cache = store.leaflet_cache();
-
-        for leaf_idx in leaf_range.clone() {
-            let leaf_entry = &branch.leaves[leaf_idx];
-            let (leaf_mmap, leaf_header) = open_and_read_leaf(&store, leaf_entry)?;
-            let leaf_id = xxhash_rust::xxh3::xxh3_128(&leaf_entry.leaf_cid.to_bytes());
-
-            let dirs = &leaf_header.leaflet_dir;
-            for i in 0..dirs.len() {
-                let dir = &dirs[i];
-                let (p, o_kind, o_key) = prefix_from_dir_or_leaflet(&leaf_mmap, dir)
-                    .map_err(|e| io_to_query("read leaflet first prefix", e))?;
-
-                if p < p_id {
-                    continue;
-                }
-                if p > p_id {
-                    break;
-                }
-
-                // Determine the "next leaflet's FIRST" (same leaf, or next leaf's first_key).
-                let next_prefix = if i + 1 < dirs.len() {
-                    let next_dir = &dirs[i + 1];
-                    Some(
-                        prefix_from_dir_or_leaflet(&leaf_mmap, next_dir)
-                            .map_err(|e| io_to_query("read next leaflet first prefix", e))?,
-                    )
-                } else if leaf_idx + 1 < leaf_range.end {
-                    Some(prefix_from_run_record(
-                        &branch.leaves[leaf_idx + 1].first_key,
-                    ))
-                } else {
-                    None
-                };
-
-                if let Some(dt_id) = single_dt_id {
-                    if next_prefix == Some((p, o_kind, o_key)) {
-                        // Boundary-equality implies this leaflet is entirely (p,o) in POST order.
-                        let key = if o_kind == ObjKind::REF_ID.as_u8() {
-                            GroupKey::Ref(o_key)
-                        } else {
-                            GroupKey::Lit {
-                                o_kind,
-                                o_key,
-                                dt_id,
-                                lang_id: 0,
-                            }
-                        };
-                        add_count(&mut counts, key, dir.row_count as i64);
-                        continue;
-                    }
-                }
-
-                let end = dir.offset as usize + dir.compressed_len as usize;
-                let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
-                let cache_key = LeafletCacheKey {
-                    leaf_id,
-                    leaflet_index: i as u8,
-                    to_t: ctx.to_t,
-                    epoch: 0,
-                };
-
-                // Decode Region 1 with cache lookup.
-                let r1 = decode_r1_cached(leaflet_bytes, &leaf_header, cache, &cache_key)?;
-
-                if let Some(dt_id) = single_dt_id {
-                    // Single-datatype mode: count from Region 1 only.
-                    for row in 0..r1.p_ids.len() {
-                        if r1.p_ids[row] != p_id {
-                            continue;
-                        }
-                        let key = if r1.o_kinds[row] == ObjKind::REF_ID.as_u8() {
-                            GroupKey::Ref(r1.o_keys[row])
-                        } else {
-                            GroupKey::Lit {
-                                o_kind: r1.o_kinds[row],
-                                o_key: r1.o_keys[row],
-                                dt_id,
-                                lang_id: 0,
-                            }
-                        };
-                        add_count(&mut counts, key, 1);
-                    }
-                } else {
-                    // Fallback mode: decode Region 2 and group by (o_kind,o_key,dt_id,lang_id).
-                    let r2 = decode_r2_cached(
-                        leaflet_bytes,
-                        r1.header.as_ref(),
-                        &leaf_header,
-                        cache,
-                        &cache_key,
-                    )?;
-                    for row in 0..r1.p_ids.len() {
-                        if r1.p_ids[row] != p_id {
-                            continue;
-                        }
-                        let key = if r1.o_kinds[row] == ObjKind::REF_ID.as_u8() {
-                            GroupKey::Ref(r1.o_keys[row])
-                        } else {
-                            let dt_id = r2.dt_values[row] as u16;
-                            let lang_id = r2.lang.as_ref().map(|c| c.get(row as u16)).unwrap_or(0);
-                            GroupKey::Lit {
-                                o_kind: r1.o_kinds[row],
-                                o_key: r1.o_keys[row],
-                                dt_id,
-                                lang_id,
-                            }
-                        };
-                        add_count(&mut counts, key, 1);
-                    }
-                }
-            }
-        }
-
-        // Merge novelty overlay deltas (when present).
-        merge_overlay_deltas(
-            ctx,
-            &gv,
-            p_id,
-            |_op| true,
-            |key, delta| {
-                add_count(&mut counts, group_key_for_fact(key, single_dt_id), delta);
-            },
-        );
-
-        debug_assert!(
-            counts.values().all(|&c| c >= 0),
-            "group count went negative after overlay merge; overlay invariant violated"
-        );
-
-        // Top-k by count desc.
-        let mut rows: Vec<(GroupKey, i64)> = counts.into_iter().collect();
-        rows.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        rows.truncate(self.limit);
-        self.results = rows;
-
-        Ok(())
+        // V5 leaf-scanning fast-path removed. Fall back to generic scan/aggregate.
+        // TODO: V3 leaflet fast-path for group-count-firsts (port boundary-equality
+        // optimization to V3 column-based format).
+        self.open_fallback(ctx).await
     }
 
     async fn next_batch(
@@ -713,12 +380,13 @@ impl Operator for PredicateGroupCountFirstsOperator {
                 self.state = OperatorState::Exhausted;
                 return Ok(None);
             }
-            let store_v6 = ctx.binary_store_v6.as_ref().ok_or_else(|| {
+            let binary_index_store = ctx.binary_store.as_ref().ok_or_else(|| {
                 QueryError::Internal("V6 group-count results but no V6 store".to_string())
             })?;
             let g_id = ctx.binary_g_id;
-            let p_id = resolve_predicate_id_v6(&self.predicate, store_v6)?;
-            let view = fluree_db_binary_index::BinaryGraphViewV3::new(Arc::clone(store_v6), g_id);
+            let p_id = resolve_predicate_id_v6(&self.predicate, binary_index_store)?;
+            let view =
+                fluree_db_binary_index::BinaryGraphView::new(Arc::clone(binary_index_store), g_id);
 
             let batch_size = ctx.batch_size;
             let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -734,10 +402,11 @@ impl Operator for PredicateGroupCountFirstsOperator {
                     let val = view
                         .decode_value(o_type, o_key, p_id)
                         .map_err(|e| QueryError::Internal(format!("V6 decode_value: {e}")))?;
-                    let dt = store_v6
+                    let dt = binary_index_store
                         .resolve_datatype_sid(o_type)
                         .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
-                    let lang: Option<Arc<str>> = store_v6.resolve_lang_tag(o_type).map(Arc::from);
+                    let lang: Option<Arc<str>> =
+                        binary_index_store.resolve_lang_tag(o_type).map(Arc::from);
                     col_o.push(Binding::Lit {
                         val,
                         dt,
@@ -775,8 +444,6 @@ impl Operator for PredicateGroupCountFirstsOperator {
             ));
         };
         let store = gv.clone_store();
-        let p_id =
-            resolve_predicate_id(&self.predicate, &store, "predicate group-count fast-path")?;
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -788,20 +455,24 @@ impl Operator for PredicateGroupCountFirstsOperator {
 
             match key {
                 GroupKey::Ref(s_id) => col_o.push(Binding::EncodedSid { s_id }),
-                GroupKey::Lit {
-                    o_kind,
-                    o_key,
-                    dt_id,
-                    lang_id,
-                } => col_o.push(Binding::EncodedLit {
-                    o_kind,
-                    o_key,
-                    p_id,
-                    dt_id,
-                    lang_id,
-                    i_val: fluree_db_core::ListIndex::none().as_i32(),
-                    t: 0,
-                }),
+                GroupKey::Lit { o_type, o_key } => {
+                    // V5 results path: decode to FlakeValue from o_type/o_key.
+                    let val = store
+                        .decode_value_no_graph(o_type, o_key)
+                        .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))?;
+                    let dt = store
+                        .resolve_datatype_sid(o_type)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
+                    let lang: Option<Arc<str>> = store.resolve_lang_tag(o_type).map(Arc::from);
+                    col_o.push(Binding::Lit {
+                        val,
+                        dt,
+                        lang,
+                        t: None,
+                        op: None,
+                        p_id: None,
+                    });
+                }
             }
             col_c.push(Binding::Lit {
                 val: fluree_db_core::FlakeValue::Long(count),
@@ -948,9 +619,9 @@ impl Operator for PredicateObjectCountFirstsOperator {
 
         // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
         if ctx.overlay.is_none() {
-            if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
+            if let Some(binary_index_store) = ctx.binary_store.as_ref() {
                 match count_bound_object_v6(
-                    store_v6,
+                    binary_index_store,
                     ctx.binary_g_id,
                     &self.predicate,
                     &self.object,
@@ -966,173 +637,10 @@ impl Operator for PredicateObjectCountFirstsOperator {
             }
         }
 
-        let Some(gv) = ctx.graph_view() else {
-            // No V5 store available — use generic scan/aggregate fallback.
-            return self.open_fallback(ctx).await;
-        };
-        let store = gv.clone_store();
-        let g_id = gv.g_id();
-
-        let p_id =
-            resolve_predicate_id(&self.predicate, &store, "predicate-object count fast-path")?;
-
-        // Translate the bound object term into its Region1 `(o_kind, o_key)` encoding.
-        let (target_kind, target_key): (u8, u64) = match &self.object {
-            Term::Sid(sid) => match store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::execution(format!("sid_to_s_id for object: {e}")))?
-            {
-                Some(s_id) => (ObjKind::REF_ID.as_u8(), s_id),
-                None => {
-                    self.state = OperatorState::Exhausted;
-                    return Ok(());
-                }
-            },
-            Term::Iri(iri) => match store.find_subject_id(iri).map_err(|e| {
-                QueryError::execution(format!("find_subject_id for object IRI: {e}"))
-            })? {
-                Some(s_id) => (ObjKind::REF_ID.as_u8(), s_id),
-                None => {
-                    self.state = OperatorState::Exhausted;
-                    return Ok(());
-                }
-            },
-            Term::Value(val) => {
-                match gv.value_to_obj_pair_for_predicate(val, p_id).map_err(|e| {
-                    QueryError::execution(format!("value_to_obj_pair_for_predicate: {e}"))
-                })? {
-                    Some((k, v)) => (k.as_u8(), v.as_u64()),
-                    None => {
-                        self.state = OperatorState::Exhausted;
-                        return Ok(());
-                    }
-                }
-            }
-            Term::Var(_) => {
-                return Err(QueryError::InvalidQuery(
-                    "predicate-object count fast-path requires a bound object".to_string(),
-                ))
-            }
-        };
-
-        let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Post) else {
-            self.state = OperatorState::Exhausted;
-            return Ok(());
-        };
-        let cmp = fluree_db_binary_index::cmp_for_order(RunSortOrder::Post);
-
-        // Range: fixed (p,o_kind,o_key), wildcard dt/lang/i/s/t.
-        let min_key = RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(0),
-            p_id,
-            dt: 0,
-            o_kind: target_kind,
-            op: 0,
-            o_key: target_key,
-            t: 0,
-            lang_id: 0,
-            i: 0,
-        };
-        let max_key = RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(u64::MAX),
-            p_id,
-            dt: u16::MAX,
-            o_kind: target_kind,
-            op: 1,
-            o_key: target_key,
-            t: u32::MAX,
-            lang_id: u16::MAX,
-            i: u32::MAX,
-        };
-
-        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
-        let target_prefix = (p_id, target_kind, target_key);
-
-        let mut total: i64 = 0;
-        let cache = store.leaflet_cache();
-
-        for leaf_idx in leaf_range.clone() {
-            let leaf_entry = &branch.leaves[leaf_idx];
-            let (leaf_mmap, leaf_header) = open_and_read_leaf(&store, leaf_entry)?;
-            let leaf_id = xxhash_rust::xxh3::xxh3_128(&leaf_entry.leaf_cid.to_bytes());
-
-            let dirs = &leaf_header.leaflet_dir;
-            for i in 0..dirs.len() {
-                let dir = &dirs[i];
-                let prefix = prefix_from_dir_or_leaflet(&leaf_mmap, dir)
-                    .map_err(|e| io_to_query("read leaflet first prefix", e))?;
-
-                if prefix < target_prefix {
-                    continue;
-                }
-                if prefix > target_prefix {
-                    break;
-                }
-
-                // Determine the "next leaflet's FIRST" (same leaf, or next leaf's first_key).
-                let next_prefix = if i + 1 < dirs.len() {
-                    let next_dir = &dirs[i + 1];
-                    Some(
-                        prefix_from_dir_or_leaflet(&leaf_mmap, next_dir)
-                            .map_err(|e| io_to_query("read next leaflet first prefix", e))?,
-                    )
-                } else if leaf_idx + 1 < leaf_range.end {
-                    Some(prefix_from_run_record(
-                        &branch.leaves[leaf_idx + 1].first_key,
-                    ))
-                } else {
-                    None
-                };
-
-                if next_prefix == Some(target_prefix) {
-                    // Boundary-equality implies this leaflet is entirely (p,o).
-                    total += dir.row_count as i64;
-                    continue;
-                }
-
-                // Fallback for this leaflet: decode Region 1 and count exact (p,o_kind,o_key) matches.
-                let end = dir.offset as usize + dir.compressed_len as usize;
-                let leaflet_bytes = &leaf_mmap[dir.offset as usize..end];
-                let cache_key = LeafletCacheKey {
-                    leaf_id,
-                    leaflet_index: i as u8,
-                    to_t: ctx.to_t,
-                    epoch: 0,
-                };
-
-                let r1 = decode_r1_cached(leaflet_bytes, &leaf_header, cache, &cache_key)?;
-
-                for row in 0..r1.p_ids.len() {
-                    if r1.p_ids[row] == p_id
-                        && r1.o_kinds[row] == target_kind
-                        && r1.o_keys[row] == target_key
-                    {
-                        total += 1;
-                    }
-                }
-            }
-        }
-
-        // Merge novelty overlay deltas (when present).
-        merge_overlay_deltas(
-            ctx,
-            &gv,
-            p_id,
-            |op| op.o_kind == target_kind && op.o_key == target_key,
-            |_key, delta| {
-                total += delta;
-            },
-        );
-
-        debug_assert!(
-            total >= 0,
-            "total count went negative ({total}) after overlay merge; overlay invariant violated"
-        );
-
-        self.count = total;
-        Ok(())
+        // V5 leaf-scanning fast-path removed. Fall back to generic scan/aggregate.
+        // TODO: V3 leaflet fast-path for predicate-object count (port boundary-equality
+        // optimization to V3 column-based format).
+        return self.open_fallback(ctx).await;
     }
 
     async fn next_batch(
@@ -1235,7 +743,7 @@ fn load_v6_batch(
 /// Resolve a predicate [`Ref`] to its V6 binary index `p_id`.
 fn resolve_predicate_id_v6(
     predicate: &crate::triple::Ref,
-    store: &BinaryIndexStoreV6,
+    store: &BinaryIndexStore,
 ) -> Result<u32> {
     let sid = match predicate {
         crate::triple::Ref::Sid(s) => s.clone(),
@@ -1257,7 +765,7 @@ fn resolve_predicate_id_v6(
 /// `(o_type, o_key)` to skip whole leaflets, and decodes only `o_key` + `o_type`
 /// columns when needed.
 fn count_bound_object_v6(
-    store: &BinaryIndexStoreV6,
+    store: &BinaryIndexStore,
     g_id: GraphId,
     predicate: &crate::triple::Ref,
     object: &Term,
@@ -1364,7 +872,7 @@ fn count_bound_object_v6(
 ///
 /// Returns `Vec<(o_type, o_key, count)>` sorted by count descending, truncated to `limit`.
 fn group_count_v6(
-    store: &BinaryIndexStoreV6,
+    store: &BinaryIndexStore,
     g_id: GraphId,
     predicate: &crate::triple::Ref,
     limit: usize,
@@ -1468,7 +976,7 @@ fn group_count_v6(
 /// Translate a bound object `Term` to V6 `(o_type, o_key)`.
 fn translate_term_to_v6(
     term: &Term,
-    store: &BinaryIndexStoreV6,
+    store: &BinaryIndexStore,
     _p_id: u32,
     _g_id: GraphId,
 ) -> Result<(u16, u64)> {
@@ -1494,7 +1002,7 @@ fn translate_term_to_v6(
         Term::Value(val) => {
             // For literal values, we need the FlakeValue → (o_type, o_key) translation.
             // Use the Sid-based dt info from the FlakeValue if available.
-            let (ot, ok) = crate::binary_scan_v3::value_to_otype_okey_simple(val, store)?;
+            let (ot, ok) = crate::binary_scan::value_to_otype_okey_simple(val, store)?;
             Ok((ot.as_u16(), ok))
         }
         Term::Var(_) => Err(QueryError::InvalidQuery(

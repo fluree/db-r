@@ -18,15 +18,6 @@ pub const CODEC_FLUREE_COMMIT: u64 = FLUREE_CODEC_BASE + 1;
 /// Multicodec for Fluree transaction (txn) blobs.
 pub const CODEC_FLUREE_TXN: u64 = FLUREE_CODEC_BASE + 2;
 
-/// Multicodec for Fluree index root descriptors.
-pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
-
-/// Multicodec for Fluree index branch manifests (FBR1).
-pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
-
-/// Multicodec for Fluree index leaf files (FLI2).
-pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
-
 /// Multicodec for Fluree dictionary blobs (all sub-kinds).
 ///
 /// `DictKind` is parameterized (`NumBig { p_id }`, `VectorShard { p_id }`, etc.)
@@ -52,14 +43,14 @@ pub const CODEC_FLUREE_SPATIAL_INDEX: u64 = FLUREE_CODEC_BASE + 11;
 /// Multicodec for Fluree history sidecar blobs (FHS1, per-leaf time-travel data).
 pub const CODEC_FLUREE_HISTORY_SIDECAR: u64 = FLUREE_CODEC_BASE + 12;
 
-/// Multicodec for Fluree V3 index branch manifests (FBR3).
-pub const CODEC_FLUREE_INDEX_BRANCH_V3: u64 = FLUREE_CODEC_BASE + 13;
+/// Multicodec for Fluree index branch manifests (FBR3).
+pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 13;
 
-/// Multicodec for Fluree V3 index leaf files (FLI3).
-pub const CODEC_FLUREE_INDEX_LEAF_V3: u64 = FLUREE_CODEC_BASE + 14;
+/// Multicodec for Fluree index leaf files (FLI3).
+pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 14;
 
-/// Multicodec for Fluree V6 index root descriptors (FIR6).
-pub const CODEC_FLUREE_INDEX_ROOT_V6: u64 = FLUREE_CODEC_BASE + 15;
+/// Multicodec for Fluree index root descriptors (FIR6).
+pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 15;
 
 // ============================================================================
 // DictKind
@@ -114,15 +105,15 @@ pub enum ContentKind {
     Commit,
     /// Transaction blob (binary encoded flakes)
     Txn,
-    /// DB root index node (the "root pointer" written each refresh)
+    /// DB root index node (FIR6 format)
     IndexRoot,
     /// Garbage record (GC metadata)
     GarbageRecord,
     /// Dictionary artifact (predicates, subjects, strings, etc.)
     DictBlob { dict: DictKind },
-    /// Index branch manifest (FBR1 format)
+    /// Index branch manifest (FBR3 format)
     IndexBranch,
-    /// Index leaf file (FLI2 format)
+    /// Index leaf file (FLI3 format)
     IndexLeaf,
     /// Ledger configuration object (origin discovery, replication defaults)
     LedgerConfig,
@@ -134,12 +125,6 @@ pub enum ContentKind {
     SpatialIndex,
     /// History sidecar blob (FHS1, per-leaf time-travel data)
     HistorySidecar,
-    /// V3 index branch manifest (FBR3)
-    IndexBranchV3,
-    /// V3 index leaf file (FLI3)
-    IndexLeafV3,
-    /// V6 index root descriptor (FIR6)
-    IndexRootV6,
 }
 
 // ============================================================================
@@ -164,9 +149,6 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
             ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
             ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
-            ContentKind::IndexBranchV3 => CODEC_FLUREE_INDEX_BRANCH_V3,
-            ContentKind::IndexLeafV3 => CODEC_FLUREE_INDEX_LEAF_V3,
-            ContentKind::IndexRootV6 => CODEC_FLUREE_INDEX_ROOT_V6,
         }
     }
 
@@ -191,9 +173,6 @@ impl ContentKind {
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
             CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
-            CODEC_FLUREE_INDEX_BRANCH_V3 => Some(ContentKind::IndexBranchV3),
-            CODEC_FLUREE_INDEX_LEAF_V3 => Some(ContentKind::IndexLeafV3),
-            CODEC_FLUREE_INDEX_ROOT_V6 => Some(ContentKind::IndexRootV6),
             _ => None,
         }
     }
@@ -213,9 +192,6 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
             ContentKind::SpatialIndex => "spatial-index",
             ContentKind::HistorySidecar => "history-sidecar",
-            ContentKind::IndexBranchV3 => "index-branch",
-            ContentKind::IndexLeafV3 => "index-leaf",
-            ContentKind::IndexRootV6 => "index-root",
         }
     }
 }

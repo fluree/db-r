@@ -1,6 +1,5 @@
 //! Integration tests for V3 (FLI3) index format via the bulk import pipeline.
 //!
-//! Exercises: `fluree.create("db").import(path).index_format_version(3).execute()`
 //! Verifies:
 //! - V3 artifacts (FLI3 leaves) are produced with correct magic bytes
 //! - Full E2E: import → FIR6 root → load → V3 cursor → SPARQL query → results
@@ -83,7 +82,6 @@ ex:cam a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await;
 
@@ -103,7 +101,7 @@ ex:cam a ex:User ;
     );
 
     // Verify first FLI3 file has valid header.
-    use fluree_db_binary_index::format::leaf_v3::{
+    use fluree_db_binary_index::format::leaf::{
         decode_leaf_dir_v3, decode_leaf_header_v3, LEAF_V3_MAGIC,
     };
 
@@ -165,8 +163,8 @@ ex:cam a ex:User ;
 
 /// Full end-to-end: import TTL with V3 format → load ledger → run queries → verify.
 ///
-/// Validates the complete V3 read path: FIR6 root decode → BinaryIndexStoreV6 load →
-/// BinaryCursorV3 scan → decode_value_v3 → query results.
+/// Validates the complete V3 read path: FIR6 root decode → BinaryIndexStore load →
+/// BinaryCursor scan → decode_value_v3 → query results.
 ///
 /// Covers:
 /// - Plain xsd:string (schema:name "Alice")
@@ -209,7 +207,6 @@ ex:bob a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("V3 import should succeed");
@@ -217,7 +214,7 @@ ex:bob a ex:User ;
     assert!(result.t > 0, "should have at least one commit");
     assert!(result.root_id.is_some(), "index should have been built");
 
-    // Verify FIR6 root was produced (not IRB1).
+    // Verify FIR6 root was produced (FIR6 format).
     let fir6_files = find_files_with_magic(db_dir.path(), b"FIR6");
     assert!(
         !fir6_files.is_empty(),
@@ -225,7 +222,7 @@ ex:bob a ex:User ;
         db_dir.path().display()
     );
 
-    // Load the ledger (this triggers FIR6 → BinaryIndexStoreV6 loading).
+    // Load the ledger (this triggers FIR6 → BinaryIndexStore loading).
     let ledger = fluree
         .ledger("test/v3-query:main")
         .await
@@ -462,7 +459,6 @@ ex:bob a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("V3 import should succeed");
@@ -604,7 +600,6 @@ ex:bob schema:name "Bob" ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("import");
@@ -688,7 +683,6 @@ ex:alice schema:name "Alice" .
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("import");
@@ -784,7 +778,6 @@ ex:bob a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("V3 import should succeed");
@@ -824,17 +817,13 @@ ex:bob a ex:User ;
         .expect("ns lookup")
         .expect("ns record should exist");
 
-    let indexer_config = fluree_db_indexer::IndexerConfig {
-        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
-        ..Default::default()
-    };
+    let indexer_config = fluree_db_indexer::IndexerConfig::default();
 
     let index_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),
         "test/v3-rebuild:main",
         &ns_record,
         indexer_config,
-        true, // use_v3
     )
     .await
     .expect("V3 rebuild should succeed");
@@ -844,7 +833,7 @@ ex:bob a ex:User ;
         "rebuild should produce an index with t > 0"
     );
 
-    // Verify the rebuild produced a FIR6 root (not IRB1).
+    // Verify the rebuild produced a FIR6 root (FIR6 format).
     let fir6_files = find_files_with_magic(db_dir.path(), b"FIR6");
     // There should be at least 2 FIR6 files now: one from import, one from rebuild.
     assert!(
@@ -952,7 +941,7 @@ ex:bob a ex:User ;
 /// subject IRI + new string), trigger incremental V6 indexing, reload, query.
 ///
 /// Validates:
-/// - `incremental_index_v6` runs (not falling back to rebuild)
+/// - `incremental_index` runs (not falling back to rebuild)
 /// - New subject IRI resolves correctly (forward pack updated)
 /// - New string literal resolves correctly (forward pack updated)
 /// - Existing indexed data survives the incremental update
@@ -988,7 +977,6 @@ ex:bob a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("V3 import should succeed");
@@ -1002,17 +990,13 @@ ex:bob a ex:User ;
         .expect("ns lookup")
         .expect("ns record");
 
-    let rebuild_config = fluree_db_indexer::IndexerConfig {
-        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
-        ..Default::default()
-    };
+    let rebuild_config = fluree_db_indexer::IndexerConfig::default();
 
     let rebuild_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),
         "test/v3-incr:main",
         &ns_record,
         rebuild_config,
-        true,
     )
     .await
     .expect("V3 rebuild should succeed");
@@ -1064,7 +1048,6 @@ ex:bob a ex:User ;
         .expect("ns record");
 
     let indexer_config = fluree_db_indexer::IndexerConfig {
-        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
         incremental_enabled: true,
         incremental_max_commits: 100,
         ..Default::default()
@@ -1122,10 +1105,10 @@ ex:bob a ex:User ;
         .await
         .expect("load incremental V3 ledger");
 
-    // Verify the root is FIR6 (codec = CODEC_FLUREE_INDEX_ROOT_V6).
+    // Verify the root is FIR6 (codec = CODEC_FLUREE_INDEX_ROOT).
     assert_eq!(
         index_result.root_id.codec(),
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT_V6,
+        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
         "result should be FIR6 root, not V5"
     );
 
@@ -1238,7 +1221,6 @@ ex:remove a ex:User ;
         .threads(1)
         .memory_budget_mb(128)
         .cleanup(false)
-        .index_format_version(3)
         .execute()
         .await
         .expect("V3 import should succeed");
@@ -1281,17 +1263,13 @@ ex:remove a ex:User ;
         .expect("ns lookup")
         .expect("ns record should exist");
 
-    let indexer_config = fluree_db_indexer::IndexerConfig {
-        index_format_version: fluree_db_indexer::IndexFormatVersion::V3,
-        ..Default::default()
-    };
+    let indexer_config = fluree_db_indexer::IndexerConfig::default();
 
     let index_result = fluree_db_indexer::rebuild_index_from_commits(
         fluree.storage(),
         "test/v3-retract:main",
         &ns_record,
         indexer_config,
-        true,
     )
     .await
     .expect("V3 rebuild should succeed");

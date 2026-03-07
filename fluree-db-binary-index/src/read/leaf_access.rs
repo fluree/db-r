@@ -21,7 +21,7 @@ use fluree_db_core::ContentId;
 
 use crate::format::column_block::{ColumnBlockRef, ColumnId};
 use crate::format::history_sidecar::{decode_history_segment, HistEntryV2, HistorySegmentRef};
-use crate::format::leaf_v3::{
+use crate::format::leaf::{
     decode_leaf_dir_v3_with_base, decode_leaf_header_v3, DecodedLeafDirV3, LeafletDirEntryV3,
     LEAF_V3_HEADER_SIZE,
 };
@@ -616,7 +616,7 @@ pub fn fetch_header_and_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::leaf_v3::LeafWriterV3;
+    use crate::format::leaf::LeafWriter;
     use crate::format::run_record::RunSortOrder;
     use crate::format::run_record_v2::RunRecordV2;
     use crate::read::column_types::{ColumnData, ColumnSet};
@@ -638,7 +638,7 @@ mod tests {
 
     /// Build a test leaf blob with known data.
     fn build_test_leaf() -> (Vec<u8>, ContentId) {
-        let mut writer = LeafWriterV3::new(RunSortOrder::Post, 100, 1000, 1);
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
 
         let ot = OType::XSD_INTEGER.as_u16();

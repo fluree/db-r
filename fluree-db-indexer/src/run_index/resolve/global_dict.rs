@@ -418,7 +418,7 @@ impl PredicateDict {
         Ok(())
     }
 
-    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRoot`).
     ///
     /// Entry at index `i` gets ID `i`. This is the safe way to seed a dict
     /// from persisted data — it guarantees ID stability.
@@ -970,7 +970,7 @@ impl LanguageTagDict {
         self.inner = VecBiDict::new(1);
     }
 
-    /// Reconstruct from an ordered list of tags (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of tags (e.g., from `IndexRoot`).
     ///
     /// Tag at index `i` gets ID `i + 1` (base_id=1; 0 = "no tag").
     pub fn from_ordered_tags(tags: Vec<std::sync::Arc<str>>) -> Self {

@@ -73,13 +73,15 @@ impl Expression {
                     o_kind,
                     o_key,
                     p_id,
+                    dt_id,
+                    lang_id,
                     ..
                 }) => {
                     let Some(gv) = ctx.and_then(|c| c.graph_view()) else {
                         return Ok(None);
                     };
                     let val = gv
-                        .decode_value(*o_kind, *o_key, *p_id)
+                        .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                         .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
                     Ok(ComparableValue::try_from(&val).ok())
                 }

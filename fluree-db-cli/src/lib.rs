@@ -45,7 +45,6 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             parallelism,
             leaflet_rows,
             leaflets_per_leaf,
-            index_format,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             // Create-specific flags take precedence; fall back to global flags.
@@ -63,7 +62,6 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 chunk_size_mb,
                 leaflet_rows,
                 leaflets_per_leaf,
-                index_format_version: index_format,
             };
             commands::create::run(
                 &ledger,

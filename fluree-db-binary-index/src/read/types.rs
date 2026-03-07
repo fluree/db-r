@@ -54,7 +54,7 @@ impl DecodedRowV3 {
 }
 
 // ============================================================================
-// OverlayOpV3
+// OverlayOp
 // ============================================================================
 
 /// An overlay operation translated to V3 integer-ID space.
@@ -63,7 +63,7 @@ impl DecodedRowV3 {
 /// Sorted by the cursor's sort order for streaming merge with decoded
 /// leaflet columns.
 #[derive(Debug, Clone, Copy)]
-pub struct OverlayOpV3 {
+pub struct OverlayOp {
     pub s_id: u64,
     pub p_id: u32,
     pub o_type: u16,
@@ -74,7 +74,7 @@ pub struct OverlayOpV3 {
     pub op: bool,
 }
 
-impl OverlayOpV3 {
+impl OverlayOp {
     /// Extract the fact identity key (without `t` and `op`).
     #[inline]
     pub fn fact_key(&self) -> FactKeyV3 {
@@ -93,7 +93,7 @@ impl OverlayOpV3 {
 // ============================================================================
 
 /// Compare two overlay ops by the V3 sort order (no `t` in sort order).
-fn cmp_overlay_v3(a: &OverlayOpV3, b: &OverlayOpV3, order: RunSortOrder) -> Ordering {
+fn cmp_overlay_v3(a: &OverlayOp, b: &OverlayOp, order: RunSortOrder) -> Ordering {
     match order {
         RunSortOrder::Spot => a
             .s_id
@@ -127,20 +127,20 @@ fn cmp_overlay_v3(a: &OverlayOpV3, b: &OverlayOpV3, order: RunSortOrder) -> Orde
 }
 
 /// Sort overlay ops by the given V3 sort order.
-pub fn sort_overlay_ops_v3(ops: &mut [OverlayOpV3], order: RunSortOrder) {
+pub fn sort_overlay_ops(ops: &mut [OverlayOp], order: RunSortOrder) {
     ops.sort_unstable_by(|a, b| cmp_overlay_v3(a, b, order));
 }
 
 /// Compare a decoded row (from a `ColumnBatch`) against an overlay op
-/// using the V3 sort order. Used by the two-pointer merge in `BinaryCursorV3`.
+/// using the V3 sort order. Used by the two-pointer merge in `BinaryCursor`.
 #[inline]
-pub fn cmp_row_vs_overlay_v3(
+pub fn cmp_row_vs_overlay(
     s_id: u64,
     p_id: u32,
     o_type: u16,
     o_key: u64,
     o_i: u32,
-    ov: &OverlayOpV3,
+    ov: &OverlayOp,
     order: RunSortOrder,
 ) -> Ordering {
     match order {
@@ -176,8 +176,8 @@ pub fn cmp_row_vs_overlay_v3(
 /// Used for per-leaf overlay slicing: binary-search overlay ops against
 /// leaf `first_key`/`last_key` in the branch manifest.
 #[inline]
-pub fn cmp_overlay_vs_record_v3(
-    ov: &OverlayOpV3,
+pub fn cmp_overlay_vs_record(
+    ov: &OverlayOp,
     rec: &crate::format::run_record_v2::RunRecordV2,
     order: RunSortOrder,
 ) -> Ordering {
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn overlay_sort_spot() {
         let mut ops = vec![
-            OverlayOpV3 {
+            OverlayOp {
                 s_id: 2,
                 p_id: 1,
                 o_type: 0,
@@ -242,7 +242,7 @@ mod tests {
                 t: 1,
                 op: true,
             },
-            OverlayOpV3 {
+            OverlayOp {
                 s_id: 1,
                 p_id: 1,
                 o_type: 0,
@@ -252,7 +252,7 @@ mod tests {
                 op: true,
             },
         ];
-        sort_overlay_ops_v3(&mut ops, RunSortOrder::Spot);
+        sort_overlay_ops(&mut ops, RunSortOrder::Spot);
         assert_eq!(ops[0].s_id, 1);
         assert_eq!(ops[1].s_id, 2);
     }
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn overlay_sort_post() {
         let mut ops = vec![
-            OverlayOpV3 {
+            OverlayOp {
                 s_id: 1,
                 p_id: 2,
                 o_type: 0,
@@ -269,7 +269,7 @@ mod tests {
                 t: 1,
                 op: true,
             },
-            OverlayOpV3 {
+            OverlayOp {
                 s_id: 1,
                 p_id: 2,
                 o_type: 0,
@@ -279,7 +279,7 @@ mod tests {
                 op: true,
             },
         ];
-        sort_overlay_ops_v3(&mut ops, RunSortOrder::Post);
+        sort_overlay_ops(&mut ops, RunSortOrder::Post);
         assert_eq!(ops[0].o_key, 5);
         assert_eq!(ops[1].o_key, 10);
     }

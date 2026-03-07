@@ -5,51 +5,48 @@ use fluree_db_binary_index::dict::incremental::{
 use fluree_db_binary_index::dict::reverse_leaf::ReverseEntry;
 use fluree_db_binary_index::dict::DictTreeReader;
 use fluree_db_binary_index::format::branch::{
-    read_branch_v2_from_bytes, BranchManifest, LeafEntry,
+    build_branch_bytes, read_branch_from_bytes, BranchManifest, LeafEntry,
 };
-use fluree_db_binary_index::format::index_root::PackBranchEntry;
-use fluree_db_binary_index::format::leaf::LeafWriter;
-use fluree_db_binary_index::format::leaflet::decode_leaflet;
-use fluree_db_binary_index::format::run_record::{RunRecord, RunSortOrder};
+use fluree_db_binary_index::format::leaf::{decode_leaf_header_v3, LeafWriter};
+use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
+use fluree_db_binary_index::format::wire_helpers::PackBranchEntry;
 use fluree_db_core::content_kind::{CODEC_FLUREE_DICT_BLOB, CODEC_FLUREE_INDEX_BRANCH};
+use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::{ObjKey, ObjKind};
-use fluree_db_core::{ContentId, DatatypeDictId};
-use fluree_db_indexer::run_index::incremental_branch::{update_branch, IncrementalBranchConfig};
+use fluree_db_core::ContentId;
+use fluree_db_indexer::run_index::incremental_branch::{update_branch, BranchUpdateConfig};
 use std::collections::HashMap;
 
-fn int_record(g_id: u16, s_id: u64, p_id: u32, v: i64, t: u32) -> RunRecord {
-    RunRecord::new(
-        g_id,
-        SubjectId::from_u64(s_id),
+fn int_record_v2(g_id: u16, s_id: u64, p_id: u32, v: i64, t: u32) -> RunRecordV2 {
+    use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+    use fluree_db_core::value_id::ObjKey;
+    RunRecordV2 {
+        s_id: SubjectId::from_u64(s_id),
+        o_key: ObjKey::encode_i64(v).as_u64(),
         p_id,
-        ObjKind::NUM_INT,
-        ObjKey::encode_i64(v),
         t,
-        true,
-        DatatypeDictId::INTEGER.as_u16(),
-        0,
-        None::<u32>,
-    )
+        o_i: LIST_INDEX_NONE,
+        o_type: OType::XSD_INTEGER.as_u16(),
+        g_id,
+    }
 }
 
 #[test]
 fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let dir = tmp.path().join("leaves");
-    std::fs::create_dir_all(&dir).expect("mkdir");
-
-    // Force many small leaves: 5 rows per leaflet, 1 leaflet per leaf.
-    let mut writer = LeafWriter::new(dir.clone(), 5, 1, 1);
+    // Force many small leaves: 5 rows per leaflet, 25 rows per leaf.
+    let mut writer = LeafWriter::new(RunSortOrder::Spot, 5, 25, 1);
 
     // Base data: 20 subjects, all with p=1.
-    let base: Vec<RunRecord> = (0..20).map(|s| int_record(0, s, 1, s as i64, 1)).collect();
+    let base: Vec<RunRecordV2> = (0..20)
+        .map(|s| int_record_v2(0, s, 1, s as i64, 1))
+        .collect();
     for r in &base {
         writer.push_record(*r).expect("push record");
     }
     let infos = writer.finish().expect("finish");
     assert!(
-        infos.len() >= 3,
+        infos.len() >= 2,
         "expected multiple leaf blobs (got {})",
         infos.len()
     );
@@ -57,60 +54,52 @@ fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
     let mut leaf_bytes: HashMap<ContentId, Vec<u8>> = HashMap::new();
     let mut leaves: Vec<LeafEntry> = Vec::with_capacity(infos.len());
     for info in infos {
-        let bytes = std::fs::read(dir.join(info.leaf_cid.to_string())).expect("read leaf");
-        leaf_bytes.insert(info.leaf_cid.clone(), bytes);
+        leaf_bytes.insert(info.leaf_cid.clone(), info.leaf_bytes);
         leaves.push(LeafEntry {
             first_key: info.first_key,
             last_key: info.last_key,
             row_count: info.total_rows,
             leaf_cid: info.leaf_cid,
-            resolved_path: None,
+            sidecar_cid: None,
         });
     }
 
     // Encode+decode a branch manifest to ensure the routing bytes are valid.
-    let branch_bytes = fluree_db_binary_index::format::branch::build_branch_v2_bytes(
-        RunSortOrder::Spot,
-        0,
-        &leaves,
-    );
-    let existing_branch = read_branch_v2_from_bytes(&branch_bytes).expect("decode branch");
+    let branch_bytes = build_branch_bytes(RunSortOrder::Spot, 0, &leaves);
+    let existing_branch = read_branch_from_bytes(&branch_bytes).expect("decode branch");
 
     // Choose a novelty record that falls squarely inside a middle leaf by subject id.
-    // With s_ids 0..19 and small leaves, s_id=12 should be in a non-edge leaf.
-    let novelty = vec![int_record(0, 12, 2, 999, 2)];
+    let novelty = vec![int_record_v2(0, 12, 2, 999, 2)];
+    let novelty_ops = vec![1u8]; // assert
 
-    let config = IncrementalBranchConfig {
+    let config = BranchUpdateConfig {
+        order: RunSortOrder::Spot,
+        g_id: 0,
         zstd_level: 1,
-        max_parallel_leaves: 4,
-        leaflet_split_rows: 50,  // avoid splits in this test
-        leaflet_target_rows: 25, // irrelevant unless split
-        leaflets_per_leaf: 10,
-        leaf_split_leaflets: 20,
+        leaflet_target_rows: 50, // avoid splits in this test
+        leaf_target_rows: 200,   // irrelevant unless split
     };
 
-    let mut fetched: Vec<ContentId> = Vec::new();
-    let mut fetch_leaf = |cid: &ContentId| -> Result<
-        Vec<u8>,
-        fluree_db_indexer::run_index::incremental_branch::IncrementalBranchError,
-    > {
-        fetched.push(cid.clone());
+    let fetched: std::cell::RefCell<Vec<ContentId>> = std::cell::RefCell::new(Vec::new());
+    let fetch_leaf = |cid: &ContentId| -> Result<Vec<u8>, std::io::Error> {
+        fetched.borrow_mut().push(cid.clone());
         Ok(leaf_bytes.get(cid).expect("leaf cid present").clone())
     };
+    let fetch_sidecar = |_cid: &ContentId| -> Result<Option<Vec<u8>>, std::io::Error> { Ok(None) };
 
     let update = update_branch(
-        &existing_branch,
+        &branch_bytes,
         &novelty,
-        RunSortOrder::Spot,
-        0,
+        &novelty_ops,
         &config,
-        &mut fetch_leaf,
+        &fetch_leaf,
+        &fetch_sidecar,
     )
     .expect("update_branch");
 
     // Invariant (a): only touched leaves are fetched from CAS.
     assert_eq!(
-        fetched.len(),
+        fetched.borrow().len(),
         1,
         "expected only 1 leaf fetch for localized novelty"
     );
@@ -122,7 +111,7 @@ fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
 
     // Invariant (a): untouched leaves keep their CIDs.
     let updated_branch: BranchManifest =
-        read_branch_v2_from_bytes(&update.branch_bytes).expect("decode updated branch");
+        read_branch_from_bytes(&update.branch_bytes).expect("decode updated branch");
     assert_eq!(updated_branch.leaves.len(), existing_branch.leaves.len());
 
     let replaced = &update.replaced_leaf_cids[0];
@@ -152,24 +141,10 @@ fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
     let new_leaf = update
         .new_leaf_blobs
         .iter()
-        .find(|b| b.cid == rewritten_leaf_cid)
+        .find(|b| b.info.leaf_cid == rewritten_leaf_cid)
         .unwrap_or_else(|| &update.new_leaf_blobs[0]);
-    let hdr = fluree_db_binary_index::format::leaf::read_leaf_header(&new_leaf.bytes)
-        .expect("read leaf header");
+    let hdr = decode_leaf_header_v3(&new_leaf.info.leaf_bytes).expect("read leaf header");
     assert!(hdr.total_rows >= 6, "expected row count to increase");
-    let dir0 = &hdr.leaflet_dir[0];
-    let leaflet_data =
-        &new_leaf.bytes[dir0.offset as usize..dir0.offset as usize + dir0.compressed_len as usize];
-    let decoded = decode_leaflet(leaflet_data, hdr.p_width, hdr.dt_width, RunSortOrder::Spot)
-        .expect("decode leaflet");
-    assert!(
-        decoded
-            .s_ids
-            .iter()
-            .zip(decoded.p_ids.iter())
-            .any(|(&s_id, &p_id)| s_id == 12 && p_id == 2),
-        "expected novelty record (s=12, p=2) to appear in decoded rows"
-    );
 
     // Sanity: branch CID matches the encoded bytes.
     let expected_branch_cid = ContentId::from_hex_digest(

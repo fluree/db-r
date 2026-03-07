@@ -30,8 +30,10 @@ fn extract_lang_tag<R: RowAccess>(
             }
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
-                    if let Some(lang_str) = store.resolve_lang_id(*lang_id) {
-                        return Some(Arc::from(lang_str));
+                    if let Some(meta) = store.decode_meta(*lang_id, i32::MIN) {
+                        if let Some(lang_str) = meta.lang {
+                            return Some(Arc::from(lang_str));
+                        }
                     }
                 }
             }
@@ -87,8 +89,8 @@ pub fn eval_lang<R: RowAccess>(
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
                     store
-                        .resolve_lang_id(*lang_id)
-                        .map(|s| s.to_string())
+                        .decode_meta(*lang_id, i32::MIN)
+                        .and_then(|m| m.lang)
                         .unwrap_or_default()
                 } else {
                     String::new()

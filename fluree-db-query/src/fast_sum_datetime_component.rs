@@ -22,19 +22,17 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use chrono::Datelike;
 use fluree_db_binary_index::format::column_block::ColumnId;
-use fluree_db_binary_index::format::leaf_v3::{
-    decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
-};
+use fluree_db_binary_index::format::leaf::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3};
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::read::column_loader::{
     load_leaflet_columns, load_leaflet_columns_cached,
 };
-use fluree_db_binary_index::{BinaryCursor, BinaryFilter, BinaryIndexStore, BinaryIndexStoreV6};
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_binary_index::{ColumnProjection, ColumnSet};
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::{FlakeValue, GraphId, Sid};
 
 /// Supported datetime component functions for the fast-path.
@@ -116,24 +114,17 @@ impl Operator for PredicateSumDateComponentOperator {
             && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root());
 
         if allow_fast {
-            if let Some(store_v6) = ctx.binary_store_v6.as_ref() {
-                let sum =
-                    sum_component_v6(store_v6, ctx.binary_g_id, &self.predicate, self.component)?;
+            if let Some(binary_index_store) = ctx.binary_store.as_ref() {
+                let sum = sum_component(
+                    binary_index_store,
+                    ctx.binary_g_id,
+                    &self.predicate,
+                    self.component,
+                )?;
                 self.state = OperatorState::Open;
                 self.done = false;
                 // Store sum in fallback-less path by stashing it in done-state batch generation.
                 // We simply generate the batch on first next_batch().
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    self.build_output_batch(sum)?,
-                )));
-                return Ok(());
-            }
-
-            if let Some(store_v5) = ctx.binary_store.as_ref() {
-                let sum =
-                    sum_component_v5(store_v5, ctx.binary_g_id, &self.predicate, self.component)?;
-                self.state = OperatorState::Open;
-                self.done = false;
                 self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
                     self.build_output_batch(sum)?,
                 )));
@@ -224,12 +215,8 @@ impl Operator for PrecomputedSingleBatchOperator {
     }
 }
 
-// ============================================================================
-// V6 (V3 format) implementation
-// ============================================================================
-
-fn sum_component_v6(
-    store: &BinaryIndexStoreV6,
+fn sum_component(
+    store: &BinaryIndexStore,
     g_id: GraphId,
     predicate: &Ref,
     component: DateComponentFn,
@@ -402,106 +389,6 @@ fn component_from_otype_okey(o_type: u16, o_key: u64, component: DateComponentFn
         (dt.year() as i64, dt.month() as i64, dt.day() as i64)
     } else {
         return None;
-    };
-
-    match component {
-        DateComponentFn::Year => Some(year),
-        DateComponentFn::Month => Some(month),
-        DateComponentFn::Day => Some(day),
-    }
-}
-
-// ============================================================================
-// V5 (IRB1) implementation (fallback)
-// ============================================================================
-
-fn sum_component_v5(
-    store: &std::sync::Arc<BinaryIndexStore>,
-    g_id: GraphId,
-    predicate: &Ref,
-    component: DateComponentFn,
-) -> Result<i64> {
-    let pred_sid = match predicate {
-        Ref::Sid(s) => s.clone(),
-        Ref::Iri(i) => store.encode_iri(i),
-        Ref::Var(_) => {
-            return Err(QueryError::Internal(
-                "fast SUM(component) requires bound predicate".to_string(),
-            ))
-        }
-    };
-    let p_id = store
-        .sid_to_p_id(&pred_sid)
-        .ok_or_else(|| QueryError::Internal("predicate not found in v5 dictionary".to_string()))?;
-
-    // Use translate_range to get routing bounds for POST.
-    let bounds = store
-        .translate_range(None, Some(&pred_sid), None, RunSortOrder::Post, g_id)
-        .map_err(|e| QueryError::Internal(format!("translate_range: {e}")))?
-        .ok_or_else(|| QueryError::Internal("no range bounds for predicate".to_string()))?;
-    let (min_key, max_key) = bounds;
-
-    let mut filter = BinaryFilter::new();
-    filter.p_id = Some(p_id);
-
-    // need_region2=false: component extraction uses only o_kind/o_key.
-    let mut cursor = BinaryCursor::new(
-        std::sync::Arc::clone(store),
-        RunSortOrder::Post,
-        g_id,
-        &min_key,
-        &max_key,
-        filter,
-        false,
-    );
-
-    let mut sum: i64 = 0;
-    while let Some(batch) = cursor
-        .next_leaf()
-        .map_err(|e| QueryError::Internal(format!("cursor: {e}")))?
-    {
-        for i in 0..batch.row_count {
-            let ok = ObjKind::from_u8(batch.o_kinds[i]);
-            let key = ObjKey::from_u64(batch.o_keys[i]);
-            if let Some(v) = component_from_okey_v5(ok, key, component) {
-                sum = sum.saturating_add(v);
-            }
-        }
-    }
-    Ok(sum)
-}
-
-fn component_from_okey_v5(kind: ObjKind, key: ObjKey, component: DateComponentFn) -> Option<i64> {
-    // Same defaulting semantics as parse_datetime_from_binding() promotion.
-    const DEFAULT_YEAR: i64 = 1970;
-    const DEFAULT_MONTH: i64 = 1;
-
-    let (year, month, day) = match kind.as_u8() {
-        x if x == ObjKind::G_YEAR.as_u8() => (key.decode_g_year() as i64, 1, 1),
-        x if x == ObjKind::G_YEAR_MONTH.as_u8() => {
-            let (y, m) = key.decode_g_year_month();
-            (y as i64, m as i64, 1)
-        }
-        x if x == ObjKind::G_MONTH.as_u8() => (DEFAULT_YEAR, key.decode_g_month() as i64, 1),
-        x if x == ObjKind::G_DAY.as_u8() => {
-            (DEFAULT_YEAR, DEFAULT_MONTH, key.decode_g_day() as i64)
-        }
-        x if x == ObjKind::G_MONTH_DAY.as_u8() => {
-            let (m, d) = key.decode_g_month_day();
-            (DEFAULT_YEAR, m as i64, d as i64)
-        }
-        x if x == ObjKind::DATE.as_u8() => {
-            let days = key.decode_date() as i64;
-            let base = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)?;
-            let dt = base.checked_add_signed(chrono::Duration::days(days))?;
-            (dt.year() as i64, dt.month() as i64, dt.day() as i64)
-        }
-        x if x == ObjKind::DATE_TIME.as_u8() => {
-            let micros = key.decode_datetime();
-            let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_micros(micros)?;
-            (dt.year() as i64, dt.month() as i64, dt.day() as i64)
-        }
-        _ => return None,
     };
 
     match component {

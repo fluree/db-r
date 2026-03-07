@@ -2,7 +2,7 @@
 //!
 //! Per-property HLL sketches are serialized into a single [`HllSketchBlob`] and
 //! stored in content-addressed storage (CAS) via `ContentKind::StatsSketch`.
-//! The blob's `ContentId` is stored in `IndexRootV5.sketch_ref`.
+//! The blob's `ContentId` is stored in `IndexRoot.sketch_ref`.
 //!
 //! For incremental refresh, use [`load_sketch_blob`] +
 //! [`super::IdStatsHook::with_prior_properties`].
@@ -20,7 +20,7 @@ use super::id_hook::{GraphPropertyKey, IdPropertyHll};
 ///
 /// Contains all per-(graph, property) HLL sketches produced by `IdStatsHook`.
 /// Written to CAS as a single JSON blob; its `ContentId` is stored in
-/// `IndexRootV5.sketch_ref`. Counts are clamped to ≥ 0 (snapshot state,
+/// `IndexRoot.sketch_ref`. Counts are clamped to ≥ 0 (snapshot state,
 /// not raw signed deltas).
 ///
 /// Entries are sorted by `(g_id, p_id)` for deterministic serialization and

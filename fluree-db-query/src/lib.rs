@@ -14,9 +14,7 @@
 
 pub mod aggregate;
 pub mod binary_range;
-pub mod binary_range_v3;
 pub mod binary_scan;
-mod binary_scan_v3;
 pub mod bind;
 pub mod binding;
 pub mod bm25;
@@ -74,7 +72,6 @@ pub mod vector;
 // Re-exports
 pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSpec};
 pub use binary_range::BinaryRangeProvider;
-pub use binary_range_v3::BinaryRangeProviderV3;
 pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use bind::BindOperator;
 pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};

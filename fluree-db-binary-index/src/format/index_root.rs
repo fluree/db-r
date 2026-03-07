@@ -1,292 +1,172 @@
-//! Binary index root types and IRB1 (v5) wire format.
+//! Index root descriptor (`FIR6`) for the FLI3 columnar index format.
 //!
-//! CID reference types (`DictRefs`, `GraphOrderRefs`, etc.) are used as
-//! intermediates in the index build pipeline. `IndexRootV5` is the canonical
-//! binary root descriptor published to the nameservice via `index_head_id`.
-//!
-//! All artifact references use `ContentId` (CIDv1) values.
+//! Contains:
+//! - `o_type_table`: maps OType → decode kind, datatype IRI, dict/arena family
+//! - Routing using FBR3 branch / FLI3 leaf CIDs
+//! - Inline small dictionaries (graphs, datatypes, languages)
+//! - Dictionary tree CID references (subjects, strings)
+//! - Optional sections: stats, schema, prev_index, garbage, sketch
 
-use fluree_db_core::index_schema::IndexSchema;
-use fluree_db_core::index_stats::IndexStats;
+use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::ContentId;
 use fluree_db_core::GraphId;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-// ============================================================================
-// CID reference types
-// ============================================================================
-
-/// CID references for a dictionary CoW tree (branch + leaves).
-///
-/// Mirrors `GraphOrderRefs` — a branch manifest that references
-/// a set of leaf blobs. The branch holds the key-range index; leaves
-/// hold the actual dictionary entries.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DictTreeRefs {
-    /// CID of the branch manifest (DTB1).
-    pub branch: ContentId,
-    /// CIDs of leaf blobs, ordered by leaf index.
-    pub leaves: Vec<ContentId>,
-}
-
-/// CID references for a per-predicate vector arena (manifest + shards).
-///
-/// Stored explicitly so GC can reach all shard CIDs without
-/// parsing manifests during retention walks.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VectorDictRef {
-    /// CID of the manifest JSON (VAM1).
-    pub manifest: ContentId,
-    /// CIDs of all shard blobs (VAS1), ordered by shard index.
-    pub shards: Vec<ContentId>,
-}
-
-/// CID references for all dictionary artifacts stored in CAS.
-///
-/// Forward dictionaries use FPK1 packs (DictPackRefs).
-/// Reverse dictionaries use CoW trees (DictTreeRefs).
-/// Small dictionaries (graphs, datatypes, languages) are embedded
-/// inline in the index root and therefore do not appear here.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DictRefs {
-    /// Forward dictionary packs (string + subject, FPK1 format).
-    pub forward_packs: DictPackRefs,
-    /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
-    pub subject_reverse: DictTreeRefs,
-    /// String reverse tree: value → string_id.
-    pub string_reverse: DictTreeRefs,
-    /// Per-graph, per-predicate numbig arenas.
-    /// Outer key = `g_id` as string, inner key = `p_id` as string.
-    pub numbig: BTreeMap<String, BTreeMap<String, ContentId>>,
-    /// Per-graph, per-predicate vector arena metadata.
-    /// Outer key = `g_id` as string, inner key = `p_id` as string.
-    pub vectors: BTreeMap<String, BTreeMap<String, VectorDictRef>>,
-}
-
-// ============================================================================
-// Forward dict pack types (FPK1)
-// ============================================================================
-
-/// A single entry in the pack branch routing table.
-///
-/// Maps an ID range to a pack CID. Used inline in the index root
-/// to route forward dictionary lookups without an extra fetch.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PackBranchEntry {
-    pub first_id: u64,
-    pub last_id: u64,
-    pub pack_cid: ContentId,
-}
-
-/// Forward dictionary pack references (replaces tree-based forward dicts).
-///
-/// String forward packs are a flat list (global contiguous IDs).
-/// Subject forward packs are grouped by namespace code (contiguous local IDs within each ns).
-#[derive(Debug, Clone, PartialEq)]
-pub struct DictPackRefs {
-    /// String forward packs, sorted by first_id.
-    pub string_fwd_packs: Vec<PackBranchEntry>,
-    /// Subject forward packs, grouped by ns_code. Sorted by ns_code, then by first_id within.
-    pub subject_fwd_ns_packs: Vec<(u16, Vec<PackBranchEntry>)>,
-}
-
-/// CID references for a single graph + sort order (one branch + its leaves).
-#[derive(Debug, Clone, PartialEq)]
-pub struct GraphOrderRefs {
-    /// CID of the branch manifest (FBR1).
-    pub branch: ContentId,
-    /// CIDs of leaf files (FLI2), ordered by leaf index.
-    pub leaves: Vec<ContentId>,
-}
-
-/// CID references for all sort orders within a single graph.
-#[derive(Debug, Clone, PartialEq)]
-pub struct GraphRefs {
-    pub g_id: GraphId,
-    /// Order name (e.g. `"spot"`) → branch + leaves CIDs.
-    pub orders: BTreeMap<String, GraphOrderRefs>,
-}
-
-// ============================================================================
-// GC chain types (prev_index / garbage)
-// ============================================================================
-
-/// Reference to the previous index root in the GC chain.
-///
-/// The garbage collector walks this chain backwards to determine which roots
-/// (and their associated CAS artifacts) are eligible for deletion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BinaryPrevIndexRef {
-    /// `index_t` of the previous root.
-    pub t: i64,
-    /// CID of the previous root blob.
-    pub id: ContentId,
-}
-
-/// Reference to this root's garbage manifest.
-///
-/// The garbage manifest lists CIDs that were replaced when building
-/// this root from the previous one. The GC collector reads this to know which
-/// objects to delete when this root ages out of the retention window.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BinaryGarbageRef {
-    /// CID of the garbage record JSON blob.
-    pub id: ContentId,
-}
-
-// ============================================================================
-// IndexRootV5 (binary, IRB1)
-// ============================================================================
+use std::io;
 
 use super::branch::LeafEntry;
-use super::run_record::{RunSortOrder, RECORD_WIRE_SIZE};
+use super::run_record::RunSortOrder;
+use super::run_record_v2::{RunRecordV2, RECORD_V2_WIRE_SIZE};
 use super::stats_wire;
-use fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT;
-use sha2::{Digest, Sha256};
-use std::io;
-use std::path::Path;
+use super::wire_helpers::{
+    ensure_bytes, io_err, read_cid, read_dict_pack_refs, read_dict_tree_refs, read_i64_at,
+    read_string, read_string_array, read_u16_at, read_u32_at, read_u64_at, read_u8_at, write_cid,
+    write_dict_pack_refs, write_dict_tree_refs, write_str, write_string_array, BinaryGarbageRef,
+    BinaryPrevIndexRef, DictRefs, FulltextArenaRef, GraphArenaRefs, SpatialArenaRef, VectorDictRef,
+};
+use fluree_db_core::index_schema::IndexSchema;
+use fluree_db_core::index_stats::IndexStats;
 
-/// Magic bytes for the binary index root (`IRB1`).
-const ROOT_V5_MAGIC: [u8; 4] = *b"IRB1";
+// ============================================================================
+// OType table entry
+// ============================================================================
 
-/// Wire format version for IRB1.
-/// v3: per-graph specialty arenas (numbig/vectors/spatial) replace global
-///     numbig/vectors in DictRefsV5.
-/// v4: added per-graph fulltext BoW arena refs.
-const ROOT_V5_VERSION: u8 = 4;
+/// Entry in the `o_type` lookup table stored in the index root.
+///
+/// Maps an `OType` value to its decode routing information. For built-in
+/// types this is derivable from the constant tables in `o_type.rs`, but
+/// for customer-defined and dynamic types it must be looked up here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OTypeTableEntry {
+    /// The `o_type` value (u16).
+    pub o_type: u16,
+    /// Decode routing kind.
+    pub decode_kind: DecodeKind,
+    /// Datatype IRI string. Present for most types; absent for refs and blank nodes.
+    /// For `rdf:langString`, stored as `"rdf:langString@{tag}"` (includes the language).
+    pub datatype_iri: Option<String>,
+    /// Which dictionary/arena family `o_key` indexes into.
+    /// Absent for embedded types (o_key is the value itself).
+    pub dict_family: Option<DictFamily>,
+}
 
-/// Fixed header size: magic(4) + version(1) + flags(1) + pad(2) + index_t(8) + base_t(8) = 24.
-const ROOT_V5_HEADER_LEN: usize = 24;
+/// Dictionary/arena family that `o_key` indexes into for dict-backed types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DictFamily {
+    /// String dictionary (xsd:string, xsd:anyURI, langString, customer types, etc.)
+    StringDict = 0,
+    /// Subject dictionary (IRI references)
+    SubjectDict = 1,
+    /// JSON arena (per-predicate)
+    JsonArena = 2,
+    /// Vector arena (per-predicate)
+    VectorArena = 3,
+    /// NumBig arena (per-predicate)
+    NumBigArena = 4,
+    /// Spatial arena (per-predicate)
+    SpatialArena = 5,
+}
 
-/// Flag bit: has_stats section.
-const FLAG_HAS_STATS: u8 = 1 << 0;
-/// Flag bit: has_schema section.
-const FLAG_HAS_SCHEMA: u8 = 1 << 1;
-/// Flag bit: has_prev_index.
-const FLAG_HAS_PREV_INDEX: u8 = 1 << 2;
-/// Flag bit: has_garbage.
-const FLAG_HAS_GARBAGE: u8 = 1 << 3;
-/// Flag bit: has_sketch.
-const FLAG_HAS_SKETCH: u8 = 1 << 4;
+impl DictFamily {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::StringDict),
+            1 => Some(Self::SubjectDict),
+            2 => Some(Self::JsonArena),
+            3 => Some(Self::VectorArena),
+            4 => Some(Self::NumBigArena),
+            5 => Some(Self::SpatialArena),
+            _ => None,
+        }
+    }
+}
 
-/// Inline leaf routing for a single sort order within the default graph.
+// ============================================================================
+// V3 routing types
+// ============================================================================
+
+/// Inline leaf routing for a single sort order in the default graph (g_id=0).
+///
+/// Inline order routing with `LeafEntry` key types.
+/// Avoids a CAS round-trip for the default graph at load time.
 #[derive(Debug, Clone)]
-pub struct InlineOrderRouting {
+pub struct DefaultGraphOrder {
     pub order: RunSortOrder,
     pub leaves: Vec<LeafEntry>,
 }
 
-/// Named graph routing: branch CIDs per sort order.
+/// Named graph routing for V3: branch CIDs per sort order.
 #[derive(Debug, Clone)]
 pub struct NamedGraphRouting {
     pub g_id: GraphId,
+    /// `(order, branch_cid)` pairs.
     pub orders: Vec<(RunSortOrder, ContentId)>,
 }
 
-/// Dictionary refs for v5 (graph-independent dict artifacts only).
+// ============================================================================
+// IndexRoot
+// ============================================================================
+
+/// Magic bytes for the index root.
+pub const ROOT_V6_MAGIC: &[u8; 4] = b"FIR6";
+
+/// Format version.
+pub const ROOT_V6_VERSION: u8 = 1;
+
+/// Binary index root (`FIR6`).
 ///
-/// Forward dictionaries use packed FPK1 format (DictPackRefs).
-/// Reverse dictionaries use CoW tree format (DictTreeRefs).
-/// Per-graph specialty arenas (numbig, vectors, spatial) live in
-/// `GraphArenaRefsV5` on the root, not here.
+/// Contains all sections needed to load an index: dict refs, arena refs,
+/// per-graph routing, o_type table, stats, schema, GC chain.
 #[derive(Debug, Clone)]
-pub struct DictRefsV5 {
-    /// Forward dictionary packs (string + subject, FPK1 format).
-    pub forward_packs: DictPackRefs,
-    /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
-    pub subject_reverse: DictTreeRefs,
-    /// String reverse tree: value → string_id.
-    pub string_reverse: DictTreeRefs,
-}
-
-/// Per-graph specialty arena refs (numbig, vectors, spatial).
-///
-/// One entry per graph that has any specialty arenas.
-#[derive(Debug, Clone)]
-pub struct GraphArenaRefsV5 {
-    pub g_id: GraphId,
-    /// Per-predicate numbig arenas, sorted by p_id.
-    pub numbig: Vec<(u32, ContentId)>,
-    /// Per-predicate vector arenas, sorted by p_id.
-    pub vectors: Vec<VectorDictRefV5>,
-    /// Per-predicate spatial index refs, sorted by p_id.
-    pub spatial: Vec<SpatialArenaRefV5>,
-    /// Per-predicate fulltext BoW arena refs, sorted by p_id.
-    pub fulltext: Vec<FulltextArenaRefV5>,
-}
-
-/// Vector arena ref with u32 p_id key.
-#[derive(Debug, Clone)]
-pub struct VectorDictRefV5 {
-    pub p_id: u32,
-    pub manifest: ContentId,
-    pub shards: Vec<ContentId>,
-}
-
-/// Spatial index ref for one (graph, predicate) pair.
-#[derive(Debug, Clone)]
-pub struct SpatialArenaRefV5 {
-    pub p_id: u32,
-    /// CID of the serialized `SpatialIndexRoot` JSON blob (contains SpatialConfig, hashes, etc.).
-    pub root_cid: ContentId,
-    /// CID of the cell index manifest.
-    pub manifest: ContentId,
-    /// CID of the geometry arena.
-    pub arena: ContentId,
-    /// CIDs of all leaflet chunks (for GC).
-    pub leaflets: Vec<ContentId>,
-}
-
-/// Fulltext arena ref for one (graph, predicate) pair.
-#[derive(Debug, Clone)]
-pub struct FulltextArenaRefV5 {
-    pub p_id: u32,
-    /// CID of the FTA1 blob.
-    pub arena_cid: ContentId,
-}
-
-/// Binary index root v5 (`IRB1`).
-///
-/// All artifact references use `ContentId`. Default graph routing is inline
-/// (no branch fetch needed). Named graphs use branch CID pointers.
-/// Stats and schema are embedded as binary sections (no JSON).
-#[derive(Debug, Clone)]
-pub struct IndexRootV5 {
+pub struct IndexRoot {
+    // ── Identity ───────────────────────────────────────────────────
     pub ledger_id: String,
     pub index_t: i64,
     pub base_t: i64,
     pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
+
+    // ── Namespace / predicate metadata ─────────────────────────────
     pub namespace_codes: BTreeMap<u16, String>,
     pub predicate_sids: Vec<(u16, String)>,
 
-    // Small dict inlines
+    // ── Inline small dictionaries ──────────────────────────────────
     pub graph_iris: Vec<String>,
+    /// Datatype IRIs: index 0..RESERVED_COUNT are well-known, ≥RESERVED_COUNT are custom.
     pub datatype_iris: Vec<String>,
+    /// Language tags: `lang_id → BCP 47 tag string` (index = lang_id).
     pub language_tags: Vec<String>,
 
-    // Dict refs (CID trees)
-    pub dict_refs: DictRefsV5,
+    // ── Dict refs (CID trees) ──────────────────────────────────────────
+    pub dict_refs: DictRefs,
 
-    // Watermarks
+    // ── Watermarks ─────────────────────────────────────────────────
     pub subject_watermarks: Vec<u64>,
     pub string_watermark: u32,
 
-    // Cumulative commit stats
+    // ── Cumulative commit stats ────────────────────────────────────
     pub total_commit_size: u64,
     pub total_asserts: u64,
     pub total_retracts: u64,
 
-    // Per-graph specialty arenas (numbig, vectors, spatial)
-    pub graph_arenas: Vec<GraphArenaRefsV5>,
+    // ── Per-graph specialty arenas ───────────────────────────────
+    pub graph_arenas: Vec<GraphArenaRefs>,
 
-    // Default graph routing (inline)
-    pub default_graph_orders: Vec<InlineOrderRouting>,
+    // ── V3-specific: o_type table ──────────────────────────────────
+    /// Maps OType values to decode kind, datatype IRI, and dict family.
+    /// Built-in types are included for completeness; customer types
+    /// and dynamic langString entries are required.
+    pub o_type_table: Vec<OTypeTableEntry>,
 
-    // Named graph routing (branch CIDs)
+    // ── V3-specific: default graph routing (inline, no branch fetch) ──
+    /// Default graph (g_id=0) leaf entries per sort order, inline in the root.
+    /// Inline order routing with leaf entries.
+    pub default_graph_orders: Vec<DefaultGraphOrder>,
+
+    // ── V3-specific: named graph routing using V3 branch CIDs ────────
+    /// Named graph routing: branch CIDs per sort order (FBR3 branches).
     pub named_graphs: Vec<NamedGraphRouting>,
 
-    // Optional sections
+    // ── Optional sections ──────────────────────────────────────────────────
     pub stats: Option<IndexStats>,
     pub schema: Option<IndexSchema>,
     pub prev_index: Option<BinaryPrevIndexRef>,
@@ -294,35 +174,321 @@ pub struct IndexRootV5 {
     pub sketch_ref: Option<ContentId>,
 }
 
-impl IndexRootV5 {
-    /// Encode to the binary IRB1 wire format.
+impl IndexRoot {
+    /// Build the `o_type_table` from custom datatype IRIs and language tags.
+    ///
+    /// Includes all built-in OType constants plus customer-defined and
+    /// langString entries.
+    ///
+    /// - `custom_datatype_iris`: IRIs for non-reserved datatypes only
+    ///   (DatatypeDictId values ≥ RESERVED_COUNT). Do NOT include the
+    ///   15 reserved well-known types — those are hardcoded.
+    /// - `language_tags`: BCP 47 tag strings, one per `lang_id` (index = lang_id).
+    pub fn build_o_type_table(
+        custom_datatype_iris: &[String],
+        language_tags: &[String],
+    ) -> Vec<OTypeTableEntry> {
+        let mut table = Vec::new();
+
+        // Built-in embedded types (tag 00).
+        let embedded_types: &[(u16, DecodeKind, Option<&str>)] = &[
+            (OType::NULL.as_u16(), DecodeKind::Null, None),
+            (
+                OType::XSD_BOOLEAN.as_u16(),
+                DecodeKind::Bool,
+                Some("xsd:boolean"),
+            ),
+            (
+                OType::XSD_INTEGER.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:integer"),
+            ),
+            (OType::XSD_LONG.as_u16(), DecodeKind::I64, Some("xsd:long")),
+            (OType::XSD_INT.as_u16(), DecodeKind::I64, Some("xsd:int")),
+            (
+                OType::XSD_SHORT.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:short"),
+            ),
+            (OType::XSD_BYTE.as_u16(), DecodeKind::I64, Some("xsd:byte")),
+            (
+                OType::XSD_UNSIGNED_LONG.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:unsignedLong"),
+            ),
+            (
+                OType::XSD_UNSIGNED_INT.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:unsignedInt"),
+            ),
+            (
+                OType::XSD_UNSIGNED_SHORT.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:unsignedShort"),
+            ),
+            (
+                OType::XSD_UNSIGNED_BYTE.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:unsignedByte"),
+            ),
+            (
+                OType::XSD_NON_NEGATIVE_INTEGER.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:nonNegativeInteger"),
+            ),
+            (
+                OType::XSD_POSITIVE_INTEGER.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:positiveInteger"),
+            ),
+            (
+                OType::XSD_NON_POSITIVE_INTEGER.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:nonPositiveInteger"),
+            ),
+            (
+                OType::XSD_NEGATIVE_INTEGER.as_u16(),
+                DecodeKind::I64,
+                Some("xsd:negativeInteger"),
+            ),
+            (
+                OType::XSD_DOUBLE.as_u16(),
+                DecodeKind::F64,
+                Some("xsd:double"),
+            ),
+            (
+                OType::XSD_FLOAT.as_u16(),
+                DecodeKind::F64,
+                Some("xsd:float"),
+            ),
+            (
+                OType::XSD_DECIMAL.as_u16(),
+                DecodeKind::F64,
+                Some("xsd:decimal"),
+            ),
+            (OType::XSD_DATE.as_u16(), DecodeKind::Date, Some("xsd:date")),
+            (OType::XSD_TIME.as_u16(), DecodeKind::Time, Some("xsd:time")),
+            (
+                OType::XSD_DATE_TIME.as_u16(),
+                DecodeKind::DateTime,
+                Some("xsd:dateTime"),
+            ),
+            (
+                OType::XSD_G_YEAR.as_u16(),
+                DecodeKind::GYear,
+                Some("xsd:gYear"),
+            ),
+            (
+                OType::XSD_G_YEAR_MONTH.as_u16(),
+                DecodeKind::GYearMonth,
+                Some("xsd:gYearMonth"),
+            ),
+            (
+                OType::XSD_G_MONTH.as_u16(),
+                DecodeKind::GMonth,
+                Some("xsd:gMonth"),
+            ),
+            (
+                OType::XSD_G_DAY.as_u16(),
+                DecodeKind::GDay,
+                Some("xsd:gDay"),
+            ),
+            (
+                OType::XSD_G_MONTH_DAY.as_u16(),
+                DecodeKind::GMonthDay,
+                Some("xsd:gMonthDay"),
+            ),
+            (
+                OType::XSD_YEAR_MONTH_DURATION.as_u16(),
+                DecodeKind::YearMonthDuration,
+                Some("xsd:yearMonthDuration"),
+            ),
+            (
+                OType::XSD_DAY_TIME_DURATION.as_u16(),
+                DecodeKind::DayTimeDuration,
+                Some("xsd:dayTimeDuration"),
+            ),
+            (
+                OType::XSD_DURATION.as_u16(),
+                DecodeKind::Duration,
+                Some("xsd:duration"),
+            ),
+            (OType::GEO_POINT.as_u16(), DecodeKind::GeoPoint, None),
+            (OType::BLANK_NODE.as_u16(), DecodeKind::BlankNode, None),
+        ];
+
+        for &(o_type, decode_kind, dt_iri) in embedded_types {
+            table.push(OTypeTableEntry {
+                o_type,
+                decode_kind,
+                datatype_iri: dt_iri.map(String::from),
+                dict_family: None,
+            });
+        }
+
+        // Fluree-reserved dict-backed types (tag 10).
+        let fluree_types: &[(u16, DecodeKind, Option<&str>, DictFamily)] = &[
+            (
+                OType::XSD_STRING.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:string"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_ANY_URI.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:anyURI"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_NORMALIZED_STRING.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:normalizedString"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_TOKEN.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:token"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_LANGUAGE.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:language"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_BASE64_BINARY.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:base64Binary"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::XSD_HEX_BINARY.as_u16(),
+                DecodeKind::StringDict,
+                Some("xsd:hexBinary"),
+                DictFamily::StringDict,
+            ),
+            (
+                OType::IRI_REF.as_u16(),
+                DecodeKind::IriRef,
+                None,
+                DictFamily::SubjectDict,
+            ),
+            (
+                OType::RDF_JSON.as_u16(),
+                DecodeKind::JsonArena,
+                Some("rdf:JSON"),
+                DictFamily::JsonArena,
+            ),
+            (
+                OType::VECTOR.as_u16(),
+                DecodeKind::VectorArena,
+                None,
+                DictFamily::VectorArena,
+            ),
+            (
+                OType::FULLTEXT.as_u16(),
+                DecodeKind::StringDict,
+                None,
+                DictFamily::StringDict,
+            ),
+            (
+                OType::NUM_BIG_OVERFLOW.as_u16(),
+                DecodeKind::NumBigArena,
+                None,
+                DictFamily::NumBigArena,
+            ),
+            (
+                OType::SPATIAL_COMPLEX.as_u16(),
+                DecodeKind::SpatialArena,
+                None,
+                DictFamily::SpatialArena,
+            ),
+        ];
+
+        for &(o_type, decode_kind, dt_iri, dict_family) in fluree_types {
+            table.push(OTypeTableEntry {
+                o_type,
+                decode_kind,
+                datatype_iri: dt_iri.map(String::from),
+                dict_family: Some(dict_family),
+            });
+        }
+
+        // LangString entries (tag 11).
+        // LanguageTagDict is 1-based: lang_id=1 is the first tag, lang_id=0 means "no tag".
+        // language_tags[0] → lang_id=1, language_tags[1] → lang_id=2, etc.
+        for (i, tag) in language_tags.iter().enumerate() {
+            let lang_id = (i as u16) + 1; // 1-based
+            let ot = OType::lang_string(lang_id);
+            table.push(OTypeTableEntry {
+                o_type: ot.as_u16(),
+                decode_kind: DecodeKind::StringDict,
+                datatype_iri: Some(format!("rdf:langString@{tag}")),
+                dict_family: Some(DictFamily::StringDict),
+            });
+        }
+
+        // Customer-defined datatypes (tag 01).
+        // Caller passes only non-reserved IRIs (DatatypeDictId ≥ RESERVED_COUNT).
+        for (i, iri) in custom_datatype_iris.iter().enumerate() {
+            let dt_id = fluree_db_core::DatatypeDictId::RESERVED_COUNT + i as u16;
+            let ot = OType::customer_datatype(dt_id);
+            table.push(OTypeTableEntry {
+                o_type: ot.as_u16(),
+                decode_kind: DecodeKind::StringDict,
+                datatype_iri: Some(iri.clone()),
+                dict_family: Some(DictFamily::StringDict),
+            });
+        }
+
+        table
+    }
+
+    // ====================================================================
+    // Encode / Decode
+    // ====================================================================
+
+    /// Header size in bytes: magic(4) + version(1) + flags(1) + pad(2) + index_t(8) + base_t(8).
+    const HEADER_LEN: usize = 24;
+
+    /// Flag bits for optional sections.
+    const FLAG_HAS_STATS: u8 = 1 << 0;
+    const FLAG_HAS_SCHEMA: u8 = 1 << 1;
+    const FLAG_HAS_PREV_INDEX: u8 = 1 << 2;
+    const FLAG_HAS_GARBAGE: u8 = 1 << 3;
+    const FLAG_HAS_SKETCH: u8 = 1 << 4;
+
+    /// Encode to the binary FIR6 wire format.
     ///
     /// Determinism: namespaces sorted by ns_code, named graphs by g_id,
-    /// orders by order_id, numbig/vectors by p_id.
+    /// orders by order_id, numbig/vectors/spatial/fulltext by p_id.
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(4096);
+        let mut buf = Vec::with_capacity(8192);
 
         // ---- Header (24 bytes) ----
-        buf.extend_from_slice(&ROOT_V5_MAGIC);
-        buf.push(ROOT_V5_VERSION);
+        buf.extend_from_slice(ROOT_V6_MAGIC);
+        buf.push(ROOT_V6_VERSION);
         let flags = (if self.stats.is_some() {
-            FLAG_HAS_STATS
+            Self::FLAG_HAS_STATS
         } else {
             0
         }) | (if self.schema.is_some() {
-            FLAG_HAS_SCHEMA
+            Self::FLAG_HAS_SCHEMA
         } else {
             0
         }) | (if self.prev_index.is_some() {
-            FLAG_HAS_PREV_INDEX
+            Self::FLAG_HAS_PREV_INDEX
         } else {
             0
         }) | (if self.garbage.is_some() {
-            FLAG_HAS_GARBAGE
+            Self::FLAG_HAS_GARBAGE
         } else {
             0
         }) | (if self.sketch_ref.is_some() {
-            FLAG_HAS_SKETCH
+            Self::FLAG_HAS_SKETCH
         } else {
             0
         });
@@ -347,7 +513,7 @@ impl IndexRootV5 {
             write_str(&mut buf, prefix);
         }
 
-        // ---- Predicate SIDs (ordered by p_id = index position) ----
+        // ---- Predicate SIDs ----
         buf.extend_from_slice(&(self.predicate_sids.len() as u32).to_le_bytes());
         for (ns_code, suffix) in &self.predicate_sids {
             buf.extend_from_slice(&ns_code.to_le_bytes());
@@ -360,60 +526,17 @@ impl IndexRootV5 {
         write_string_array(&mut buf, &self.language_tags);
 
         // ---- Dict refs ----
-        // Forward packs (FPK1)
         write_dict_pack_refs(&mut buf, &self.dict_refs.forward_packs);
-        // Reverse trees (DLF1/DTB1)
         write_dict_tree_refs(&mut buf, &self.dict_refs.subject_reverse);
         write_dict_tree_refs(&mut buf, &self.dict_refs.string_reverse);
 
-        // ---- Per-graph specialty arenas (sorted by g_id) ----
+        // ---- Per-graph specialty arenas ----
         let mut sorted_arenas = self.graph_arenas.clone();
         sorted_arenas.sort_by_key(|ga| ga.g_id);
         buf.extend_from_slice(&(sorted_arenas.len() as u16).to_le_bytes());
         for ga in &sorted_arenas {
             buf.extend_from_slice(&ga.g_id.to_le_bytes());
-            // numbig (sorted by p_id)
-            let mut sorted_nb = ga.numbig.clone();
-            sorted_nb.sort_by_key(|(p_id, _)| *p_id);
-            buf.extend_from_slice(&(sorted_nb.len() as u16).to_le_bytes());
-            for (p_id, cid) in &sorted_nb {
-                buf.extend_from_slice(&p_id.to_le_bytes());
-                write_cid(&mut buf, cid);
-            }
-            // vectors (sorted by p_id)
-            let mut sorted_v = ga.vectors.clone();
-            sorted_v.sort_by_key(|v| v.p_id);
-            buf.extend_from_slice(&(sorted_v.len() as u16).to_le_bytes());
-            for vdr in &sorted_v {
-                buf.extend_from_slice(&vdr.p_id.to_le_bytes());
-                write_cid(&mut buf, &vdr.manifest);
-                buf.extend_from_slice(&(vdr.shards.len() as u16).to_le_bytes());
-                for shard_cid in &vdr.shards {
-                    write_cid(&mut buf, shard_cid);
-                }
-            }
-            // spatial (sorted by p_id)
-            let mut sorted_s = ga.spatial.clone();
-            sorted_s.sort_by_key(|s| s.p_id);
-            buf.extend_from_slice(&(sorted_s.len() as u16).to_le_bytes());
-            for sar in &sorted_s {
-                buf.extend_from_slice(&sar.p_id.to_le_bytes());
-                write_cid(&mut buf, &sar.root_cid);
-                write_cid(&mut buf, &sar.manifest);
-                write_cid(&mut buf, &sar.arena);
-                buf.extend_from_slice(&(sar.leaflets.len() as u16).to_le_bytes());
-                for leaf_cid in &sar.leaflets {
-                    write_cid(&mut buf, leaf_cid);
-                }
-            }
-            // fulltext (sorted by p_id) — v4+
-            let mut sorted_ft = ga.fulltext.clone();
-            sorted_ft.sort_by_key(|f| f.p_id);
-            buf.extend_from_slice(&(sorted_ft.len() as u16).to_le_bytes());
-            for ftr in &sorted_ft {
-                buf.extend_from_slice(&ftr.p_id.to_le_bytes());
-                write_cid(&mut buf, &ftr.arena_cid);
-            }
+            write_graph_arenas_v5(&mut buf, ga);
         }
 
         // ---- Watermarks ----
@@ -428,25 +551,48 @@ impl IndexRootV5 {
         buf.extend_from_slice(&self.total_asserts.to_le_bytes());
         buf.extend_from_slice(&self.total_retracts.to_le_bytes());
 
-        // ---- Default graph routing (inline) ----
-        let mut sorted_default = self.default_graph_orders.clone();
-        sorted_default.sort_by_key(|o| o.order.to_wire_id());
-        buf.push(sorted_default.len() as u8);
-        let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
-        for ior in &sorted_default {
-            buf.push(ior.order.to_wire_id());
-            buf.extend_from_slice(&(ior.leaves.len() as u32).to_le_bytes());
-            for leaf in &ior.leaves {
-                leaf.first_key.write_le(&mut rec_buf);
-                buf.extend_from_slice(&rec_buf);
-                leaf.last_key.write_le(&mut rec_buf);
-                buf.extend_from_slice(&rec_buf);
-                buf.extend_from_slice(&leaf.row_count.to_le_bytes());
-                write_cid(&mut buf, &leaf.leaf_cid);
+        // ---- o_type table ----
+        buf.extend_from_slice(&(self.o_type_table.len() as u32).to_le_bytes());
+        for entry in &self.o_type_table {
+            buf.extend_from_slice(&entry.o_type.to_le_bytes());
+            buf.push(entry.decode_kind as u8);
+            // flags: bit 0 = has_datatype_iri, bit 1 = has_dict_family
+            let entry_flags = (if entry.datatype_iri.is_some() { 1u8 } else { 0 })
+                | (if entry.dict_family.is_some() { 2u8 } else { 0 });
+            buf.push(entry_flags);
+            if let Some(ref iri) = entry.datatype_iri {
+                write_str(&mut buf, iri);
+            }
+            if let Some(df) = entry.dict_family {
+                buf.push(df as u8);
             }
         }
 
-        // ---- Named graph routing (branch CIDs) ----
+        // ---- Default graph routing (inline, V3 key types) ----
+        let mut sorted_default = self.default_graph_orders.clone();
+        sorted_default.sort_by_key(|o| o.order.to_wire_id());
+        buf.push(sorted_default.len() as u8);
+        let mut rec_buf = [0u8; RECORD_V2_WIRE_SIZE];
+        for dgo in &sorted_default {
+            buf.push(dgo.order.to_wire_id());
+            buf.extend_from_slice(&(dgo.leaves.len() as u32).to_le_bytes());
+            for leaf in &dgo.leaves {
+                leaf.first_key.write_run_le(&mut rec_buf);
+                buf.extend_from_slice(&rec_buf);
+                leaf.last_key.write_run_le(&mut rec_buf);
+                buf.extend_from_slice(&rec_buf);
+                buf.extend_from_slice(&leaf.row_count.to_le_bytes());
+                write_cid(&mut buf, &leaf.leaf_cid);
+                if let Some(ref sidecar) = leaf.sidecar_cid {
+                    buf.push(1);
+                    write_cid(&mut buf, sidecar);
+                } else {
+                    buf.push(0);
+                }
+            }
+        }
+
+        // ---- Named graph routing (V3 branch CIDs) ----
         let mut sorted_named = self.named_graphs.clone();
         sorted_named.sort_by_key(|ng| ng.g_id);
         buf.extend_from_slice(&(sorted_named.len() as u16).to_le_bytes());
@@ -494,25 +640,24 @@ impl IndexRootV5 {
         buf
     }
 
-    /// Decode from IRB1 binary bytes.
+    /// Decode from FIR6 binary bytes.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < ROOT_V5_HEADER_LEN {
-            return Err(io_err("root too small for header"));
+        if data.len() < Self::HEADER_LEN {
+            return Err(io_err("root v6: too small for header"));
         }
-        if data[0..4] != ROOT_V5_MAGIC {
+        if data[0..4] != *ROOT_V6_MAGIC {
             return Err(io_err(&format!(
-                "root: expected magic IRB1, got {:?}",
+                "root v6: expected magic FIR6, got {:?}",
                 &data[0..4]
             )));
         }
         let version = data[4];
-        if version != 3 && version != ROOT_V5_VERSION {
-            return Err(io_err(&format!("root: unsupported version {version}")));
+        if version != ROOT_V6_VERSION {
+            return Err(io_err(&format!("root v6: unsupported version {version}")));
         }
 
         let flags = data[5];
         let mut pos = 8; // skip pad(2)
-
         let index_t = read_i64_at(data, &mut pos)?;
         let base_t = read_i64_at(data, &mut pos)?;
 
@@ -524,7 +669,7 @@ impl IndexRootV5 {
         let subject_id_encoding = match enc_byte {
             0 => fluree_db_core::SubjectIdEncoding::Narrow,
             1 => fluree_db_core::SubjectIdEncoding::Wide,
-            other => return Err(io_err(&format!("root: unknown encoding {other}"))),
+            other => return Err(io_err(&format!("root v6: unknown encoding {other}"))),
         };
 
         // Namespace codes
@@ -554,84 +699,17 @@ impl IndexRootV5 {
         let forward_packs = read_dict_pack_refs(data, &mut pos)?;
         let subject_reverse = read_dict_tree_refs(data, &mut pos)?;
         let string_reverse = read_dict_tree_refs(data, &mut pos)?;
-
-        let dict_refs = DictRefsV5 {
+        let dict_refs = DictRefs {
             forward_packs,
             subject_reverse,
             string_reverse,
         };
 
         // Per-graph specialty arenas
-        let arena_graph_count = read_u16_at(data, &mut pos)? as usize;
-        let mut graph_arenas = Vec::with_capacity(arena_graph_count);
-        for _ in 0..arena_graph_count {
-            let g_id = read_u16_at(data, &mut pos)?;
-            // numbig
-            let nb_count = read_u16_at(data, &mut pos)? as usize;
-            let mut numbig = Vec::with_capacity(nb_count);
-            for _ in 0..nb_count {
-                let p_id = read_u32_at(data, &mut pos)?;
-                let cid = read_cid(data, &mut pos)?;
-                numbig.push((p_id, cid));
-            }
-            // vectors
-            let vec_count = read_u16_at(data, &mut pos)? as usize;
-            let mut vectors = Vec::with_capacity(vec_count);
-            for _ in 0..vec_count {
-                let p_id = read_u32_at(data, &mut pos)?;
-                let manifest = read_cid(data, &mut pos)?;
-                let shard_count = read_u16_at(data, &mut pos)? as usize;
-                let mut shards = Vec::with_capacity(shard_count);
-                for _ in 0..shard_count {
-                    shards.push(read_cid(data, &mut pos)?);
-                }
-                vectors.push(VectorDictRefV5 {
-                    p_id,
-                    manifest,
-                    shards,
-                });
-            }
-            // spatial
-            let sp_count = read_u16_at(data, &mut pos)? as usize;
-            let mut spatial = Vec::with_capacity(sp_count);
-            for _ in 0..sp_count {
-                let p_id = read_u32_at(data, &mut pos)?;
-                let root_cid = read_cid(data, &mut pos)?;
-                let manifest = read_cid(data, &mut pos)?;
-                let arena = read_cid(data, &mut pos)?;
-                let leaf_count = read_u16_at(data, &mut pos)? as usize;
-                let mut leaflets = Vec::with_capacity(leaf_count);
-                for _ in 0..leaf_count {
-                    leaflets.push(read_cid(data, &mut pos)?);
-                }
-                spatial.push(SpatialArenaRefV5 {
-                    p_id,
-                    root_cid,
-                    manifest,
-                    arena,
-                    leaflets,
-                });
-            }
-            // fulltext (v4+)
-            let fulltext = if version >= 4 {
-                let ft_count = read_u16_at(data, &mut pos)? as usize;
-                let mut fulltext = Vec::with_capacity(ft_count);
-                for _ in 0..ft_count {
-                    let p_id = read_u32_at(data, &mut pos)?;
-                    let arena_cid = read_cid(data, &mut pos)?;
-                    fulltext.push(FulltextArenaRefV5 { p_id, arena_cid });
-                }
-                fulltext
-            } else {
-                Vec::new()
-            };
-            graph_arenas.push(GraphArenaRefsV5 {
-                g_id,
-                numbig,
-                vectors,
-                spatial,
-                fulltext,
-            });
+        let arena_count = read_u16_at(data, &mut pos)? as usize;
+        let mut graph_arenas = Vec::with_capacity(arena_count);
+        for _ in 0..arena_count {
+            graph_arenas.push(read_graph_arenas_v5(data, &mut pos)?);
         }
 
         // Watermarks
@@ -647,29 +725,66 @@ impl IndexRootV5 {
         let total_asserts = read_u64_at(data, &mut pos)?;
         let total_retracts = read_u64_at(data, &mut pos)?;
 
-        // Default graph routing
+        // o_type table
+        let otype_count = read_u32_at(data, &mut pos)? as usize;
+        let mut o_type_table = Vec::with_capacity(otype_count);
+        for _ in 0..otype_count {
+            let o_type = read_u16_at(data, &mut pos)?;
+            let dk_byte = read_u8_at(data, &mut pos)?;
+            let decode_kind = DecodeKind::from_u8(dk_byte)
+                .ok_or_else(|| io_err(&format!("root v6: unknown decode_kind {dk_byte}")))?;
+            let entry_flags = read_u8_at(data, &mut pos)?;
+            let datatype_iri = if entry_flags & 1 != 0 {
+                Some(read_string(data, &mut pos)?)
+            } else {
+                None
+            };
+            let dict_family =
+                if entry_flags & 2 != 0 {
+                    let df_byte = read_u8_at(data, &mut pos)?;
+                    Some(DictFamily::from_u8(df_byte).ok_or_else(|| {
+                        io_err(&format!("root v6: unknown dict_family {df_byte}"))
+                    })?)
+                } else {
+                    None
+                };
+            o_type_table.push(OTypeTableEntry {
+                o_type,
+                decode_kind,
+                datatype_iri,
+                dict_family,
+            });
+        }
+
+        // Default graph routing (V3 keys)
         let order_count = read_u8_at(data, &mut pos)? as usize;
         let mut default_graph_orders = Vec::with_capacity(order_count);
         for _ in 0..order_count {
             let order_id = read_u8_at(data, &mut pos)?;
             let order = RunSortOrder::from_wire_id(order_id)
-                .ok_or_else(|| io_err(&format!("root: invalid order_id {order_id}")))?;
+                .ok_or_else(|| io_err(&format!("root v6: invalid order_id {order_id}")))?;
             let leaf_count = read_u32_at(data, &mut pos)? as usize;
             let mut leaves = Vec::with_capacity(leaf_count);
             for _ in 0..leaf_count {
-                let first_key = read_run_record(data, &mut pos)?;
-                let last_key = read_run_record(data, &mut pos)?;
+                let first_key = read_run_record_v2(data, &mut pos)?;
+                let last_key = read_run_record_v2(data, &mut pos)?;
                 let row_count = read_u64_at(data, &mut pos)?;
                 let leaf_cid = read_cid(data, &mut pos)?;
+                let has_sidecar = read_u8_at(data, &mut pos)?;
+                let sidecar_cid = if has_sidecar != 0 {
+                    Some(read_cid(data, &mut pos)?)
+                } else {
+                    None
+                };
                 leaves.push(LeafEntry {
                     first_key,
                     last_key,
                     row_count,
                     leaf_cid,
-                    resolved_path: None,
+                    sidecar_cid,
                 });
             }
-            default_graph_orders.push(InlineOrderRouting { order, leaves });
+            default_graph_orders.push(DefaultGraphOrder { order, leaves });
         }
 
         // Named graph routing
@@ -681,8 +796,9 @@ impl IndexRootV5 {
             let mut orders = Vec::with_capacity(ng_order_count);
             for _ in 0..ng_order_count {
                 let oid = read_u8_at(data, &mut pos)?;
-                let order = RunSortOrder::from_wire_id(oid)
-                    .ok_or_else(|| io_err(&format!("root: invalid named graph order_id {oid}")))?;
+                let order = RunSortOrder::from_wire_id(oid).ok_or_else(|| {
+                    io_err(&format!("root v6: invalid named graph order_id {oid}"))
+                })?;
                 let branch_cid = read_cid(data, &mut pos)?;
                 orders.push((order, branch_cid));
             }
@@ -690,29 +806,27 @@ impl IndexRootV5 {
         }
 
         // Optional sections
-        let stats = if flags & FLAG_HAS_STATS != 0 {
+        let stats = if flags & Self::FLAG_HAS_STATS != 0 {
             let stats_len = read_u32_at(data, &mut pos)? as usize;
             ensure_bytes(data, pos, stats_len, "stats section")?;
-            let (stats, _consumed) =
-                stats_wire::decode_stats_with_len(&data[pos..pos + stats_len])?;
+            let (stats, _) = stats_wire::decode_stats_with_len(&data[pos..pos + stats_len])?;
             pos += stats_len;
             Some(stats)
         } else {
             None
         };
 
-        let schema = if flags & FLAG_HAS_SCHEMA != 0 {
+        let schema = if flags & Self::FLAG_HAS_SCHEMA != 0 {
             let schema_len = read_u32_at(data, &mut pos)? as usize;
             ensure_bytes(data, pos, schema_len, "schema section")?;
-            let (schema, _consumed) =
-                stats_wire::decode_schema_with_len(&data[pos..pos + schema_len])?;
+            let (schema, _) = stats_wire::decode_schema_with_len(&data[pos..pos + schema_len])?;
             pos += schema_len;
             Some(schema)
         } else {
             None
         };
 
-        let prev_index = if flags & FLAG_HAS_PREV_INDEX != 0 {
+        let prev_index = if flags & Self::FLAG_HAS_PREV_INDEX != 0 {
             let t = read_i64_at(data, &mut pos)?;
             let id = read_cid(data, &mut pos)?;
             Some(BinaryPrevIndexRef { t, id })
@@ -720,20 +834,20 @@ impl IndexRootV5 {
             None
         };
 
-        let garbage = if flags & FLAG_HAS_GARBAGE != 0 {
+        let garbage = if flags & Self::FLAG_HAS_GARBAGE != 0 {
             let id = read_cid(data, &mut pos)?;
             Some(BinaryGarbageRef { id })
         } else {
             None
         };
 
-        let sketch_ref = if flags & FLAG_HAS_SKETCH != 0 {
+        let sketch_ref = if flags & Self::FLAG_HAS_SKETCH != 0 {
             Some(read_cid(data, &mut pos)?)
         } else {
             None
         };
 
-        Ok(IndexRootV5 {
+        Ok(IndexRoot {
             ledger_id,
             index_t,
             base_t,
@@ -750,6 +864,7 @@ impl IndexRootV5 {
             total_commit_size,
             total_asserts,
             total_retracts,
+            o_type_table,
             default_graph_orders,
             named_graphs,
             stats,
@@ -759,12 +874,11 @@ impl IndexRootV5 {
             sketch_ref,
         })
     }
-
     /// Collect all CAS content-artifact CIDs referenced by this root.
     ///
-    /// Includes: dict artifacts, leaf CIDs (default graph inline), branch CIDs
-    /// (named graphs), numbig, vectors, sketch. Does NOT include the root's own
-    /// CID or the garbage manifest CID.
+    /// Includes: dict artifacts, leaf CIDs + sidecar CIDs (default graph inline),
+    /// branch CIDs (named graphs), numbig, vectors, spatial, fulltext, sketch.
+    /// Does NOT include the root's own CID or the garbage manifest CID.
     pub fn all_cas_ids(&self) -> Vec<ContentId> {
         let mut ids = Vec::new();
 
@@ -787,7 +901,7 @@ impl IndexRootV5 {
             ids.extend(tree.leaves.iter().cloned());
         }
 
-        // Per-graph arenas (numbig, vectors, spatial)
+        // Per-graph arenas (numbig, vectors, spatial, fulltext)
         for ga in &self.graph_arenas {
             for (_, cid) in &ga.numbig {
                 ids.push(cid.clone());
@@ -807,10 +921,13 @@ impl IndexRootV5 {
             }
         }
 
-        // Default graph inline leaves
-        for ior in &self.default_graph_orders {
-            for leaf in &ior.leaves {
+        // Default graph inline leaves + sidecar CIDs
+        for dgo in &self.default_graph_orders {
+            for leaf in &dgo.leaves {
                 ids.push(leaf.leaf_cid.clone());
+                if let Some(ref sidecar) = leaf.sidecar_cid {
+                    ids.push(sidecar.clone());
+                }
             }
         }
 
@@ -830,387 +947,191 @@ impl IndexRootV5 {
         ids.dedup();
         ids
     }
-
-    /// Write to disk named by CID, returns the root ContentId.
-    pub fn write_to_disk(&self, dir: &Path) -> io::Result<ContentId> {
-        let data = self.encode();
-        let digest_hex = hex::encode(Sha256::digest(&data));
-        let cid = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &digest_hex)
-            .expect("valid SHA-256 hex digest");
-        let path = dir.join(cid.to_string());
-        std::fs::write(&path, &data)?;
-        Ok(cid)
-    }
-
-    /// Human-readable diagnostic JSON (never stored or uploaded).
-    pub fn to_debug_json(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        obj.insert("format".into(), "IRB1".into());
-        obj.insert("version".into(), ROOT_V5_VERSION.into());
-        obj.insert("ledger_id".into(), self.ledger_id.clone().into());
-        obj.insert("index_t".into(), self.index_t.into());
-        obj.insert("base_t".into(), self.base_t.into());
-        obj.insert(
-            "subject_id_encoding".into(),
-            match self.subject_id_encoding {
-                fluree_db_core::SubjectIdEncoding::Narrow => "narrow",
-                fluree_db_core::SubjectIdEncoding::Wide => "wide",
-            }
-            .into(),
-        );
-        obj.insert(
-            "namespace_count".into(),
-            (self.namespace_codes.len() as u64).into(),
-        );
-        obj.insert(
-            "predicate_count".into(),
-            (self.predicate_sids.len() as u64).into(),
-        );
-        obj.insert(
-            "default_graph_orders".into(),
-            self.default_graph_orders
-                .iter()
-                .map(|o| {
-                    serde_json::json!({
-                        "order": o.order.dir_name(),
-                        "leaf_count": o.leaves.len(),
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into(),
-        );
-        obj.insert(
-            "named_graphs".into(),
-            self.named_graphs
-                .iter()
-                .map(|ng| {
-                    serde_json::json!({
-                        "g_id": ng.g_id,
-                        "orders": ng.orders.iter().map(|(o, cid)| {
-                            serde_json::json!({ "order": o.dir_name(), "branch_cid": cid.to_string() })
-                        }).collect::<Vec<_>>(),
-                    })
-                })
-                .collect::<Vec<_>>()
-                .into(),
-        );
-        obj.insert("has_stats".into(), self.stats.is_some().into());
-        obj.insert("has_schema".into(), self.schema.is_some().into());
-        obj.insert("has_prev_index".into(), self.prev_index.is_some().into());
-        obj.insert("has_garbage".into(), self.garbage.is_some().into());
-        obj.insert("has_sketch".into(), self.sketch_ref.is_some().into());
-        serde_json::Value::Object(obj)
-    }
 }
 
 // ============================================================================
-// Wire format helpers
+// Shared arena encode/decode
 // ============================================================================
 
-pub(crate) fn io_err(msg: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
-}
-
-pub(crate) fn ensure_bytes(data: &[u8], pos: usize, need: usize, ctx: &str) -> io::Result<()> {
-    if pos + need > data.len() {
-        Err(io_err(&format!(
-            "root: truncated at {ctx} (need {need} at offset {pos}, have {})",
-            data.len()
-        )))
-    } else {
-        Ok(())
+fn write_graph_arenas_v5(buf: &mut Vec<u8>, ga: &GraphArenaRefs) {
+    // numbig
+    let mut sorted_nb = ga.numbig.clone();
+    sorted_nb.sort_by_key(|(p_id, _)| *p_id);
+    buf.extend_from_slice(&(sorted_nb.len() as u16).to_le_bytes());
+    for (p_id, cid) in &sorted_nb {
+        buf.extend_from_slice(&p_id.to_le_bytes());
+        write_cid(buf, cid);
     }
-}
-
-pub(crate) fn read_u8_at(data: &[u8], pos: &mut usize) -> io::Result<u8> {
-    ensure_bytes(data, *pos, 1, "u8")?;
-    let v = data[*pos];
-    *pos += 1;
-    Ok(v)
-}
-
-pub(crate) fn read_u16_at(data: &[u8], pos: &mut usize) -> io::Result<u16> {
-    ensure_bytes(data, *pos, 2, "u16")?;
-    let v = u16::from_le_bytes(data[*pos..*pos + 2].try_into().unwrap());
-    *pos += 2;
-    Ok(v)
-}
-
-pub(crate) fn read_u32_at(data: &[u8], pos: &mut usize) -> io::Result<u32> {
-    ensure_bytes(data, *pos, 4, "u32")?;
-    let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    Ok(v)
-}
-
-pub(crate) fn read_u64_at(data: &[u8], pos: &mut usize) -> io::Result<u64> {
-    ensure_bytes(data, *pos, 8, "u64")?;
-    let v = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(v)
-}
-
-pub(crate) fn read_i64_at(data: &[u8], pos: &mut usize) -> io::Result<i64> {
-    ensure_bytes(data, *pos, 8, "i64")?;
-    let v = i64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(v)
-}
-
-/// Write a CID as `cid_len:u16(LE) + cid_bytes`.
-pub(crate) fn write_cid(buf: &mut Vec<u8>, cid: &ContentId) {
-    let cid_bytes = cid.to_bytes();
-    buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-    buf.extend_from_slice(&cid_bytes);
-}
-
-/// Read a CID from `cid_len:u16(LE) + cid_bytes`.
-pub(crate) fn read_cid(data: &[u8], pos: &mut usize) -> io::Result<ContentId> {
-    let cid_len = read_u16_at(data, pos)? as usize;
-    ensure_bytes(data, *pos, cid_len, "cid bytes")?;
-    let cid = ContentId::from_bytes(&data[*pos..*pos + cid_len])
-        .map_err(|e| io_err(&format!("invalid CID: {e}")))?;
-    *pos += cid_len;
-    Ok(cid)
-}
-
-/// Write a length-prefixed UTF-8 string as `len:u16(LE) + bytes`.
-pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str) {
-    let bytes = s.as_bytes();
-    buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
-    buf.extend_from_slice(bytes);
-}
-
-/// Read a length-prefixed UTF-8 string.
-pub(crate) fn read_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
-    let len = read_u16_at(data, pos)? as usize;
-    ensure_bytes(data, *pos, len, "string bytes")?;
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
-        .map_err(|e| io_err(&format!("invalid UTF-8: {e}")))?
-        .to_string();
-    *pos += len;
-    Ok(s)
-}
-
-/// Write a string array as `count:u16(LE) + [len:u16 + bytes]...`.
-pub(crate) fn write_string_array(buf: &mut Vec<u8>, strings: &[String]) {
-    buf.extend_from_slice(&(strings.len() as u16).to_le_bytes());
-    for s in strings {
-        write_str(buf, s);
-    }
-}
-
-/// Read a string array.
-pub(crate) fn read_string_array(data: &[u8], pos: &mut usize) -> io::Result<Vec<String>> {
-    let count = read_u16_at(data, pos)? as usize;
-    let mut result = Vec::with_capacity(count);
-    for _ in 0..count {
-        result.push(read_string(data, pos)?);
-    }
-    Ok(result)
-}
-
-/// Write forward dictionary pack refs (FPK1 packs).
-///
-/// Wire format:
-/// ```text
-/// [string_fwd_pack_count: u16 LE]
-///   For each: [first_id: u64] [last_id: u64] [pack_cid: len_prefixed]
-/// [subject_fwd_ns_count: u16 LE]
-///   For each ns: [ns_code: u16] [pack_count: u16]
-///     For each: [first_id: u64] [last_id: u64] [pack_cid: len_prefixed]
-/// ```
-pub(crate) fn write_dict_pack_refs(buf: &mut Vec<u8>, packs: &DictPackRefs) {
-    // String forward packs
-    buf.extend_from_slice(&(packs.string_fwd_packs.len() as u16).to_le_bytes());
-    for entry in &packs.string_fwd_packs {
-        buf.extend_from_slice(&entry.first_id.to_le_bytes());
-        buf.extend_from_slice(&entry.last_id.to_le_bytes());
-        write_cid(buf, &entry.pack_cid);
-    }
-
-    // Subject forward packs (per namespace)
-    let mut sorted_ns = packs.subject_fwd_ns_packs.clone();
-    sorted_ns.sort_by_key(|(ns_code, _)| *ns_code);
-    buf.extend_from_slice(&(sorted_ns.len() as u16).to_le_bytes());
-    for (ns_code, ns_packs) in &sorted_ns {
-        buf.extend_from_slice(&ns_code.to_le_bytes());
-        buf.extend_from_slice(&(ns_packs.len() as u16).to_le_bytes());
-        for entry in ns_packs {
-            buf.extend_from_slice(&entry.first_id.to_le_bytes());
-            buf.extend_from_slice(&entry.last_id.to_le_bytes());
-            write_cid(buf, &entry.pack_cid);
+    // vectors
+    let mut sorted_v = ga.vectors.clone();
+    sorted_v.sort_by_key(|v| v.p_id);
+    buf.extend_from_slice(&(sorted_v.len() as u16).to_le_bytes());
+    for vdr in &sorted_v {
+        buf.extend_from_slice(&vdr.p_id.to_le_bytes());
+        write_cid(buf, &vdr.manifest);
+        buf.extend_from_slice(&(vdr.shards.len() as u16).to_le_bytes());
+        for shard_cid in &vdr.shards {
+            write_cid(buf, shard_cid);
         }
     }
+    // spatial
+    let mut sorted_s = ga.spatial.clone();
+    sorted_s.sort_by_key(|s| s.p_id);
+    buf.extend_from_slice(&(sorted_s.len() as u16).to_le_bytes());
+    for sar in &sorted_s {
+        buf.extend_from_slice(&sar.p_id.to_le_bytes());
+        write_cid(buf, &sar.root_cid);
+        write_cid(buf, &sar.manifest);
+        write_cid(buf, &sar.arena);
+        buf.extend_from_slice(&(sar.leaflets.len() as u16).to_le_bytes());
+        for leaf_cid in &sar.leaflets {
+            write_cid(buf, leaf_cid);
+        }
+    }
+    // fulltext
+    let mut sorted_ft = ga.fulltext.clone();
+    sorted_ft.sort_by_key(|f| f.p_id);
+    buf.extend_from_slice(&(sorted_ft.len() as u16).to_le_bytes());
+    for ftr in &sorted_ft {
+        buf.extend_from_slice(&ftr.p_id.to_le_bytes());
+        write_cid(buf, &ftr.arena_cid);
+    }
 }
 
-/// Read forward dictionary pack refs.
-pub(crate) fn read_dict_pack_refs(data: &[u8], pos: &mut usize) -> io::Result<DictPackRefs> {
-    // String forward packs
-    let str_count = read_u16_at(data, pos)? as usize;
-    let mut string_fwd_packs = Vec::with_capacity(str_count);
-    for _ in 0..str_count {
-        let first_id = read_u64_at(data, pos)?;
-        let last_id = read_u64_at(data, pos)?;
-        let pack_cid = read_cid(data, pos)?;
-        string_fwd_packs.push(PackBranchEntry {
-            first_id,
-            last_id,
-            pack_cid,
+fn read_graph_arenas_v5(data: &[u8], pos: &mut usize) -> io::Result<GraphArenaRefs> {
+    let g_id = read_u16_at(data, pos)?;
+    // numbig
+    let nb_count = read_u16_at(data, pos)? as usize;
+    let mut numbig = Vec::with_capacity(nb_count);
+    for _ in 0..nb_count {
+        let p_id = read_u32_at(data, pos)?;
+        let cid = read_cid(data, pos)?;
+        numbig.push((p_id, cid));
+    }
+    // vectors
+    let vec_count = read_u16_at(data, pos)? as usize;
+    let mut vectors = Vec::with_capacity(vec_count);
+    for _ in 0..vec_count {
+        let p_id = read_u32_at(data, pos)?;
+        let manifest = read_cid(data, pos)?;
+        let shard_count = read_u16_at(data, pos)? as usize;
+        let mut shards = Vec::with_capacity(shard_count);
+        for _ in 0..shard_count {
+            shards.push(read_cid(data, pos)?);
+        }
+        vectors.push(VectorDictRef {
+            p_id,
+            manifest,
+            shards,
         });
     }
-
-    // Subject forward packs (per namespace)
-    let ns_count = read_u16_at(data, pos)? as usize;
-    let mut subject_fwd_ns_packs = Vec::with_capacity(ns_count);
-    for _ in 0..ns_count {
-        let ns_code = read_u16_at(data, pos)?;
-        let pack_count = read_u16_at(data, pos)? as usize;
-        let mut ns_packs = Vec::with_capacity(pack_count);
-        for _ in 0..pack_count {
-            let first_id = read_u64_at(data, pos)?;
-            let last_id = read_u64_at(data, pos)?;
-            let pack_cid = read_cid(data, pos)?;
-            ns_packs.push(PackBranchEntry {
-                first_id,
-                last_id,
-                pack_cid,
-            });
+    // spatial
+    let sp_count = read_u16_at(data, pos)? as usize;
+    let mut spatial = Vec::with_capacity(sp_count);
+    for _ in 0..sp_count {
+        let p_id = read_u32_at(data, pos)?;
+        let root_cid = read_cid(data, pos)?;
+        let manifest = read_cid(data, pos)?;
+        let arena = read_cid(data, pos)?;
+        let leaf_count = read_u16_at(data, pos)? as usize;
+        let mut leaflets = Vec::with_capacity(leaf_count);
+        for _ in 0..leaf_count {
+            leaflets.push(read_cid(data, pos)?);
         }
-        subject_fwd_ns_packs.push((ns_code, ns_packs));
+        spatial.push(SpatialArenaRef {
+            p_id,
+            root_cid,
+            manifest,
+            arena,
+            leaflets,
+        });
     }
-
-    Ok(DictPackRefs {
-        string_fwd_packs,
-        subject_fwd_ns_packs,
+    // fulltext
+    let ft_count = read_u16_at(data, pos)? as usize;
+    let mut fulltext = Vec::with_capacity(ft_count);
+    for _ in 0..ft_count {
+        let p_id = read_u32_at(data, pos)?;
+        let arena_cid = read_cid(data, pos)?;
+        fulltext.push(FulltextArenaRef { p_id, arena_cid });
+    }
+    Ok(GraphArenaRefs {
+        g_id,
+        numbig,
+        vectors,
+        spatial,
+        fulltext,
     })
 }
 
-/// Write dict tree refs: branch CID + leaf_count:u32 + leaf CIDs.
-pub(crate) fn write_dict_tree_refs(buf: &mut Vec<u8>, tree: &DictTreeRefs) {
-    write_cid(buf, &tree.branch);
-    buf.extend_from_slice(&(tree.leaves.len() as u32).to_le_bytes());
-    for leaf_cid in &tree.leaves {
-        write_cid(buf, leaf_cid);
-    }
-}
-
-/// Read dict tree refs: branch CID + leaf_count:u32 + leaf CIDs.
-pub(crate) fn read_dict_tree_refs(data: &[u8], pos: &mut usize) -> io::Result<DictTreeRefs> {
-    let branch = read_cid(data, pos)?;
-    let leaf_count = read_u32_at(data, pos)? as usize;
-    let mut leaves = Vec::with_capacity(leaf_count);
-    for _ in 0..leaf_count {
-        leaves.push(read_cid(data, pos)?);
-    }
-    Ok(DictTreeRefs { branch, leaves })
-}
-
-/// Read a RunRecord from wire bytes at position.
-fn read_run_record(data: &[u8], pos: &mut usize) -> io::Result<super::run_record::RunRecord> {
-    ensure_bytes(data, *pos, RECORD_WIRE_SIZE, "RunRecord")?;
-    let rec = super::run_record::RunRecord::read_le(
-        data[*pos..*pos + RECORD_WIRE_SIZE].try_into().unwrap(),
-    );
-    *pos += RECORD_WIRE_SIZE;
+/// Read a V2 run record (30 bytes) at the current position.
+fn read_run_record_v2(data: &[u8], pos: &mut usize) -> io::Result<RunRecordV2> {
+    ensure_bytes(data, *pos, RECORD_V2_WIRE_SIZE, "RunRecordV2")?;
+    let rec = RunRecordV2::read_run_le(data[*pos..*pos + RECORD_V2_WIRE_SIZE].try_into().unwrap());
+    *pos += RECORD_V2_WIRE_SIZE;
     Ok(rec)
 }
 
-// ============================================================================
-// Tests (v5)
-// ============================================================================
-
 #[cfg(test)]
-mod tests_v5 {
+mod tests {
+    use super::super::wire_helpers::{DictPackRefs, DictRefs, DictTreeRefs, PackBranchEntry};
     use super::*;
-    use fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{ContentKind, DatatypeDictId};
 
-    const DICT: ContentKind = ContentKind::DictBlob {
-        dict: fluree_db_core::DictKind::Graphs,
-    };
-
-    fn test_cid(kind: ContentKind, label: &str) -> ContentId {
-        ContentId::new(kind, label.as_bytes())
-    }
-
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> crate::format::run_record::RunRecord {
-        crate::format::run_record::RunRecord::new(
-            0,
-            SubjectId::from_u64(s_id),
-            p_id,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(val),
-            t,
-            true,
-            DatatypeDictId::INTEGER.as_u16(),
-            0,
-            None,
+    /// Build a minimal IndexRoot for testing.
+    fn minimal_root_v6() -> IndexRoot {
+        // Create a dummy CID for dict refs
+        let dummy_cid = ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_DICT_BLOB,
+            &fluree_db_core::sha256_hex(b"dummy"),
         )
-    }
+        .unwrap();
 
-    fn make_leaf_cid(index: u32) -> ContentId {
-        ContentId::from_hex_digest(
-            CODEC_FLUREE_INDEX_LEAF,
-            &hex::encode(sha2::Sha256::digest(format!("leaf-{index}").as_bytes())),
-        )
-        .unwrap()
-    }
-
-    fn sample_dict_refs_v5() -> DictRefsV5 {
-        DictRefsV5 {
-            forward_packs: DictPackRefs {
-                string_fwd_packs: vec![PackBranchEntry {
-                    first_id: 0,
-                    last_id: 999,
-                    pack_cid: test_cid(DICT, "str_fwd_pack0"),
-                }],
-                subject_fwd_ns_packs: vec![(
-                    0,
-                    vec![PackBranchEntry {
-                        first_id: 0,
-                        last_id: 499,
-                        pack_cid: test_cid(DICT, "subj_fwd_ns0_pack0"),
-                    }],
-                )],
-            },
-            subject_reverse: DictTreeRefs {
-                branch: test_cid(DICT, "sr_branch"),
-                leaves: vec![test_cid(DICT, "sr_l0")],
-            },
-            string_reverse: DictTreeRefs {
-                branch: test_cid(DICT, "str_branch"),
-                leaves: vec![test_cid(DICT, "str_l0")],
-            },
-        }
-    }
-
-    fn minimal_root() -> IndexRootV5 {
-        let mut ns = BTreeMap::new();
-        ns.insert(0, String::new());
-        ns.insert(1, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".into());
-
-        IndexRootV5 {
+        IndexRoot {
             ledger_id: "test:main".to_string(),
             index_t: 42,
-            base_t: 1,
+            base_t: 0,
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            namespace_codes: ns,
-            predicate_sids: vec![(0, "p0".to_string())],
-            graph_iris: vec![fluree_db_core::graph_registry::txn_meta_graph_iri(
-                "test:main",
-            )],
-            datatype_iris: vec!["@id".to_string()],
-            language_tags: vec![],
-            dict_refs: sample_dict_refs_v5(),
-            subject_watermarks: vec![100, 200],
-            string_watermark: 50,
-            total_commit_size: 1000,
-            total_asserts: 500,
-            total_retracts: 50,
+            namespace_codes: {
+                let mut m = BTreeMap::new();
+                m.insert(0, "http://example.org/".to_string());
+                m
+            },
+            predicate_sids: vec![(0, "name".to_string()), (0, "age".to_string())],
+            graph_iris: vec![],
+            datatype_iris: vec!["xsd:string".to_string(), "xsd:integer".to_string()],
+            language_tags: vec!["en".to_string()],
+            dict_refs: DictRefs {
+                forward_packs: DictPackRefs {
+                    string_fwd_packs: vec![PackBranchEntry {
+                        first_id: 0,
+                        last_id: 100,
+                        pack_cid: dummy_cid.clone(),
+                    }],
+                    subject_fwd_ns_packs: vec![(
+                        0u16,
+                        vec![PackBranchEntry {
+                            first_id: 0,
+                            last_id: 50,
+                            pack_cid: dummy_cid.clone(),
+                        }],
+                    )],
+                },
+                subject_reverse: DictTreeRefs {
+                    branch: dummy_cid.clone(),
+                    leaves: vec![dummy_cid.clone()],
+                },
+                string_reverse: DictTreeRefs {
+                    branch: dummy_cid.clone(),
+                    leaves: vec![dummy_cid.clone()],
+                },
+            },
+            subject_watermarks: vec![50],
+            string_watermark: 100,
+            total_commit_size: 1024,
+            total_asserts: 10,
+            total_retracts: 0,
             graph_arenas: vec![],
+            o_type_table: IndexRoot::build_o_type_table(&[], &["en".to_string()]),
             default_graph_orders: vec![],
             named_graphs: vec![],
             stats: None,
@@ -1222,275 +1143,273 @@ mod tests_v5 {
     }
 
     #[test]
-    fn round_trip_minimal() {
-        let root = minimal_root();
+    fn fir6_round_trip_minimal() {
+        let root = minimal_root_v6();
         let bytes = root.encode();
-        let parsed = IndexRootV5::decode(&bytes).unwrap();
 
-        assert_eq!(parsed.ledger_id, "test:main");
-        assert_eq!(parsed.index_t, 42);
-        assert_eq!(parsed.base_t, 1);
-        assert_eq!(parsed.namespace_codes.len(), 2);
-        assert_eq!(parsed.predicate_sids.len(), 1);
-        assert_eq!(parsed.subject_watermarks, vec![100, 200]);
-        assert_eq!(parsed.string_watermark, 50);
-        assert_eq!(parsed.total_commit_size, 1000);
-        assert_eq!(parsed.total_asserts, 500);
-        assert_eq!(parsed.total_retracts, 50);
-        assert!(parsed.stats.is_none());
-        assert!(parsed.schema.is_none());
-        assert!(parsed.prev_index.is_none());
-        assert!(parsed.garbage.is_none());
-        assert!(parsed.sketch_ref.is_none());
+        assert_eq!(&bytes[0..4], b"FIR6");
+        assert_eq!(bytes[4], ROOT_V6_VERSION);
+        assert_eq!(bytes[5], 0); // no optional sections
+
+        let decoded = IndexRoot::decode(&bytes).unwrap();
+        assert_eq!(decoded.ledger_id, "test:main");
+        assert_eq!(decoded.index_t, 42);
+        assert_eq!(decoded.base_t, 0);
+        assert_eq!(decoded.namespace_codes.len(), 1);
+        assert_eq!(decoded.predicate_sids.len(), 2);
+        assert_eq!(decoded.language_tags, vec!["en"]);
+        assert_eq!(decoded.o_type_table.len(), root.o_type_table.len());
+        assert_eq!(decoded.default_graph_orders.len(), 0);
+        assert_eq!(decoded.named_graphs.len(), 0);
+        assert!(decoded.stats.is_none());
     }
 
     #[test]
-    fn round_trip_with_default_graph_routing() {
-        let mut root = minimal_root();
-        root.default_graph_orders = vec![InlineOrderRouting {
-            order: RunSortOrder::Spot,
-            leaves: vec![
-                LeafEntry {
-                    first_key: make_record(1, 1, 0, 1),
-                    last_key: make_record(100, 5, 99, 1),
-                    row_count: 5000,
-                    leaf_cid: make_leaf_cid(0),
-                    resolved_path: None,
-                },
-                LeafEntry {
-                    first_key: make_record(101, 1, 0, 1),
-                    last_key: make_record(200, 10, 50, 1),
-                    row_count: 5000,
-                    leaf_cid: make_leaf_cid(1),
-                    resolved_path: None,
-                },
-            ],
-        }];
+    fn fir6_round_trip_with_default_graph() {
+        let mut root = minimal_root_v6();
+
+        // Create dummy leaf entries for the default graph
+        let dummy_cid = ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF,
+            &fluree_db_core::sha256_hex(b"leaf1"),
+        )
+        .unwrap();
+        let sidecar_cid = ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_HISTORY_SIDECAR,
+            &fluree_db_core::sha256_hex(b"sidecar1"),
+        )
+        .unwrap();
+
+        let leaf = LeafEntry {
+            first_key: RunRecordV2 {
+                s_id: SubjectId(1),
+                o_key: 100,
+                p_id: 2,
+                t: 1,
+                o_i: u32::MAX,
+                o_type: OType::XSD_INTEGER.as_u16(),
+                g_id: 0,
+            },
+            last_key: RunRecordV2 {
+                s_id: SubjectId(999),
+                o_key: 500,
+                p_id: 5,
+                t: 1,
+                o_i: u32::MAX,
+                o_type: OType::XSD_STRING.as_u16(),
+                g_id: 0,
+            },
+            row_count: 25000,
+            leaf_cid: dummy_cid,
+            sidecar_cid: Some(sidecar_cid),
+        };
+
+        root.default_graph_orders = vec![
+            DefaultGraphOrder {
+                order: RunSortOrder::Spot,
+                leaves: vec![leaf.clone()],
+            },
+            DefaultGraphOrder {
+                order: RunSortOrder::Post,
+                leaves: vec![leaf],
+            },
+        ];
 
         let bytes = root.encode();
-        let parsed = IndexRootV5::decode(&bytes).unwrap();
+        let decoded = IndexRoot::decode(&bytes).unwrap();
 
-        assert_eq!(parsed.default_graph_orders.len(), 1);
-        assert_eq!(parsed.default_graph_orders[0].order, RunSortOrder::Spot);
-        assert_eq!(parsed.default_graph_orders[0].leaves.len(), 2);
+        assert_eq!(decoded.default_graph_orders.len(), 2);
+        // Orders should be sorted by wire ID (SPOT=0, POST=2)
+        assert_eq!(decoded.default_graph_orders[0].order, RunSortOrder::Spot);
+        assert_eq!(decoded.default_graph_orders[1].order, RunSortOrder::Post);
+        assert_eq!(decoded.default_graph_orders[0].leaves.len(), 1);
+        assert_eq!(decoded.default_graph_orders[0].leaves[0].row_count, 25000);
         assert_eq!(
-            parsed.default_graph_orders[0].leaves[0]
-                .first_key
-                .s_id
-                .as_u64(),
-            1
+            decoded.default_graph_orders[0].leaves[0].first_key.s_id,
+            SubjectId(1)
         );
-        assert_eq!(parsed.default_graph_orders[0].leaves[0].row_count, 5000);
-        assert_eq!(
-            parsed.default_graph_orders[0].leaves[0].leaf_cid,
-            make_leaf_cid(0)
-        );
-        assert_eq!(
-            parsed.default_graph_orders[0].leaves[1].leaf_cid,
-            make_leaf_cid(1)
-        );
+        assert!(decoded.default_graph_orders[0].leaves[0]
+            .sidecar_cid
+            .is_some());
     }
 
     #[test]
-    fn round_trip_with_named_graphs() {
-        let mut root = minimal_root();
+    fn fir6_round_trip_with_named_graphs() {
+        let mut root = minimal_root_v6();
+
+        let branch_cid = ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_BRANCH,
+            &fluree_db_core::sha256_hex(b"branch1"),
+        )
+        .unwrap();
+
         root.named_graphs = vec![NamedGraphRouting {
             g_id: 1,
             orders: vec![
-                (
-                    RunSortOrder::Spot,
-                    test_cid(ContentKind::IndexBranch, "g1_spot"),
-                ),
-                (
-                    RunSortOrder::Psot,
-                    test_cid(ContentKind::IndexBranch, "g1_psot"),
-                ),
+                (RunSortOrder::Spot, branch_cid.clone()),
+                (RunSortOrder::Post, branch_cid.clone()),
             ],
         }];
 
         let bytes = root.encode();
-        let parsed = IndexRootV5::decode(&bytes).unwrap();
+        let decoded = IndexRoot::decode(&bytes).unwrap();
 
-        assert_eq!(parsed.named_graphs.len(), 1);
-        assert_eq!(parsed.named_graphs[0].g_id, 1);
-        assert_eq!(parsed.named_graphs[0].orders.len(), 2);
-        assert_eq!(parsed.named_graphs[0].orders[0].0, RunSortOrder::Spot);
-        assert_eq!(parsed.named_graphs[0].orders[1].0, RunSortOrder::Psot);
+        assert_eq!(decoded.named_graphs.len(), 1);
+        assert_eq!(decoded.named_graphs[0].g_id, 1);
+        assert_eq!(decoded.named_graphs[0].orders.len(), 2);
     }
 
     #[test]
-    fn round_trip_with_gc_fields() {
-        let mut root = minimal_root();
-        root.prev_index = Some(BinaryPrevIndexRef {
-            t: 40,
-            id: test_cid(ContentKind::IndexRoot, "prev_root"),
-        });
-        root.garbage = Some(BinaryGarbageRef {
-            id: test_cid(ContentKind::GarbageRecord, "garbage"),
-        });
-        root.sketch_ref = Some(test_cid(ContentKind::StatsSketch, "sketch"));
-
+    fn fir6_o_type_table_round_trip() {
+        let root = minimal_root_v6();
         let bytes = root.encode();
-        let parsed = IndexRootV5::decode(&bytes).unwrap();
+        let decoded = IndexRoot::decode(&bytes).unwrap();
 
-        assert_eq!(parsed.prev_index.as_ref().unwrap().t, 40);
-        assert_eq!(
-            parsed.prev_index.as_ref().unwrap().id,
-            test_cid(ContentKind::IndexRoot, "prev_root")
-        );
-        assert!(parsed.garbage.is_some());
-        assert!(parsed.sketch_ref.is_some());
-    }
-
-    #[test]
-    fn round_trip_with_stats_and_schema() {
-        use fluree_db_core::index_schema::{SchemaPredicateInfo, SchemaPredicates};
-        use fluree_db_core::index_stats::GraphStatsEntry;
-        use fluree_db_core::sid::Sid;
-
-        let mut root = minimal_root();
-        root.stats = Some(IndexStats {
-            flakes: 1000,
-            size: 5000,
-            properties: None,
-            classes: None,
-            graphs: Some(vec![GraphStatsEntry {
-                g_id: 0,
-                flakes: 1000,
-                size: 5000,
-                properties: vec![],
-                classes: None,
-            }]),
-        });
-        root.schema = Some(IndexSchema {
-            t: 42,
-            pred: SchemaPredicates {
-                keys: vec![],
-                vals: vec![SchemaPredicateInfo {
-                    id: Sid::new(5, "Person"),
-                    subclass_of: vec![],
-                    parent_props: vec![],
-                    child_props: vec![],
-                }],
-            },
-        });
-
-        let bytes = root.encode();
-        let parsed = IndexRootV5::decode(&bytes).unwrap();
-
-        let stats = parsed.stats.unwrap();
-        assert_eq!(stats.flakes, 1000);
-        assert_eq!(stats.graphs.as_ref().unwrap().len(), 1);
-
-        let schema = parsed.schema.unwrap();
-        assert_eq!(schema.t, 42);
-        assert_eq!(schema.pred.vals.len(), 1);
-    }
-
-    #[test]
-    fn deterministic_encoding() {
-        let root = minimal_root();
-        let bytes1 = root.encode();
-        let bytes2 = root.encode();
-        assert_eq!(bytes1, bytes2, "same root must produce identical bytes");
-    }
-
-    #[test]
-    fn header_structure() {
-        let root = minimal_root();
-        let bytes = root.encode();
-
-        assert_eq!(&bytes[0..4], b"IRB1");
-        assert_eq!(bytes[4], 4); // version
-        assert_eq!(bytes[5], 0); // flags (no optional sections)
-        assert_eq!(bytes[6], 0); // pad
-        assert_eq!(bytes[7], 0); // pad
-    }
-
-    #[test]
-    fn all_cas_ids_comprehensive() {
-        let mut root = minimal_root();
-        root.graph_arenas = vec![GraphArenaRefsV5 {
-            g_id: 0,
-            numbig: vec![(5, test_cid(DICT, "numbig_5"))],
-            vectors: vec![],
-            spatial: vec![],
-            fulltext: vec![],
-        }];
-        root.default_graph_orders = vec![InlineOrderRouting {
-            order: RunSortOrder::Spot,
-            leaves: vec![LeafEntry {
-                first_key: make_record(1, 1, 0, 1),
-                last_key: make_record(100, 5, 0, 1),
-                row_count: 5000,
-                leaf_cid: make_leaf_cid(0),
-                resolved_path: None,
-            }],
-        }];
-        root.named_graphs = vec![NamedGraphRouting {
-            g_id: 1,
-            orders: vec![(
-                RunSortOrder::Spot,
-                test_cid(ContentKind::IndexBranch, "g1_spot"),
-            )],
-        }];
-        root.sketch_ref = Some(test_cid(ContentKind::StatsSketch, "sketch"));
-
-        let ids = root.all_cas_ids();
-
-        // 1 str_fwd pack + 1 subj_fwd pack + 2 reverse tree (branch+leaf each = 4) + 1 numbig + 1 inline leaf + 1 named branch + 1 sketch = 10
-        assert_eq!(ids.len(), 10);
-        assert!(ids.contains(&test_cid(DICT, "numbig_5")));
-        assert!(ids.contains(&make_leaf_cid(0)));
-        assert!(ids.contains(&test_cid(ContentKind::IndexBranch, "g1_spot")));
-        assert!(ids.contains(&test_cid(ContentKind::StatsSketch, "sketch")));
-        assert!(ids.contains(&test_cid(DICT, "str_fwd_pack0")));
-        assert!(ids.contains(&test_cid(DICT, "subj_fwd_ns0_pack0")));
-
-        // Verify sorted
-        for w in ids.windows(2) {
-            assert!(w[0] <= w[1]);
+        // Verify o_type_table entries match
+        assert_eq!(decoded.o_type_table.len(), root.o_type_table.len());
+        for (orig, dec) in root.o_type_table.iter().zip(decoded.o_type_table.iter()) {
+            assert_eq!(orig.o_type, dec.o_type);
+            assert_eq!(orig.decode_kind, dec.decode_kind);
+            assert_eq!(orig.datatype_iri, dec.datatype_iri);
+            assert_eq!(orig.dict_family, dec.dict_family);
         }
     }
 
     #[test]
-    fn debug_json_output() {
-        let root = minimal_root();
-        let json = root.to_debug_json();
-        assert_eq!(json["format"], "IRB1");
-        assert_eq!(json["ledger_id"], "test:main");
-        assert_eq!(json["index_t"], 42);
-        assert_eq!(json["has_stats"], false);
-    }
-
-    #[test]
-    fn reject_wrong_magic() {
-        let root = minimal_root();
+    fn fir6_bad_magic_rejected() {
+        let root = minimal_root_v6();
         let mut bytes = root.encode();
         bytes[0..4].copy_from_slice(b"BAD!");
-        let err = IndexRootV5::decode(&bytes).unwrap_err();
-        assert!(err.to_string().contains("IRB1"));
+        let err = IndexRoot::decode(&bytes).unwrap_err();
+        assert!(err.to_string().contains("FIR6"));
     }
 
     #[test]
-    fn write_and_read_from_disk() {
-        let dir = std::env::temp_dir().join("fluree_test_root_v5_disk");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn o_type_table_built_in() {
+        let table = IndexRoot::build_o_type_table(&[], &[]);
+        // Should contain all 31 embedded + 13 Fluree = 44 entries.
+        assert_eq!(table.len(), 44);
 
-        let root = minimal_root();
-        let cid = root.write_to_disk(&dir).unwrap();
+        // Spot-check a few entries.
+        let int_entry = table
+            .iter()
+            .find(|e| e.o_type == OType::XSD_INTEGER.as_u16())
+            .unwrap();
+        assert_eq!(int_entry.decode_kind, DecodeKind::I64);
+        assert_eq!(int_entry.datatype_iri.as_deref(), Some("xsd:integer"));
+        assert!(int_entry.dict_family.is_none());
 
-        let path = dir.join(cid.to_string());
-        assert!(path.exists());
+        let string_entry = table
+            .iter()
+            .find(|e| e.o_type == OType::XSD_STRING.as_u16())
+            .unwrap();
+        assert_eq!(string_entry.decode_kind, DecodeKind::StringDict);
+        assert_eq!(string_entry.dict_family, Some(DictFamily::StringDict));
 
-        let data = std::fs::read(&path).unwrap();
-        assert!(cid.verify(&data));
+        let ref_entry = table
+            .iter()
+            .find(|e| e.o_type == OType::IRI_REF.as_u16())
+            .unwrap();
+        assert_eq!(ref_entry.decode_kind, DecodeKind::IriRef);
+        assert_eq!(ref_entry.dict_family, Some(DictFamily::SubjectDict));
+    }
 
-        let parsed = IndexRootV5::decode(&data).unwrap();
-        assert_eq!(parsed.ledger_id, "test:main");
-        assert_eq!(parsed.index_t, 42);
+    #[test]
+    fn o_type_table_with_langs() {
+        let table = IndexRoot::build_o_type_table(&[], &["en".to_string(), "fr".to_string()]);
+        // 44 built-in + 2 langString = 46.
+        assert_eq!(table.len(), 46);
 
-        let _ = std::fs::remove_dir_all(&dir);
+        // lang_id is 1-based: first tag "en" gets lang_id=1
+        let en_entry = table
+            .iter()
+            .find(|e| e.o_type == OType::lang_string(1).as_u16())
+            .unwrap();
+        assert_eq!(en_entry.decode_kind, DecodeKind::StringDict);
+        assert!(en_entry.datatype_iri.as_ref().unwrap().contains("en"));
+    }
+
+    #[test]
+    fn o_type_table_with_custom_types() {
+        let table = IndexRoot::build_o_type_table(&["http://example.org/myType".to_string()], &[]);
+        // 44 built-in + 1 customer = 45.
+        assert_eq!(table.len(), 45);
+
+        let custom = table.last().unwrap();
+        assert!(OType::from_u16(custom.o_type).is_customer_datatype());
+        assert_eq!(
+            custom.datatype_iri.as_deref(),
+            Some("http://example.org/myType")
+        );
+    }
+
+    #[test]
+    fn all_cas_ids_includes_leaves_and_sidecars() {
+        use crate::format::branch::LeafEntry;
+
+        let leaf_cid = ContentId::new(fluree_db_core::ContentKind::IndexLeaf, b"leaf1");
+        let sidecar_cid = ContentId::new(fluree_db_core::ContentKind::HistorySidecar, b"sc1");
+        let leaf_no_sc = ContentId::new(fluree_db_core::ContentKind::IndexLeaf, b"leaf2");
+        let branch_cid = ContentId::new(fluree_db_core::ContentKind::IndexBranch, b"br1");
+        let sketch_cid = ContentId::new(fluree_db_core::ContentKind::Commit, b"sketch1");
+
+        let zero_key = RunRecordV2 {
+            s_id: SubjectId::from(0u64),
+            o_key: 0,
+            p_id: 0,
+            t: 0,
+            o_i: 0,
+            o_type: 0,
+            g_id: 0,
+        };
+
+        let mut root = minimal_root_v6();
+        root.default_graph_orders = vec![DefaultGraphOrder {
+            order: RunSortOrder::Spot,
+            leaves: vec![
+                LeafEntry {
+                    first_key: zero_key,
+                    last_key: zero_key,
+                    row_count: 10,
+                    leaf_cid: leaf_cid.clone(),
+                    sidecar_cid: Some(sidecar_cid.clone()),
+                },
+                LeafEntry {
+                    first_key: zero_key,
+                    last_key: zero_key,
+                    row_count: 5,
+                    leaf_cid: leaf_no_sc.clone(),
+                    sidecar_cid: None,
+                },
+            ],
+        }];
+        root.named_graphs = vec![NamedGraphRouting {
+            g_id: 1,
+            orders: vec![(RunSortOrder::Spot, branch_cid.clone())],
+        }];
+        root.sketch_ref = Some(sketch_cid.clone());
+
+        let ids = root.all_cas_ids();
+
+        // Leaf CIDs present
+        assert!(ids.contains(&leaf_cid), "missing leaf_cid");
+        assert!(ids.contains(&leaf_no_sc), "missing leaf without sidecar");
+        // Sidecar CID present
+        assert!(ids.contains(&sidecar_cid), "missing sidecar_cid");
+        // Branch CID present
+        assert!(ids.contains(&branch_cid), "missing branch_cid");
+        // Sketch present
+        assert!(ids.contains(&sketch_cid), "missing sketch_cid");
+        // Dict CIDs present (from minimal_root_v6)
+        assert!(
+            ids.len() >= 5,
+            "expected at least 5 CIDs, got {}",
+            ids.len()
+        );
+        // No duplicates (sorted + deduped)
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(ids.len(), sorted.len(), "all_cas_ids has duplicates");
     }
 }

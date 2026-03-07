@@ -7,7 +7,6 @@ use crate::{
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{NameServiceError, Publisher};
-use fluree_db_query::BinaryRangeProvider;
 
 impl<S, N> Fluree<S, N>
 where
@@ -38,9 +37,7 @@ where
             .and_then(|r| r.index_head_id.as_ref())
             .cloned()
         {
-            if state.snapshot.range_provider.is_none()
-                || (state.binary_store.is_none() && state.binary_store_v6.is_none())
-            {
+            if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
                 let cs = fluree_db_core::content_store_for(
                     storage.clone(),
@@ -56,106 +53,66 @@ where
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(cs);
 
-                // Dispatch by root magic bytes: FIR6 → V6, IRB1 → V5.
-                let is_v6 = bytes.len() >= 4 && &bytes[0..4] == b"FIR6";
+                // Load BinaryIndexStore from FIR6 root.
+                let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
+                let mut binary_index_store = BinaryIndexStore::load_from_root_bytes(
+                    cs_dyn,
+                    &bytes,
+                    &cache_dir,
+                    Some(Arc::clone(&self.leaflet_cache)),
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to load binary index store for {}: {}",
+                        index_cid, e
+                    ))
+                })?;
 
-                if is_v6 {
-                    // V6 (FIR6) path: load BinaryIndexStoreV6.
-                    let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
-                    let mut store_v6 =
-                        fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6::load_from_root_bytes(
-                            cs_dyn,
-                            &bytes,
-                            &cache_dir,
-                            Some(Arc::clone(&self.leaflet_cache)),
-                        )
-                        .await
-                        .map_err(|e| {
-                            ApiError::internal(format!(
-                                "failed to load V6 binary index store for {}: {}",
-                                index_cid, e
-                            ))
-                        })?;
+                binary_index_store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
-                    store_v6.augment_namespace_codes(&state.snapshot.namespace_codes);
+                // Augment the snapshot's namespace table with codes from
+                // the root. After a rebuild, the root may have namespace
+                // codes that the snapshot (loaded from the commit chain)
+                // doesn't have. Without this, SPARQL result formatting
+                // fails with UnknownNamespace errors.
+                for (code, prefix) in binary_index_store.namespace_codes() {
+                    state
+                        .snapshot
+                        .namespace_codes
+                        .entry(*code)
+                        .or_insert_with(|| prefix.clone());
+                }
 
-                    // Augment the snapshot's namespace table with codes from
-                    // the V6 root. After a rebuild, the V6 root may have
-                    // namespace codes that the snapshot (loaded from the
-                    // commit chain) doesn't have. Without this, SPARQL result
-                    // formatting fails with UnknownNamespace errors.
-                    for (code, prefix) in store_v6.namespace_codes() {
-                        state
-                            .snapshot
-                            .namespace_codes
-                            .entry(*code)
-                            .or_insert_with(|| prefix.clone());
-                    }
-
-                    // Extract stats from the FIR6 root if present.
-                    // from_fir6_header() is a fast-path that doesn't parse stats;
-                    // we do a full decode here to get them.
-                    if state.snapshot.stats.is_none() || state.snapshot.schema.is_none() {
-                        if let Ok(root) =
-                            fluree_db_binary_index::format::index_root_v6::IndexRootV6::decode(
-                                &bytes,
-                            )
-                        {
-                            if root.stats.is_some() && state.snapshot.stats.is_none() {
-                                state.snapshot.stats = root.stats;
-                                tracing::debug!("loaded stats from FIR6 root");
-                            }
-                            if root.schema.is_some() && state.snapshot.schema.is_none() {
-                                state.snapshot.schema = root.schema;
-                                tracing::debug!("loaded schema from FIR6 root");
-                            }
+                // Extract stats from the FIR6 root if present.
+                if state.snapshot.stats.is_none() || state.snapshot.schema.is_none() {
+                    if let Ok(root) =
+                        fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes)
+                    {
+                        if root.stats.is_some() && state.snapshot.stats.is_none() {
+                            state.snapshot.stats = root.stats;
+                            tracing::debug!("loaded stats from FIR6 root");
+                        }
+                        if root.schema.is_some() && state.snapshot.schema.is_none() {
+                            state.snapshot.schema = root.schema;
+                            tracing::debug!("loaded schema from FIR6 root");
                         }
                     }
-
-                    let arc_store_v6 = Arc::new(store_v6);
-
-                    // Attach V3 range provider so policy/SHACL/reasoner/property
-                    // paths work through range_with_overlay().
-                    if state.snapshot.range_provider.is_none() {
-                        let provider = fluree_db_query::BinaryRangeProviderV3::new(
-                            Arc::clone(&arc_store_v6),
-                            state.dict_novelty.clone(),
-                        );
-                        state.snapshot.range_provider = Some(Arc::new(provider));
-                    }
-
-                    // V6 store: set binary_store_v6. Do NOT set binary_store (V5)
-                    // so that the query engine uses V3 operators exclusively.
-                    state.binary_store_v6 = Some(TypeErasedStore(arc_store_v6));
-                    tracing::info!("loaded V6 (FIR6) binary index store");
-                } else {
-                    // V5 (IRB1) path: existing BinaryIndexStore.
-                    let mut store = BinaryIndexStore::load_from_root_bytes(
-                        cs,
-                        &bytes,
-                        &cache_dir,
-                        Some(Arc::clone(&self.leaflet_cache)),
-                    )
-                    .await
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to load binary index store for {}: {}",
-                            index_cid, e
-                        ))
-                    })?;
-
-                    store.augment_namespace_codes(&state.snapshot.namespace_codes);
-
-                    let arc_store = Arc::new(store);
-                    if state.snapshot.range_provider.is_none() {
-                        let provider = BinaryRangeProvider::new(
-                            Arc::clone(&arc_store),
-                            state.dict_novelty.clone(),
-                        );
-                        state.snapshot.range_provider = Some(Arc::new(provider));
-                    }
-                    state.binary_store = Some(TypeErasedStore(arc_store));
                 }
+
+                let arc_store = Arc::new(binary_index_store);
+
+                // Attach range provider for policy/SHACL/reasoner/property paths.
+                if state.snapshot.range_provider.is_none() {
+                    let provider = fluree_db_query::BinaryRangeProvider::new(
+                        Arc::clone(&arc_store),
+                        state.dict_novelty.clone(),
+                    );
+                    state.snapshot.range_provider = Some(Arc::new(provider));
+                }
+
+                state.binary_store = Some(TypeErasedStore(arc_store));
+                tracing::info!("loaded binary index store");
             }
         }
 

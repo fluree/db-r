@@ -14,15 +14,15 @@ preserving fine-grained decompression and caching at the leaflet level.
 A binary index build produces:
 
 - **Per-graph, per-sort-order fact indexes**:
-  - a content-addressed **branch manifest** (`FBR2`, file extension `.fbr`)
-  - a set of content-addressed **leaf files** (`FLI2`, file extension `.fli`)
+  - a content-addressed **branch manifest** (`FBR3`, file extension `.fbr`)
+  - a set of content-addressed **leaf files** (`FLI3`, file extension `.fli`)
   - each leaf contains multiple **leaflets** (compressed blocks with independently compressed regions)
 - **Shared dictionary artifacts**:
   - small dictionaries (predicates, graphs, datatypes, languages) embedded in the **index root** (CAS) and/or persisted as flat files in local builds
   - large dictionaries (subjects, strings) stored as **CoW single-level B-tree-like trees**
     (a branch manifest `DTB1` + multiple leaf blobs `DLF1`/`DLR1`)
 - **Manifests / roots** that describe how to load the above either from a local directory layout
-  or from the content store via `IndexRootV5` (IRB1 binary format, CID-based).
+  or from the content store via `IndexRoot` (FIR6 binary format, CID-based).
 
 Fact indexes exist in up to four sort orders (see `RunSortOrder`):
 
@@ -88,10 +88,10 @@ The per-order manifest is JSON and summarizes all graphs for a sort order:
 - `max_t`: max transaction `t` in the indexed snapshot
 - `graphs[]`: `g_id`, `leaf_count`, `total_rows`, `branch_hash`, and `directory` (relative path)
 
-## Root descriptor (CAS): `IndexRootV5` (IRB1)
+## Root descriptor (CAS): `IndexRoot` (FIR6)
 
-When publishing an index to nameservice / CAS, the canonical entrypoint is the **IRB1 root**
-(`IndexRootV5`, binary wire format, magic bytes `IRB1`).
+When publishing an index to nameservice / CAS, the canonical entrypoint is the **FIR6 root**
+(`IndexRoot`, binary wire format, magic bytes `FIR6`).
 
 Key properties:
 
@@ -117,7 +117,7 @@ At a high level the root contains:
 - **Default graph routing** (inline leaf entries per sort order)
 - **Named graph routing** (branch CIDs per sort order per graph)
 
-## Branch manifest (`FBR2`, `.fbr`)
+## Branch manifest (`FBR3`, `.fbr`)
 
 A branch manifest is a single-level index mapping key ranges to leaf files. It is written per graph
 per order and read via binary search to route a lookup/range scan.
@@ -126,7 +126,7 @@ per order and read via binary search to route a lookup/range scan.
 
 ```text
 [BranchHeader: 16 bytes]
-  magic: "FBR2" (4B)
+  magic: "FBR3" (4B)
   version: u8
   _pad: [u8; 3]
   leaf_count: u32
@@ -151,7 +151,7 @@ Notes:
 **[1] Key encoding note (internal)**: the 44-byte key is the `RunRecord` wire layout used by the import/index-build
 pipeline and stored here only for routing. It is an internal build artifact detail (not a core runtime fact type).
 
-## Leaf file (`FLI2`, `.fli`)
+## Leaf file (`FLI3`, `.fli`)
 
 A leaf file groups multiple leaflets into a single blob, and includes a small directory so leaflets can
 be accessed without scanning the entire file.
@@ -160,9 +160,9 @@ be accessed without scanning the entire file.
 
 ```text
 [LeafHeader: variable size]
-  magic: "FLI2" (4B)
-  version: u8          (currently 3; v2 also supported on read)
-  leaflet_count: u8
+  magic: "FLI3" (4B)
+  version: u8          (currently 1)
+  order: u8
   dt_width: u8         (currently 1; may widen to 2)
   p_width: u8          (2=u16, 4=u32)
   total_rows: u64
@@ -336,7 +336,7 @@ for each entry:
 
 This format is used for predicate-like dictionaries. In local builds these are written
 as flat files (e.g., `graphs.dict`, `datatypes.dict`, `languages.dict`), but in CAS
-publishes (IRB1 root) these small dictionaries are embedded inline in the binary root.
+publishes (FIR6 root) these small dictionaries are embedded inline in the binary root.
 
 ### Legacy forward files + index (`FSI1`) (primarily build-time)
 
@@ -418,14 +418,14 @@ The `u16` big-endian prefix ensures that lexicographic byte comparisons match lo
 
 - Leaf and branch filenames (local) are derived from **SHA-256** content hashes; remote references use ContentId (CIDv1).
 - Content-addressed artifacts are immutable; caches can key by ContentId.
-- `IndexRootV5` (IRB1) provides a GC chain (`prev_index`) and an optional garbage manifest pointer to
+- `IndexRoot` (FIR6) provides a GC chain (`prev_index`) and an optional garbage manifest pointer to
   support retention-based cleanup of replaced artifacts.
 
 ## Versioning notes
 
 - Fact artifacts:
-  - branch: magic `FBR2`, version `1`
-  - leaf: magic `FLI2`, version `3` (v2 readable for backward compat)
+  - branch: magic `FBR3`, version `1`
+  - leaf: magic `FLI3`, version `1`
 - Dictionary tree artifacts:
   - branch: magic `DTB1`
   - leaves: magic `DLF1` / `DLR1`

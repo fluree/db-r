@@ -383,7 +383,7 @@ impl Operator for PropertyJoinOperator {
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
-                // Batched probe requires V5 binary store (V6 has no batched_lookup yet).
+                // Batched probe requires binary store with batched_lookup support.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
                     && ctx.binary_store.is_some()

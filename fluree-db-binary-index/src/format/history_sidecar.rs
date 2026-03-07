@@ -1,7 +1,7 @@
 //! History sidecar encoder/decoder (FHS1) for the V3 index format.
 //!
 //! The history sidecar is a separate CAS object referenced by the branch
-//! manifest (`LeafEntryV3.sidecar_cid`). It stores per-leaflet history
+//! manifest (`LeafEntry.sidecar_cid`). It stores per-leaflet history
 //! segments containing fixed-size `HistEntryV2` records.
 //!
 //! ## Sidecar blob layout

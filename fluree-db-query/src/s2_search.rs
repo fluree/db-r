@@ -132,6 +132,8 @@ impl S2SearchOperator {
                         o_kind,
                         o_key,
                         p_id,
+                        dt_id,
+                        lang_id,
                         ..
                     } => {
                         // Check if it's an inline GeoPoint (ObjKind::GEO_POINT = 0x14)
@@ -144,7 +146,7 @@ impl S2SearchOperator {
 
                         // Decode the literal using the binary store
                         let gv = ctx.graph_view()?;
-                        match gv.decode_value(*o_kind, *o_key, *p_id) {
+                        match gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id) {
                             Ok(fluree_db_core::FlakeValue::String(s)) => {
                                 Some(QueryGeomResolved::Wkt(s.to_string()))
                             }

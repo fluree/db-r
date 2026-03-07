@@ -11,7 +11,7 @@ use super::column_types::{ColumnBatch, ColumnData, ColumnProjection};
 use crate::format::column_block::{
     decode_column_u16, decode_column_u32, decode_column_u64, ColumnBlockRef, ColumnId,
 };
-use crate::format::leaf_v3::LeafletDirEntryV3;
+use crate::format::leaf::LeafletDirEntryV3;
 use crate::format::run_record::RunSortOrder;
 
 /// Leaflet flag: at least one row has `o_i != u32::MAX`.
@@ -256,12 +256,12 @@ pub fn load_columns_cached_via_handle(
 
 // Re-export for convenience: callers use decode_leaf_dir_v3_with_base to get
 // the authoritative payload_base alongside the directory entries.
-pub use crate::format::leaf_v3::{decode_leaf_dir_v3_with_base, DecodedLeafDirV3};
+pub use crate::format::leaf::{decode_leaf_dir_v3_with_base, DecodedLeafDirV3};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::leaf_v3::{decode_leaf_header_v3, LeafWriterV3};
+    use crate::format::leaf::{decode_leaf_header_v3, LeafWriter};
     use crate::format::run_record::RunSortOrder;
     use crate::format::run_record_v2::RunRecordV2;
     use crate::read::column_types::{ColumnProjection, ColumnSet};
@@ -280,11 +280,11 @@ mod tests {
         }
     }
 
-    /// Round-trip: LeafWriterV3 → leaf bytes → decode dir → load columns → verify.
+    /// Round-trip: LeafWriter → leaf bytes → decode dir → load columns → verify.
     #[test]
     fn round_trip_post_leaf_columns() {
         // Build a POST leaf with a single predicate (p_id=1), single type (XSD_INTEGER).
-        let mut writer = LeafWriterV3::new(RunSortOrder::Post, 100, 1000, 1);
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
 
         let ot = OType::XSD_INTEGER.as_u16();
@@ -358,7 +358,7 @@ mod tests {
     /// SPOT leaf: no p_const, o_type should be a real column when types are mixed.
     #[test]
     fn round_trip_spot_leaf_mixed_types() {
-        let mut writer = LeafWriterV3::new(RunSortOrder::Spot, 100, 1000, 1);
+        let mut writer = LeafWriter::new(RunSortOrder::Spot, 100, 1000, 1);
         writer.set_skip_history(true);
 
         // Two records with different o_type → no o_type_const.
@@ -406,7 +406,7 @@ mod tests {
     /// Selective projection: only load s_id and o_key, skip everything else.
     #[test]
     fn selective_projection() {
-        let mut writer = LeafWriterV3::new(RunSortOrder::Post, 100, 1000, 1);
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
 
         let ot = OType::XSD_INTEGER.as_u16();

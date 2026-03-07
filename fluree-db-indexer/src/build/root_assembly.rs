@@ -1,17 +1,16 @@
 //! Root encode, CAS write, garbage chain, and IndexResult derivation.
 //!
 //! Both the full-rebuild and incremental pipelines end by encoding an
-//! `IndexRootV5` or `IndexRootV6`, optionally attaching a garbage manifest,
+//! `IndexRoot` or `IndexRoot`, optionally attaching a garbage manifest,
 //! writing the root to CAS, and deriving an `IndexResult`. This module
 //! provides shared helpers to avoid duplicating that logic.
 
-use fluree_db_binary_index::format::index_root::{DictRefsV5, GraphArenaRefsV5};
-use fluree_db_binary_index::format::index_root_v6::{DefaultGraphOrderV3, IndexRootV6};
-use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef, IndexRootV5};
+use fluree_db_binary_index::format::index_root::{DefaultGraphOrder, IndexRoot};
+use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef, DictRefs, GraphArenaRefs};
 use fluree_db_core::{ContentId, ContentKind, Storage};
 use std::collections::BTreeMap;
 
-use super::types::{UploadedDicts, UploadedV3Indexes};
+use super::types::{UploadedDicts, UploadedIndexes};
 
 use crate::error::{IndexerError, Result};
 use crate::gc;
@@ -32,7 +31,7 @@ pub(crate) struct GarbageContext {
     pub prev_index: Option<BinaryPrevIndexRef>,
 }
 
-/// Encode an `IndexRootV5`, attach garbage/prev_index, write to CAS,
+/// Encode an `IndexRoot`, attach garbage/prev_index, write to CAS,
 /// and return an `IndexResult`.
 ///
 /// This is the shared "last mile" for both rebuild and incremental pipelines.
@@ -42,7 +41,7 @@ pub(crate) struct GarbageContext {
 pub(crate) async fn encode_and_write_root<S: Storage>(
     storage: &S,
     ledger_id: &str,
-    mut root: IndexRootV5,
+    mut root: IndexRoot,
     garbage_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
@@ -72,7 +71,7 @@ pub(crate) async fn encode_and_write_root<S: Storage>(
         index_t = root.index_t,
         default_orders = root.default_graph_orders.len(),
         named_graphs = root.named_graphs.len(),
-        "encoding and writing IRB1 root to CAS"
+        "encoding and writing FIR6 root to CAS"
     );
 
     // Encode and write root.
@@ -120,11 +119,11 @@ pub(crate) async fn encode_and_write_root<S: Storage>(
 #[expect(dead_code)]
 pub(crate) async fn compute_garbage_from_prev_root(
     content_store: &dyn fluree_db_core::storage::ContentStore,
-    new_root: &IndexRootV5,
+    new_root: &IndexRoot,
     prev_root_id: &ContentId,
 ) -> Option<GarbageContext> {
     let prev_bytes = content_store.get(prev_root_id).await.ok()?;
-    let prev_root = IndexRootV5::decode(&prev_bytes).ok()?;
+    let prev_root = IndexRoot::decode(&prev_bytes).ok()?;
 
     let prev_t = prev_root.index_t;
     let old_ids: std::collections::HashSet<ContentId> =
@@ -156,8 +155,8 @@ pub(crate) struct Fir6Inputs {
     pub namespace_codes: BTreeMap<u16, String>,
     pub predicate_sids: Vec<(u16, String)>,
     pub uploaded_dicts: UploadedDicts,
-    pub v3_uploaded: UploadedV3Indexes,
-    pub graph_arenas: Vec<GraphArenaRefsV5>,
+    pub v3_uploaded: UploadedIndexes,
+    pub graph_arenas: Vec<GraphArenaRefs>,
     pub datatype_iris: Vec<String>,
     pub language_tags: Vec<String>,
     pub total_commit_size: u64,
@@ -172,10 +171,10 @@ pub(crate) struct Fir6Inputs {
     pub sketch_ref: Option<ContentId>,
 }
 
-/// Encode an `IndexRootV6` (FIR6), write to CAS, and return an `IndexResult`.
+/// Encode an `IndexRoot` (FIR6), write to CAS, and return an `IndexResult`.
 ///
 /// This is the V3 equivalent of the V5 root assembly. It constructs the
-/// `IndexRootV6`, encodes it, writes to CAS with `ContentKind::IndexRootV6`,
+/// `IndexRoot`, encodes it, writes to CAS with `ContentKind::IndexRoot`,
 /// and derives the CID.
 ///
 /// `gc_ctx` is `None` for this milestone (V3 GC chain is deferred).
@@ -185,20 +184,20 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
-    // Convert DictRefs → DictRefsV5 (same struct, shared with V5).
+    // Convert DictRefs for root assembly.
     let dr = inputs.uploaded_dicts.dict_refs;
-    let dict_refs = DictRefsV5 {
+    let dict_refs = DictRefs {
         forward_packs: dr.forward_packs,
         subject_reverse: dr.subject_reverse,
         string_reverse: dr.string_reverse,
     };
 
     // Build default_graph_orders from V3 upload result.
-    let default_graph_orders: Vec<DefaultGraphOrderV3> = inputs
+    let default_graph_orders: Vec<DefaultGraphOrder> = inputs
         .v3_uploaded
         .default_graph_orders
         .into_iter()
-        .map(|(order, leaves)| DefaultGraphOrderV3 { order, leaves })
+        .map(|(order, leaves)| DefaultGraphOrder { order, leaves })
         .collect();
 
     // Custom datatype IRIs (non-reserved only, for o_type table).
@@ -209,7 +208,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         .cloned()
         .collect();
 
-    let mut root = IndexRootV6 {
+    let mut root = IndexRoot {
         ledger_id: inputs.ledger_id.clone(),
         index_t: inputs.index_t,
         base_t: 0,
@@ -226,7 +225,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         total_asserts: inputs.total_asserts,
         total_retracts: inputs.total_retracts,
         graph_arenas: inputs.graph_arenas,
-        o_type_table: IndexRootV6::build_o_type_table(&custom_dt_iris, &inputs.language_tags),
+        o_type_table: IndexRoot::build_o_type_table(&custom_dt_iris, &inputs.language_tags),
         default_graph_orders,
         named_graphs: inputs.v3_uploaded.named_graphs,
         stats: inputs.db_stats,
@@ -273,11 +272,11 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     // Encode and write root.
     let root_bytes = root.encode();
     let write_result = storage
-        .content_write_bytes(ContentKind::IndexRootV6, &inputs.ledger_id, &root_bytes)
+        .content_write_bytes(ContentKind::IndexRoot, &inputs.ledger_id, &root_bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
     let root_id = ContentId::from_hex_digest(
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT_V6,
+        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
         &write_result.content_hash,
     )
     .ok_or_else(|| {

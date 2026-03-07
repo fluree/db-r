@@ -8,7 +8,7 @@
 use axum::body::Body;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
-use fluree_db_binary_index::IndexRootV5;
+use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
 use fluree_db_core::{ContentId, ContentKind, StorageRead};
 use fluree_db_server::{
@@ -1250,12 +1250,12 @@ fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all:
     format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
 }
 
-/// Test that binary FLI2 leaf blocks return FLKB format when requested.
+/// Test that binary FLI3 leaf blocks return FLKB format when requested.
 ///
 /// This test:
 /// - creates a ledger and transacts some data
-/// - reindexes (producing binary `FLI2` leaves)
-/// - fetches a real leaf address from the IRB1 index root
+/// - reindexes (producing binary FLI3 leaves)
+/// - fetches a real leaf address from the FIR6 index root
 /// - requests that leaf with `Accept: application/x-fluree-flakes`
 /// - verifies the response is FLKB and decodes to at least one flake
 #[tokio::test]
@@ -1311,7 +1311,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "Transact should succeed");
 
-    // Reindex to build binary leaves (FLI2) + refresh cache so binary_store is present.
+    // Reindex to build binary leaves (FLI3) + refresh cache so binary_store is present.
     let fluree = state.fluree.as_file();
     let reindex_result = fluree
         .reindex("leaf:test", ReindexOptions::default())
@@ -1551,9 +1551,9 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 ///
 /// Under PolicyEnforced mode (the only mode currently available via storage proxy),
 /// leaf blocks are always decoded and policy-filtered. ProxyStorage.read_bytes() uses
-/// flakes-first content negotiation, so leaves come back as FLKB (not raw FLI2).
+/// flakes-first content negotiation, so leaves come back as FLKB (not raw FLI3).
 ///
-/// Raw FLI2 leaf bytes would only be available under TrustedInternal enforcement mode,
+/// Raw FLI3 leaf bytes would only be available under TrustedInternal enforcement mode,
 /// which is not yet implemented. When it is, a separate ProxyStorage variant (or mode)
 /// would be needed to opt into raw bytes.
 #[tokio::test]
@@ -1601,7 +1601,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         "Ledger creation should succeed"
     );
 
-    // Transact + reindex to create real binary leaves (FLI2).
+    // Transact + reindex to create real binary leaves (FLI3).
     let transact_resp = client
         .post(format!("{}/v1/fluree/transact", server_url))
         .header("content-type", "application/json")
@@ -1664,17 +1664,17 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     let bytes = result.expect("read_bytes should succeed for leaf");
 
     // Under PolicyEnforced, leaf blocks are returned as FLKB (policy-filtered flakes),
-    // not raw FLI2. This is the same behavior as read_bytes_hint(PreferLeafFlakes).
+    // not raw FLI3. This is the same behavior as read_bytes_hint(PreferLeafFlakes).
     assert!(
         bytes.len() >= 4 && &bytes[0..4] == FLKB_MAGIC,
         "read_bytes for leaf should return FLKB under PolicyEnforced, got magic: {:?}",
         &bytes[..std::cmp::min(4, bytes.len())]
     );
 
-    // Should NOT be raw FLI2 (that would require TrustedInternal mode)
+    // Should NOT be raw FLI3 (that would require TrustedInternal mode)
     assert!(
-        bytes.len() < 4 || &bytes[0..4] != b"FLI2",
-        "read_bytes should NOT return raw FLI2 under PolicyEnforced"
+        bytes.len() < 4 || &bytes[0..4] != b"FLI3",
+        "read_bytes should NOT return raw FLI3 under PolicyEnforced"
     );
 
     // Cleanup: abort server
@@ -1715,7 +1715,7 @@ fn tx_server_state_with_policy(
     (tmp, state)
 }
 
-/// Extract the first SPOT leaf CID string from a IndexRootV5 JSON structure.
+/// Extract the first SPOT leaf CID string from a IndexRoot JSON structure.
 ///
 /// The root format is:
 /// ```json
@@ -1729,7 +1729,7 @@ fn tx_server_state_with_policy(
 /// }
 /// ```
 fn extract_spot_leaf_cid(root_bytes: &[u8]) -> String {
-    let root = IndexRootV5::decode(root_bytes).expect("db root should be valid IRB1");
+    let root = IndexRoot::decode(root_bytes).expect("db root should be valid FIR6");
     let spot_order = root
         .default_graph_orders
         .iter()
@@ -1750,7 +1750,7 @@ fn leaf_address_from_cid(cid_str: &str, ledger_id: &str) -> String {
     fluree_db_core::content_address("file", ContentKind::IndexLeaf, ledger_id, &cid.digest_hex())
 }
 
-/// Test that policy filtering is applied to binary leaves (FLI2 → FLKB)
+/// Test that policy filtering is applied to binary leaves (FLI3 → FLKB)
 ///
 /// This test proves real policy enforcement using CLASS-BASED policy (not identity-based):
 /// 1. Create ledger with data and a policy class that unconditionally denies `schema:ssn`
@@ -1916,7 +1916,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     let (status, db_root_bytes) = bytes_body(resp).await;
     assert_eq!(status, StatusCode::OK, "DB root fetch failed");
 
-    // Extract the first SPOT leaf CID from IRB1 binary root
+    // Extract the first SPOT leaf CID from FIR6 binary root
     let leaf_cid = extract_spot_leaf_cid(&db_root_bytes);
 
     let leaf_block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });
@@ -2061,7 +2061,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     let (status, db_root_bytes) = bytes_body(resp).await;
     assert_eq!(status, StatusCode::OK, "DB root fetch failed");
 
-    // Extract the first SPOT leaf CID from IRB1 binary root
+    // Extract the first SPOT leaf CID from FIR6 binary root
     let leaf_cid = extract_spot_leaf_cid(&db_root_bytes);
 
     let block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });

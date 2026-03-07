@@ -374,7 +374,6 @@ where
             head_index_id: base.head_index_id,
             ns_record: base.ns_record,
             binary_store: base.binary_store,
-            binary_store_v6: base.binary_store_v6,
             default_context: base.default_context,
             spatial_indexes: base.spatial_indexes,
         };

@@ -41,7 +41,7 @@ pub struct LedgerSnapshotMetadata {
     /// Graph IRIs from index root in raw root format.
     /// Index 0 = g_id 1 (txn-meta), index 1 = g_id 2 (config),
     /// index 2 = g_id 3 (first user graph), etc.
-    /// Matches `IndexRootV5.graph_iris` encoding.
+    /// Matches `IndexRoot.graph_iris` encoding.
     pub graph_iris: Vec<String>,
 }
 
@@ -180,30 +180,24 @@ impl LedgerSnapshot {
         })
     }
 
-    /// Extract metadata from raw index root bytes (IRB1 or FIR6 binary format).
+    /// Extract metadata from raw index root bytes (FIR6 binary format).
     pub fn from_root_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 4 {
             return Err(Error::invalid_index("index root: too short"));
         }
-        if &bytes[0..4] == b"FIR6" {
-            return Self::from_fir6_header(bytes);
-        }
-        if &bytes[0..4] != b"IRB1" {
+        if &bytes[0..4] != b"FIR6" {
             return Err(Error::invalid_index(
-                "index root: expected IRB1 or FIR6 magic bytes",
+                "index root: expected FIR6 magic bytes",
             ));
         }
-        if bytes.len() < 24 {
-            return Err(Error::invalid_index("IRB1: truncated root (< 24 bytes)"));
-        }
-        Self::from_irb1_header(bytes)
+        Self::from_fir6_header(bytes)
     }
 
     /// Extract minimal metadata from FIR6 root bytes.
     ///
     /// Reads: index_t, base_t, ledger_id from the FIR6 header.
     /// Watermarks are left empty — they're populated later when
-    /// `BinaryIndexStoreV6::load_from_root_bytes` runs.
+    /// `BinaryIndexStore::load_from_root_bytes` runs.
     fn from_fir6_header(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 24 {
             return Err(Error::invalid_index("FIR6: truncated root (< 24 bytes)"));
@@ -213,7 +207,7 @@ impl LedgerSnapshot {
         // base_t is at bytes[16..24] but LedgerSnapshot doesn't use it
 
         // Ledger ID: u16-length-prefixed string after the 24-byte header.
-        // (write_str in index_root_v6.rs uses a u16 length prefix)
+        // (write_str in index_root.rs uses a u16 length prefix)
         let mut pos = 24;
         let ledger_id = if pos + 2 <= bytes.len() {
             let len = u16::from_le_bytes(bytes[pos..pos + 2].try_into().unwrap()) as usize;
@@ -240,292 +234,6 @@ impl LedgerSnapshot {
             range_provider: None,
             graph_registry: GraphRegistry::default(),
         })
-    }
-
-    /// Parse an IRB1 binary root to extract all metadata fields.
-    ///
-    /// Skips graph routing sections (leaf entries, branch CIDs) and decodes
-    /// the optional stats/schema sections using `stats_wire` decoders.
-    fn from_irb1_header(data: &[u8]) -> Result<Self> {
-        fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8> {
-            if *pos >= data.len() {
-                return Err(Error::invalid_index("IRB1: unexpected EOF (u8)"));
-            }
-            let v = data[*pos];
-            *pos += 1;
-            Ok(v)
-        }
-        fn read_u16(data: &[u8], pos: &mut usize) -> Result<u16> {
-            if *pos + 2 > data.len() {
-                return Err(Error::invalid_index("IRB1: unexpected EOF (u16)"));
-            }
-            let v = u16::from_le_bytes([data[*pos], data[*pos + 1]]);
-            *pos += 2;
-            Ok(v)
-        }
-        fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32> {
-            if *pos + 4 > data.len() {
-                return Err(Error::invalid_index("IRB1: unexpected EOF (u32)"));
-            }
-            let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
-            *pos += 4;
-            Ok(v)
-        }
-        fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64> {
-            if *pos + 8 > data.len() {
-                return Err(Error::invalid_index("IRB1: unexpected EOF (u64)"));
-            }
-            let v = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            *pos += 8;
-            Ok(v)
-        }
-        fn read_i64(data: &[u8], pos: &mut usize) -> Result<i64> {
-            if *pos + 8 > data.len() {
-                return Err(Error::invalid_index("IRB1: unexpected EOF (i64)"));
-            }
-            let v = i64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            *pos += 8;
-            Ok(v)
-        }
-        fn read_str(data: &[u8], pos: &mut usize) -> Result<String> {
-            let len = read_u16(data, pos)? as usize;
-            if *pos + len > data.len() {
-                return Err(Error::invalid_index("IRB1: string overflow"));
-            }
-            let s = std::str::from_utf8(&data[*pos..*pos + len])
-                .map_err(|e| Error::invalid_index(format!("IRB1: invalid UTF-8: {e}")))?;
-            *pos += len;
-            Ok(s.to_string())
-        }
-        fn skip_cid(data: &[u8], pos: &mut usize) -> Result<()> {
-            let len = read_u16(data, pos)? as usize;
-            if *pos + len > data.len() {
-                return Err(Error::invalid_index("IRB1: CID overflow"));
-            }
-            *pos += len;
-            Ok(())
-        }
-        fn skip_dict_tree_refs(data: &[u8], pos: &mut usize) -> Result<()> {
-            // branch CID + leaf_count:u32 + leaf CIDs
-            skip_cid(data, pos)?;
-            let leaf_count = read_u32(data, pos)? as usize;
-            for _ in 0..leaf_count {
-                skip_cid(data, pos)?;
-            }
-            Ok(())
-        }
-        fn skip_string_array(data: &[u8], pos: &mut usize) -> Result<()> {
-            let count = read_u16(data, pos)? as usize;
-            for _ in 0..count {
-                let len = read_u16(data, pos)? as usize;
-                if *pos + len > data.len() {
-                    return Err(Error::invalid_index("IRB1: string array overflow"));
-                }
-                *pos += len;
-            }
-            Ok(())
-        }
-
-        // RunRecord wire size: s_id(8)+o_key(8)+p_id(4)+t(4)+i(4)+dt(2)+lang(2)+o_kind(1)+op(1) = 34
-        const RECORD_WIRE_SIZE: usize = 34;
-        const FLAG_HAS_STATS: u8 = 1 << 0;
-        const FLAG_HAS_SCHEMA: u8 = 1 << 1;
-
-        // Validate version (caller already checked len >= 24 and magic)
-        let version = data[4];
-        if version != 3 && version != 4 {
-            return Err(Error::invalid_index(format!(
-                "IRB1: unsupported version {version}"
-            )));
-        }
-
-        let flags = data[5];
-        let mut pos = 8; // skip magic(4) + version(1) + flags(1) + pad(2)
-        let index_t = read_i64(data, &mut pos)?;
-        let _base_t = read_i64(data, &mut pos)?;
-
-        // Ledger ID
-        let ledger_id = read_str(data, &mut pos)?;
-
-        // Subject ID encoding (1 byte, skip)
-        pos += 1;
-
-        // Namespace codes
-        let ns_count = read_u16(data, &mut pos)? as usize;
-        let mut namespace_codes = HashMap::with_capacity(ns_count);
-        for _ in 0..ns_count {
-            let ns_code = read_u16(data, &mut pos)?;
-            let prefix = read_str(data, &mut pos)?;
-            namespace_codes.insert(ns_code, prefix);
-        }
-
-        // Predicate SIDs (skip)
-        let pred_count = read_u32(data, &mut pos)? as usize;
-        for _ in 0..pred_count {
-            let _ns = read_u16(data, &mut pos)?;
-            let _suffix = read_str(data, &mut pos)?;
-        }
-
-        // Small dict inlines: graph_iris, datatype_iris, language_tags
-        // Read graph_iris in raw root format: index 0 = g_id 1 (txn-meta), etc.
-        let graph_iris_count = read_u16(data, &mut pos)? as usize;
-        let mut graph_iris: Vec<String> = Vec::with_capacity(graph_iris_count);
-        for _ in 0..graph_iris_count {
-            graph_iris.push(read_str(data, &mut pos)?);
-        }
-        // Skip datatype_iris and language_tags
-        skip_string_array(data, &mut pos)?;
-        skip_string_array(data, &mut pos)?;
-
-        // Dict refs: forward packs (string_fwd + subject_fwd per ns) + 2 reverse trees.
-        // String forward packs
-        let str_pack_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..str_pack_count {
-            let _first_id = read_u64(data, &mut pos)?;
-            let _last_id = read_u64(data, &mut pos)?;
-            skip_cid(data, &mut pos)?;
-        }
-        // Subject forward packs (grouped by namespace)
-        let ns_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..ns_count {
-            let _ns_code = read_u16(data, &mut pos)?;
-            let pack_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..pack_count {
-                let _first_id = read_u64(data, &mut pos)?;
-                let _last_id = read_u64(data, &mut pos)?;
-                skip_cid(data, &mut pos)?;
-            }
-        }
-        // Subject reverse tree
-        skip_dict_tree_refs(data, &mut pos)?;
-        // String reverse tree
-        skip_dict_tree_refs(data, &mut pos)?;
-
-        // Per-graph specialty arenas (v3: graph-scoped numbig/vectors/spatial)
-        let arena_graph_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..arena_graph_count {
-            let _g_id = read_u16(data, &mut pos)?;
-            // numbig
-            let numbig_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..numbig_count {
-                let _p_id = read_u32(data, &mut pos)?;
-                skip_cid(data, &mut pos)?;
-            }
-            // vectors
-            let vector_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..vector_count {
-                let _p_id = read_u32(data, &mut pos)?;
-                skip_cid(data, &mut pos)?; // manifest
-                let shard_count = read_u16(data, &mut pos)? as usize;
-                for _ in 0..shard_count {
-                    skip_cid(data, &mut pos)?;
-                }
-            }
-            // spatial
-            let spatial_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..spatial_count {
-                let _p_id = read_u32(data, &mut pos)?;
-                skip_cid(data, &mut pos)?; // root_cid (SpatialIndexRoot JSON)
-                skip_cid(data, &mut pos)?; // manifest
-                skip_cid(data, &mut pos)?; // arena
-                let leaflet_count = read_u16(data, &mut pos)? as usize;
-                for _ in 0..leaflet_count {
-                    skip_cid(data, &mut pos)?;
-                }
-            }
-            // fulltext (v4+)
-            if version >= 4 {
-                let fulltext_count = read_u16(data, &mut pos)? as usize;
-                for _ in 0..fulltext_count {
-                    let _p_id = read_u32(data, &mut pos)?;
-                    skip_cid(data, &mut pos)?; // arena_cid
-                }
-            }
-        }
-
-        // Watermarks
-        let wm_count = read_u16(data, &mut pos)? as usize;
-        let mut subject_watermarks = Vec::with_capacity(wm_count);
-        for _ in 0..wm_count {
-            subject_watermarks.push(read_u64(data, &mut pos)?);
-        }
-        let string_watermark = read_u32(data, &mut pos)?;
-
-        // Cumulative commit stats (3x u64, skip)
-        let _total_commit_size = read_u64(data, &mut pos)?;
-        let _total_asserts = read_u64(data, &mut pos)?;
-        let _total_retracts = read_u64(data, &mut pos)?;
-
-        // Default graph routing (inline leaf entries, skip)
-        let default_order_count = read_u8(data, &mut pos)? as usize;
-        for _ in 0..default_order_count {
-            let _order_id = read_u8(data, &mut pos)?;
-            let leaf_count = read_u32(data, &mut pos)? as usize;
-            for _ in 0..leaf_count {
-                // first_key + last_key (each RECORD_WIRE_SIZE) + row_count(u64) + leaf_cid
-                let skip = RECORD_WIRE_SIZE * 2 + 8;
-                if pos + skip > data.len() {
-                    return Err(Error::invalid_index("IRB1: leaf entry overflow"));
-                }
-                pos += skip;
-                skip_cid(data, &mut pos)?;
-            }
-        }
-
-        // Named graph routing (branch CIDs, skip)
-        let named_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..named_count {
-            let _g_id = read_u16(data, &mut pos)?;
-            let order_count = read_u8(data, &mut pos)? as usize;
-            for _ in 0..order_count {
-                let _order_id = read_u8(data, &mut pos)?;
-                skip_cid(data, &mut pos)?;
-            }
-        }
-
-        // Optional: stats
-        let stats = if flags & FLAG_HAS_STATS != 0 {
-            let stats_len = read_u32(data, &mut pos)? as usize;
-            if pos + stats_len > data.len() {
-                return Err(Error::invalid_index("IRB1: stats section overflow"));
-            }
-            let (stats, _consumed) =
-                crate::stats_wire::decode_stats(&data[pos..pos + stats_len])
-                    .map_err(|e| Error::invalid_index(format!("IRB1: stats decode: {e}")))?;
-            pos += stats_len;
-            Some(stats)
-        } else {
-            None
-        };
-
-        // Optional: schema
-        let schema = if flags & FLAG_HAS_SCHEMA != 0 {
-            let schema_len = read_u32(data, &mut pos)? as usize;
-            if pos + schema_len > data.len() {
-                return Err(Error::invalid_index("IRB1: schema section overflow"));
-            }
-            let (schema, _consumed) =
-                crate::stats_wire::decode_schema(&data[pos..pos + schema_len])
-                    .map_err(|e| Error::invalid_index(format!("IRB1: schema decode: {e}")))?;
-            pos += schema_len;
-            Some(schema)
-        } else {
-            None
-        };
-
-        let _ = pos; // remaining optional sections (prev_index, garbage, sketch) not needed
-
-        let meta = LedgerSnapshotMetadata {
-            ledger_id,
-            t: index_t,
-            namespace_codes,
-            stats,
-            schema,
-            subject_watermarks,
-            string_watermark,
-            graph_iris,
-        };
-        Self::new_meta(meta)
     }
 
     /// Attach a range provider for binary index queries.
@@ -694,16 +402,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_root_bytes_rejects_non_irb1() {
+    fn test_from_root_bytes_rejects_non_fir6() {
         let json = b"{\"ledger_id\": \"test:main\"}";
         let err = LedgerSnapshot::from_root_bytes(json).unwrap_err();
-        assert!(err.to_string().contains("IRB1"));
+        assert!(err.to_string().contains("FIR6"));
     }
 
     #[test]
     fn test_from_root_bytes_rejects_truncated() {
-        let err = LedgerSnapshot::from_root_bytes(b"IRB1").unwrap_err();
-        assert!(err.to_string().contains("truncated"));
+        let err = LedgerSnapshot::from_root_bytes(b"FI").unwrap_err();
+        assert!(err.to_string().contains("too short"));
     }
 
     #[test]

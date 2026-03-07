@@ -17,7 +17,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::LedgerHandle;
-use fluree_db_binary_index::{IndexRootV5, IndexRootV6};
+use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::pack::{
     encode_data_frame, encode_end_frame, encode_error_frame, encode_header_frame,
     encode_manifest_frame, estimate_pack_bytes, write_stream_preamble, PackHeader, PackRequest,
@@ -132,14 +132,10 @@ pub async fn compute_missing_commits<C: ContentStore>(
 // Missing index artifact computation
 // ============================================================================
 
-/// Decode an index root blob (FIR6 or IRB1) and return all CAS artifact CIDs.
+/// Decode an index root blob (FIR6) and return all CAS artifact CIDs.
 fn decode_root_cas_ids(bytes: &[u8]) -> std::result::Result<Vec<ContentId>, String> {
-    if bytes.len() >= 4 && &bytes[0..4] == b"FIR6" {
-        let v6 = IndexRootV6::decode(bytes).map_err(|e| e.to_string())?;
-        return Ok(v6.all_cas_ids());
-    }
-    let v5 = IndexRootV5::decode(bytes).map_err(|e| e.to_string())?;
-    Ok(v5.all_cas_ids())
+    let root = IndexRoot::decode(bytes).map_err(|e| e.to_string())?;
+    Ok(root.all_cas_ids())
 }
 
 /// Extract named-graph branch CIDs from a decoded root.
@@ -147,17 +143,8 @@ fn decode_root_cas_ids(bytes: &[u8]) -> std::result::Result<Vec<ContentId>, Stri
 /// These branch manifests must be loaded from CAS to discover the
 /// leaf/sidecar CIDs they contain.
 fn extract_branch_cids(bytes: &[u8]) -> Vec<ContentId> {
-    if bytes.len() >= 4 && &bytes[0..4] == b"FIR6" {
-        if let Ok(v6) = IndexRootV6::decode(bytes) {
-            return v6
-                .named_graphs
-                .iter()
-                .flat_map(|ng| ng.orders.iter().map(|(_, cid)| cid.clone()))
-                .collect();
-        }
-    }
-    if let Ok(v5) = IndexRootV5::decode(bytes) {
-        return v5
+    if let Ok(root) = IndexRoot::decode(bytes) {
+        return root
             .named_graphs
             .iter()
             .flat_map(|ng| ng.orders.iter().map(|(_, cid)| cid.clone()))
@@ -188,18 +175,18 @@ async fn expand_branch_leaf_cids<C: ContentStore>(
                 continue;
             }
         };
-        let manifest =
-            match fluree_db_binary_index::format::branch_v3::read_branch_v3_from_bytes(&bytes) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::debug!(
-                        %branch_cid,
-                        error = %e,
-                        "skipping branch manifest (decode failed)"
-                    );
-                    continue;
-                }
-            };
+        let manifest = match fluree_db_binary_index::format::branch::read_branch_from_bytes(&bytes)
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(
+                    %branch_cid,
+                    error = %e,
+                    "skipping branch manifest (decode failed)"
+                );
+                continue;
+            }
+        };
         for leaf in &manifest.leaves {
             ids.push(leaf.leaf_cid.clone());
             if let Some(ref sc) = leaf.sidecar_cid {
@@ -223,7 +210,7 @@ pub async fn compute_missing_index_artifacts<C: ContentStore>(
     want_root_id: &ContentId,
     have_root_id: Option<&ContentId>,
 ) -> Result<Vec<ContentId>> {
-    // Load and parse the want root (FIR6 or IRB1).
+    // Load and parse the want root (FIR6).
     let want_bytes = store.get(want_root_id).await.map_err(|e| {
         ApiError::internal(format!("failed to read index root {}: {}", want_root_id, e))
     })?;

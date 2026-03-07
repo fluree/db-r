@@ -1,84 +1,44 @@
-//! Scan operators for WHERE-clause triple-pattern evaluation.
+//! Binary scan operator — eagerly materializes `ColumnBatch` rows into `Binding` values.
 //!
-//! `ScanOperator` is the entry point — it selects between `BinaryScanOperator`
-//! (fast streaming cursors) and `RangeScanOperator` (range_with_overlay fallback).
-//! Works entirely in integer-ID space (s_id, p_id, ObjKind/ObjKey) and only resolves
-//! to Sid/FlakeValue at the Binding output boundary.
+//! - Uses `BinaryCursor` (leaflet-at-a-time columnar batches)
+//! - Uses `o_type` for value dispatch
+//! - Eagerly materializes all values (no EncodedLit/EncodedSid)
 //!
-//! # Integer-ID Pipeline
-//!
-//! 1. Pattern's bound terms → integer IDs (s_id, p_id, ObjKind/ObjKey) via `BinaryIndexStore`
-//! 2. `BinaryCursor` iterates leaves using integer comparators and columnar filters
-//! 3. `DecodedBatch` rows converted to `Binding` columns:
-//!    - s_id → Sid (cached in `sid_cache`)
-//!    - p_id → Sid (pre-computed in `p_sids`)
-//!    - o (ObjKind, ObjKey) → FlakeValue via `store.decode_value()`
-//!    - dt_id → Sid via `store.dt_sids()`
-//!
-//! # Design Principles
-//!
-//! - **Sync local-file reads** via `BinaryCursor` (no async Storage needed)
-//! - **Columnar integer filtering** in the cursor (no Flake conversion in hot path)
-//! - **Pre-computed dictionaries** for fast ID→Sid conversion
-//! - **Subject Sid cache** for amortized IRI resolution
-//! - **Overlay merge** — translates Flake overlay ops to integer-ID space
-//!   and merges with decoded leaflet columns at query time
+//! The eager approach trades some allocation for simplicity. Deferred decoding
+//! can be added in a follow-up when perf requires it.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch,
+    ColumnProjection, OverlayOp,
+};
+use fluree_db_core::o_type::OType;
+use fluree_db_core::value_id::ObjKey;
+use fluree_db_core::{
+    dt_compatible, FlakeValue, GraphId, IndexType, ObjectBounds, OverlayProvider, Sid,
+};
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::{Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
-use async_trait::async_trait;
-use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, DecodedBatch, NumericShape,
-    OverlayOp, RunSortOrder,
-};
-use fluree_db_core::value_id::ValueTypeTag;
-use fluree_db_core::value_id::{ObjKey, ObjKind};
-use fluree_db_core::ListIndex;
-use fluree_db_core::{
-    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
-    ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
-};
-use fluree_vocab::namespaces::FLUREE_DB;
-use fluree_vocab::rdf;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-
-use crate::policy::QueryPolicyEnforcer;
 
 // ============================================================================
-// Variable emission control
+// Shared types and utilities
 // ============================================================================
 
-/// Controls which triple-pattern variables are emitted into the operator schema.
+use fluree_db_binary_index::format::run_record::RunSortOrder;
+
+/// Mask indicating which triple components should be emitted as columns.
 ///
-/// This enables plan-time pruning of unused variables so scans can avoid decoding
-/// and materializing values that do not affect query results.
-///
-/// # Planner usage
-///
-/// The query planner sets mask fields to `false` for positions that are not
-/// referenced downstream. Typical scenarios:
-///
-/// - **`COUNT(*)` / `COUNT(?x)` with unused positions:** If a query only counts
-///   results and never reads the object, `o` can be `false` to skip object
-///   decoding (Region 2 zstd decompression, string/lang resolution, etc.).
-///
-/// - **Existence-only sub-patterns:** In `FILTER EXISTS { ?s <p> ?o }` the
-///   engine only needs to know whether rows exist, not their values, so all
-///   positions can be masked off and the scan becomes a pure count.
-///
-/// - **Projection push-down:** When SELECT names only `?s`, the planner can
-///   set `p: false, o: false` on scans where `?p` and `?o` are not used in
-///   filters, joins, or ORDER BY.
-///
-/// The default (`EmitMask::ALL`) emits all positions and is always safe.
-/// Non-ALL masks are an optimisation — correctness must never depend on them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Used by plan-time optimizations to prune unused output columns.
+#[derive(Debug, Clone, Copy)]
 pub struct EmitMask {
     pub s: bool,
     pub p: bool,
@@ -86,21 +46,16 @@ pub struct EmitMask {
 }
 
 impl EmitMask {
-    pub const ALL: Self = Self {
+    pub const ALL: EmitMask = EmitMask {
         s: true,
         p: true,
         o: true,
     };
 }
 
-// ============================================================================
-// IndexType → RunSortOrder mapping
-// ============================================================================
-
-/// Map from fluree-db-core's `IndexType` to `RunSortOrder`.
-///
-pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
-    match idx {
+/// Convert `IndexType` (query-layer) to `RunSortOrder` (binary-index-layer).
+pub fn index_type_to_sort_order(index: IndexType) -> RunSortOrder {
+    match index {
         IndexType::Spot => RunSortOrder::Spot,
         IndexType::Psot => RunSortOrder::Psot,
         IndexType::Post => RunSortOrder::Post,
@@ -108,66 +63,485 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
     }
 }
 
-// ============================================================================
-// Shared helpers
-// ============================================================================
-
-/// Build output schema and variable positions from a triple pattern.
+/// Build a schema vector from a triple pattern, respecting `EmitMask` pruning.
 ///
-/// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where each position
-/// is the column index of that variable in the schema (None if bound).
-pub(crate) fn schema_from_pattern_with_emit(
+/// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where positions are
+/// indices into the schema if the corresponding variable is emitted.
+pub fn schema_from_pattern_with_emit(
     pattern: &TriplePattern,
     emit: EmitMask,
-) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
-    let mut schema_vec = Vec::with_capacity(3);
-    let mut s_var_pos = None;
-    let mut p_var_pos = None;
-    let mut o_var_pos = None;
+) -> (Vec<VarId>, Option<usize>, Option<usize>, Option<usize>) {
+    let mut schema = Vec::new();
+    let mut s_pos = None;
+    let mut p_pos = None;
+    let mut o_pos = None;
 
     if emit.s {
         if let Ref::Var(v) = &pattern.s {
-            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
-                s_var_pos = Some(pos);
-            } else {
-                s_var_pos = Some(schema_vec.len());
-                schema_vec.push(*v);
-            }
+            s_pos = Some(schema.len());
+            schema.push(*v);
         }
     }
     if emit.p {
         if let Ref::Var(v) = &pattern.p {
-            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
-                p_var_pos = Some(pos);
-            } else {
-                p_var_pos = Some(schema_vec.len());
-                schema_vec.push(*v);
-            }
+            p_pos = Some(schema.len());
+            schema.push(*v);
         }
     }
     if emit.o {
         if let Term::Var(v) = &pattern.o {
-            if let Some(pos) = schema_vec.iter().position(|sv| sv == v) {
-                o_var_pos = Some(pos);
-            } else {
-                o_var_pos = Some(schema_vec.len());
-                schema_vec.push(*v);
-            }
+            o_pos = Some(schema.len());
+            schema.push(*v);
         }
     }
 
-    (
-        Arc::from(schema_vec.into_boxed_slice()),
-        s_var_pos,
-        p_var_pos,
-        o_var_pos,
-    )
+    (schema, s_pos, p_pos, o_pos)
+}
+
+/// Translate overlay flakes to OverlayOp for V3 binary cursor merging.
+///
+/// Uses the V6 store for persisted dictionary lookups and DictNovelty for
+/// ephemeral IDs from uncommitted transactions.
+pub fn translate_overlay_flakes(
+    overlay: &dyn OverlayProvider,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    to_t: i64,
+    g_id: GraphId,
+) -> Vec<OverlayOp> {
+    translate_overlay_flakes_v3(overlay, store, dict_novelty, to_t, g_id)
+}
+
+/// Public type alias — `ScanOperator` is the sole scan implementation.
+pub type ScanOperator = BinaryScanOperator;
+
+// ============================================================================
+// BinaryScanOperator
+// ============================================================================
+
+/// Scan operator: streams leaflets from `BinaryCursor`, eagerly decoding
+/// `ColumnBatch` rows into `Binding::Sid` / `Binding::Lit` values.
+pub struct BinaryScanOperator {
+    pattern: TriplePattern,
+    index: IndexType,
+    schema: Arc<[VarId]>,
+    s_var_pos: Option<usize>,
+    p_var_pos: Option<usize>,
+    o_var_pos: Option<usize>,
+    state: OperatorState,
+    /// Set in `open()` from `ExecutionContext`.
+    store: Option<Arc<BinaryIndexStore>>,
+    g_id: GraphId,
+    cursor: Option<BinaryCursor>,
+    /// Pre-computed p_id → Sid (all predicates, done once at open).
+    p_sids: Vec<Sid>,
+    /// Cached s_id → Sid for amortized IRI resolution.
+    sid_cache: HashMap<u64, Sid>,
+    /// Whether predicate is a variable (for internal predicate filtering).
+    p_is_var: bool,
+    inline_ops: Vec<InlineOperator>,
+    // Kept for: plan-time emit pruning and index override during query optimization.
+    // Use when: planner emits BinaryScanOperator with pruned columns or forced index.
+    #[expect(dead_code)]
+    emit: EmitMask,
+    #[expect(dead_code)]
+    index_hint: Option<IndexType>,
+    object_bounds: Option<ObjectBounds>,
+    /// Bound object value, if the triple pattern's object is a constant.
+    bound_o: Option<FlakeValue>,
+    /// Pre-computed repeated-variable flags from the triple pattern.
+    check_s_eq_o: bool,
+    check_s_eq_p: bool,
+    check_p_eq_o: bool,
+}
+
+impl BinaryScanOperator {
+    /// Create a new scan operator. The `store` and `g_id` are resolved from
+    /// `ExecutionContext` during `open()`.
+    pub fn new(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+    ) -> Self {
+        Self::new_with_emit_and_index(pattern, object_bounds, inline_ops, EmitMask::ALL, None)
+    }
+
+    /// Create a scan operator with explicit emit mask and index hint.
+    pub fn new_with_emit_and_index(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+        index_hint: Option<IndexType>,
+    ) -> Self {
+        let s_bound = pattern.s_bound();
+        let p_bound = pattern.p_bound();
+        let o_bound = pattern.o_bound();
+        let o_is_ref = pattern.o_is_ref();
+
+        let mut index = IndexType::for_query(s_bound, p_bound, o_bound, o_is_ref);
+        if object_bounds.is_some() && index == IndexType::Psot {
+            index = IndexType::Post;
+        }
+        if let Some(hint) = index_hint {
+            index = hint;
+        }
+
+        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
+            schema_from_pattern_with_emit(&pattern, emit);
+        let p_is_var = pattern.p.is_var();
+        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
+        let (check_s_eq_o, check_s_eq_p, check_p_eq_o) = repeated_var_flags(&pattern);
+
+        Self {
+            pattern,
+            index,
+            schema,
+            s_var_pos,
+            p_var_pos,
+            o_var_pos,
+            state: OperatorState::Created,
+            store: None,
+            g_id: 0,
+            cursor: None,
+            p_sids: Vec::new(),
+            sid_cache: HashMap::new(),
+            p_is_var,
+            inline_ops,
+            emit,
+            index_hint,
+            object_bounds,
+            bound_o: None,
+            check_s_eq_o,
+            check_s_eq_p,
+            check_p_eq_o,
+        }
+    }
+
+    /// Helper to get the store ref, panics if not yet set (before open).
+    fn store(&self) -> &Arc<BinaryIndexStore> {
+        self.store.as_ref().expect("store set in open()")
+    }
+
+    /// Base schema length (max var position + 1).
+    fn base_schema_len(&self) -> usize {
+        [self.s_var_pos, self.p_var_pos, self.o_var_pos]
+            .into_iter()
+            .flatten()
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+
+    /// Extract bound Sids from the pattern, normalizing to the V6 store's
+    /// namespace encoding.
+    ///
+    /// SPARQL lowers IRIs to `Ref::Sid` / `Term::Sid` using the snapshot's
+    /// namespace codes, which may differ from the V6 store's codes after a
+    /// rebuild. Re-encoding through the store ensures the Sid matches decoded
+    /// values from the index.
+    fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
+        let s_sid = match &self.pattern.s {
+            Ref::Sid(s) => Some(self.re_encode_sid(s)),
+            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+            _ => None,
+        };
+        let p_sid = match &self.pattern.p {
+            Ref::Sid(s) => Some(self.re_encode_sid(s)),
+            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+            _ => None,
+        };
+        let o_val = match &self.pattern.o {
+            Term::Sid(sid) => Some(FlakeValue::Ref(self.re_encode_sid(sid))),
+            Term::Iri(iri) => Some(FlakeValue::Ref(self.store().encode_iri(iri))),
+            Term::Value(v) => Some(v.clone()),
+            Term::Var(_) => None,
+        };
+        (s_sid, p_sid, o_val)
+    }
+
+    /// Re-encode a Sid from the pattern's namespace space into the V6 store's
+    /// namespace space. Reconstructs the full IRI and re-encodes via the store's
+    /// prefix trie, ensuring namespace codes match decoded index values.
+    #[inline]
+    fn re_encode_sid(&self, sid: &Sid) -> Sid {
+        let iri = self.store().sid_to_iri(sid);
+        self.store().encode_iri(&iri)
+    }
+
+    /// Build a `BinaryFilter` from bound pattern terms.
+    fn build_filter(
+        &self,
+        s_sid: &Option<Sid>,
+        p_sid: &Option<Sid>,
+    ) -> std::io::Result<BinaryFilter> {
+        let s_id = if let Some(sid) = s_sid {
+            self.store().sid_to_s_id(sid)?
+        } else {
+            None
+        };
+        let p_id = p_sid.as_ref().and_then(|sid| self.store().sid_to_p_id(sid));
+
+        Ok(BinaryFilter {
+            s_id,
+            p_id,
+            o_type: None,
+            o_key: None,
+            o_i: None,
+        })
+    }
+
+    /// Resolve s_id → Sid with caching.
+    fn resolve_s_id(&mut self, s_id: u64) -> Result<Sid> {
+        if let Some(sid) = self.sid_cache.get(&s_id) {
+            return Ok(sid.clone());
+        }
+        let iri = self
+            .store()
+            .resolve_subject_iri(s_id)
+            .map_err(|e| QueryError::Internal(format!("resolve s_id={s_id}: {e}")))?;
+        let sid = self.store().encode_iri(&iri);
+        self.sid_cache.insert(s_id, sid.clone());
+        Ok(sid)
+    }
+
+    /// Resolve p_id → Sid (pre-computed, O(1)).
+    #[inline]
+    fn resolve_p_id(&self, p_id: u32) -> Sid {
+        self.p_sids
+            .get(p_id as usize)
+            .cloned()
+            .unwrap_or_else(|| Sid::new(0, ""))
+    }
+
+    /// Filter: skip internal db: predicates when predicate is a variable.
+    #[inline]
+    fn is_internal_predicate(&self, p_id: u32) -> bool {
+        if !self.p_is_var || self.g_id != 0 {
+            return false;
+        }
+        self.p_sids
+            .get(p_id as usize)
+            .is_some_and(|s| s.namespace_code == fluree_vocab::namespaces::FLUREE_DB)
+    }
+
+    /// Enforce within-pattern repeated-variable constraints.
+    ///
+    /// SPARQL allows the same variable to appear in multiple positions of a triple pattern,
+    /// e.g. `?x <p> ?x` or `?x ?x ?o`. These are equality constraints that must be applied
+    /// even when emission pruning omits one of the positions.
+    fn within_row_var_equality_ok(
+        &mut self,
+        s_id: u64,
+        p_id: u32,
+        o_type: u16,
+        o_key: u64,
+    ) -> Result<bool> {
+        // Fast path: no repeated variables in this pattern (the common case).
+        if !self.check_s_eq_o && !self.check_s_eq_p && !self.check_p_eq_o {
+            return Ok(true);
+        }
+
+        if self.check_s_eq_o {
+            // s==o only possible if o is a ref pointing at s_id.
+            let ot = fluree_db_core::o_type::OType::from_u16(o_type);
+            if !(ot.is_iri_ref() || ot.is_blank_node()) {
+                return Ok(false);
+            }
+            if o_key != s_id {
+                return Ok(false);
+            }
+        }
+
+        // Comparisons involving predicate IDs require Sid materialization (different ID domains).
+        if self.check_s_eq_p {
+            let s = self.resolve_s_id(s_id)?;
+            let p = self.resolve_p_id(p_id);
+            if s != p {
+                return Ok(false);
+            }
+        }
+        if self.check_p_eq_o {
+            let ot = fluree_db_core::o_type::OType::from_u16(o_type);
+            if !(ot.is_iri_ref() || ot.is_blank_node()) {
+                return Ok(false);
+            }
+            let o_sid = self.resolve_s_id(o_key)?;
+            let p_sid = self.resolve_p_id(p_id);
+            if o_sid != p_sid {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    #[inline]
+    fn set_binding_at(slots: &mut [Binding], pos: usize, b: Binding) -> bool {
+        match &slots[pos] {
+            Binding::Unbound => {
+                slots[pos] = b;
+                true
+            }
+            existing => existing == &b,
+        }
+    }
+
+    /// Check whether this row matches the triple pattern's datatype constraint (if any).
+    #[inline]
+    fn matches_datatype_constraint(&self, o_type: u16) -> bool {
+        let Some(dtc) = &self.pattern.dtc else {
+            return true;
+        };
+
+        let Some(dt_sid) = self.store().resolve_datatype_sid(o_type) else {
+            return false;
+        };
+        if !dt_compatible(dtc.datatype(), &dt_sid) {
+            return false;
+        }
+
+        if let Some(tag) = dtc.lang_tag() {
+            self.store().resolve_lang_tag(o_type) == Some(tag)
+        } else {
+            true
+        }
+    }
+
+    /// Convert a ColumnBatch into columnar Bindings.
+    fn batch_to_bindings(
+        &mut self,
+        batch: &ColumnBatch,
+        columns: &mut [Vec<Binding>],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<usize> {
+        let mut produced = 0;
+        let ncols = self.schema.len();
+        let base_len = self.base_schema_len();
+        let mut bindings = Vec::with_capacity(ncols.max(base_len));
+        let view = BinaryGraphView::new(Arc::clone(self.store()), self.g_id);
+
+        for row in 0..batch.row_count {
+            let s_id = batch.s_id.get(row);
+            let p_id = batch.p_id.get_or(row, 0);
+            let o_type = batch.o_type.get_or(row, 0);
+            let o_key = batch.o_key.get(row);
+            let t = batch.t.get_or(row, 0) as i64;
+
+            // Skip internal db: predicates on wildcard scans.
+            if self.is_internal_predicate(p_id) {
+                continue;
+            }
+
+            if !self.within_row_var_equality_ok(s_id, p_id, o_type, o_key)? {
+                continue;
+            }
+
+            // Enforce datatype constraints before decoding into bindings.
+            if !self.matches_datatype_constraint(o_type) {
+                continue;
+            }
+
+            // Decode object when needed:
+            // - object is a variable (must emit)
+            // - object is bound (must filter)
+            // - object bounds are present (must filter)
+            let needs_o_decode =
+                self.o_var_pos.is_some() || self.bound_o.is_some() || self.object_bounds.is_some();
+            let decoded_o = if needs_o_decode {
+                Some(
+                    view.decode_value(o_type, o_key, p_id)
+                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?,
+                )
+            } else {
+                None
+            };
+
+            if let Some(bound) = &self.bound_o {
+                let Some(val) = decoded_o.as_ref() else {
+                    return Err(QueryError::Internal(
+                        "bound object requires object decoding".to_string(),
+                    ));
+                };
+                if val != bound {
+                    continue;
+                }
+            }
+
+            if let Some(bounds) = &self.object_bounds {
+                let Some(val) = decoded_o.as_ref() else {
+                    return Err(QueryError::Internal(
+                        "object bounds require object decoding".to_string(),
+                    ));
+                };
+                if !bounds.matches(val) {
+                    continue;
+                }
+            }
+
+            bindings.clear();
+            bindings.resize(base_len, Binding::Unbound);
+
+            // Subject binding.
+            if let Some(pos) = self.s_var_pos {
+                let sid = self.resolve_s_id(s_id)?;
+                if !Self::set_binding_at(&mut bindings, pos, Binding::Sid(sid)) {
+                    continue;
+                }
+            }
+
+            // Predicate binding.
+            if let Some(pos) = self.p_var_pos {
+                let sid = self.resolve_p_id(p_id);
+                if !Self::set_binding_at(&mut bindings, pos, Binding::Sid(sid)) {
+                    continue;
+                }
+            }
+
+            // Object binding.
+            if let Some(pos) = self.o_var_pos {
+                let val = decoded_o.expect("o_var_pos implies decoded_o");
+                let binding = match &val {
+                    FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
+                    _ => {
+                        let dt = self
+                            .store()
+                            .resolve_datatype_sid(o_type)
+                            .unwrap_or_else(|| Sid::new(0, ""));
+                        let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
+                        Binding::Lit {
+                            val,
+                            dt,
+                            lang,
+                            t: Some(t),
+                            op: None,
+                            p_id: Some(p_id),
+                        }
+                    }
+                };
+                if !Self::set_binding_at(&mut bindings, pos, binding) {
+                    continue;
+                }
+            }
+
+            // Apply inline operators.
+            if !apply_inline(&self.inline_ops, &self.schema, &mut bindings, ctx)? {
+                continue;
+            }
+
+            // Push to columns.
+            for (i, binding) in bindings.drain(..).enumerate() {
+                columns[i].push(binding);
+            }
+            produced += 1;
+        }
+
+        Ok(produced)
+    }
 }
 
 /// Pre-compute which repeated-variable equality checks are needed for a pattern.
 ///
-/// Returns `(s==o, s==p, p==o)` flags. When all three are false (the common case),
-/// `within_row_var_equality_ok` can short-circuit without inspecting the pattern.
+/// Returns `(s==o, s==p, p==o)` flags.
 fn repeated_var_flags(pattern: &TriplePattern) -> (bool, bool, bool) {
     let s_var = match &pattern.s {
         Ref::Var(v) => Some(*v),
@@ -188,804 +562,6 @@ fn repeated_var_flags(pattern: &TriplePattern) -> (bool, bool, bool) {
     )
 }
 
-/// True when the triple pattern's predicate is `rdf:type` (by Sid or IRI).
-///
-/// This is used for performance short-circuits based on RDF semantics, e.g.
-/// avoiding literal-metadata decoding for `?s rdf:type ?o` scans.
-#[inline]
-fn predicate_is_rdf_type(p: &Ref) -> bool {
-    match p {
-        Ref::Sid(sid) => fluree_db_core::is_rdf_type(sid),
-        Ref::Iri(iri) => iri.as_ref() == rdf::TYPE,
-        Ref::Var(_) => false,
-    }
-}
-
-/// True when a variable-object scan can safely skip Region 2 decoding because
-/// the object is semantically ref-only.
-///
-/// Today this is limited to `rdf:type` patterns with no datatype/lang constraint:
-/// RDF requires `rdf:type` objects to be IRIs (or blank nodes), so dt/lang/i/t
-/// metadata is irrelevant. Skipping Region 2 reduces zstd decode and cache churn
-/// on large `rdf:type` scans (common in sparqloscope benchmarks).
-#[inline]
-fn object_var_is_ref_only(pattern: &TriplePattern) -> bool {
-    matches!(pattern.o, Term::Var(_)) && pattern.dtc.is_none() && predicate_is_rdf_type(&pattern.p)
-}
-
-// ============================================================================
-// BinaryScanOperator
-// ============================================================================
-
-/// Scan operator backed by binary columnar indexes.
-///
-/// Uses `BinaryCursor` to iterate leaf files in the selected sort order,
-/// decoding columnar integer IDs into `Binding` values at the output boundary.
-///
-/// # When to Use
-///
-/// Used by `ScanOperator` when a `BinaryIndexStore` is available and the query
-/// mode is compatible (single-ledger, non-history, time within index coverage).
-/// Otherwise `ScanOperator` falls back to `RangeScanOperator`.
-///
-/// # Single-Ledger Only
-///
-/// This operator is designed for single-ledger mode (no cross-ledger joins).
-/// It creates `Binding::Sid` for IRI positions. Multi-ledger `IriMatch` bindings
-/// are not yet supported.
-pub struct BinaryScanOperator {
-    /// The triple pattern to match.
-    pattern: TriplePattern,
-    /// Selected index type (SPOT, PSOT, POST, OPST).
-    index: IndexType,
-    /// Output schema (variables from pattern).
-    schema: Arc<[VarId]>,
-    /// Position of s variable in schema (None if s is bound).
-    s_var_pos: Option<usize>,
-    /// Position of p variable in schema (None if p is bound).
-    p_var_pos: Option<usize>,
-    /// Position of o variable in schema (None if o is bound).
-    o_var_pos: Option<usize>,
-    /// Operator lifecycle state.
-    state: OperatorState,
-    /// Graph-scoped view of the binary index store (shared, immutable).
-    graph_view: BinaryGraphView,
-    /// Cursor for leaf iteration (created during open).
-    cursor: Option<BinaryCursor>,
-    /// Pre-computed p_id → Sid (all predicates, done once at open).
-    p_sids: Vec<Sid>,
-    /// Cached s_id → Sid for amortized IRI resolution.
-    sid_cache: HashMap<u64, Sid>,
-    /// Whether predicate is a variable (for internal predicate filtering).
-    p_is_var: bool,
-    /// Bound object value for post-filtering when the value cannot be translated
-    /// to an (ObjKind, ObjKey) pair (e.g., string literals without a reverse index).
-    /// When set, `batch_to_bindings` filters rows whose decoded object != this value.
-    bound_o_filter: Option<FlakeValue>,
-    /// Object bounds for range post-filtering (set when binary path handles range queries).
-    object_bounds: Option<ObjectBounds>,
-    /// Pre-translated overlay operations (set by ScanOperator).
-    overlay_ops: Vec<OverlayOp>,
-    /// Overlay epoch for cache key differentiation.
-    overlay_epoch: u64,
-    /// Dictionary overlay for decode-time ephemeral ID resolution.
-    ///
-    /// When set, all ID→value decoding goes through DictOverlay instead of
-    /// directly through the store. This handles ephemeral subjects, predicates,
-    /// strings, and lang tags that are in novelty but not yet in the persisted
-    /// binary index.
-    dict_overlay: Option<crate::dict_overlay::DictOverlay>,
-    /// Inline operators evaluated per-row during batch processing.
-    /// Applied after building triple bindings, before adding to output columns.
-    inline_ops: Vec<InlineOperator>,
-    /// Pre-computed repeated-variable flags from the triple pattern.
-    /// When all are false (the common case), `within_row_var_equality_ok`
-    /// short-circuits without inspecting the pattern on every row.
-    check_s_eq_o: bool,
-    check_s_eq_p: bool,
-    check_p_eq_o: bool,
-}
-
-impl BinaryScanOperator {
-    #[inline]
-    fn base_schema_len(&self) -> usize {
-        let mut max_pos: Option<usize> = None;
-        for pos in [self.s_var_pos, self.p_var_pos, self.o_var_pos]
-            .into_iter()
-            .flatten()
-        {
-            max_pos = Some(max_pos.map_or(pos, |m| m.max(pos)));
-        }
-        max_pos.map_or(0, |m| m + 1)
-    }
-
-    /// Enforce within-pattern repeated-variable constraints.
-    ///
-    /// SPARQL allows the same variable to appear in multiple positions of a triple pattern,
-    /// e.g. `?x <p> ?x` or `?x ?x ?o`. These are equality constraints that must be applied
-    /// even when emission pruning omits one of the positions.
-    ///
-    /// Uses pre-computed `check_s_eq_o`, `check_s_eq_p`, `check_p_eq_o` flags to
-    /// short-circuit the common case where no variables are repeated.
-    fn within_row_var_equality_ok(&mut self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
-        // Fast path: no repeated variables in this pattern (the common case).
-        if !self.check_s_eq_o && !self.check_s_eq_p && !self.check_p_eq_o {
-            return Ok(true);
-        }
-
-        // s == o is only possible when o is a ref pointing to s_id.
-        if self.check_s_eq_o {
-            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
-                return Ok(false);
-            }
-            if decoded.o_keys[row] != decoded.s_ids[row] {
-                return Ok(false);
-            }
-        }
-
-        // For comparisons involving predicate IDs, decode to Sid (different ID domains).
-        if self.check_s_eq_p {
-            let s = self.resolve_s_id(decoded.s_ids[row])?;
-            let p = self.resolve_p_id(decoded.p_ids[row]);
-            if s != p {
-                return Ok(false);
-            }
-        }
-        if self.check_p_eq_o {
-            if decoded.o_kinds[row] != ObjKind::REF_ID.as_u8() {
-                return Ok(false);
-            }
-            let o = self.resolve_s_id(decoded.o_keys[row])?;
-            let p = self.resolve_p_id(decoded.p_ids[row]);
-            if o != p {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-
-    #[inline]
-    fn set_binding_at(&mut self, slots: &mut [Binding], pos: usize, b: Binding) -> Result<bool> {
-        match &slots[pos] {
-            Binding::Unbound => {
-                slots[pos] = b;
-                Ok(true)
-            }
-            existing if existing == &b => Ok(true),
-            // When the same var is shared across positions, prefer allowing
-            // Encoded* vs Sid comparisons by decoding only in the mismatch case.
-            Binding::Sid(sid) => match b {
-                Binding::EncodedSid { s_id } => Ok(self.resolve_s_id(s_id)? == *sid),
-                Binding::EncodedPid { p_id } => Ok(self.resolve_p_id(p_id) == *sid),
-                _ => Ok(false),
-            },
-            Binding::EncodedSid { s_id } => match b {
-                Binding::Sid(sid) => Ok(self.resolve_s_id(*s_id)? == sid),
-                Binding::EncodedPid { p_id } => {
-                    Ok(self.resolve_s_id(*s_id)? == self.resolve_p_id(p_id))
-                }
-                _ => Ok(false),
-            },
-            Binding::EncodedPid { p_id } => match b {
-                Binding::Sid(sid) => Ok(self.resolve_p_id(*p_id) == sid),
-                Binding::EncodedSid { s_id } => {
-                    Ok(self.resolve_p_id(*p_id) == self.resolve_s_id(s_id)?)
-                }
-                _ => Ok(false),
-            },
-            _ => Ok(false),
-        }
-    }
-
-    /// Create a new BinaryScanOperator for a triple pattern.
-    ///
-    /// The `graph_view` provides a graph-scoped view of the binary index store.
-    /// Inline operators are evaluated per-row before adding
-    /// bindings to output columns.
-    pub fn new(
-        pattern: TriplePattern,
-        graph_view: BinaryGraphView,
-        object_bounds: Option<ObjectBounds>,
-        inline_ops: Vec<InlineOperator>,
-        emit: EmitMask,
-        index_hint: Option<IndexType>,
-    ) -> Self {
-        let s_bound = pattern.s_bound();
-        let p_bound = pattern.p_bound();
-        let o_bound = pattern.o_bound();
-        let o_is_ref = pattern.o_is_ref();
-
-        let mut index = IndexType::for_query(s_bound, p_bound, o_bound, o_is_ref);
-
-        // When object bounds are present and default index is PSOT, switch to POST
-        // for object-range scanning.
-        if object_bounds.is_some() && index == IndexType::Psot {
-            index = IndexType::Post;
-        }
-
-        // Plan-time override to align physical order with downstream operators.
-        if let Some(hint) = index_hint {
-            index = hint;
-        }
-
-        tracing::debug!(
-            s_bound,
-            p_bound,
-            o_bound,
-            o_is_ref,
-            ?index,
-            ?index_hint,
-            has_object_bounds = object_bounds.is_some(),
-            "binary scan index selected"
-        );
-
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
-            schema_from_pattern_with_emit(&pattern, emit);
-        let p_is_var = pattern.p.is_var();
-        let (check_s_eq_o, check_s_eq_p, check_p_eq_o) = repeated_var_flags(&pattern);
-
-        // Extend schema with new bind variables from inline operators.
-        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
-
-        Self {
-            pattern,
-            index,
-            schema,
-            s_var_pos,
-            p_var_pos,
-            o_var_pos,
-            state: OperatorState::Created,
-            graph_view,
-            cursor: None,
-            p_sids: Vec::new(),
-            sid_cache: HashMap::new(),
-            p_is_var,
-            bound_o_filter: None,
-            object_bounds,
-            overlay_ops: Vec::new(),
-            overlay_epoch: 0,
-            dict_overlay: None,
-            inline_ops,
-            check_s_eq_o,
-            check_s_eq_p,
-            check_p_eq_o,
-        }
-    }
-
-    /// Create with explicit index selection (for testing or forced order).
-    pub fn with_index(
-        pattern: TriplePattern,
-        graph_view: BinaryGraphView,
-        index: IndexType,
-        inline_ops: Vec<InlineOperator>,
-    ) -> Self {
-        Self::new(
-            pattern,
-            graph_view,
-            None,
-            inline_ops,
-            EmitMask::ALL,
-            Some(index),
-        )
-    }
-
-    /// Get the index type being used.
-    pub fn index_type(&self) -> IndexType {
-        self.index
-    }
-
-    /// Set pre-translated overlay operations and epoch for query-time merge.
-    ///
-    /// Called by `ScanOperator` after translating overlay Flakes to
-    /// integer-ID space. The ops are sorted by the cursor's sort order during
-    /// `open()` and passed to the `BinaryCursor` for per-leaf merge.
-    pub fn set_overlay(&mut self, ops: Vec<OverlayOp>, epoch: u64) {
-        self.overlay_ops = ops;
-        self.overlay_epoch = epoch;
-    }
-
-    /// Set the dictionary overlay for ephemeral ID resolution at decode time.
-    ///
-    /// Must be the same DictOverlay that was used for `translate_overlay_flakes()`
-    /// so ephemeral IDs in overlay ops resolve correctly.
-    pub fn set_dict_overlay(&mut self, overlay: crate::dict_overlay::DictOverlay) {
-        self.dict_overlay = Some(overlay);
-    }
-
-    /// Resolve s_id to Sid, using cache for amortized lookups.
-    ///
-    /// When a DictOverlay is present, delegates to it (handles both persisted
-    /// and ephemeral subject IDs). Otherwise, uses the store directly.
-    ///
-    /// Note: Used for early materialization of ephemeral subjects from novelty.
-    fn resolve_s_id(&mut self, s_id: u64) -> Result<Sid> {
-        if let Some(sid) = self.sid_cache.get(&s_id) {
-            return Ok(sid.clone());
-        }
-
-        let sid = if let Some(dict_ov) = &self.dict_overlay {
-            dict_ov
-                .resolve_subject_sid(s_id)
-                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
-        } else {
-            let iri = self
-                .graph_view
-                .store()
-                .resolve_subject_iri(s_id)
-                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
-            self.graph_view.store().encode_iri(&iri)
-        };
-        self.sid_cache.insert(s_id, sid.clone());
-        Ok(sid)
-    }
-
-    /// Check if a predicate p_id corresponds to a fluree:ledger internal predicate.
-    ///
-    /// Internal predicates are filtered out when the pattern's predicate is a variable
-    /// (wildcard) to skip internal predicates.
-    #[inline]
-    fn is_internal_predicate(&self, p_id: u32) -> bool {
-        // Only filter internal predicates for the default graph (g_id=0).
-        // The txn-meta graph (g_id=1) is entirely composed of db: namespace
-        // predicates, so filtering them would return zero results.
-        self.graph_view.g_id() == 0
-            && self.p_is_var
-            && self
-                .p_sids
-                .get(p_id as usize)
-                .is_some_and(|s| s.namespace_code == FLUREE_DB)
-    }
-
-    /// Decode an object value, routing through DictOverlay when present.
-    #[inline]
-    fn decode_obj(&self, o_kind: u8, o_key: u64, p_id: u32) -> std::io::Result<FlakeValue> {
-        match &self.dict_overlay {
-            Some(ov) => ov.decode_value(o_kind, o_key, p_id),
-            None => self.graph_view.decode_value(o_kind, o_key, p_id),
-        }
-    }
-
-    /// Check if a subject ID is ephemeral (from novelty overlay).
-    #[inline]
-    fn is_ephemeral_subject(&self, s_id: u64) -> bool {
-        self.dict_overlay
-            .as_ref()
-            .is_some_and(|ov| ov.is_ephemeral_subject(s_id))
-    }
-
-    /// Check if a predicate ID is ephemeral (from novelty overlay).
-    #[inline]
-    fn is_ephemeral_predicate(&self, p_id: u32) -> bool {
-        self.dict_overlay
-            .as_ref()
-            .is_some_and(|ov| ov.is_ephemeral_predicate(p_id))
-    }
-
-    /// Resolve a predicate ID to Sid, handling ephemeral IDs via DictOverlay.
-    ///
-    /// Note: Used for early materialization of ephemeral predicates from novelty.
-    #[inline]
-    fn resolve_p_id(&self, p_id: u32) -> Sid {
-        let idx = p_id as usize;
-        if idx < self.p_sids.len() {
-            return self.p_sids[idx].clone();
-        }
-        // Ephemeral or out-of-range p_id: try DictOverlay, then store
-        if let Some(ov) = &self.dict_overlay {
-            if let Some(sid) = ov.resolve_predicate_sid(p_id) {
-                return sid;
-            }
-        }
-        match self.graph_view.store().resolve_predicate_iri(p_id) {
-            Some(iri) => self.graph_view.store().encode_iri(iri),
-            None => {
-                tracing::warn!(p_id, "unresolvable predicate ID in batch_to_bindings");
-                Sid::new(0, "")
-            }
-        }
-    }
-
-    // ========================================================================
-    // Row filtering helpers
-    // ========================================================================
-
-    /// Check if a row should be skipped based on all active filters.
-    ///
-    /// Returns `Ok(true)` if the row should be filtered out.
-    #[inline]
-    fn should_skip_row(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
-        let skip = self.is_internal_predicate(decoded.p_ids[row])
-            || !self.matches_bound_object(decoded, row)?
-            || !self.matches_object_bounds(decoded, row)?;
-        Ok(skip)
-    }
-
-    /// Check if a row's object matches the bound object filter.
-    ///
-    /// Returns `Ok(true)` if there's no filter or if the object matches.
-    /// Used for post-filtering when an object value couldn't be translated to an
-    /// (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index).
-    #[inline]
-    fn matches_bound_object(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
-        let Some(filter_val) = &self.bound_o_filter else {
-            return Ok(true);
-        };
-        let decoded_val = self
-            .decode_obj(
-                decoded.o_kinds[row],
-                decoded.o_keys[row],
-                decoded.p_ids[row],
-            )
-            .map_err(|e| QueryError::Internal(format!("decode object for filter: {}", e)))?;
-        Ok(decoded_val == *filter_val)
-    }
-
-    /// Check if a row's object matches the ObjectBounds range filter.
-    ///
-    /// Returns `Ok(true)` if there are no bounds or if the object is within bounds.
-    /// POST key range provides coarse leaf filtering; this handles
-    /// inclusive/exclusive boundaries and cross-type comparisons exactly.
-    #[inline]
-    fn matches_object_bounds(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
-        let Some(obj_bounds) = &self.object_bounds else {
-            return Ok(true);
-        };
-        let decoded_val = self
-            .decode_obj(
-                decoded.o_kinds[row],
-                decoded.o_keys[row],
-                decoded.p_ids[row],
-            )
-            .map_err(|e| QueryError::Internal(format!("decode object for bounds: {}", e)))?;
-        Ok(obj_bounds.matches(&decoded_val))
-    }
-
-    // ========================================================================
-    // Subject binding helpers
-    // ========================================================================
-
-    /// Build a subject binding if the subject is a variable.
-    ///
-    /// Emits `EncodedSid` for late materialization, or `Sid` for ephemeral subjects.
-    /// Returns `None` if the subject position is bound (not a variable).
-    #[inline]
-    fn build_subject_binding(&mut self, s_id: u64) -> Result<Option<Binding>> {
-        if self.s_var_pos.is_none() {
-            return Ok(None);
-        }
-
-        let is_ephemeral = self.is_ephemeral_subject(s_id);
-
-        tracing::trace!(
-            s_id,
-            is_ephemeral,
-            has_dict_overlay = self.dict_overlay.is_some(),
-            "binary_scan building subject binding"
-        );
-
-        let binding = if is_ephemeral {
-            // Ephemeral subject: resolve now while dict_overlay is available
-            let sid = self.resolve_s_id(s_id)?;
-            tracing::trace!(
-                ?sid,
-                s_id,
-                "binary_scan early-materializing ephemeral subject"
-            );
-            Binding::Sid(sid)
-        } else {
-            tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
-            Binding::EncodedSid { s_id }
-        };
-
-        Ok(Some(binding))
-    }
-
-    // ========================================================================
-    // Predicate binding helpers
-    // ========================================================================
-
-    /// Build a predicate binding if the predicate is a variable.
-    ///
-    /// Emits `EncodedPid` for late materialization, or `Sid` for ephemeral predicates.
-    /// Returns `None` if the predicate position is bound (not a variable).
-    #[inline]
-    fn build_predicate_binding(&self, p_id: u32) -> Option<Binding> {
-        self.p_var_pos?;
-
-        let binding = if self.is_ephemeral_predicate(p_id) {
-            // Ephemeral predicate: resolve now while dict_overlay is available
-            let sid = self.resolve_p_id(p_id);
-            tracing::trace!(
-                ?sid,
-                p_id,
-                "binary_scan early-materializing ephemeral predicate"
-            );
-            Binding::Sid(sid)
-        } else {
-            tracing::trace!(p_id, "binary_scan emitting EncodedPid for predicate");
-            Binding::EncodedPid { p_id }
-        };
-
-        Some(binding)
-    }
-
-    // ========================================================================
-    // Object binding helpers
-    // ========================================================================
-
-    /// Build an object binding if the object is a variable.
-    ///
-    /// Handles three cases:
-    /// - Ref objects: `EncodedSid` for late materialization
-    /// - Ephemeral values: immediate materialization to `Sid` or `Lit`
-    /// - Literals: `EncodedLit` for late materialization
-    ///
-    /// Returns `None` if the object position is bound (not a variable).
-    #[inline]
-    fn build_object_binding(&self, decoded: &DecodedBatch, row: usize) -> Result<Option<Binding>> {
-        if self.o_var_pos.is_none() {
-            return Ok(None);
-        }
-
-        let o_kind = decoded.o_kinds[row];
-        let o_key = decoded.o_keys[row];
-        let p_id = decoded.p_ids[row];
-
-        // Check if early materialization is needed (ephemeral IDs from novelty)
-        let needs_early = self
-            .dict_overlay
-            .as_ref()
-            .map(|ov| ov.needs_early_materialize(o_kind, o_key))
-            .unwrap_or(false);
-
-        let binding = if o_kind == ObjKind::REF_ID.as_u8() && !needs_early {
-            // Ref object: use EncodedSid for late materialization
-            tracing::trace!(o_key, "binary_scan emitting EncodedSid for ref object");
-            Binding::EncodedSid { s_id: o_key }
-        } else if needs_early {
-            self.build_early_materialized_object(decoded, row)?
-        } else {
-            // Literal: use EncodedLit (avoids string dictionary lookups)
-            // This is the main late materialization win - literal strings
-            // are only decoded when needed for FILTER/ORDER BY/output.
-            Binding::EncodedLit {
-                o_kind,
-                o_key,
-                p_id,
-                dt_id: decoded.dt_values[row] as u16,
-                lang_id: decoded.lang_ids[row],
-                i_val: decoded.i_values[row],
-                t: decoded.t_values[row],
-            }
-        };
-
-        Ok(Some(binding))
-    }
-
-    /// Build an early-materialized object binding for ephemeral values.
-    ///
-    /// Called when the object contains ephemeral IDs from novelty that must
-    /// be resolved immediately while the dict_overlay is available.
-    #[inline]
-    fn build_early_materialized_object(
-        &self,
-        decoded: &DecodedBatch,
-        row: usize,
-    ) -> Result<Binding> {
-        let o_kind = decoded.o_kinds[row];
-        let o_key = decoded.o_keys[row];
-        let p_id = decoded.p_ids[row];
-        let dt_id = decoded.dt_values[row] as u16;
-        let lang_id = decoded.lang_ids[row];
-        let i_val = decoded.i_values[row];
-        let t = decoded.t_values[row];
-
-        let val = self
-            .decode_obj(o_kind, o_key, p_id)
-            .map_err(|e| QueryError::Internal(format!("early materialize: {}", e)))?;
-
-        let dt_sid = self.resolve_dt_sid(dt_id);
-        let lang = self.resolve_lang(lang_id, i_val);
-
-        tracing::trace!(?val, "binary_scan early-materializing ephemeral value");
-
-        let binding = match val {
-            FlakeValue::Ref(sid) => Binding::Sid(sid),
-            other => Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang,
-                t: Some(t),
-                op: None,
-                p_id: Some(p_id),
-            },
-        };
-
-        Ok(binding)
-    }
-
-    /// Resolve a datatype ID to its Sid representation.
-    #[inline]
-    fn resolve_dt_sid(&self, dt_id: u16) -> Sid {
-        self.dict_overlay
-            .as_ref()
-            .map(|ov| ov.decode_dt_sid(dt_id))
-            .unwrap_or_else(|| {
-                self.graph_view
-                    .store()
-                    .dt_sids()
-                    .get(dt_id as usize)
-                    .cloned()
-                    .unwrap_or_else(|| Sid::new(0, ""))
-            })
-    }
-
-    /// Resolve a language tag from the lang_id and i_val metadata.
-    #[inline]
-    fn resolve_lang(&self, lang_id: u16, i_val: i32) -> Option<Arc<str>> {
-        self.dict_overlay
-            .as_ref()
-            .and_then(|ov| ov.decode_meta(lang_id, i_val))
-            .and_then(|m| m.lang.map(Arc::from))
-    }
-
-    // ========================================================================
-    // Main batch processing
-    // ========================================================================
-
-    /// Convert a DecodedBatch into columnar Bindings.
-    ///
-    /// Processes all rows in the batch, converting integer IDs to Binding values.
-    /// Only produces columns for variable positions in the schema.
-    /// Filters out internal predicates when predicate is a variable.
-    ///
-    /// When inline filters are present, each row's bindings are evaluated
-    /// against filters and only added to columns if all pass.
-    fn batch_to_bindings(
-        &mut self,
-        decoded: &DecodedBatch,
-        columns: &mut [Vec<Binding>],
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> Result<usize> {
-        let mut produced = 0;
-        let ncols = self.schema.len();
-        let base_len = self.base_schema_len();
-        let mut bindings = Vec::with_capacity(ncols.max(base_len));
-
-        for row in 0..decoded.row_count {
-            if self.should_skip_row(decoded, row)? {
-                continue;
-            }
-
-            if !self.within_row_var_equality_ok(decoded, row)? {
-                continue;
-            }
-
-            bindings.clear();
-            bindings.resize(base_len, Binding::Unbound);
-
-            // Fill bindings in schema order using precomputed positions.
-            if let Some(pos) = self.s_var_pos {
-                let b = self
-                    .build_subject_binding(decoded.s_ids[row])?
-                    .expect("s_var_pos implies subject binding");
-                if !self.set_binding_at(&mut bindings, pos, b)? {
-                    continue;
-                }
-            }
-            if let Some(pos) = self.p_var_pos {
-                let b = self
-                    .build_predicate_binding(decoded.p_ids[row])
-                    .expect("p_var_pos implies predicate binding");
-                if !self.set_binding_at(&mut bindings, pos, b)? {
-                    continue;
-                }
-            }
-            if let Some(pos) = self.o_var_pos {
-                let b = self
-                    .build_object_binding(decoded, row)?
-                    .expect("o_var_pos implies object binding");
-                if !self.set_binding_at(&mut bindings, pos, b)? {
-                    continue;
-                }
-            }
-
-            // Apply inline operators; may extend `bindings` or skip the row.
-            if !apply_inline(&self.inline_ops, &self.schema, &mut bindings, ctx)? {
-                continue;
-            }
-
-            // Push to columns
-            for (i, binding) in bindings.drain(..).enumerate() {
-                columns[i].push(binding);
-            }
-
-            produced += 1;
-        }
-
-        Ok(produced)
-    }
-
-    /// Extract bound Sids from the pattern, handling Term::Iri by encoding through the store.
-    ///
-    /// Returns (s_sid, p_sid, o_val) as owned optionals for use with translate_range.
-    fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
-        let s_sid = match &self.pattern.s {
-            Ref::Sid(s) => Some(s.clone()),
-            Ref::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
-            _ => None,
-        };
-
-        let p_sid = match &self.pattern.p {
-            Ref::Sid(s) => Some(s.clone()),
-            Ref::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
-            _ => None,
-        };
-
-        let o_val = match &self.pattern.o {
-            Term::Sid(sid) => Some(FlakeValue::Ref(sid.clone())),
-            Term::Iri(iri) => Some(FlakeValue::Ref(self.graph_view.store().encode_iri(iri))),
-            Term::Value(v) => Some(v.clone()),
-            Term::Var(_) => None,
-        };
-
-        (s_sid, p_sid, o_val)
-    }
-}
-
-/// Derive per-predicate numeric shape from real DB stats (no run-dir files).
-///
-/// Uses graph-scoped property datatype counts from `IndexStats.graphs`.
-/// Returns `None` when stats are unavailable or the predicate is not present.
-fn numeric_shape_from_db_stats(
-    ctx: &ExecutionContext<'_>,
-    _pred_iri: &str,
-    pred_sid_binary: &Sid,
-) -> Option<NumericShape> {
-    let stats = ctx.snapshot.stats.as_ref()?;
-
-    // Prefer graph-scoped stats when available (authoritative ID-based view).
-    // (Not always present yet; many deployments only have class-property stats.)
-    if let Some(graphs) = stats.graphs.as_ref() {
-        let g = graphs.iter().find(|g| g.g_id == ctx.binary_g_id)?;
-        let p_id = ctx
-            .binary_store
-            .as_ref()
-            .and_then(|s| s.sid_to_p_id(pred_sid_binary))?;
-        if let Some(p) = g.properties.iter().find(|p| p.p_id == p_id) {
-            let mut has_int = false;
-            let mut has_float = false;
-            let mut has_decimal = false;
-            for &(dt_raw, count) in &p.datatypes {
-                if count == 0 {
-                    continue;
-                }
-                let dt = ValueTypeTag::from_u8(dt_raw);
-                if dt.is_integer_type() {
-                    has_int = true;
-                } else if dt.is_float_type() {
-                    has_float = true;
-                } else if dt == ValueTypeTag::DECIMAL {
-                    has_decimal = true;
-                }
-            }
-            if has_decimal {
-                return None;
-            }
-            return match (has_int, has_float) {
-                (true, false) => Some(NumericShape::IntOnly),
-                (false, true) => Some(NumericShape::FloatOnly),
-                (true, true) => Some(NumericShape::Mixed),
-                (false, false) => None,
-            };
-        }
-    }
-
-    // No fallback: class-property stats no longer carry datatype breakdowns.
-    None
-}
-
 #[async_trait]
 impl Operator for BinaryScanOperator {
     fn schema(&self) -> &[VarId] {
@@ -1000,438 +576,74 @@ impl Operator for BinaryScanOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        // Pre-compute p_sids for all predicates (typically ~96 for DBLP)
-        let pred_count = self.graph_view.store().predicate_count();
-        self.p_sids = (0..pred_count)
-            .map(
-                |p_id| match self.graph_view.store().resolve_predicate_iri(p_id) {
-                    Some(iri) => self.graph_view.store().encode_iri(iri),
-                    None => Sid::new(0, ""),
-                },
-            )
-            .collect();
+        // Resolve store and g_id from context.
+        self.store = ctx.binary_store.clone();
+        self.g_id = ctx.binary_g_id;
 
-        // Extract bound terms from the pattern
-        let (s_sid, p_sid, o_val) = self.extract_bound_terms();
-
-        tracing::trace!(
-            ?s_sid,
-            ?p_sid,
-            overlay_ops = self.overlay_ops.len(),
-            "BinaryScanOperator::open: bound terms extracted"
-        );
-
-        let order = index_type_to_sort_order(self.index);
-
-        // Translate to RunRecord bounds
-        let bounds = self
-            .graph_view
-            .store()
-            .translate_range(
-                s_sid.as_ref(),
-                p_sid.as_ref(),
-                o_val.as_ref(),
-                order,
-                self.graph_view.g_id(),
-            )
-            .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
-
-        tracing::trace!(
-            has_bounds = bounds.is_some(),
-            "BinaryScanOperator::open: translate_range"
-        );
-
-        // If translate_range returned None but we had an object value,
-        // the value may be untranslatable (e.g., string literal with no
-        // reverse index). Retry without the object bound and enable
-        // post-filtering in batch_to_bindings instead.
-        let bounds = match bounds {
-            some @ Some(_) => some,
-            None => {
-                if o_val.is_some() {
-                    let retry = self
-                        .graph_view
-                        .store()
-                        .translate_range(
-                            s_sid.as_ref(),
-                            p_sid.as_ref(),
-                            None,
-                            order,
-                            self.graph_view.g_id(),
-                        )
-                        .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
-                    if retry.is_some() {
-                        self.bound_o_filter = o_val.clone();
-                        tracing::debug!("object value untranslatable, using post-filter scan");
-                    }
-                    retry
-                } else {
-                    None
-                }
-            }
-        };
-
-        // If bounds is still None but we have overlay ops and a bound subject,
-        // the subject may only exist in the overlay (e.g., novelty subject not
-        // yet indexed). Try DictOverlay for subject translation and create
-        // bounds for the overlay-only subject.
-        tracing::trace!(
-            bounds_present = bounds.is_some(),
-            overlay_ops_len = self.overlay_ops.len(),
-            s_sid = ?s_sid,
-            "binary_scan: checking overlay-only subject fallback"
-        );
-        let bounds = match bounds {
-            some @ Some(_) => some,
-            None if !self.overlay_ops.is_empty() && s_sid.is_some() => {
-                tracing::trace!(?s_sid, "binary_scan: trying overlay-only subject fallback");
-                if let Some(dict_ov) = &mut self.dict_overlay {
-                    tracing::trace!("binary_scan: have dict_overlay for overlay-only fallback");
-                    if let Some(s) = &s_sid {
-                        // Try to get s_id from DictOverlay (handles ephemeral subjects)
-                        match dict_ov.assign_subject_id_from_sid(s) {
-                            Ok(s_id) => {
-                                tracing::trace!(s_id, sid = ?s, "binary_scan: got s_id for overlay-only subject");
-                                // Create bounds for this specific subject
-                                use fluree_db_binary_index::RunRecord;
-                                use fluree_db_core::subject_id::SubjectId;
-                                // Try persisted store first; fall back to DictOverlay for
-                                // novelty-only predicates. Both paths use the same ephemeral
-                                // IDs as translate_overlay_flakes, so the bounds are valid.
-                                let p_id = p_sid.as_ref().map(|p| {
-                                    self.graph_view
-                                        .store()
-                                        .sid_to_p_id(p)
-                                        .unwrap_or_else(|| dict_ov.assign_predicate_id_from_sid(p))
-                                });
-
-                                let (min_o_kind, min_o_key, max_o_kind, max_o_key) =
-                                    if let Some(val) = &o_val {
-                                        if let Ok(Some((ok, okey))) =
-                                            self.graph_view.store().value_to_obj_pair(val)
-                                        {
-                                            (ok.as_u8(), okey.as_u64(), ok.as_u8(), okey.as_u64())
-                                        } else {
-                                            self.bound_o_filter = o_val.clone();
-                                            (
-                                                ObjKind::MIN.as_u8(),
-                                                0u64,
-                                                ObjKind::MAX.as_u8(),
-                                                u64::MAX,
-                                            )
-                                        }
-                                    } else {
-                                        (ObjKind::MIN.as_u8(), 0u64, ObjKind::MAX.as_u8(), u64::MAX)
-                                    };
-
-                                let min_key = RunRecord {
-                                    g_id: self.graph_view.g_id(),
-                                    s_id: SubjectId::from_u64(s_id),
-                                    p_id: p_id.unwrap_or(0),
-                                    dt: 0,
-                                    o_kind: min_o_kind,
-                                    op: 0,
-                                    o_key: min_o_key,
-                                    t: 0,
-                                    lang_id: 0,
-                                    i: 0,
-                                };
-                                let max_key = RunRecord {
-                                    g_id: self.graph_view.g_id(),
-                                    s_id: SubjectId::from_u64(s_id),
-                                    p_id: p_id.unwrap_or(u32::MAX),
-                                    dt: u16::MAX,
-                                    o_kind: max_o_kind,
-                                    op: 1,
-                                    o_key: max_o_key,
-                                    t: u32::MAX,
-                                    lang_id: u16::MAX,
-                                    i: u32::MAX,
-                                };
-                                tracing::trace!(s_id, "binary_scan: created overlay-only bounds");
-                                Some((min_key, max_key))
-                            }
-                            Err(e) => {
-                                tracing::trace!(error = %e, "binary_scan: assign_subject_id_from_sid failed");
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    tracing::trace!(
-                        "binary_scan: no dict_overlay available for overlay-only fallback"
-                    );
-                    None
-                }
-            }
-            // Overlay-only fallback: UNBOUND subject.
-            // When a predicate exists only in novelty (not yet indexed),
-            // translate_range returns None because sid_to_p_id fails.
-            // If overlay ops exist, create full-range bounds so the cursor
-            // can merge overlay ops. The BinaryFilter will narrow to the
-            // predicate via dict_overlay.
-            None if !self.overlay_ops.is_empty() && s_sid.is_none() => {
-                tracing::trace!("binary_scan: trying overlay-only fallback for unbound subject");
-                if let Some(dict_ov) = &mut self.dict_overlay {
-                    use fluree_db_binary_index::RunRecord;
-                    use fluree_db_core::subject_id::SubjectId;
-                    let p_id = p_sid
-                        .as_ref()
-                        .map(|p| dict_ov.assign_predicate_id_from_sid(p));
-                    // Full-range bounds spanning the entire graph.
-                    // The cursor will merge overlay ops; BinaryFilter
-                    // restricts to the resolved p_id.
-                    let min_key = RunRecord {
-                        g_id: self.graph_view.g_id(),
-                        s_id: SubjectId::from_u64(0),
-                        p_id: p_id.unwrap_or(0),
-                        dt: 0,
-                        o_kind: ObjKind::MIN.as_u8(),
-                        op: 0,
-                        o_key: 0,
-                        t: 0,
-                        lang_id: 0,
-                        i: 0,
-                    };
-                    let max_key = RunRecord {
-                        g_id: self.graph_view.g_id(),
-                        s_id: SubjectId::from_u64(u64::MAX),
-                        p_id: p_id.unwrap_or(u32::MAX),
-                        dt: u16::MAX,
-                        o_kind: ObjKind::MAX.as_u8(),
-                        op: 1,
-                        o_key: u64::MAX,
-                        t: u32::MAX,
-                        lang_id: u16::MAX,
-                        i: u32::MAX,
-                    };
-                    tracing::trace!(
-                        ?p_id,
-                        "binary_scan: created full-range overlay-only bounds (unbound subject)"
-                    );
-                    Some((min_key, max_key))
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
-
-        match bounds {
-            Some((mut min_key, mut max_key)) => {
-                // Narrow key range with ObjectBounds when available.
-                // Requires a bound predicate (need p_id for shape lookup and POST order).
-                if let Some(obj_bounds) = &self.object_bounds {
-                    if let Some(p) = &p_sid {
-                        if let Some(p_id) = self.graph_view.store().sid_to_p_id(p) {
-                            let shape = {
-                                let pred_iri_for_stats = self.graph_view.store().sid_to_iri(p);
-                                numeric_shape_from_db_stats(ctx, &pred_iri_for_stats, p)
-                            };
-                            let mut narrowed: Option<(ObjKind, ObjKey, ObjKind, ObjKey)> = None;
-                            if let Some(shape) = shape {
-                                match self
-                                    .graph_view
-                                    .store()
-                                    .translate_object_bounds(obj_bounds, p_id, shape)
-                                {
-                                    Some((min_ok, min_okey, max_ok, max_okey)) => {
-                                        narrowed = Some((min_ok, min_okey, max_ok, max_okey));
-                                        min_key.o_kind = min_ok.as_u8();
-                                        min_key.o_key = min_okey.as_u64();
-                                        max_key.o_kind = max_ok.as_u8();
-                                        max_key.o_key = max_okey.as_u64();
-                                    }
-                                    None => {
-                                        // Cannot safely narrow (e.g., Mixed numeric predicates or
-                                        // bounds that don't translate cleanly). Fall back to
-                                        // post-filtering with ObjectBounds after decoding.
-                                        //
-                                        // IMPORTANT: `translate_object_bounds` returning `None`
-                                        // does NOT necessarily mean "empty range" in the current
-                                        // API — it can also mean "no safe narrowing".
-                                    }
-                                }
-                            }
-
-                            // One-per-scan debug line to verify pushdown + float-only narrowing.
-                            // This should be low volume: it only triggers when ObjectBounds exist.
-                            let pred_iri = self.graph_view.store().sid_to_iri(p);
-                            let lower = obj_bounds
-                                .lower
-                                .as_ref()
-                                .map(|(v, inc)| (format!("{:?}", v), *inc));
-                            let upper = obj_bounds
-                                .upper
-                                .as_ref()
-                                .map(|(v, inc)| (format!("{:?}", v), *inc));
-                            let stats_graphs_len = ctx
-                                .snapshot
-                                .stats
-                                .as_ref()
-                                .and_then(|s| s.graphs.as_ref())
-                                .map(|g| g.len())
-                                .unwrap_or(0);
-                            let stats_classes_len = ctx
-                                .snapshot
-                                .stats
-                                .as_ref()
-                                .and_then(|s| s.classes.as_ref())
-                                .map(|c| c.len())
-                                .unwrap_or(0);
-                            match (shape, narrowed) {
-                                (Some(shape), Some((min_ok, _, max_ok, _))) => {
-                                    tracing::debug!(
-                                        predicate = %pred_iri,
-                                        p_id,
-                                        index = ?self.index,
-                                        shape = ?shape,
-                                        narrowed_min_kind = %min_ok,
-                                        narrowed_max_kind = %max_ok,
-                                        lower = ?lower,
-                                        upper = ?upper,
-                                        stats_graphs = stats_graphs_len,
-                                        stats_classes = stats_classes_len,
-                                        "binary scan: object bounds pushed down (narrowed key range)"
-                                    );
-                                }
-                                (Some(shape), None) => {
-                                    tracing::debug!(
-                                        predicate = %pred_iri,
-                                        p_id,
-                                        index = ?self.index,
-                                        shape = ?shape,
-                                        lower = ?lower,
-                                        upper = ?upper,
-                                        stats_graphs = stats_graphs_len,
-                                        stats_classes = stats_classes_len,
-                                        "binary scan: object bounds pushed down (no safe narrowing; post-filter)"
-                                    );
-                                }
-                                (None, _) => {
-                                    tracing::debug!(
-                                        predicate = %pred_iri,
-                                        p_id,
-                                        index = ?self.index,
-                                        lower = ?lower,
-                                        upper = ?upper,
-                                        stats_graphs = stats_graphs_len,
-                                        stats_classes = stats_classes_len,
-                                        "binary scan: object bounds pushed down (no stats-derived numeric shape; post-filter)"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Build BinaryFilter from bound terms
-                let mut filter = BinaryFilter::new();
-
-                if let Some(sid) = &s_sid {
-                    // First try persisted index
-                    if let Ok(Some(s_id)) = self.graph_view.store().sid_to_s_id(sid) {
-                        filter.s_id = Some(s_id);
-                    } else if let Some(dict_ov) = &mut self.dict_overlay {
-                        // Fallback to DictOverlay for novelty-only subjects
-                        if let Ok(s_id) = dict_ov.assign_subject_id_from_sid(sid) {
-                            filter.s_id = Some(s_id);
-                        }
-                    }
-                }
-                let resolved_p_id = p_sid.as_ref().and_then(|sid| {
-                    self.graph_view
-                        .store()
-                        .sid_to_p_id(sid)
-                        // Fallback to DictOverlay for novelty-only predicates
-                        .or_else(|| {
-                            self.dict_overlay
-                                .as_mut()
-                                .map(|ov| ov.assign_predicate_id_from_sid(sid))
-                        })
-                });
-                if let Some(p_id) = resolved_p_id {
-                    filter.p_id = Some(p_id);
-                }
-                if let Some(val) = &o_val {
-                    let pair_result = if let Some(p_id) = resolved_p_id {
-                        self.graph_view.value_to_obj_pair_for_predicate(val, p_id)
-                    } else {
-                        self.graph_view.store().value_to_obj_pair(val)
-                    };
-                    if let Ok(Some((ok, okey))) = pair_result {
-                        filter.o_kind = Some(ok.as_u8());
-                        filter.o_key = Some(okey.as_u64());
-                    }
-                }
-
-                // Use optimized subject lookup for SPOT with bound subject
-                let need_region2 =
-                    self.o_var_pos.is_some() && !object_var_is_ref_only(&self.pattern);
-                tracing::debug!(
-                    need_region2,
-                    o_is_var = self.o_var_pos.is_some(),
-                    object_ref_only = object_var_is_ref_only(&self.pattern),
-                    p = ?self.pattern.p,
-                    "binary_scan: cursor need_region2 decision"
-                );
-                let cursor = if order == RunSortOrder::Spot {
-                    if let Some(s_id) = filter.s_id {
-                        BinaryCursor::for_subject(
-                            self.graph_view.clone_store(),
-                            self.graph_view.g_id(),
-                            s_id,
-                            filter.p_id,
-                            need_region2,
-                        )
-                    } else {
-                        BinaryCursor::new(
-                            self.graph_view.clone_store(),
-                            order,
-                            self.graph_view.g_id(),
-                            &min_key,
-                            &max_key,
-                            filter,
-                            need_region2,
-                        )
-                    }
-                } else {
-                    BinaryCursor::new(
-                        self.graph_view.clone_store(),
-                        order,
-                        self.graph_view.g_id(),
-                        &min_key,
-                        &max_key,
-                        filter,
-                        need_region2,
-                    )
-                };
-
-                // Propagate time-travel target and overlay state to the cursor.
-                let mut cursor = cursor;
-                cursor.set_to_t(ctx.to_t);
-
-                // Always propagate overlay epoch for cache key correctness.
-                if self.overlay_epoch > 0 {
-                    cursor.set_epoch(self.overlay_epoch);
-                }
-
-                // Sort and pass pre-translated overlay ops for query-time merge.
-                if !self.overlay_ops.is_empty() {
-                    sort_overlay_ops(&mut self.overlay_ops, order);
-                    cursor.set_overlay_ops(std::mem::take(&mut self.overlay_ops));
-                }
-
-                self.cursor = Some(cursor);
-                self.state = OperatorState::Open;
-            }
-            None => {
-                // No results possible (lookup failed or OPST guard)
-                self.state = OperatorState::Exhausted;
+        // Pre-compute p_id → Sid table.
+        let mut p_sids = Vec::new();
+        let store = self.store();
+        for p_id in 0u32.. {
+            match store.resolve_predicate_iri(p_id) {
+                Some(iri) => p_sids.push(store.encode_iri(iri)),
+                None => break,
             }
         }
+        self.p_sids = p_sids;
+
+        // Extract bound terms and build filter.
+        let (s_sid, p_sid, o_val) = self.extract_bound_terms();
+        self.bound_o = o_val;
+        let filter = self
+            .build_filter(&s_sid, &p_sid)
+            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+
+        let order = index_type_to_sort_order(self.index);
+        let projection = ColumnProjection::all();
+
+        // Get branch manifest (clone into Arc for cursor ownership).
+        let store = self.store();
+        let branch_ref = store.branch_for_order(self.g_id, order).ok_or_else(|| {
+            QueryError::Internal(format!(
+                "no V3 branch for g_id={}, order={:?}",
+                self.g_id, order
+            ))
+        })?;
+        let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
+            Arc::new(branch_ref.clone());
+
+        // Create cursor: full scan with filter.
+        let mut cursor =
+            BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection);
+
+        // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
+        if ctx.overlay.is_some() {
+            let mut ops = translate_overlay_flakes_v3(
+                ctx.overlay(),
+                store,
+                ctx.dict_novelty.as_ref(),
+                ctx.to_t,
+                self.g_id,
+            );
+            if !ops.is_empty() {
+                sort_overlay_ops(&mut ops, order);
+                let epoch = ctx.overlay().epoch();
+                cursor.set_overlay_ops(ops);
+                cursor.set_epoch(epoch);
+            }
+        }
+        cursor.set_to_t(ctx.to_t);
+
+        self.cursor = Some(cursor);
+        self.state = OperatorState::Open;
+
+        tracing::debug!(
+            index = ?self.index,
+            order = ?order,
+            g_id = self.g_id,
+            pattern = ?self.pattern,
+            "BinaryScanOperator::open"
+        );
 
         Ok(())
     }
@@ -1451,45 +663,26 @@ impl Operator for BinaryScanOperator {
             .collect();
 
         let mut produced = 0usize;
-        let mut leaves_scanned = 0usize;
-        let scan_start = std::time::Instant::now();
 
-        // Pull decoded batches from cursor until we fill a batch or exhaust cursor
         while produced < batch_size {
             let cursor = match &mut self.cursor {
                 Some(c) => c,
                 None => break,
             };
 
-            match cursor.next_leaf() {
-                Ok(Some(decoded)) => {
-                    leaves_scanned += 1;
-                    let n = self.batch_to_bindings(&decoded, &mut columns, Some(ctx))?;
+            match cursor.next_batch() {
+                Ok(Some(batch)) => {
+                    let n = self.batch_to_bindings(&batch, &mut columns, Some(ctx))?;
                     for _ in 0..n {
                         ctx.tracker.consume_fuel_one()?;
                     }
                     produced += n;
                 }
-                Ok(None) => {
-                    // Cursor exhausted
-                    break;
-                }
+                Ok(None) => break,
                 Err(e) => {
-                    return Err(QueryError::Internal(format!("binary cursor: {}", e)));
+                    return Err(QueryError::Internal(format!("V3 cursor: {}", e)));
                 }
             }
-        }
-
-        let scan_ms = scan_start.elapsed().as_secs_f64() * 1000.0;
-        if produced > 0 {
-            tracing::trace!(
-                leaves_scanned,
-                rows = produced,
-                scan_ms = format!("{:.2}", scan_ms),
-                sid_cache_size = self.sid_cache.len(),
-                index = ?self.index,
-                "binary_scan batch"
-            );
         }
 
         if produced == 0 {
@@ -1509,815 +702,371 @@ impl Operator for BinaryScanOperator {
         self.cursor = None;
         self.sid_cache.clear();
         self.p_sids.clear();
-        self.bound_o_filter = None;
-        self.dict_overlay = None;
         self.state = OperatorState::Closed;
     }
 }
 
 // ============================================================================
-// Overlay Flake → OverlayOp translation
+// Overlay translation: Flake → OverlayOp
 // ============================================================================
 
-/// Translate overlay flakes from Sid/FlakeValue space to integer-ID space.
+/// Translate overlay flakes to V3 integer-ID space.
 ///
-/// Uses `DictOverlay` to allocate ephemeral IDs for subjects, predicates,
-/// strings, and language tags not yet in the persisted binary dictionaries.
-/// This makes overlay translation infallible — every flake is always
-/// translatable.
-///
-/// Flakes are filtered by `g_id`:
-/// - `g_id == 0`: only flakes in the default graph (`flake.g.is_none()`)
-/// - `g_id > 0`: only flakes in the named graph matching `g_id`
-pub(crate) fn translate_overlay_flakes(
+/// Uses the V6 store for persisted dictionary lookups and DictNovelty for
+/// ephemeral IDs from uncommitted transactions.
+fn translate_overlay_flakes_v3(
     overlay: &dyn OverlayProvider,
-    dict_overlay: &mut crate::dict_overlay::DictOverlay,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     to_t: i64,
     g_id: GraphId,
 ) -> Vec<OverlayOp> {
     let mut ops = Vec::new();
-    let mut io_error: Option<std::io::Error> = None;
+    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut next_ephemeral_p_id = store.predicate_count();
 
-    tracing::trace!(
-        epoch = overlay.epoch(),
-        to_t,
-        g_id,
-        "translate_overlay_flakes: starting"
-    );
-
-    // Collect overlay flakes for the requested graph. Per-graph novelty returns
-    // only that graph's flakes — no per-flake sid_to_iri reconstruction needed.
     overlay.for_each_overlay_flake(
         g_id,
-        IndexType::Spot,
+        fluree_db_core::IndexType::Spot,
         None,
         None,
         true,
         to_t,
-        &mut |flake| {
-            tracing::trace!(
-                s = ?flake.s,
-                p = ?flake.p,
-                o = ?flake.o,
-                t = flake.t,
-                op = ?flake.op,
-                g_id,
-                "translate_overlay_flakes: processing flake"
-            );
-            if io_error.is_some() {
-                return;
-            }
-            match translate_one_flake(flake, dict_overlay) {
-                Ok(op) => ops.push(op),
-                Err(e) => {
-                    // IO errors from mmap reads are truly exceptional; log and
-                    // stop collecting (remaining flakes will be missing from
-                    // overlay, but this is a storage-level failure, not a
-                    // dictionary gap).
-                    tracing::error!(%e, "IO error during overlay translation");
-                    io_error = Some(e);
-                }
+        &mut |flake| match translate_one_flake_v3_pub(
+            flake,
+            store,
+            dict_novelty,
+            &mut ephemeral_preds,
+            &mut next_ephemeral_p_id,
+        ) {
+            Ok(op) => ops.push(op),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to translate overlay flake to V3");
             }
         },
     );
 
-    tracing::trace!(count = ops.len(), "translate_overlay_flakes: collected ops");
     ops
 }
 
-/// Translate a single Flake to an OverlayOp using the DictOverlay.
+/// Translate a single Flake to an OverlayOp.
 ///
-/// All dictionary lookups that previously returned `Err("unknown ...")` now
-/// delegate to `DictOverlay::assign_*` methods, which allocate ephemeral IDs
-/// for entities not in the persisted dictionaries. Only true IO errors
-/// (mmap read failures) propagate.
-fn translate_one_flake(
-    flake: &Flake,
-    dict_overlay: &mut crate::dict_overlay::DictOverlay,
+/// `pub(crate)` so `binary_range` can reuse it for overlay translation.
+pub(crate) fn translate_one_flake_v3_pub(
+    flake: &fluree_db_core::Flake,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ephemeral_preds: &mut HashMap<String, u32>,
+    next_ephemeral_p_id: &mut u32,
 ) -> std::io::Result<OverlayOp> {
-    let s_id = dict_overlay.assign_subject_id_from_sid(&flake.s)?;
-    let p_id = dict_overlay.assign_predicate_id_from_sid(&flake.p);
-    let (o_kind, o_key) = dict_overlay.value_to_obj_pair(&flake.o)?;
-    let dt = dict_overlay.assign_dt_id(&flake.dt);
+    // Subject: persisted → DictNovelty → error
+    let s_id = resolve_subject_v3(&flake.s, store, dict_novelty)?;
 
-    let (lang_id, i_val) = match &flake.m {
-        Some(meta) => {
-            let lang_id = match &meta.lang {
-                Some(tag) => dict_overlay.assign_lang_id(tag),
-                None => 0,
-            };
-            let i_val = meta.i.unwrap_or(ListIndex::none().as_i32());
-            (lang_id, i_val)
-        }
-        None => (0, ListIndex::none().as_i32()),
-    };
+    // Predicate: persisted → ephemeral
+    let p_iri = store.sid_to_iri(&flake.p);
+    let p_id = resolve_predicate_v3(&p_iri, store, ephemeral_preds, next_ephemeral_p_id);
+
+    // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
+    let lang = flake.m.as_ref().and_then(|m| m.lang.as_deref());
+    let (o_type, o_key) = value_to_otype_okey(&flake.o, &flake.dt, lang, store, dict_novelty)?;
+
+    // List index
+    let o_i = flake
+        .m
+        .as_ref()
+        .and_then(|m| m.i)
+        .map(|i| i as u32)
+        .unwrap_or(u32::MAX);
 
     Ok(OverlayOp {
         s_id,
         p_id,
-        o_kind: o_kind.as_u8(),
-        o_key: o_key.as_u64(),
+        o_type: o_type.as_u16(),
+        o_key,
+        o_i,
         t: flake.t,
         op: flake.op,
-        dt,
-        lang_id,
-        i_val,
     })
 }
 
-// ============================================================================
-// ScanOperator
-// ============================================================================
-
-/// The sole scan operator for WHERE-clause triple patterns.
+/// Resolve a predicate IRI to p_id.
 ///
-/// Created at plan time (before the `ExecutionContext` exists) with just the
-/// pattern and optional object bounds. At `open()` time it inspects the context
-/// and selects the appropriate scan strategy:
-///
-/// - **Binary cursor path**: When `ctx.binary_store` is present and the query
-///   mode is compatible (not multi-ledger, not history, time within index
-///   coverage). This is the fast streaming path via `BinaryScanOperator`.
-///
-/// - **Range-based fallback**: When the binary cursor path is not available —
-///   pre-index databases, history mode, time-travel before `base_t`. Delegates
-///   to `range_with_overlay()` via `RangeScanOperator`.
-///
-/// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
-/// are allocated for entities not yet in the persisted dictionaries).
-pub struct ScanOperator {
-    pattern: TriplePattern,
-    object_bounds: Option<ObjectBounds>,
-    schema: Arc<[VarId]>,
-    inner: Option<BoxedOperator>,
-    state: OperatorState,
-    /// Inline operators evaluated during batch processing.
-    /// Applied after building bindings, before returning the batch.
-    /// This reduces operator overhead by avoiding separate FilterOperator/BindOperator nodes.
-    inline_ops: Vec<InlineOperator>,
-    /// Which pattern variables to emit into schema.
-    emit: EmitMask,
-    /// Optional explicit index selection (overrides IndexType::for_query).
-    ///
-    /// Used to align scan physical order with downstream operators (e.g., GROUP BY).
-    index_hint: Option<IndexType>,
+/// Predicates are not tracked in DictNovelty (they're per-query ephemeral in V5).
+/// For V3 overlay, novel predicates get an ephemeral p_id above the persisted count.
+/// These ephemeral IDs won't match any persisted data (correct: the predicate
+/// is novelty-only), but will match overlay ops that use the same ID.
+fn resolve_predicate_v3(
+    iri: &str,
+    store: &BinaryIndexStore,
+    ephemeral_preds: &mut HashMap<String, u32>,
+    next_ephemeral_p_id: &mut u32,
+) -> u32 {
+    if let Some(id) = store.find_predicate_id(iri) {
+        return id;
+    }
+    // Ephemeral allocation for novel predicates.
+    *ephemeral_preds.entry(iri.to_string()).or_insert_with(|| {
+        let id = *next_ephemeral_p_id;
+        *next_ephemeral_p_id += 1;
+        id
+    })
 }
 
-impl ScanOperator {
-    /// Create a new scan operator for a triple pattern.
-    ///
-    /// Schema is computed from the pattern variables, extended with any bind
-    /// variables from inline operators. Inline operators are evaluated during batch
-    /// processing, which is more efficient than wrapping with separate
-    /// FilterOperator/BindOperator nodes.
-    pub fn new(
-        pattern: TriplePattern,
-        object_bounds: Option<ObjectBounds>,
-        inline_ops: Vec<InlineOperator>,
-    ) -> Self {
-        Self::new_with_emit(pattern, object_bounds, inline_ops, EmitMask::ALL)
+/// Resolve a subject Sid to s_id using persisted dict then DictNovelty.
+fn resolve_subject_v3(
+    sid: &Sid,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<u64> {
+    // 1. Persisted
+    if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
+        return Ok(id);
     }
-
-    /// Create a new scan operator with explicit emission control.
-    pub fn new_with_emit(
-        pattern: TriplePattern,
-        object_bounds: Option<ObjectBounds>,
-        inline_ops: Vec<InlineOperator>,
-        emit: EmitMask,
-    ) -> Self {
-        Self::new_with_emit_and_index(pattern, object_bounds, inline_ops, emit, None)
-    }
-
-    /// Create a new scan operator with explicit emission control and index hint.
-    pub fn new_with_emit_and_index(
-        pattern: TriplePattern,
-        object_bounds: Option<ObjectBounds>,
-        inline_ops: Vec<InlineOperator>,
-        emit: EmitMask,
-        index_hint: Option<IndexType>,
-    ) -> Self {
-        let (base_schema, _, _, _) = schema_from_pattern_with_emit(&pattern, emit);
-        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
-        Self {
-            pattern,
-            object_bounds,
-            schema,
-            inner: None,
-            state: OperatorState::Created,
-            inline_ops,
-            emit,
-            index_hint,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for ScanOperator {
-    fn schema(&self) -> &[VarId] {
-        match &self.inner {
-            Some(op) => op.schema(),
-            None => &self.schema,
-        }
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+    // 2. DictNovelty
+    if let Some(dn) = dict_novelty {
+        if dn.is_initialized() {
+            if let Some(id) = dn.subjects.find_subject(sid.namespace_code, &sid.name) {
+                return Ok(id);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
         }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "subject not found in persisted or novelty dict: ns={} name={}",
+            sid.namespace_code, sid.name
+        ),
+    ))
+}
 
-        // ── V6 (V3 format) fast path ──────────────────────────────────
-        // Check V6 store first. When present, use the V3 columnar scan
-        // operator exclusively — V5 paths must never touch V3 leaf bytes.
-        let use_binary_v6 = ctx.binary_store_v6.is_some() && {
-            let s = ctx.binary_store_v6.as_ref().unwrap();
-            ctx.to_t >= s.base_t()
-                && !ctx.history_mode
-                && ctx.from_t.is_none()
-                && ctx.policy_enforcer.as_ref().is_none_or(|enf| enf.is_root())
-        };
-
-        if use_binary_v6 {
-            let store = ctx.binary_store_v6.as_ref().unwrap().clone();
-            let mut inner: BoxedOperator =
-                Box::new(crate::binary_scan_v3::BinaryScanOperatorV3::new(
-                    self.pattern.clone(),
-                    store,
-                    ctx.binary_g_id,
-                    self.object_bounds.clone(),
-                    std::mem::take(&mut self.inline_ops),
-                    self.emit,
-                    self.index_hint,
-                ));
-            inner.open(ctx).await?;
-            self.inner = Some(inner);
-            self.state = OperatorState::Open;
-            return Ok(());
+/// Resolve a string value to a string_id using persisted dict then DictNovelty.
+fn resolve_string_v3(
+    value: &str,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<u32> {
+    // 1. Persisted
+    if let Some(id) = store.find_string_id(value)? {
+        return Ok(id);
+    }
+    // 2. DictNovelty
+    if let Some(dn) = dict_novelty {
+        if dn.is_initialized() {
+            if let Some(id) = dn.strings.find_string(value) {
+                return Ok(id);
+            }
         }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "string not found in dict: {}",
+            &value[..value.len().min(50)]
+        ),
+    ))
+}
 
-        // ── V5 fast path ─────────────────────────────────────────────
-        // Determine whether the binary cursor path can handle this query.
-        // Binary cursors require: store present, single-ledger, time within
-        // coverage, no history mode, no time-range queries.  Everything else
-        // falls back to range_with_overlay() which works for multi-ledger,
-        // pre-index, history, and time-travel-before-base_t via the
-        // RangeProvider trait.
-        let use_binary = ctx.has_binary_store() && ctx.binary_store.is_some() && {
-            let s = ctx.binary_store.as_ref().unwrap();
-            ctx.to_t >= s.base_t()
-                && !ctx.history_mode
-                && ctx.from_t.is_none()
-                // Policy enforcement currently operates on materialized flakes.
-                // When a non-root policy is present, fall back to the flake-based
-                // range path (`range_with_overlay`) so policy filtering is applied.
-                && ctx
-                    .policy_enforcer
-                    .as_ref()
-                    .is_none_or(|enf| enf.is_root())
-        };
-
-        tracing::trace!(
-            pattern = ?self.pattern,
-            use_binary,
-            has_overlay = ctx.overlay.is_some(),
-            to_t = ctx.to_t,
-            "ScanOperator::open"
-        );
-        if let Some(s) = ctx.binary_store.as_ref() {
-            tracing::trace!(
-                base_t = s.base_t(),
-                "ScanOperator::open: binary_store present"
+/// Convert a FlakeValue to `(OType, o_key)` in V3 encoding.
+///
+/// Uses `dt_sid` (the flake's datatype Sid) and `lang` (from FlakeMeta) to derive
+/// the correct OType, rather than inferring purely from the FlakeValue variant.
+/// This is critical for:
+/// - langString: OType must embed the lang_id, not use XSD_STRING
+/// - numeric subtypes: xsd:int vs xsd:integer can share the same FlakeValue::Long
+/// - string subtypes: xsd:anyURI vs xsd:string share FlakeValue::String
+fn value_to_otype_okey(
+    val: &FlakeValue,
+    dt_sid: &Sid,
+    lang: Option<&str>,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<(OType, u64)> {
+    // If the value has a language tag, it's rdf:langString — encode lang_id into OType.
+    if let Some(lang_tag) = lang {
+        let str_id = resolve_string_v3(
+            match val {
+                FlakeValue::String(s) => s,
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "langString value must be FlakeValue::String",
+                    ))
+                }
+            },
+            store,
+            dict_novelty,
+        )?;
+        let lang_id = store.resolve_lang_id(lang_tag).unwrap_or_else(|| {
+            tracing::warn!(
+                tag = lang_tag,
+                "language tag not found in persisted dict, using 1"
             );
+            1
+        });
+        return Ok((OType::lang_string(lang_id), str_id as u64));
+    }
+
+    // For value types that are dt-dependent (Long, Double, String), resolve
+    // the exact OType from the datatype Sid IRI. For value types with 1:1
+    // OType mapping (Bool, Date, Ref, etc.), the FlakeValue variant suffices.
+    let dt_otype = otype_from_dt_sid(dt_sid, store);
+
+    match val {
+        FlakeValue::Null => Ok((OType::NULL, 0)),
+        FlakeValue::Boolean(b) => Ok((OType::XSD_BOOLEAN, *b as u64)),
+        FlakeValue::Long(n) => {
+            // Use dt-derived OType for integer subtypes (xsd:int, xsd:short, etc.)
+            let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
+            Ok((ot, ObjKey::encode_i64(*n).as_u64()))
         }
-
-        // When the binary path is selected, create a DictOverlay for ephemeral
-        // ID resolution during both overlay translation and result decoding.
-        // If overlay exists, translate flakes to integer-ID space (infallible —
-        // ephemeral IDs are allocated for entities not in persisted dictionaries).
-        let (overlay_data, dict_overlay) = if use_binary {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
-
-            let overlay_data = if ctx.overlay.is_some() {
-                let ops = translate_overlay_flakes(
-                    ctx.overlay(),
-                    &mut dict_ov,
-                    ctx.to_t,
-                    ctx.binary_g_id,
-                );
-                tracing::trace!(
-                    overlay_ops = ops.len(),
-                    g_id = ctx.binary_g_id,
-                    "ScanOperator::open: translated overlay ops"
-                );
-                let epoch = ctx.overlay().epoch();
-                (!ops.is_empty()).then_some((ops, epoch))
+        FlakeValue::Double(d) => {
+            if d.is_finite() && d.fract() == 0.0 {
+                let as_i64 = *d as i64;
+                if (as_i64 as f64) == *d {
+                    let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
+                    return Ok((ot, ObjKey::encode_i64(as_i64).as_u64()));
+                }
+            }
+            if d.is_finite() {
+                let ot = dt_otype.unwrap_or(OType::XSD_DOUBLE);
+                match ObjKey::encode_f64(*d) {
+                    Ok(key) => Ok((ot, key.as_u64())),
+                    Err(_) => Ok((OType::NULL, 0)),
+                }
             } else {
-                None
-            };
-
-            (overlay_data, Some(dict_ov))
-        } else {
-            (None, None)
-        };
-
-        let mut inner: BoxedOperator = if use_binary {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
-            let mut op = BinaryScanOperator::new(
-                self.pattern.clone(),
-                gv,
-                self.object_bounds.clone(),
-                std::mem::take(&mut self.inline_ops),
-                self.emit,
-                self.index_hint,
-            );
-            if let Some((ops, epoch)) = overlay_data {
-                op.set_overlay(ops, epoch);
+                Ok((OType::NULL, 0))
             }
-            if let Some(dict_ov) = dict_overlay {
-                op.set_dict_overlay(dict_ov);
-            }
-            Box::new(op)
-        } else {
-            // Fallback: range_with_overlay() for pre-index, history, or
-            // time-travel-before-base_t queries.
-            Box::new(RangeScanOperator::new(
-                self.pattern.clone(),
-                self.object_bounds.clone(),
-                std::mem::take(&mut self.inline_ops),
-                self.emit,
+        }
+        FlakeValue::Ref(sid) => {
+            let s_id = resolve_subject_v3(sid, store, dict_novelty)?;
+            Ok((OType::IRI_REF, s_id))
+        }
+        FlakeValue::String(s) => {
+            let str_id = resolve_string_v3(s, store, dict_novelty)?;
+            // Use dt-derived OType for string subtypes (xsd:anyURI, xsd:token, etc.)
+            let ot = dt_otype.unwrap_or(OType::XSD_STRING);
+            Ok((ot, str_id as u64))
+        }
+        FlakeValue::Json(s) => {
+            let str_id = resolve_string_v3(s, store, dict_novelty)?;
+            Ok((OType::RDF_JSON, str_id as u64))
+        }
+        FlakeValue::Date(d) => {
+            let days = d.days_since_epoch();
+            Ok((OType::XSD_DATE, ObjKey::encode_date(days).as_u64()))
+        }
+        FlakeValue::DateTime(dt) => {
+            let micros = dt.epoch_micros();
+            Ok((
+                OType::XSD_DATE_TIME,
+                ObjKey::encode_datetime(micros).as_u64(),
             ))
-        };
-
-        inner.open(ctx).await?;
-        self.inner = Some(inner);
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        match &mut self.inner {
-            Some(op) => op.next_batch(ctx).await,
-            None => Err(QueryError::OperatorNotOpened),
         }
-    }
-
-    fn close(&mut self) {
-        if let Some(op) = &mut self.inner {
-            op.close();
+        FlakeValue::Time(t) => {
+            let micros = t.micros_since_midnight();
+            Ok((OType::XSD_TIME, ObjKey::encode_time(micros).as_u64()))
         }
-        self.inner = None;
-        self.state = OperatorState::Closed;
-    }
-}
-
-// ============================================================================
-// RangeScanOperator — range_with_overlay() path
-// ============================================================================
-
-/// Range-based scan operator that delegates to `range_with_overlay()`.
-///
-/// Used when the binary cursor path is not available:
-/// - Pre-index databases (no `BinaryIndexStore` yet — indexing is async)
-/// - History mode queries
-/// - Time-travel before `base_t`
-///
-/// When a `RangeProvider` is attached to the `LedgerSnapshot` (the normal post-index
-/// state), `range_with_overlay()` routes through it, so queries still
-/// execute against the binary index — just via materialized collection
-/// rather than streaming cursors.
-///
-/// For genesis databases (t=0, no index, no provider), returns overlay-only
-/// flakes.
-struct RangeScanOperator {
-    pattern: TriplePattern,
-    object_bounds: Option<ObjectBounds>,
-    schema: Arc<[VarId]>,
-    s_var_pos: Option<usize>,
-    p_var_pos: Option<usize>,
-    o_var_pos: Option<usize>,
-    /// Whether predicate is a variable (for internal predicate filtering).
-    ///
-    /// Mirrors `BinaryScanOperator` behavior: when `?p` is unbound, skip
-    /// internal fluree:ledger predicates (commit metadata) so wildcard
-    /// patterns like `?s ?p ?o` don't surface internal rows.
-    p_is_var: bool,
-    /// Graph ID — used to suppress internal predicate filtering for txn-meta
-    /// (g_id=1) and named graphs where db: namespace predicates are the data.
-    g_id: GraphId,
-    state: OperatorState,
-    batches: VecDeque<Batch>,
-    /// Inline operators evaluated during batch building.
-    inline_ops: Vec<InlineOperator>,
-}
-
-impl RangeScanOperator {
-    fn new(
-        pattern: TriplePattern,
-        object_bounds: Option<ObjectBounds>,
-        inline_ops: Vec<InlineOperator>,
-        emit: EmitMask,
-    ) -> Self {
-        let p_is_var = pattern.p.is_var();
-        let (base_schema, s_var_pos, p_var_pos, o_var_pos) =
-            schema_from_pattern_with_emit(&pattern, emit);
-        let schema: Arc<[VarId]> = extend_schema(&base_schema, &inline_ops).into();
-
-        Self {
-            pattern,
-            object_bounds,
-            schema,
-            s_var_pos,
-            p_var_pos,
-            o_var_pos,
-            p_is_var,
-            g_id: 0,
-            state: OperatorState::Created,
-            batches: VecDeque::new(),
-            inline_ops,
-        }
-    }
-
-    /// Build a `RangeMatch` from the pattern's bound terms.
-    fn build_range_match(&self, snapshot: &LedgerSnapshot) -> RangeMatch {
-        let mut rm = RangeMatch::new();
-
-        match &self.pattern.s {
-            Ref::Sid(sid) => rm.s = Some(sid.clone()),
-            Ref::Iri(iri) => {
-                if let Some(sid) = snapshot.encode_iri(iri) {
-                    rm.s = Some(sid);
-                }
-            }
-            _ => {}
-        }
-
-        match &self.pattern.p {
-            Ref::Sid(sid) => rm.p = Some(sid.clone()),
-            Ref::Iri(iri) => {
-                if let Some(sid) = snapshot.encode_iri(iri) {
-                    rm.p = Some(sid);
-                }
-            }
-            _ => {}
-        }
-
-        match &self.pattern.o {
-            Term::Sid(sid) => rm.o = Some(FlakeValue::Ref(sid.clone())),
-            Term::Value(val) => rm.o = Some(val.clone()),
-            Term::Iri(iri) => {
-                if let Some(sid) = snapshot.encode_iri(iri) {
-                    rm.o = Some(FlakeValue::Ref(sid));
-                }
-            }
-            _ => {}
-        }
-
-        if let Some(dtc) = &self.pattern.dtc {
-            rm.dt = Some(dtc.datatype().clone());
-        }
-
-        rm
-    }
-
-    /// Build `RangeOptions` from execution context and this operator's bounds.
-    fn build_range_opts(&self, to_t: i64, ctx: &ExecutionContext<'_>) -> RangeOptions {
-        let mut opts = RangeOptions::new().with_to_t(to_t);
-        if let Some(from_t) = ctx.from_t {
-            opts = opts.with_from_t(from_t);
-        }
-        if ctx.history_mode {
-            opts = opts.with_history_mode();
-        }
-        if let Some(bounds) = &self.object_bounds {
-            opts = opts.with_object_bounds(bounds.clone());
-        }
-        opts
-    }
-
-    /// Scan one graph: range query + policy enforcement + post-filtering.
-    ///
-    /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
-    #[allow(clippy::too_many_arguments)]
-    async fn scan_one_graph(
-        &self,
-        snapshot: &LedgerSnapshot,
-        overlay: &dyn OverlayProvider,
-        g_id: GraphId,
-        to_t: i64,
-        index: IndexType,
-        ctx: &ExecutionContext<'_>,
-        policy_enforcer: Option<&Arc<QueryPolicyEnforcer>>,
-    ) -> Result<Vec<Flake>> {
-        let range_match = self.build_range_match(snapshot);
-        let opts = self.build_range_opts(to_t, ctx);
-        let flakes = range_with_overlay(
-            snapshot,
-            g_id,
-            overlay,
-            index,
-            RangeTest::Eq,
-            range_match,
-            opts,
-        )
-        .await
-        .map_err(|e| QueryError::execution(e.to_string()))?;
-
-        // Policy filter (skip for root policies).
-        let flakes = match policy_enforcer {
-            Some(enforcer) if !enforcer.is_root() => {
-                let subjects: Vec<fluree_db_core::Sid> = flakes
-                    .iter()
-                    .map(|f| f.s.clone())
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
-                enforcer
-                    .populate_class_cache_for_graph(db, &subjects)
-                    .await?;
-                enforcer
-                    .filter_flakes_for_graph(snapshot, overlay, to_t, &ctx.tracker, flakes)
-                    .await?
-            }
-            _ => flakes,
-        };
-
-        // Post-filter (overlay may return a superset).
-        Ok(flakes
-            .into_iter()
-            .filter(|f| self.flake_matches(f, snapshot))
-            .collect())
-    }
-
-    /// Check if a flake matches the pattern's bound terms.
-    ///
-    /// `range_with_overlay` may return a superset (especially in the
-    /// overlay-only genesis path), so we post-filter here.
-    fn flake_matches(&self, f: &Flake, snapshot: &LedgerSnapshot) -> bool {
-        match &self.pattern.s {
-            Ref::Sid(sid) if &f.s != sid => return false,
-            Ref::Iri(iri) => match snapshot.encode_iri(iri) {
-                Some(sid) if f.s != sid => return false,
-                None => return false,
-                _ => {}
-            },
-            _ => {}
-        }
-
-        match &self.pattern.p {
-            Ref::Sid(sid) if &f.p != sid => return false,
-            Ref::Iri(iri) => match snapshot.encode_iri(iri) {
-                Some(sid) if f.p != sid => return false,
-                None => return false,
-                _ => {}
-            },
-            _ => {}
-        }
-
-        match &self.pattern.o {
-            Term::Sid(sid) => {
-                if f.o != FlakeValue::Ref(sid.clone()) {
-                    return false;
-                }
-            }
-            Term::Value(val) if &f.o != val => return false,
-            Term::Iri(iri) => match snapshot.encode_iri(iri) {
-                Some(sid) if f.o != FlakeValue::Ref(sid.clone()) => return false,
-                None => return false,
-                _ => {}
-            },
-            _ => {}
-        }
-
-        if let Some(dtc) = &self.pattern.dtc {
-            if !dt_compatible(dtc.datatype(), &f.dt) {
-                return false;
-            }
-        }
-
-        if let Some(bounds) = &self.object_bounds {
-            if !bounds.matches(&f.o) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Convert a single flake to binding values matching the schema.
-    fn flake_to_row(&self, f: &Flake, history_mode: bool) -> Vec<Binding> {
-        let mut row = Vec::with_capacity(self.schema.len());
-
-        if self.s_var_pos.is_some() {
-            row.push(Binding::Sid(f.s.clone()));
-        }
-        if self.p_var_pos.is_some() {
-            row.push(Binding::Sid(f.p.clone()));
-        }
-        if self.o_var_pos.is_some() {
-            let binding = match &f.o {
-                FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
-                val => Binding::Lit {
-                    val: val.clone(),
-                    dt: f.dt.clone(),
-                    lang: f
-                        .m
-                        .as_ref()
-                        .and_then(|m| m.lang.as_ref().map(|s| Arc::from(s.as_str()))),
-                    // Always attach `t` for literal bindings so `t(?var)` works even
-                    // outside history mode when explicitly requested via `@t`.
-                    t: Some(f.t),
-                    op: if history_mode { Some(f.op) } else { None },
-                    p_id: None,
-                },
-            };
-            row.push(binding);
-        }
-
-        row
+        FlakeValue::GYear(g) => Ok((OType::XSD_G_YEAR, ObjKey::encode_g_year(g.year()).as_u64())),
+        FlakeValue::GYearMonth(g) => Ok((
+            OType::XSD_G_YEAR_MONTH,
+            ObjKey::encode_g_year_month(g.year(), g.month()).as_u64(),
+        )),
+        FlakeValue::GMonth(g) => Ok((
+            OType::XSD_G_MONTH,
+            ObjKey::encode_g_month(g.month()).as_u64(),
+        )),
+        FlakeValue::GDay(g) => Ok((OType::XSD_G_DAY, ObjKey::encode_g_day(g.day()).as_u64())),
+        FlakeValue::GMonthDay(g) => Ok((
+            OType::XSD_G_MONTH_DAY,
+            ObjKey::encode_g_month_day(g.month(), g.day()).as_u64(),
+        )),
+        FlakeValue::YearMonthDuration(d) => Ok((
+            OType::XSD_YEAR_MONTH_DURATION,
+            ObjKey::encode_year_month_dur(d.months()).as_u64(),
+        )),
+        FlakeValue::DayTimeDuration(d) => Ok((
+            OType::XSD_DAY_TIME_DURATION,
+            ObjKey::encode_day_time_dur(d.micros()).as_u64(),
+        )),
+        FlakeValue::GeoPoint(bits) => Ok((OType::GEO_POINT, bits.0)),
+        // Types not yet handled: BigInt, Decimal, Vector, Duration
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("unsupported FlakeValue variant for V3 overlay: {:?}", val),
+        )),
     }
 }
 
-#[async_trait]
-impl Operator for RangeScanOperator {
-    fn schema(&self) -> &[VarId] {
-        &self.schema
-    }
+/// Resolve a datatype Sid to its OType constant.
+///
+/// Reconstructs the IRI from the Sid and matches against well-known XSD types.
+/// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
+fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStore) -> Option<OType> {
+    let iri = store.sid_to_iri(dt_sid);
+    fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
+}
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
+/// Simplified FlakeValue → (OType, o_key) translation for fast-path operators.
+///
+/// Uses default OType for each value variant (no dt_sid/lang context needed).
+/// Works for the common cases in bound-object count queries. Does not handle
+/// langString (no language tag available) or custom datatypes.
+pub(crate) fn value_to_otype_okey_simple(
+    val: &FlakeValue,
+    store: &BinaryIndexStore,
+) -> Result<(OType, u64)> {
+    use fluree_db_core::value_id::ObjKey;
 
-        self.g_id = ctx.binary_g_id;
-
-        let mut index = IndexType::for_query(
-            self.pattern.s_bound(),
-            self.pattern.p_bound(),
-            self.pattern.o_bound(),
-            self.pattern.o_is_ref(),
-        );
-
-        // When object bounds are present and default index is PSOT, switch to POST
-        // for object-range scanning (matches BinaryScanOperator behavior).
-        if self.object_bounds.is_some() && index == IndexType::Psot {
-            index = IndexType::Post;
-        }
-
-        // Collect matching flakes.
-        //
-        // All paths delegate to scan_one_graph() which handles the range query,
-        // policy enforcement, and post-filtering in a single call.
-        //
-        // Dataset mode:
-        // - ActiveGraph::Default → union across all default graphs (fast path via slice)
-        // - ActiveGraph::Named   → scan only the selected named graph(s)
-        //
-        // Single-db mode:
-        // - scan `ctx.snapshot`
-        let flakes = if let Some(graphs) = ctx.default_graphs_slice() {
-            let mut all_flakes = Vec::new();
-            for graph in graphs {
-                let enforcer = graph
-                    .policy_enforcer
-                    .as_ref()
-                    .or(ctx.policy_enforcer.as_ref());
-                let graph_flakes = self
-                    .scan_one_graph(
-                        graph.snapshot,
-                        graph.overlay,
-                        graph.g_id,
-                        graph.to_t,
-                        index,
-                        ctx,
-                        enforcer,
-                    )
-                    .await?;
-                all_flakes.extend(graph_flakes);
-            }
-            all_flakes
-        } else if ctx.dataset.is_some() {
-            let active = ctx.active_graphs();
-            let graphs = active.as_many().unwrap_or(&[]);
-            let mut all_flakes = Vec::new();
-            for graph in graphs {
-                let graph = *graph;
-                let enforcer = graph
-                    .policy_enforcer
-                    .as_ref()
-                    .or(ctx.policy_enforcer.as_ref());
-                let graph_flakes = self
-                    .scan_one_graph(
-                        graph.snapshot,
-                        graph.overlay,
-                        graph.g_id,
-                        graph.to_t,
-                        index,
-                        ctx,
-                        enforcer,
-                    )
-                    .await?;
-                all_flakes.extend(graph_flakes);
-            }
-            all_flakes
-        } else {
-            self.scan_one_graph(
-                ctx.snapshot,
-                ctx.overlay(),
-                ctx.binary_g_id,
-                ctx.to_t,
-                index,
-                ctx,
-                ctx.policy_enforcer.as_ref(),
-            )
-            .await?
-        };
-
-        // Build batches from collected flakes (already post-filtered by scan_one_graph).
-        let batch_size = ctx.batch_size;
-        let ncols = self.schema.len();
-
-        if ncols == 0 && self.inline_ops.is_empty() {
-            // All terms bound, no inline operators: count matches, emit empty-schema batch.
-            let match_count = if self.p_is_var && self.g_id == 0 {
-                flakes
-                    .iter()
-                    .filter(|f| f.p.namespace_code != FLUREE_DB)
-                    .count()
+    match val {
+        FlakeValue::Null => Ok((OType::NULL, 0)),
+        FlakeValue::Boolean(b) => Ok((OType::XSD_BOOLEAN, *b as u64)),
+        FlakeValue::Long(n) => Ok((OType::XSD_INTEGER, ObjKey::encode_i64(*n).as_u64())),
+        FlakeValue::Double(d) => {
+            if d.is_finite() {
+                ObjKey::encode_f64(*d)
+                    .map(|key| (OType::XSD_DOUBLE, key.as_u64()))
+                    .map_err(|_| {
+                        QueryError::execution("cannot encode f64 for V6 index".to_string())
+                    })
             } else {
-                flakes.len()
-            };
-            for _ in 0..match_count {
-                ctx.tracker.consume_fuel_one()?;
-            }
-            if match_count > 0 {
-                self.batches
-                    .push_back(Batch::empty_schema_with_len(match_count));
-            }
-        } else {
-            let mut columns: Vec<Vec<Binding>> =
-                (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
-            let mut row_count = 0;
-
-            for f in &flakes {
-                // Filter internal predicates (commit metadata) for wildcard predicate patterns.
-                // Only applies to default graph (g_id=0); txn-meta and named graphs
-                // need db: namespace predicates to be visible.
-                if self.g_id == 0 && self.p_is_var && f.p.namespace_code == FLUREE_DB {
-                    continue;
-                }
-
-                let mut row = self.flake_to_row(f, ctx.history_mode);
-
-                // Apply inline operators; may extend `row` or skip it.
-                if !apply_inline(&self.inline_ops, &self.schema, &mut row, Some(ctx))? {
-                    continue;
-                }
-
-                ctx.tracker.consume_fuel_one()?;
-                for (col_idx, binding) in row.into_iter().enumerate() {
-                    columns[col_idx].push(binding);
-                }
-                row_count += 1;
-
-                if row_count >= batch_size {
-                    let batch = Batch::new(self.schema.clone(), columns)
-                        .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
-                    self.batches.push_back(batch);
-                    columns = (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
-                    row_count = 0;
-                }
-            }
-
-            // Final partial batch
-            if row_count > 0 {
-                let batch = Batch::new(self.schema.clone(), columns)
-                    .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
-                self.batches.push_back(batch);
+                Err(QueryError::execution(
+                    "non-finite double in bound object".to_string(),
+                ))
             }
         }
-
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        Ok(self.batches.pop_front())
-    }
-
-    fn close(&mut self) {
-        self.batches.clear();
-        self.state = OperatorState::Closed;
+        FlakeValue::Ref(sid) => {
+            let s_id = store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("ref object not found in V6 dict".to_string())
+                })?;
+            Ok((OType::IRI_REF, s_id))
+        }
+        FlakeValue::String(s) => {
+            let str_id = store
+                .find_string_id(s)
+                .map_err(|e| QueryError::execution(format!("find_string_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("string value not found in V6 dict".to_string())
+                })?;
+            Ok((OType::XSD_STRING, str_id as u64))
+        }
+        FlakeValue::Date(d) => Ok((
+            OType::XSD_DATE,
+            ObjKey::encode_date(d.days_since_epoch()).as_u64(),
+        )),
+        FlakeValue::DateTime(dt) => Ok((
+            OType::XSD_DATE_TIME,
+            ObjKey::encode_datetime(dt.epoch_micros()).as_u64(),
+        )),
+        FlakeValue::Time(t) => Ok((
+            OType::XSD_TIME,
+            ObjKey::encode_time(t.micros_since_midnight()).as_u64(),
+        )),
+        _ => Err(QueryError::execution(format!(
+            "unsupported FlakeValue variant for V6 fast-path: {:?}",
+            val
+        ))),
     }
 }

@@ -144,7 +144,6 @@ impl CachedLedgerState {
             head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
-            binary_store_v6: None,
             default_context: self.default_context,
             spatial_indexes: None,
         }
@@ -373,18 +372,18 @@ impl LedgerHandle {
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
-        // Build metadata-only LedgerSnapshot from IRB1 root.
-        let v5 = fluree_db_binary_index::IndexRootV5::decode(&bytes)
-            .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
+        // Build metadata-only LedgerSnapshot from FIR6 root.
+        let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
+            .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
         let meta = LedgerSnapshotMetadata {
-            ledger_id: v5.ledger_id,
-            t: v5.index_t,
-            namespace_codes: v5.namespace_codes.into_iter().collect(),
-            stats: v5.stats,
-            schema: v5.schema,
-            subject_watermarks: v5.subject_watermarks,
-            string_watermark: v5.string_watermark,
-            graph_iris: v5.graph_iris,
+            ledger_id: root.ledger_id,
+            t: root.index_t,
+            namespace_codes: root.namespace_codes.into_iter().collect(),
+            stats: root.stats,
+            schema: root.schema,
+            subject_watermarks: root.subject_watermarks,
+            string_watermark: root.string_watermark,
+            graph_iris: root.graph_iris,
         };
         let mut db = LedgerSnapshot::new_meta(meta)
             .map_err(|e| ApiError::internal(format!("graph registry from root: {e}")))?;

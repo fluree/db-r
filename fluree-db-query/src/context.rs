@@ -81,9 +81,6 @@ pub struct ExecutionContext<'a> {
     /// against the binary columnar indexes. When absent, scans fall back
     /// to `range_with_overlay()`.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
-    /// Optional V6 binary index store (FIR6 root, FLI3 leaves).
-    /// Takes priority over `binary_store` (V5) when present.
-    pub binary_store_v6: Option<Arc<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>>,
     /// Graph ID for binary index scans (typically 0 for default graph).
     pub binary_g_id: GraphId,
     /// Dictionary novelty layer for subject/string lookups in binary scans.
@@ -128,7 +125,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
@@ -157,7 +153,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: db.g_id,
             dict_novelty: None,
             spatial_providers: None,
@@ -190,7 +185,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: db.g_id,
             dict_novelty: None,
             spatial_providers: None,
@@ -224,7 +218,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
@@ -263,7 +256,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
@@ -298,7 +290,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: false,
             strict_bind_errors: false,
             binary_store: None,
-            binary_store_v6: None,
             binary_g_id: 0,
             dict_novelty: None,
             spatial_providers: None,
@@ -527,12 +518,7 @@ impl<'a> ExecutionContext<'a> {
     /// single-ledger mode. Individual call sites may layer additional
     /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
     pub fn has_binary_store(&self) -> bool {
-        !self.is_multi_ledger() && (self.binary_store.is_some() || self.binary_store_v6.is_some())
-    }
-
-    /// Check whether the V6 binary store is available.
-    pub fn has_binary_store_v6(&self) -> bool {
-        !self.is_multi_ledger() && self.binary_store_v6.is_some()
+        !self.is_multi_ledger() && self.binary_store.is_some()
     }
 
     /// Return a `BinaryGraphView` for the current graph, combining the binary store
@@ -583,7 +569,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_store_v6: self.binary_store_v6.clone(),
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
@@ -614,7 +599,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_store_v6: self.binary_store_v6.clone(),
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
@@ -649,7 +633,6 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: None, // GraphRef doesn't have binary store
-            binary_store_v6: None,
             binary_g_id: graph.g_id,
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
@@ -663,17 +646,6 @@ impl<'a> ExecutionContext<'a> {
     /// `ScanOperator` for reading from the binary columnar indexes.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
         self.binary_store = Some(store);
-        self.binary_g_id = g_id;
-        self
-    }
-
-    /// Attach a V6 binary index store for V3 format scans.
-    pub fn with_binary_store_v6(
-        mut self,
-        store: Arc<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>,
-        g_id: GraphId,
-    ) -> Self {
-        self.binary_store_v6 = Some(store);
         self.binary_g_id = g_id;
         self
     }

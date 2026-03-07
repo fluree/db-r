@@ -228,7 +228,7 @@ impl ColumnProjection {
 }
 
 // ============================================================================
-// BinaryFilterV3 — integer-ID filter for V3
+// BinaryFilter — integer-ID filter for V3
 // ============================================================================
 
 /// Row-level integer-ID filter for V3 columnar scans.
@@ -236,7 +236,7 @@ impl ColumnProjection {
 /// Replaces V2's `BinaryFilter` which used `(s_id, p_id, o_kind, o_key)`.
 /// V3 uses `(s_id, p_id, o_type, o_key, o_i)` matching the new identity model.
 #[derive(Debug, Clone, Default)]
-pub struct BinaryFilterV3 {
+pub struct BinaryFilter {
     pub s_id: Option<u64>,
     pub p_id: Option<u32>,
     pub o_type: Option<u16>,
@@ -244,7 +244,7 @@ pub struct BinaryFilterV3 {
     pub o_i: Option<u32>,
 }
 
-impl BinaryFilterV3 {
+impl BinaryFilter {
     /// True if the filter has no constraints (matches everything).
     pub fn is_empty(&self) -> bool {
         self.s_id.is_none()
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn filter_matches() {
-        let filter = BinaryFilterV3 {
+        let filter = BinaryFilter {
             p_id: Some(5),
             ..Default::default()
         };
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn filter_skip_leaflet() {
-        let filter = BinaryFilterV3 {
+        let filter = BinaryFilter {
             p_id: Some(5),
             ..Default::default()
         };

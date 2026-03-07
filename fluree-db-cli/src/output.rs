@@ -196,12 +196,14 @@ fn sparql_table_cell(
             o_kind,
             o_key,
             p_id,
+            dt_id,
+            lang_id,
             ..
         } => {
             let Some(gv) = gv else {
                 return Ok(format!("{b:?}"));
             };
-            match gv.decode_value(*o_kind, *o_key, *p_id) {
+            match gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id) {
                 Ok(v) => flake_value_to_table_cell(&v, compactor),
                 Err(_) => format!("{b:?}"),
             }

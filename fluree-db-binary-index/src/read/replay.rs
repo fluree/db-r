@@ -1,523 +1,436 @@
-//! Time-travel replay: reconstruct leaflet state at a prior `t`.
+//! Time-travel replay: reconstruct leaflet state at `t_target` using
+//! base columns (latest-state) and history sidecar entries.
 //!
-//! Per-leaflet replay consuming Region 1+2 (current snapshot) and
-//! Region 3 (history journal) to produce the database state at `t_target`.
+//! - **Fact identity**: `(s_id, p_id, o_type, o_key, o_i)`
+//! - **History entries**: `HistEntryV2` from FHS1 sidecar
+//! - **Input/output**: `ColumnBatch`
 //!
 //! ## Algorithm
 //!
-//! **Step 0** — Build membership set from R1 (current state FactKeys).
-//!
-//! **Step 1** — Collect all events with `t > t_target`:
-//! - R3 history entries (asserts and retracts from prior operations)
-//! - R1 synthetic asserts (rows whose `t > t_target`)
-//!
-//! **Step 2** — Apply undo events in reverse-chronological order (newest first).
-//! For each touched FactKey, track presence starting from R1 membership:
-//! - Undo assert → set present=false
-//! - Undo retract → set present=true (with source for materialization)
-//!
-//! **Step 3** — Derive exclude/include from final vs starting state:
-//! - start=present, end=absent → exclude from R1
-//! - start=absent, end=present → include (restore from R3 retract source)
-//!
-//! **Step 4** — Three-way merge of R1 rows (minus excludes) plus includes,
-//! maintaining the leaflet's sort order.
-//!
-//! ## Correctness
-//!
-//! Processing ALL events (no first-seen-per-key shortcutting) correctly
-//! handles arbitrary assert→retract→reassert chains. `lang_id` and `i`
-//! participate in FactKey identity, so language variants and list positions
-//! are retracted/restored independently.
-//!
-//! ## Cost
-//!
-//! O(R1 + R3_scanned) — linear in leaflet size plus history depth.
-//! Close-to-current queries scan few events; deep time-travel scans more
-//! but is bounded by leaflet history size.
+//! 0. Build current-state membership: `FactKeyV3 → t` from base `ColumnBatch`
+//! 1. Collect undo events with `t > t_target` from both base rows and history
+//! 2. Apply undo events in reverse-chronological order to derive final state
+//! 3. Derive exclude/include sets and three-way merge into output `ColumnBatch`
 
-use crate::format::leaflet::Region3Entry;
-use crate::format::run_record::{FactKey, RunSortOrder};
-use crate::types::RowColumnSlice;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::format::history_sidecar::HistEntryV2;
+use crate::format::run_record::RunSortOrder;
+use crate::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+use crate::read::column_types::{ColumnBatch, ColumnData};
+
+/// Sentinel for o_i when no list index is present.
+const OI_NONE: u32 = u32::MAX;
 
 // ============================================================================
-// ReplayedLeaflet: output of time-travel replay
+// V3 Fact Key (identity for replay)
 // ============================================================================
 
-/// Output of time-travel replay: reconstructed leaflet state at `t_target`.
-///
-/// Contains columnar data in the same format as decoded Region 1+2,
-/// representing the database state as it existed at `t_target`.
-pub struct ReplayedLeaflet {
-    pub s_ids: Vec<u64>,
-    pub p_ids: Vec<u32>,
-    pub o_kinds: Vec<u8>,
-    pub o_keys: Vec<u64>,
-    pub dt_values: Vec<u32>,
-    pub t_values: Vec<u32>,
-    pub lang_ids: Vec<u16>,
-    pub i_values: Vec<i32>,
-    pub row_count: usize,
-}
-
-// ============================================================================
-// Sort-order comparison for Region 3 entries
-// ============================================================================
-
-/// Compare two Region3Entry values using the given sort order.
-///
-/// Compares only the sort-key columns (s_id, p_id, o_kind, o_key, dt) — not t
-/// or op, since those are not part of the index ordering.
-fn cmp_r3_for_order(a: &Region3Entry, b: &Region3Entry, order: RunSortOrder) -> std::cmp::Ordering {
-    match order {
-        RunSortOrder::Spot => a
-            .s_id
-            .cmp(&b.s_id)
-            .then(a.p_id.cmp(&b.p_id))
-            .then(a.o_kind.cmp(&b.o_kind))
-            .then(a.o_key.cmp(&b.o_key))
-            .then(a.dt.cmp(&b.dt)),
-        RunSortOrder::Psot => a
-            .p_id
-            .cmp(&b.p_id)
-            .then(a.s_id.cmp(&b.s_id))
-            .then(a.o_kind.cmp(&b.o_kind))
-            .then(a.o_key.cmp(&b.o_key))
-            .then(a.dt.cmp(&b.dt)),
-        RunSortOrder::Post => a
-            .p_id
-            .cmp(&b.p_id)
-            .then(a.o_kind.cmp(&b.o_kind))
-            .then(a.o_key.cmp(&b.o_key))
-            .then(a.dt.cmp(&b.dt))
-            .then(a.s_id.cmp(&b.s_id)),
-        RunSortOrder::Opst => a
-            .o_kind
-            .cmp(&b.o_kind)
-            .then(a.o_key.cmp(&b.o_key))
-            .then(a.dt.cmp(&b.dt))
-            .then(a.p_id.cmp(&b.p_id))
-            .then(a.s_id.cmp(&b.s_id)),
-    }
-}
-
-/// Compare a decoded row (from Region 1+2) against a Region3Entry using
-/// the given sort order (sort-key columns only).
-///
-/// `dt` is `u32` from Region 2 decode output but actual datatype IDs always
-/// fit in `u16` (max 65,535 distinct datatype IRIs). The truncation to `u16`
-/// here matches `FactKey::from_decoded_row()` and `Region3Entry.dt`.
-fn cmp_row_vs_r3(
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct FactKeyV3 {
     s_id: u64,
     p_id: u32,
-    o_kind: u8,
+    o_type: u16,
     o_key: u64,
-    dt: u32,
-    entry: &Region3Entry,
-    order: RunSortOrder,
-) -> std::cmp::Ordering {
-    match order {
-        RunSortOrder::Spot => s_id
-            .cmp(&entry.s_id)
-            .then(p_id.cmp(&entry.p_id))
-            .then(o_kind.cmp(&entry.o_kind))
-            .then(o_key.cmp(&entry.o_key))
-            .then((dt as u16).cmp(&entry.dt)),
-        RunSortOrder::Psot => p_id
-            .cmp(&entry.p_id)
-            .then(s_id.cmp(&entry.s_id))
-            .then(o_kind.cmp(&entry.o_kind))
-            .then(o_key.cmp(&entry.o_key))
-            .then((dt as u16).cmp(&entry.dt)),
-        RunSortOrder::Post => p_id
-            .cmp(&entry.p_id)
-            .then(o_kind.cmp(&entry.o_kind))
-            .then(o_key.cmp(&entry.o_key))
-            .then((dt as u16).cmp(&entry.dt))
-            .then(s_id.cmp(&entry.s_id)),
-        RunSortOrder::Opst => o_kind
-            .cmp(&entry.o_kind)
-            .then(o_key.cmp(&entry.o_key))
-            .then((dt as u16).cmp(&entry.dt))
-            .then(p_id.cmp(&entry.p_id))
-            .then(s_id.cmp(&entry.s_id)),
+    o_i: u32,
+}
+
+impl FactKeyV3 {
+    #[inline]
+    fn from_batch(batch: &ColumnBatch, row: usize) -> Self {
+        Self {
+            s_id: batch.s_id.get(row),
+            p_id: batch.p_id.get(row),
+            o_type: batch.o_type.get(row),
+            o_key: batch.o_key.get(row),
+            o_i: batch.o_i.get_or(row, OI_NONE),
+        }
+    }
+
+    #[inline]
+    fn from_hist(entry: &HistEntryV2) -> Self {
+        Self {
+            s_id: entry.s_id.as_u64(),
+            p_id: entry.p_id,
+            o_type: entry.o_type,
+            o_key: entry.o_key,
+            o_i: entry.o_i,
+        }
     }
 }
 
 // ============================================================================
-// replay_leaflet: reverse-play time-travel reconstruction
+// Undo event
 // ============================================================================
 
-/// Reconstruct the leaflet state at `t_target` using Region 1+2 (current
-/// snapshot) and Region 3 (history journal).
+struct UndoEvent {
+    abs_t: u32,
+    is_assert: bool,
+    key: FactKeyV3,
+    /// Source entry for materialization when undoing a retract (restore the fact).
+    source: Option<HistEntryV2>,
+}
+
+// ============================================================================
+// Replay output state per fact key
+// ============================================================================
+
+struct FactState {
+    /// Whether the fact should be present at `t_target`.
+    present: bool,
+    /// Source entry to materialize from (for include/restore).
+    include_src: Option<HistEntryV2>,
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Replay a V3 leaflet to reconstruct its state at `t_target`.
 ///
-/// Returns `None` if no changes are needed — meaning no R3 entries have
-/// `t > t_target` and no R1 rows have `t > t_target`. The caller can
-/// then use the original R1+R2 data directly.
+/// Returns `Some(ColumnBatch)` with the reconstructed rows, or `None` if
+/// no replay is needed (no events with `t > t_target`).
 ///
-/// Collects all events (R3 history + R1 synthetic asserts) with `t > t_target`,
-/// then undoes them in reverse-chronological order to derive which facts
-/// to exclude from R1 and which retracted facts to restore. See module docs.
+/// # Inputs
 ///
-/// # Arguments
-///
-/// * `input` — Decoded Region 1+2 columns (current snapshot state)
-/// * `region3` — Region 3 entries in reverse chronological order (newest first)
-/// * `t_target` — Target time to reconstruct state at
-/// * `order` — Sort order of this leaflet (determines merge ordering)
+/// - `batch`: decoded base columns (latest-state) for the leaflet
+/// - `history`: decoded history entries from the sidecar segment (sorted by t desc)
+/// - `t_target`: the transaction time to reconstruct (query `AS OF`)
+/// - `order`: sort order (for maintaining output ordering)
 pub fn replay_leaflet(
-    input: &RowColumnSlice<'_>,
-    region3: &[Region3Entry],
+    batch: &ColumnBatch,
+    history: &[HistEntryV2],
     t_target: i64,
     order: RunSortOrder,
-) -> Option<ReplayedLeaflet> {
-    let row_count = input.len();
+) -> Option<ColumnBatch> {
+    // Clamp t_target to u32 range. All on-disk t values are u32.
+    // t_target < 0 → "before genesis" → everything is undone → empty batch.
+    // t_target > u32::MAX → all t values are ≤ target → no replay needed.
+    if t_target > u32::MAX as i64 {
+        return None;
+    }
+    if t_target < 0 {
+        // Before any transaction — return empty batch.
+        return Some(ColumnBatch::empty());
+    }
+    let t_target_u32 = t_target as u32;
 
-    // ---- Step 0: Build R1 current membership set ----
-    //
-    // R1 rows represent the current state. Every row is an implicit assert.
-    // We need to know which FactKeys are currently present to determine
-    // the starting state for undo processing.
-
-    let mut r1_keys: HashMap<FactKey, u32> = HashMap::with_capacity(row_count);
-    for idx in 0..row_count {
-        let key = FactKey::from_decoded_row(
-            input.s[idx],
-            input.p[idx],
-            input.o_kinds[idx],
-            input.o_keys[idx],
-            input.dt[idx],
-            input.lang[idx],
-            input.i[idx],
-        );
-        r1_keys.insert(key, input.t[idx]);
+    // ---- Step 0: Build current-state membership ----
+    // Map FactKeyV3 → (t, row_index) for all base rows.
+    let mut membership: HashMap<FactKeyV3, (u32, usize)> = HashMap::with_capacity(batch.row_count);
+    for i in 0..batch.row_count {
+        let key = FactKeyV3::from_batch(batch, i);
+        let t = batch.t.get_or(i, 0);
+        membership.insert(key, (t, i));
     }
 
-    // ---- Step 1: Collect all events with t > t_target ----
-    //
-    // Two sources:
-    // 1A) R3 history entries (explicit assert/retract operations)
-    // 1B) R1 rows with t > t_target (implicit "assert at row.t" events)
-    //
-    // All events are processed in reverse-chronological order (t desc)
-    // to correctly undo operations back to t_target.
-
-    struct UndoEvent {
-        abs_t: u32,
-        is_assert: bool,
-        key: FactKey,
-        /// For R3 retract entries: the source entry for include materialization.
-        r3_source: Option<Region3Entry>,
-    }
-
+    // ---- Step 1: Collect undo events with t > t_target ----
     let mut events: Vec<UndoEvent> = Vec::new();
 
-    // 1A: R3 history entries
-    // Track break index so Step 3 can scan R3 below t_target for base assert times.
-    let mut r3_break_idx = region3.len();
-    for (i, entry) in region3.iter().enumerate() {
-        let abs_t = entry.abs_t();
-        if abs_t <= t_target as u64 {
-            r3_break_idx = i;
-            break; // R3 is sorted by abs_t desc
+    // From history entries.
+    for entry in history {
+        if entry.t <= t_target_u32 {
+            // History is sorted by t descending; once we hit ≤ target, stop.
+            break;
         }
         events.push(UndoEvent {
-            abs_t: abs_t as u32,
-            is_assert: entry.is_assert(),
-            key: FactKey::from_region3(entry),
-            r3_source: if entry.is_assert() {
-                None
-            } else {
-                Some(*entry)
-            },
+            abs_t: entry.t,
+            is_assert: entry.op == 1,
+            key: FactKeyV3::from_hist(entry),
+            source: Some(*entry),
         });
     }
 
-    // 1B: Synthetic assert events from R1's t column
-    for idx in 0..row_count {
-        if (input.t[idx] as i64) > t_target {
+    // From base rows with t > t_target (synthetic assert events).
+    for i in 0..batch.row_count {
+        let t = batch.t.get_or(i, 0);
+        if t > t_target_u32 {
             events.push(UndoEvent {
-                abs_t: input.t[idx],
-                is_assert: true, // R1 rows are implicit asserts
-                key: FactKey::from_decoded_row(
-                    input.s[idx],
-                    input.p[idx],
-                    input.o_kinds[idx],
-                    input.o_keys[idx],
-                    input.dt[idx],
-                    input.lang[idx],
-                    input.i[idx],
-                ),
-                r3_source: None,
+                abs_t: t,
+                is_assert: true,
+                key: FactKeyV3::from_batch(batch, i),
+                source: None,
             });
         }
     }
 
+    // Early return if no events need undoing.
     if events.is_empty() {
         return None;
     }
 
-    // Sort by abs_t descending. For same abs_t: assert before retract
-    // (undo assert first, then undo retract, for consistent same-t behavior).
-    // FactKey tie-breaker ensures deterministic ordering for events at the
-    // same (t, op) — required because sort_unstable_by is non-deterministic
-    // for ties.
+    // ---- Step 2: Apply undo events in reverse-chronological order ----
+    // Sort by t descending, then asserts before retracts at same t.
     events.sort_unstable_by(|a, b| {
         b.abs_t
             .cmp(&a.abs_t)
             .then_with(|| b.is_assert.cmp(&a.is_assert))
-            .then_with(|| a.key.cmp(&b.key))
     });
 
-    // ---- Step 2: Apply undo events in reverse-chronological order ----
-    //
-    // For each touched FactKey, track whether it's present or absent after
-    // undoing all events. Starting state comes from R1 membership.
-    //
-    // Undo semantics:
-    // - Undo assert → fact becomes absent
-    // - Undo retract → fact becomes present (with source for materialization)
-
-    struct KeyState {
-        present: bool,
-        include_src: Option<Region3Entry>,
-    }
-
-    let mut touched: HashMap<FactKey, KeyState> = HashMap::new();
+    // Per-fact state tracker.
+    let mut fact_states: HashMap<FactKeyV3, FactState> = HashMap::new();
 
     for event in &events {
-        let state = touched.entry(event.key).or_insert_with(|| KeyState {
-            present: r1_keys.contains_key(&event.key),
+        let state = fact_states.entry(event.key.clone()).or_insert(FactState {
+            present: membership.contains_key(&event.key),
             include_src: None,
         });
 
         if event.is_assert {
-            // Undo assert → fact becomes absent
+            // Undo assert → mark absent.
             state.present = false;
-            state.include_src = None;
         } else {
-            // Undo retract → fact becomes present
+            // Undo retract → mark present, remember source for materialization.
             state.present = true;
-            state.include_src = event.r3_source;
+            if state.include_src.is_none() {
+                state.include_src = event.source;
+            }
         }
     }
 
-    // ---- Step 3: Derive exclude and include sets ----
-    //
-    // Compare starting state (R1 membership) with final state after undo:
-    // - start=present, end=absent → exclude (fact shouldn't exist at t_target)
-    // - start=absent, end=present → include (fact should exist at t_target)
-    // - same start and end → no change needed
+    // ---- Step 3: Derive exclude/include sets ----
+    // Exclude: base rows that shouldn't exist at t_target.
+    let mut exclude_indices: Vec<usize> = Vec::new();
+    // Include: facts to restore from history.
+    let mut includes: Vec<RunRecordV2> = Vec::new();
 
-    let mut exclude: HashSet<FactKey> = HashSet::new();
-    let mut include: Vec<Region3Entry> = Vec::new();
+    for (key, state) in &fact_states {
+        let base_entry = membership.get(key); // O(1) lookup
+        let in_base = base_entry.is_some();
 
-    for (key, state) in &touched {
-        let start_present = r1_keys.contains_key(key);
-        match (start_present, state.present) {
-            (true, false) => {
-                exclude.insert(*key);
+        if in_base && !state.present {
+            // Was in base, should be absent → exclude.
+            let (_, row_idx) = base_entry.unwrap();
+            exclude_indices.push(*row_idx);
+        } else if !in_base && state.present {
+            // Was NOT in base, should be present → include from source.
+            if let Some(src) = &state.include_src {
+                includes.push(hist_entry_to_record(src));
             }
-            (false, true) => {
-                let mut restored = state
-                    .include_src
-                    .expect("include requires R3 retract source");
-                restored.op = 1; // flip retract to assert
-                include.push(restored);
-            }
-            (true, true) => {
-                // Fact is present at both start and end of undo chain.
-                // If R1's t > t_target, the output t_value would be wrong
-                // (it would show the reassert time, not the effective assert
-                // time at t_target). Correct by excluding the R1 row and
-                // including a version with the base assert time from R3.
-                let r1_t = r1_keys[key];
-                if (r1_t as i64) > t_target {
-                    exclude.insert(*key);
-
-                    // Scan R3 below break for the most recent assert matching
-                    // this key — that's the effective assert time at t_target.
-                    let base_t = region3[r3_break_idx..]
-                        .iter()
-                        .find(|e| e.is_assert() && FactKey::from_region3(e) == *key)
-                        .map(|e| e.t);
-
-                    let effective_t = base_t.unwrap_or_else(|| {
-                        debug_assert!(
-                            false,
-                            "expected base assert in R3 below break for \
-                             (true,true) with R1 t > t_target"
-                        );
-                        // Fallback: use include_src t if available, else R1 t
-                        state.include_src.map(|e| e.t).unwrap_or(r1_t)
-                    });
-
-                    include.push(Region3Entry {
-                        s_id: key.s_id.as_u64(),
-                        p_id: key.p_id.as_u32(),
-                        o_kind: key.o.kind.as_u8(),
-                        o_key: key.o.key.as_u64(),
-                        t: effective_t,
-                        op: 1,
-                        dt: key.dt.as_u16(),
-                        lang_id: key.lang_id.as_u16(),
-                        i: key.i.as_i32(),
-                    });
+        } else if in_base && state.present {
+            // Was in base and should remain, but check if base row's t > t_target.
+            // If so, we need to swap it with the older version from history.
+            let (base_t, row_idx) = base_entry.unwrap();
+            if *base_t > t_target_u32 {
+                // Exclude the base row (too new).
+                exclude_indices.push(*row_idx);
+                // Include the older version from history (find the assert with t ≤ t_target).
+                if let Some(src) = find_base_assert_at_target(key, history, t_target_u32) {
+                    includes.push(hist_entry_to_record(&src));
+                } else if let Some(src) = &state.include_src {
+                    includes.push(hist_entry_to_record(src));
                 }
-                // else: R1 t ≤ t_target — row stays unchanged, no delta.
             }
-            (false, false) => {} // absent at both start and end: no delta
         }
     }
 
-    if exclude.is_empty() && include.is_empty() {
-        // All undo operations resulted in no net state change (start==end for
-        // every touched key). We can only return None if ALL R1 rows have
-        // t <= t_target. When R1 contains rows with t > t_target, we must
-        // return Some(...) so the binary_cursor defense check doesn't fire
-        // on a None result with future-t rows in R1.
-        let has_future_rows = (0..row_count).any(|idx| (input.t[idx] as i64) > t_target);
-        if !has_future_rows {
-            return None;
-        }
-        // Fall through: produce a ReplayedLeaflet (a copy of R1 in this case)
-    }
+    // Sort excludes for efficient skip during merge.
+    exclude_indices.sort_unstable();
+    exclude_indices.dedup();
+
+    // Sort includes by the leaflet's sort order for ordered merge.
+    let cmp = cmp_v2_for_order(order);
+    includes.sort_unstable_by(cmp);
 
     // ---- Step 4: Three-way merge ----
-    //
-    // Merge Region 1 rows (minus excludes) with include entries, maintaining
-    // sort order. Both inputs are already in the leaflet's sort order:
-    // - Region 1 rows: sorted by construction
-    // - include entries: need to be sorted by the index's sort order
+    // Merge (base rows minus excludes) with includes, maintaining sort order.
+    let exclude_set: std::collections::HashSet<usize> = exclude_indices.iter().copied().collect();
 
-    include.sort_by(|a, b| cmp_r3_for_order(a, b, order));
+    let mut out_s: Vec<u64> = Vec::new();
+    let mut out_p: Vec<u32> = Vec::new();
+    let mut out_otype: Vec<u16> = Vec::new();
+    let mut out_okey: Vec<u64> = Vec::new();
+    let mut out_oi: Vec<u32> = Vec::new();
+    let mut out_t: Vec<u32> = Vec::new();
 
-    let estimated_size = row_count + include.len();
-    let mut out = ReplayedLeaflet {
-        s_ids: Vec::with_capacity(estimated_size),
-        p_ids: Vec::with_capacity(estimated_size),
-        o_kinds: Vec::with_capacity(estimated_size),
-        o_keys: Vec::with_capacity(estimated_size),
-        dt_values: Vec::with_capacity(estimated_size),
-        t_values: Vec::with_capacity(estimated_size),
-        lang_ids: Vec::with_capacity(estimated_size),
-        i_values: Vec::with_capacity(estimated_size),
-        row_count: 0,
+    let mut bi = 0usize; // base row index
+    let mut ii = 0usize; // include index
+
+    // Helper: push a base row to output.
+    let push_base = |batch: &ColumnBatch,
+                     row: usize,
+                     s: &mut Vec<u64>,
+                     p: &mut Vec<u32>,
+                     ot: &mut Vec<u16>,
+                     ok: &mut Vec<u64>,
+                     oi: &mut Vec<u32>,
+                     t: &mut Vec<u32>| {
+        s.push(batch.s_id.get(row));
+        p.push(batch.p_id.get(row));
+        ot.push(batch.o_type.get(row));
+        ok.push(batch.o_key.get(row));
+        oi.push(batch.o_i.get_or(row, OI_NONE));
+        t.push(batch.t.get_or(row, 0));
     };
 
-    let mut r1_idx = 0;
-    let mut inc_idx = 0;
+    // Helper: push an include record to output.
+    let push_include = |rec: &RunRecordV2,
+                        s: &mut Vec<u64>,
+                        p: &mut Vec<u32>,
+                        ot: &mut Vec<u16>,
+                        ok: &mut Vec<u64>,
+                        oi: &mut Vec<u32>,
+                        t: &mut Vec<u32>| {
+        s.push(rec.s_id.as_u64());
+        p.push(rec.p_id);
+        ot.push(rec.o_type);
+        ok.push(rec.o_key);
+        oi.push(rec.o_i);
+        t.push(rec.t);
+    };
 
-    while r1_idx < row_count && inc_idx < include.len() {
-        let r1_key = FactKey::from_decoded_row(
-            input.s[r1_idx],
-            input.p[r1_idx],
-            input.o_kinds[r1_idx],
-            input.o_keys[r1_idx],
-            input.dt[r1_idx],
-            input.lang[r1_idx],
-            input.i[r1_idx],
-        );
+    // Convert base row to RunRecordV2 for comparison.
+    let batch_row_as_rec = |batch: &ColumnBatch, row: usize| -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: fluree_db_core::subject_id::SubjectId(batch.s_id.get(row)),
+            o_key: batch.o_key.get(row),
+            p_id: batch.p_id.get(row),
+            t: batch.t.get_or(row, 0),
+            o_i: batch.o_i.get_or(row, OI_NONE),
+            o_type: batch.o_type.get(row),
+            g_id: 0,
+        }
+    };
 
-        // Check if this R1 row should be excluded
-        if exclude.contains(&r1_key) {
-            r1_idx += 1;
+    while bi < batch.row_count && ii < includes.len() {
+        // Skip excluded base rows.
+        if exclude_set.contains(&bi) {
+            bi += 1;
             continue;
         }
 
-        let cmp = cmp_row_vs_r3(
-            input.s[r1_idx],
-            input.p[r1_idx],
-            input.o_kinds[r1_idx],
-            input.o_keys[r1_idx],
-            input.dt[r1_idx],
-            &include[inc_idx],
-            order,
-        );
+        let base_rec = batch_row_as_rec(batch, bi);
+        let inc = &includes[ii];
+        let ord = cmp(&base_rec, inc);
 
-        match cmp {
+        match ord {
             std::cmp::Ordering::Less => {
-                // R1 row comes first — emit it
-                emit_r1_row(&mut out, r1_idx, input);
-                r1_idx += 1;
+                push_base(
+                    batch,
+                    bi,
+                    &mut out_s,
+                    &mut out_p,
+                    &mut out_otype,
+                    &mut out_okey,
+                    &mut out_oi,
+                    &mut out_t,
+                );
+                bi += 1;
             }
             std::cmp::Ordering::Greater => {
-                // Include entry comes first — emit it
-                emit_include_entry(&mut out, &include[inc_idx]);
-                inc_idx += 1;
+                push_include(
+                    inc,
+                    &mut out_s,
+                    &mut out_p,
+                    &mut out_otype,
+                    &mut out_okey,
+                    &mut out_oi,
+                    &mut out_t,
+                );
+                ii += 1;
             }
             std::cmp::Ordering::Equal => {
-                // Same sort position. This can happen if the sort-key columns
-                // match but the full FactKey (including lang_id, i) differs
-                // — the sort-order comparators only use (s_id, p_id, o_kind, o_key, dt).
-                // In this case the R1 row is a surviving current fact and the
-                // include entry is a distinct restored fact at the same sort
-                // position. Emit R1 first to maintain stable ordering,
-                // then the include entry.
-                emit_r1_row(&mut out, r1_idx, input);
-                emit_include_entry(&mut out, &include[inc_idx]);
-                r1_idx += 1;
-                inc_idx += 1;
+                // Same position — prefer include (it's the historically correct version).
+                push_include(
+                    inc,
+                    &mut out_s,
+                    &mut out_p,
+                    &mut out_otype,
+                    &mut out_okey,
+                    &mut out_oi,
+                    &mut out_t,
+                );
+                bi += 1;
+                ii += 1;
             }
         }
     }
 
-    // Drain remaining R1 rows
-    while r1_idx < row_count {
-        let r1_key = FactKey::from_decoded_row(
-            input.s[r1_idx],
-            input.p[r1_idx],
-            input.o_kinds[r1_idx],
-            input.o_keys[r1_idx],
-            input.dt[r1_idx],
-            input.lang[r1_idx],
-            input.i[r1_idx],
-        );
-        if !exclude.contains(&r1_key) {
-            emit_r1_row(&mut out, r1_idx, input);
+    // Drain remaining base rows (skipping excludes).
+    while bi < batch.row_count {
+        if !exclude_set.contains(&bi) {
+            push_base(
+                batch,
+                bi,
+                &mut out_s,
+                &mut out_p,
+                &mut out_otype,
+                &mut out_okey,
+                &mut out_oi,
+                &mut out_t,
+            );
         }
-        r1_idx += 1;
+        bi += 1;
     }
 
-    // Drain remaining include entries
-    while inc_idx < include.len() {
-        emit_include_entry(&mut out, &include[inc_idx]);
-        inc_idx += 1;
+    // Drain remaining includes.
+    while ii < includes.len() {
+        push_include(
+            &includes[ii],
+            &mut out_s,
+            &mut out_p,
+            &mut out_otype,
+            &mut out_okey,
+            &mut out_oi,
+            &mut out_t,
+        );
+        ii += 1;
     }
 
-    out.row_count = out.s_ids.len();
-    Some(out)
+    let row_count = out_s.len();
+
+    // Check if o_i is all sentinel (can use AbsentDefault).
+    let has_non_sentinel_oi = out_oi.iter().any(|&v| v != OI_NONE);
+
+    Some(ColumnBatch {
+        row_count,
+        s_id: ColumnData::Block(Arc::from(out_s)),
+        o_key: ColumnData::Block(Arc::from(out_okey)),
+        p_id: ColumnData::Block(Arc::from(out_p)),
+        o_type: ColumnData::Block(Arc::from(out_otype)),
+        o_i: if has_non_sentinel_oi {
+            ColumnData::Block(Arc::from(out_oi))
+        } else {
+            ColumnData::AbsentDefault
+        },
+        t: ColumnData::Block(Arc::from(out_t)),
+    })
 }
 
 // ============================================================================
-// Emit helpers
+// Helpers
 // ============================================================================
 
-/// Emit a Region 1+2 row to the output.
-#[inline]
-fn emit_r1_row(out: &mut ReplayedLeaflet, idx: usize, input: &RowColumnSlice<'_>) {
-    out.s_ids.push(input.s[idx]);
-    out.p_ids.push(input.p[idx]);
-    out.o_kinds.push(input.o_kinds[idx]);
-    out.o_keys.push(input.o_keys[idx]);
-    out.dt_values.push(input.dt[idx]);
-    out.t_values.push(input.t[idx]);
-    out.lang_ids.push(input.lang[idx]);
-    out.i_values.push(input.i[idx]);
+/// Convert a `HistEntryV2` to a `RunRecordV2` for sort comparison and output.
+fn hist_entry_to_record(entry: &HistEntryV2) -> RunRecordV2 {
+    RunRecordV2 {
+        s_id: entry.s_id,
+        o_key: entry.o_key,
+        p_id: entry.p_id,
+        t: entry.t,
+        o_i: entry.o_i,
+        o_type: entry.o_type,
+        g_id: 0,
+    }
 }
 
-/// Emit a Region 3 include entry (restored retraction) to the output.
-#[inline]
-fn emit_include_entry(out: &mut ReplayedLeaflet, entry: &Region3Entry) {
-    out.s_ids.push(entry.s_id);
-    out.p_ids.push(entry.p_id);
-    out.o_kinds.push(entry.o_kind);
-    out.o_keys.push(entry.o_key);
-    out.dt_values.push(entry.dt as u32);
-    out.t_values.push(entry.t); // positive (restored assert)
-    out.lang_ids.push(entry.lang_id);
-    out.i_values.push(entry.i);
+/// Find the most recent assert entry for `key` with `t ≤ t_target` in history.
+///
+/// Used for the "base row has `t > t_target` but fact should be present" case:
+/// we need to find the version of the fact that was valid at `t_target`.
+fn find_base_assert_at_target(
+    key: &FactKeyV3,
+    history: &[HistEntryV2],
+    t_target: u32,
+) -> Option<HistEntryV2> {
+    // History is sorted by t descending. Find the first assert with t ≤ t_target.
+    for entry in history {
+        if entry.t <= t_target && entry.op == 1 && FactKeyV3::from_hist(entry) == *key {
+            return Some(*entry);
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -527,531 +440,131 @@ fn emit_include_entry(out: &mut ReplayedLeaflet, entry: &Region3Entry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::ListIndex;
+    use fluree_db_core::o_type::OType;
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::value_id::ObjKey;
 
-    /// Helper: build a Region3Entry.
-    ///
-    /// Accepts `t_signed: i64` for test ergonomics: positive = assert, negative = retract.
-    /// Internally maps to `t: u32` + `op: u8` (1=assert, 0=retract).
-    fn r3(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
-        Region3Entry {
-            s_id,
-            p_id,
-            o_kind,
-            o_key,
-            t: t_signed.unsigned_abs() as u32,
-            op: if t_signed >= 0 { 1 } else { 0 },
-            dt,
-            lang_id: 0,
-            i: ListIndex::none().as_i32(),
+    fn make_batch(records: &[(u64, u32, i64, u32)]) -> ColumnBatch {
+        if records.is_empty() {
+            return ColumnBatch::empty();
+        }
+        let s_ids: Arc<[u64]> = records.iter().map(|r| r.0).collect();
+        let p_ids: Arc<[u32]> = records.iter().map(|_| 1u32).collect();
+        let o_types: Arc<[u16]> = records
+            .iter()
+            .map(|_| OType::XSD_INTEGER.as_u16())
+            .collect();
+        let o_keys: Arc<[u64]> = records
+            .iter()
+            .map(|r| ObjKey::encode_i64(r.2).as_u64())
+            .collect();
+        let ts: Arc<[u32]> = records.iter().map(|r| r.3).collect();
+
+        ColumnBatch {
+            row_count: records.len(),
+            s_id: ColumnData::Block(s_ids),
+            o_key: ColumnData::Block(o_keys),
+            p_id: ColumnData::Block(p_ids),
+            o_type: ColumnData::Block(o_types),
+            o_i: ColumnData::AbsentDefault,
+            t: ColumnData::Block(ts),
         }
     }
 
-    /// Helper macro to create RowColumnSlice from arrays for tests.
-    macro_rules! row_slice {
-        ($s:expr, $p:expr, $ok:expr, $okey:expr, $dt:expr, $t:expr, $lang:expr, $i:expr) => {
-            RowColumnSlice {
-                s: $s,
-                p: $p,
-                o_kinds: $ok,
-                o_keys: $okey,
-                dt: $dt,
-                t: $t,
-                lang: $lang,
-                i: $i,
-            }
-        };
+    fn make_hist(s_id: u64, val: i64, t: u32, op: u8) -> HistEntryV2 {
+        HistEntryV2 {
+            s_id: SubjectId(s_id),
+            p_id: 1,
+            o_type: OType::XSD_INTEGER.as_u16(),
+            o_key: ObjKey::encode_i64(val).as_u64(),
+            o_i: OI_NONE,
+            t,
+            op,
+        }
     }
 
     #[test]
-    fn test_replay_no_changes_returns_none() {
-        // Region 3 is empty and all R1 rows have t <= t_target — no replay needed
-        let input = row_slice!(
-            &[1u64, 2],
-            &[10u32, 10],
-            &[0u8, 0],
-            &[100u64, 200],
-            &[1u32, 1],
-            &[3u32, 3],
-            &[0u16, 0],
-            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &[], 5, RunSortOrder::Spot);
-        assert!(result.is_none());
+    fn no_replay_needed() {
+        // All rows have t ≤ t_target, no history events above target.
+        let batch = make_batch(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
+        let result = replay_leaflet(&batch, &[], 5, RunSortOrder::Spot);
+        assert!(result.is_none(), "no replay needed when all t ≤ t_target");
     }
 
     #[test]
-    fn test_replay_all_entries_before_target_returns_none() {
-        // All R3 entries are at or before t_target
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, 3, 1), // assert at t=3
-            r3(2, 10, 0, 200, 2, 1), // assert at t=2
+    fn exclude_row_above_target() {
+        // Row at t=5 should be excluded when t_target=3.
+        let batch = make_batch(&[(1, 1, 10, 1), (2, 1, 20, 5)]);
+        let result = replay_leaflet(&batch, &[], 3, RunSortOrder::Spot);
+        assert!(result.is_some());
+        let replayed = result.unwrap();
+        assert_eq!(replayed.row_count, 1);
+        assert_eq!(replayed.s_id.get(0), 1);
+    }
+
+    #[test]
+    fn restore_retracted_fact() {
+        // Base has s=1 at t=3. History shows s=2 was retracted at t=5.
+        // At t_target=4, s=2 should be restored.
+        let batch = make_batch(&[(1, 1, 10, 3)]);
+        let history = vec![
+            make_hist(2, 20, 5, 0), // retract s=2 at t=5
+            make_hist(2, 20, 2, 1), // assert s=2 at t=2
         ];
-
-        let input = row_slice!(
-            &[1u64, 2],
-            &[10u32, 10],
-            &[0u8, 0],
-            &[100u64, 200],
-            &[1u32, 1],
-            &[3u32, 2],
-            &[0u16, 0],
-            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        assert!(result.is_none());
+        let result = replay_leaflet(&batch, &history, 4, RunSortOrder::Spot);
+        assert!(result.is_some());
+        let replayed = result.unwrap();
+        assert_eq!(replayed.row_count, 2);
+        // Should have both s=1 and s=2 (restored).
+        let s_ids: Vec<u64> = (0..replayed.row_count)
+            .map(|i| replayed.s_id.get(i))
+            .collect();
+        assert!(s_ids.contains(&1));
+        assert!(s_ids.contains(&2));
     }
 
     #[test]
-    fn test_replay_exclude_later_assert() {
-        // Current state: s=1 p=10 o=100 (asserted at t=5)
-        // Region 3 is EMPTY (single-version fact — no history)
-        // Synthetic event: undo assert at t=5 → present=false. Exclude.
-        // Expected: s=1 p=10 o=100 should be excluded at t=3
-
-        let input = row_slice!(
-            &[1u64],
-            &[10u32],
-            &[0u8],
-            &[100u64],
-            &[1u32],
-            &[5u32],
-            &[0u16],
-            &[ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &[], 3, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
+    fn swap_newer_base_row_with_older_version() {
+        // Base has s=1 with val=20 at t=5. History has assert of val=10 at t=2.
+        // At t_target=3, s=1 should have val=10 (the older version).
+        let batch = make_batch(&[(1, 1, 20, 5)]);
+        let history = vec![
+            make_hist(1, 20, 5, 1), // assert val=20 at t=5
+            make_hist(1, 10, 5, 0), // retract val=10 at t=5
+            make_hist(1, 10, 2, 1), // assert val=10 at t=2
+        ];
+        let result = replay_leaflet(&batch, &history, 3, RunSortOrder::Spot);
+        assert!(result.is_some());
+        let replayed = result.unwrap();
+        assert_eq!(replayed.row_count, 1);
+        assert_eq!(replayed.s_id.get(0), 1);
+        // The value should be val=10 (the older version).
         assert_eq!(
-            out.row_count, 0,
-            "fact asserted at t=5 should not exist at t=3"
+            replayed.o_key.get(0),
+            ObjKey::encode_i64(10).as_u64(),
+            "should have older value at t_target"
         );
     }
 
     #[test]
-    fn test_replay_include_later_retract() {
-        // Current state: (empty — the fact was retracted)
-        // Region 3: retract at t=5 (retraction happened after t_target=3)
-        // Expected: fact should be restored at t=3
-
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, -5, 1), // retract at t=5 (negative = retract)
-        ];
-
-        let empty: &[u64] = &[];
-        let empty32: &[u32] = &[];
-        let empty8: &[u8] = &[];
-        let empty16: &[u16] = &[];
-        let emptyi: &[i32] = &[];
-        let emptyt: &[u32] = &[];
-        let input = row_slice!(empty, empty32, empty8, empty, empty32, emptyt, empty16, emptyi);
-        let result = replay_leaflet(&input, &r3_entries, 3, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 1, "retracted fact should be restored at t=3");
-        assert_eq!(out.s_ids[0], 1);
-        assert_eq!(out.p_ids[0], 10);
-        assert_eq!(out.o_keys[0], 100);
-        assert!(out.t_values[0] > 0, "restored fact should have positive t");
-    }
-
-    #[test]
-    fn test_replay_mixed_exclude_and_include() {
-        // Current state at max_t=10:
-        //   s=1 p=10 o=100 (survived — existed before and after, t=3)
-        //   s=2 p=10 o=200 (asserted at t=8, single-version)
-        //   s=4 p=10 o=400 (survived — existed before and after, t=3)
-        //
-        // Region 3: s=3 retract at t=7
-        //
-        // Events at t_target=5:
-        //   s=2: undo synthetic assert t=8 → present=false. Exclude.
-        //   s=3: undo R3 retract t=7 → present=true. Include (restore).
-        //
-        // Expected at t=5: s=1, s=3, s=4
-
-        let r3_entries = vec![
-            r3(3, 10, 0, 300, -7, 1), // retract at t=7 → include
-        ];
-
-        let input = row_slice!(
-            &[1u64, 2, 4],
-            &[10u32, 10, 10],
-            &[0u8, 0, 0],
-            &[100u64, 200, 400],
-            &[1u32, 1, 1],
-            &[3u32, 8, 3],
-            &[0u16, 0, 0],
-            &[
-                ListIndex::none().as_i32(),
-                ListIndex::none().as_i32(),
-                ListIndex::none().as_i32()
-            ]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 3);
-        assert_eq!(out.s_ids, vec![1, 3, 4]);
-        assert_eq!(out.o_keys, vec![100, 300, 400]);
-    }
-
-    #[test]
-    fn test_replay_retract_undo_restores_fact() {
-        // Fact history: asserted at t=3, retracted at t=7, reasserted at t=10.
-        // R1: fact present at t=10 (current state).
-        // R3 (history): retract at t=7, assert at t=3.
-        //
-        // At t_target=5:
-        //   Events (t desc): synthetic assert t=10, R3 retract t=7
-        //   Undo t=10 assert → present=false
-        //   Undo t=7 retract → present=true
-        //   Final: start=true, end=true, R1 t=10 > 5 → exclude R1, include
-        //   with base assert t=3 from R3 below break.
-        //   Result: fact present with t=3. Correct.
-
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, -7, 1), // retract at t=7
-            r3(1, 10, 0, 100, 3, 1),  // assert at t=3 (original)
-        ];
-
-        let input = row_slice!(
-            &[1u64], // fact is in current state (reasserted at t=10)
-            &[10u32],
-            &[0u8],
-            &[100u64],
-            &[1u32],
-            &[10u32],
-            &[0u16],
-            &[ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 1);
-        assert_eq!(out.s_ids[0], 1);
+    fn negative_t_target_returns_empty() {
+        let batch = make_batch(&[(1, 1, 10, 1), (2, 1, 20, 2)]);
+        let result = replay_leaflet(&batch, &[], -1, RunSortOrder::Spot);
+        assert!(result.is_some());
         assert_eq!(
-            out.t_values[0], 3,
-            "effective assert time at t_target=5 should be t=3, not t=10"
+            result.unwrap().row_count,
+            0,
+            "t_target < 0 means before genesis"
         );
     }
 
     #[test]
-    fn test_replay_preserves_sort_order_psot() {
-        // Test with PSOT order to verify sort-order generic merge.
-        // Include entries should be interleaved correctly by PSOT order.
-
-        // Current state: p=10 s=1, p=20 s=3
-        // Include: p=10 s=2 (from retract at t=8)
-        // Expected PSOT order: p=10 s=1, p=10 s=2, p=20 s=3
-
-        let r3_entries = vec![
-            r3(2, 10, 0, 200, -8, 1), // retract at t=8 → include
-        ];
-
-        let input = row_slice!(
-            &[1u64, 3],   // current s_ids (PSOT order: p=10 s=1, p=20 s=3)
-            &[10u32, 20], // p_ids
-            &[0u8, 0],
-            &[100u64, 300],
-            &[1u32, 1],
-            &[3u32, 3],
-            &[0u16, 0],
-            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
+    fn huge_t_target_returns_none() {
+        let batch = make_batch(&[(1, 1, 10, 1)]);
+        let result = replay_leaflet(&batch, &[], i64::MAX, RunSortOrder::Spot);
+        assert!(
+            result.is_none(),
+            "t_target > u32::MAX means no replay needed"
         );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Psot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 3);
-        // PSOT order: (p=10,s=1), (p=10,s=2), (p=20,s=3)
-        assert_eq!(out.p_ids, vec![10, 10, 20]);
-        assert_eq!(out.s_ids, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn test_replay_multiple_includes_sorted() {
-        // Multiple include entries should be sorted and merged correctly.
-
-        // Current state: s=3 p=10 o=300
-        // Include: s=1 (retract at t=8), s=5 (retract at t=7)
-        // Expected SPOT: s=1, s=3, s=5
-
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, -8, 1), // retract at t=8 → include
-            r3(5, 10, 0, 500, -7, 1), // retract at t=7 → include
-        ];
-
-        let input = row_slice!(
-            &[3u64],
-            &[10u32],
-            &[0u8],
-            &[300u64],
-            &[1u32],
-            &[3u32],
-            &[0u16],
-            &[ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 3);
-        assert_eq!(out.s_ids, vec![1, 3, 5]);
-    }
-
-    #[test]
-    fn test_replay_all_excluded() {
-        // All current rows have t > t_target — undo of synthetic asserts
-        // makes all facts absent. R3 is empty (single-version facts).
-
-        let input = row_slice!(
-            &[1u64, 2],
-            &[10u32, 10],
-            &[0u8, 0],
-            &[100u64, 200],
-            &[1u32, 1],
-            &[8u32, 7],
-            &[0u16, 0],
-            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &[], 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 0);
-    }
-
-    #[test]
-    fn test_replay_boundary_t_equals_target() {
-        // Entry at exactly t_target should NOT be undone.
-        // Synthetic events only for t > t_target (strict), not t == t_target.
-        //
-        // R3 is empty (no historical entries — both facts are single-version).
-        // s=2 has t=8 > 5 → undo assert → excluded.
-        // s=1 has t=5 == 5 → no event → kept.
-
-        let r3_entries: Vec<Region3Entry> = vec![];
-
-        let input = row_slice!(
-            &[1u64, 2],
-            &[10u32, 10],
-            &[0u8, 0],
-            &[100u64, 200],
-            &[1u32, 1],
-            &[5u32, 8],
-            &[0u16, 0],
-            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 1);
-        assert_eq!(out.s_ids, vec![1]); // s=1 survives (t=5 is at boundary)
-    }
-
-    #[test]
-    fn test_replay_multi_transaction_assert_retract_assert() {
-        // Same fact goes through: assert t=3 → retract t=5 → reassert t=8
-        //
-        // Region 3 (history only, no current-state assert):
-        //   retract t=5, assert t=3
-        // R1: fact is present at t=8 (current state)
-        //
-        // At t_target=6:
-        //   Events: synthetic assert t=8 (only event; R3 retract t=5 ≤ 6)
-        //   Undo t=8 assert → present=false
-        //   Final: start=true, end=false → exclude. row_count=0
-        //   Correct — at t=6, retraction at t=5 already happened.
-        //
-        // At t_target=4:
-        //   Events (t desc): synthetic assert t=8, R3 retract t=5
-        //   Undo t=8 assert → present=false
-        //   Undo t=5 retract → present=true
-        //   Final: start=true, end=true, R1 t=8 > 4 → exclude R1, include
-        //   with base assert t=3 from R3 below break. row_count=1, t=3.
-        //   Correct — at t=4, original assert at t=3 was still active.
-        //
-        // At t_target=2:
-        //   Events (t desc): synthetic assert t=8, R3 retract t=5, R3 assert t=3
-        //   Undo t=8 assert → present=false
-        //   Undo t=5 retract → present=true
-        //   Undo t=3 assert → present=false
-        //   Final: start=true, end=false → exclude. row_count=0
-        //   Correct — at t=2, the fact didn't exist yet (asserted at t=3).
-
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, -5, 1), // retract at t=5
-            r3(1, 10, 0, 100, 3, 1),  // assert at t=3 (oldest)
-        ];
-
-        // Current R1: fact is present (reasserted at t=8)
-        let input = row_slice!(
-            &[1u64],
-            &[10u32],
-            &[0u8],
-            &[100u64],
-            &[1u32],
-            &[8u32],
-            &[0u16],
-            &[ListIndex::none().as_i32()]
-        );
-
-        // t_target=6: fact was retracted at t=5
-        let result_t6 = replay_leaflet(&input, &r3_entries, 6, RunSortOrder::Spot);
-        let out = result_t6.expect("should produce replay");
-        assert_eq!(
-            out.row_count, 0,
-            "at t=6, fact was retracted (retract at t=5)"
-        );
-
-        // t_target=4: fact was alive (original assert at t=3)
-        let result_t4 = replay_leaflet(&input, &r3_entries, 4, RunSortOrder::Spot);
-        let out = result_t4.expect("should produce replay");
-        assert_eq!(
-            out.row_count, 1,
-            "at t=4, fact was alive (original assert at t=3, retract at t=5 not yet)"
-        );
-        assert_eq!(out.s_ids, vec![1]);
-        assert_eq!(
-            out.t_values[0], 3,
-            "effective assert time at t_target=4 should be t=3, not t=8"
-        );
-
-        // t_target=2: fact didn't exist yet (asserted at t=3)
-        let result_t2 = replay_leaflet(&input, &r3_entries, 2, RunSortOrder::Spot);
-        let out = result_t2.expect("should produce replay");
-        assert_eq!(
-            out.row_count, 0,
-            "at t=2, fact didn't exist yet (first asserted at t=3)"
-        );
-    }
-
-    #[test]
-    fn test_replay_retract_then_reassert_restore() {
-        // Fact asserted at t=2, retracted at t=5, then reasserted at t=8.
-        // Current state: present (reasserted at t=8).
-        //
-        // Region 3 (history): retract t=5, assert t=2
-        // R1: fact present at t=8
-        //
-        // At t_target=4:
-        //   Events (t desc): synthetic assert t=8, R3 retract t=5
-        //   Undo t=8 assert → present=false
-        //   Undo t=5 retract → present=true
-        //   Final: start=true, end=true, R1 t=8 > 4 → exclude R1, include
-        //   with base assert t=2 from R3 below break.
-        //   Result: row_count=1, t=2. Correct — at t=4 the fact existed
-        //   (original assert at t=2, retraction at t=5 not yet happened).
-
-        let r3_entries = vec![
-            r3(1, 10, 0, 100, -5, 1), // retract at t=5
-            r3(1, 10, 0, 100, 2, 1),  // assert at t=2 (original)
-        ];
-
-        let input = row_slice!(
-            &[1u64],
-            &[10u32],
-            &[0u8],
-            &[100u64],
-            &[1u32],
-            &[8u32],
-            &[0u16],
-            &[ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 4, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(
-            out.row_count, 1,
-            "at t=4, fact existed (retraction at t=5 undone, restoring fact)"
-        );
-        assert_eq!(out.s_ids, vec![1]);
-        assert_eq!(
-            out.t_values[0], 2,
-            "effective assert time at t_target=4 should be t=2, not t=8"
-        );
-    }
-
-    #[test]
-    fn test_replay_equal_sort_position_different_facts() {
-        // Two facts with the same sort-key columns (s_id, p_id, o, dt) but
-        // different full identity (different lang_id). One survives in R1,
-        // one is restored from retraction.
-        //
-        // This exercises the Equal branch in the three-way merge: sort-key
-        // match but different FactKey means both should be emitted.
-
-        // Current R1: s=1 p=10 o=100 dt=11 lang=1 (a lang string in English)
-        // Include: s=1 p=10 o=100 dt=11 lang=2 (same triple in French, retracted at t=8)
-        //
-        // These have the same sort-key (s_id=1, p_id=10, o=100, dt=11)
-        // but different lang_id, so cmp_row_vs_r3 returns Equal.
-
-        let r3_entries = vec![Region3Entry {
-            s_id: 1,
-            p_id: 10,
-            o_kind: 0,
-            o_key: 100,
-            t: 8,       // retract at t=8
-            op: 0,      // retract
-            dt: 11,     // LANG_STRING
-            lang_id: 2, // French
-            i: ListIndex::none().as_i32(),
-        }];
-
-        let input = row_slice!(
-            &[1u64],   // s_ids
-            &[10u32],  // p_ids
-            &[0u8],    // o_kinds
-            &[100u64], // o_keys
-            &[11u32],  // dt (LANG_STRING)
-            &[3u32],   // t
-            &[1u16],   // lang_ids (English)
-            &[ListIndex::none().as_i32()]
-        );
-        let result = replay_leaflet(
-            &input,
-            &r3_entries,
-            5, // want state at t=5 (retraction at t=8 → include French back)
-            RunSortOrder::Spot,
-        );
-        let out = result.expect("should produce replay");
-        // Both facts should be present: English (from R1) and French (restored)
-        assert_eq!(out.row_count, 2);
-        assert_eq!(out.s_ids, vec![1, 1]);
-        assert_eq!(out.lang_ids, vec![1, 2]); // English first (from R1), then French (restored)
-    }
-
-    #[test]
-    fn test_replay_multiple_facts_different_transactions() {
-        // History spanning multiple transactions with interleaved operations.
-        //
-        // Current state at max_t=10: s=1 o=100, s=3 o=300, s=5 o=500
-        //
-        // Region 3 (history only): s=2 retract at t=9, s=4 retract at t=8
-        // R1 rows: s=1 (t=6), s=3 (t=7), s=5 (t=10)
-        //
-        // At t_target=5:
-        //   s=1: undo synthetic assert t=6 → exclude (start=true, end=false)
-        //   s=2: undo R3 retract t=9 → include (start=false, end=true)
-        //   s=3: undo synthetic assert t=7 → exclude
-        //   s=4: undo R3 retract t=8 → include
-        //   s=5: undo synthetic assert t=10 → exclude
-        //
-        // Expected: s=2, s=4 (in SPOT order)
-
-        let r3_entries = vec![
-            r3(2, 10, 0, 200, -9, 1), // retract at t=9
-            r3(4, 10, 0, 400, -8, 1), // retract at t=8
-        ];
-
-        let input = row_slice!(
-            &[1u64, 3, 5], // current R1 s_ids
-            &[10u32, 10, 10],
-            &[0u8, 0, 0],
-            &[100u64, 300, 500],
-            &[1u32, 1, 1],
-            &[6u32, 7, 10], // t values
-            &[0u16, 0, 0],
-            &[
-                ListIndex::none().as_i32(),
-                ListIndex::none().as_i32(),
-                ListIndex::none().as_i32()
-            ]
-        );
-        let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
-        let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 2);
-        assert_eq!(out.s_ids, vec![2, 4]);
-        assert_eq!(out.o_keys, vec![200, 400]);
     }
 }

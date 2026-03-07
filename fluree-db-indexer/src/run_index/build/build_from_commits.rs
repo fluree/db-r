@@ -8,15 +8,13 @@
 //! `build_all_indexes()` (Phase E) from the V1 pipeline with a single
 //! unified function that builds ALL orders from V2 run files.
 
-use crate::run_index::build::index_build_v2::{
-    build_all_indexes_v2, BuildAllV2Config, IndexBuildV2Result,
+use crate::run_index::build::index_build::{build_all_indexes, BuildAllConfig, IndexBuildResult};
+use crate::run_index::runs::run_writer::{
+    MultiOrderConfig, MultiOrderRunWriter, MultiOrderRunWriterWithOp,
 };
-use crate::run_index::runs::run_writer_v2::{
-    MultiOrderRunWriterV2, MultiOrderRunWriterV2WithOp, MultiOrderV2Config,
+use crate::run_index::runs::spool::{
+    remap_commit_to_runs, remap_commit_to_runs_with_op, MmapStringRemap, MmapSubjectRemap,
 };
-use crate::run_index::runs::spool::MmapStringRemap;
-use crate::run_index::runs::spool::MmapSubjectRemap;
-use crate::run_index::runs::spool_v2::{remap_commit_to_runs_v2, remap_commit_to_runs_v2_with_op};
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use std::io;
@@ -26,7 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 /// Input for a single sorted commit chunk.
-pub struct V3CommitInput {
+pub struct CommitInput {
     /// Path to the sorted commit file (.fsc).
     pub commit_path: PathBuf,
     /// Number of records in the commit file.
@@ -40,7 +38,7 @@ pub struct V3CommitInput {
 }
 
 /// Configuration for the V3 build-from-commits pipeline.
-pub struct V3BuildConfig {
+pub struct BuildConfig {
     /// Base directory for temporary run files.
     pub run_dir: PathBuf,
     /// Output directory for per-graph index artifacts.
@@ -60,9 +58,9 @@ pub struct V3BuildConfig {
 }
 
 /// Result of the V3 build pipeline.
-pub struct V3BuildResult {
+pub struct BuildResult {
     /// Per-order build results (each contains per-graph artifacts).
-    pub order_results: Vec<(RunSortOrder, IndexBuildV2Result)>,
+    pub order_results: Vec<(RunSortOrder, IndexBuildResult)>,
     /// Total rows across all orders (from the POST result for canonical count).
     pub total_rows: u64,
     /// Total records remapped across all chunks.
@@ -82,16 +80,16 @@ pub struct V3BuildResult {
 /// Steps:
 /// 1. Remap each sorted commit → V2 run files for all 4 orders
 /// 2. K-way merge run files → FLI3/FBR3 per graph per order
-pub fn build_v3_indexes_from_commits(
-    commits: &[V3CommitInput],
+pub fn build_indexes_from_commits(
+    commits: &[CommitInput],
     registry: &OTypeRegistry,
-    config: &V3BuildConfig,
-) -> io::Result<V3BuildResult> {
+    config: &BuildConfig,
+) -> io::Result<BuildResult> {
     // Phase 1: Remap sorted commits → V2 run files for all 4 orders.
     let remap_start = Instant::now();
 
     let orders = RunSortOrder::all_build_orders().to_vec();
-    let mut writer = MultiOrderRunWriterV2::new(MultiOrderV2Config {
+    let mut writer = MultiOrderRunWriter::new(MultiOrderConfig {
         total_budget_bytes: config.run_budget_bytes,
         orders: orders.clone(),
         base_run_dir: config.run_dir.clone(),
@@ -102,7 +100,7 @@ pub fn build_v3_indexes_from_commits(
         let s_remap = MmapSubjectRemap::open(&commit.subject_remap_path)?;
         let str_remap = MmapStringRemap::open(&commit.string_remap_path)?;
 
-        let count = remap_commit_to_runs_v2(
+        let count = remap_commit_to_runs(
             &commit.commit_path,
             commit.record_count,
             &s_remap,
@@ -110,6 +108,8 @@ pub fn build_v3_indexes_from_commits(
             &commit.lang_remap,
             registry,
             &mut writer,
+            None, // no stats_hook
+            None, // no dt_tags
         )?;
         total_remapped += count;
 
@@ -125,7 +125,7 @@ pub fn build_v3_indexes_from_commits(
     // Phase 2: Build V3 indexes from run files.
     let build_start = Instant::now();
 
-    let build_config = BuildAllV2Config {
+    let build_config = BuildAllConfig {
         base_run_dir: config.run_dir.clone(),
         index_dir: config.index_dir.clone(),
         leaflet_target_rows: config.leaflet_target_rows,
@@ -138,7 +138,7 @@ pub fn build_v3_indexes_from_commits(
     };
 
     let order_results =
-        build_all_indexes_v2(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
+        build_all_indexes(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
 
     let build_elapsed = build_start.elapsed();
 
@@ -154,7 +154,7 @@ pub fn build_v3_indexes_from_commits(
                 .unwrap_or(0)
         });
 
-    Ok(V3BuildResult {
+    Ok(BuildResult {
         order_results,
         total_rows,
         total_remapped,
@@ -165,22 +165,22 @@ pub fn build_v3_indexes_from_commits(
 
 /// Build V3 indexes from globally-remapped sorted commit files (rebuild path).
 ///
-/// Unlike [`build_v3_indexes_from_commits`], which takes `V3CommitInput` with
+/// Unlike [`build_indexes_from_commits`], which takes `CommitInput` with
 /// per-chunk remap files, this function takes `SortedCommitInfo` entries whose
 /// `.fsc` files already contain globally-remapped IDs (Phase C applied remap
 /// in-memory). Uses `IdentitySubjectRemap` / `IdentityStringRemap` since
 /// no disk remap files exist.
 ///
 /// Key differences from the import path:
-/// - Input: `&[SortedCommitInfo]` (not `&[V3CommitInput]`)
+/// - Input: `&[SortedCommitInfo]` (not `&[CommitInput]`)
 /// - Remap: identity (global IDs already in place)
 /// - `skip_dedup: false` (rebuild may have retractions)
 /// - `skip_history: false` (produce history sidecars for time-travel)
-pub fn build_v3_indexes_from_remapped_commits(
+pub fn build_indexes_from_remapped_commits(
     commit_infos: &[crate::run_index::runs::spool::SortedCommitInfo],
     registry: &OTypeRegistry,
-    config: &V3BuildConfig,
-) -> io::Result<V3BuildResult> {
+    config: &BuildConfig,
+) -> io::Result<BuildResult> {
     use crate::run_index::runs::spool::{IdentityStringRemap, IdentitySubjectRemap};
 
     // Phase 1: Remap sorted commits → V2 run files (with op) for all 4 orders.
@@ -190,7 +190,7 @@ pub fn build_v3_indexes_from_remapped_commits(
     let remap_start = Instant::now();
 
     let orders = RunSortOrder::all_build_orders().to_vec();
-    let mut writer = MultiOrderRunWriterV2WithOp::new(MultiOrderV2Config {
+    let mut writer = MultiOrderRunWriterWithOp::new(MultiOrderConfig {
         total_budget_bytes: config.run_budget_bytes,
         orders: orders.clone(),
         base_run_dir: config.run_dir.clone(),
@@ -202,7 +202,7 @@ pub fn build_v3_indexes_from_remapped_commits(
 
     let mut total_remapped = 0u64;
     for info in commit_infos {
-        let count = remap_commit_to_runs_v2_with_op(
+        let count = remap_commit_to_runs_with_op(
             &info.path,
             info.record_count,
             &s_remap,
@@ -224,7 +224,7 @@ pub fn build_v3_indexes_from_remapped_commits(
     // Phase 2: Build V3 indexes from run files.
     let build_start = Instant::now();
 
-    let build_config = BuildAllV2Config {
+    let build_config = BuildAllConfig {
         base_run_dir: config.run_dir.clone(),
         index_dir: config.index_dir.clone(),
         leaflet_target_rows: config.leaflet_target_rows,
@@ -237,7 +237,7 @@ pub fn build_v3_indexes_from_remapped_commits(
     };
 
     let order_results =
-        build_all_indexes_v2(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
+        build_all_indexes(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
 
     let build_elapsed = build_start.elapsed();
 
@@ -253,7 +253,7 @@ pub fn build_v3_indexes_from_remapped_commits(
                 .unwrap_or(0)
         });
 
-    Ok(V3BuildResult {
+    Ok(BuildResult {
         order_results,
         total_rows,
         total_remapped,
@@ -266,7 +266,7 @@ pub fn build_v3_indexes_from_remapped_commits(
 mod tests {
     use super::*;
     use crate::run_index::runs::spool::SpoolWriter;
-    use fluree_db_binary_index::format::leaf_v3::{decode_leaf_dir_v3, decode_leaf_header_v3};
+    use fluree_db_binary_index::format::leaf::{decode_leaf_dir_v3, decode_leaf_header_v3};
     use fluree_db_binary_index::format::run_record::RunRecord;
 
     use fluree_db_core::subject_id::SubjectId;
@@ -344,7 +344,7 @@ mod tests {
         let str_data: Vec<u8> = (0u32..10).flat_map(|i| i.to_le_bytes()).collect();
         std::fs::write(&str_remap_path, &str_data).unwrap();
 
-        let commits = vec![V3CommitInput {
+        let commits = vec![CommitInput {
             commit_path,
             record_count: spool_info.record_count,
             subject_remap_path: subj_remap_path,
@@ -353,7 +353,7 @@ mod tests {
         }];
 
         let registry = OTypeRegistry::builtin_only();
-        let config = V3BuildConfig {
+        let config = BuildConfig {
             run_dir,
             index_dir: index_dir.clone(),
             g_id: 0,
@@ -364,7 +364,7 @@ mod tests {
             progress: None,
         };
 
-        let result = build_v3_indexes_from_commits(&commits, &registry, &config).unwrap();
+        let result = build_indexes_from_commits(&commits, &registry, &config).unwrap();
 
         // Should have results for all 4 orders.
         assert_eq!(result.order_results.len(), 4);

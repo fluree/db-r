@@ -419,10 +419,6 @@ pub struct ContextConfig<'a, 'b> {
     /// This is the explicit path — separate from `LedgerSnapshot.range_provider` which
     /// serves the transparent `range_with_overlay()` callers.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
-    /// V6 binary columnar index store for V3 format scans.
-    ///
-    /// When set, takes priority over `binary_store` (V5) for query execution.
-    pub binary_store_v6: Option<Arc<fluree_db_binary_index::read::store_v6::BinaryIndexStoreV6>>,
     /// Graph ID for binary index lookups (default 0 = default graph).
     pub binary_g_id: GraphId,
     /// Dictionary novelty layer for binary scan subject/string lookups.
@@ -537,10 +533,7 @@ pub async fn execute_prepared<'a, 'b>(
         ctx = ctx.with_strict_bind_errors();
     }
     if let Some(store) = config.binary_store {
-        ctx = ctx.with_binary_store(store, db.g_id);
-    }
-    if let Some(store) = config.binary_store_v6 {
-        ctx = ctx.with_binary_store_v6(store, config.binary_g_id);
+        ctx = ctx.with_binary_store(store, config.binary_g_id);
     }
     if let Some(dn) = config.dict_novelty {
         ctx = ctx.with_dict_novelty(dn);

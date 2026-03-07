@@ -1,26 +1,44 @@
-//! Incremental index pipeline (Phase 1..5).
+//! Incremental index pipeline (FIR6).
 //!
-//! Instead of rebuilding from genesis, loads the existing `IndexRootV5`,
-//! resolves only new commits since the last indexed t, merges novelty into
-//! affected leaves, updates dictionaries incrementally, and publishes a
-//! new root that references mostly-unchanged CAS artifacts.
+//! Resolves only new commits since the last indexed `t`, merges novelty into
+//! affected FLI3 leaves via the V3 incremental modules, updates dictionaries,
+//! and publishes a new FIR6 root.
 //!
-//! Falls back to full rebuild on any error -- correctness is never at risk.
+//! ## Phases
+//!
+//! 1. **Resolve**: Load FIR6 root, walk new commits, produce `RunRecordV2` + ops
+//! 2. **Branch updates**: For each (graph, order) — including named graphs —
+//!    sort novelty by order, fetch existing branch, call `update_branch`,
+//!    upload new blobs
+//! 3. **Arena updates**: NumBig, Vector, Spatial, Fulltext — patch affected
+//!    (g_id, p_id) arenas, carry forward unchanged ones by CID.
+//!    Stats / HLL refresh. Schema refresh (rdfs:subClassOf / rdfs:subPropertyOf).
+//! 4. **Dict updates**: Update reverse trees + forward packs for new subjects/strings
+//! 5. **Root assembly**: `IncrementalRootBuilder` → encode → CAS write → publish
 
-use fluree_db_binary_index::{
-    BinaryGarbageRef, BinaryIndexStore, BinaryPrevIndexRef, PackBranchEntry, RunRecord,
-    RunSortOrder, SpatialArenaRefV5,
-};
+use std::sync::Arc;
+
+use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
 use fluree_db_core::{ContentId, ContentKind, Storage};
 
 use crate::error::{IndexerError, Result};
 use crate::gc;
-use crate::run_index;
+use crate::run_index::build::incremental_branch::{
+    update_branch, BranchUpdateConfig, BranchUpdateResult,
+};
+use crate::run_index::build::incremental_resolve::{
+    resolve_incremental_commits_v6, IncrementalResolveConfig,
+};
+use crate::run_index::build::incremental_root::IncrementalRootBuilder;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
-use super::upload::{cid_from_write, upload_dict_blob};
-
-pub async fn incremental_index_from_root<S>(
+/// Entry point for incremental indexing.
+///
+/// Called from `build_index_for_ledger` when an index exists and
+/// incremental conditions are met.
+pub async fn incremental_index<S>(
     storage: &S,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
@@ -30,69 +48,11 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let base_root_id = record.index_head_id.clone().ok_or(IndexerError::NoIndex)?;
-
     let head_commit_id = record
         .commit_head_id
         .clone()
         .ok_or(IndexerError::NoCommits)?;
-
     let from_t = record.index_t;
-    let storage = storage.clone();
-    let ledger_id = ledger_id.to_string();
-    let handle = tokio::runtime::Handle::current();
-
-    let span = tracing::info_span!(
-        "incremental_index",
-        ledger_id = %ledger_id,
-        from_t = from_t,
-        head = %head_commit_id,
-    );
-
-    tokio::task::spawn_blocking(move || {
-        let _guard = span.enter();
-        handle.block_on(async {
-            incremental_index_inner(
-                &storage,
-                &ledger_id,
-                base_root_id,
-                head_commit_id,
-                from_t,
-                config,
-            )
-            .await
-        })
-    })
-    .await
-    .map_err(|e| IndexerError::StorageWrite(format!("incremental index task panicked: {}", e)))?
-}
-
-/// Inner async implementation of incremental indexing.
-///
-/// Separated from `incremental_index_from_root` to keep the spawn_blocking
-/// wrapper clean and enable direct async calls from tests.
-async fn incremental_index_inner<S>(
-    storage: &S,
-    ledger_id: &str,
-    base_root_id: ContentId,
-    head_commit_id: ContentId,
-    from_t: i64,
-    config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    use crate::build::dicts::{
-        upload_incremental_reverse_tree_async, upload_incremental_reverse_tree_async_strings,
-    };
-    use crate::build::types::UpdatedReverseTree;
-    use fluree_db_binary_index::format::branch::read_branch_v2_from_bytes;
-    use fluree_db_binary_index::format::run_record::{cmp_for_order, RunSortOrder};
-    use run_index::incremental_branch::{
-        update_branch, IncrementalBranchConfig, IncrementalBranchError,
-    };
-    use run_index::incremental_resolve::{resolve_incremental_commits, IncrementalResolveConfig};
-    use run_index::incremental_root::IncrementalRootBuilder;
-    use std::sync::Arc;
 
     let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
         fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
@@ -104,12 +64,12 @@ where
         head_commit_id,
         from_t,
     };
-    let novelty = resolve_incremental_commits(content_store.clone(), resolve_config)
+    let novelty = resolve_incremental_commits_v6(content_store.clone(), resolve_config)
         .await
-        .map_err(|e| IndexerError::StorageWrite(format!("incremental resolve: {e}")))?;
+        .map_err(|e| IndexerError::StorageWrite(format!("V6 incremental resolve: {e}")))?;
 
     if novelty.records.is_empty() {
-        tracing::info!("no new records resolved; returning existing root");
+        tracing::info!("no new records resolved; returning existing V6 root");
         return Ok(IndexResult {
             root_id: base_root_id,
             index_t: novelty.max_t,
@@ -123,67 +83,25 @@ where
         new_subjects = novelty.new_subjects.len(),
         new_strings = novelty.new_strings.len(),
         max_t = novelty.max_t,
-        "Phase 1 complete: incremental resolve"
+        "V6 Phase 1 complete: incremental resolve"
     );
-    let base_root = &novelty.base_root;
 
-    // ---- Phase 2-3: Per-(graph, order) branch updates ----
-    // Partition records by graph, then build 4 order-sorted copies per graph.
-    let all_orders: &[RunSortOrder] = &[
+    // ---- Phase 2: Per-(graph, order) branch updates ----
+    let all_orders = [
         RunSortOrder::Spot,
         RunSortOrder::Psot,
         RunSortOrder::Post,
         RunSortOrder::Opst,
     ];
 
-    // Group records by g_id.
-    let mut by_graph: std::collections::BTreeMap<u16, Vec<&RunRecord>> =
+    // Group records + ops by g_id.
+    let mut by_graph: std::collections::BTreeMap<u16, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for record in &novelty.records {
-        by_graph.entry(record.g_id).or_default().push(record);
+    for (idx, rec) in novelty.records.iter().enumerate() {
+        by_graph.entry(rec.g_id).or_default().push(idx);
     }
 
-    // Format-level constants for leaflet/leaf sizing.
-    // These match the full-rebuild pipeline and are tied to the FLI2 format.
-    //
-    // Note: these can be overridden via IndexerConfig for testing/specialized builds.
-    let branch_config = IncrementalBranchConfig {
-        zstd_level: 1,
-        max_parallel_leaves: 4,
-        leaflet_target_rows: config.leaflet_rows.max(1),
-        leaflet_split_rows: (config.leaflet_rows.max(1) * 3) / 2,
-        leaflets_per_leaf: config.leaflets_per_leaf.max(1),
-        leaf_split_leaflets: config.leaflets_per_leaf.max(1) * 2,
-    };
-
-    let p_width = fluree_db_binary_index::format::leaflet::p_width_for_max(
-        novelty.shared.predicates.len().saturating_sub(1) as u32,
-    );
-
-    // Detect width promotion: if the new predicate or datatype count requires
-    // a wider encoding than the base root used, fall back to full rebuild.
-    // Existing leaves are encoded with the old width; re-encoding merged
-    // leaflets with a new width within the same leaf file is not supported.
-    let base_pred_count = base_root.predicate_sids.len() as u32;
-    let base_p_width =
-        fluree_db_binary_index::format::leaflet::p_width_for_max(base_pred_count.saturating_sub(1));
-    if p_width > base_p_width {
-        return Err(IndexerError::IncrementalAbort(format!(
-            "predicate width promotion ({base_p_width} -> {p_width}) requires full rebuild"
-        )));
-    }
-    let dt_count = novelty.shared.datatypes.len() as u32;
-    let base_dt_count = base_root.datatype_iris.len() as u32;
-    let dt_width =
-        fluree_db_binary_index::format::leaflet::dt_width_for_max(dt_count.saturating_sub(1));
-    let base_dt_width =
-        fluree_db_binary_index::format::leaflet::dt_width_for_max(base_dt_count.saturating_sub(1));
-    if dt_width > base_dt_width {
-        return Err(IndexerError::IncrementalAbort(format!(
-            "datatype width promotion ({base_dt_width} -> {dt_width}) requires full rebuild"
-        )));
-    }
-
+    let base_root = &novelty.base_root;
     let mut root_builder = IncrementalRootBuilder::from_old_root(novelty.base_root.clone());
     root_builder.set_index_t(novelty.max_t);
     root_builder.add_commit_stats(
@@ -192,343 +110,355 @@ where
         novelty.delta_retracts,
     );
 
-    // ---- Build unified work queue: branch updates + dict updates ----
-    //
-    // Both branch and dict work run concurrently in a single JoinSet, bounded
-    // by the same semaphore. Results are collected, sorted deterministically,
-    // and applied to IncrementalRootBuilder after all tasks complete.
+    let mut total_new_leaves = 0usize;
 
-    // -- Work item / result types --
+    for (&g_id, indices) in &by_graph {
+        // Extract this graph's records + ops.
+        let graph_records: Vec<RunRecordV2> = indices.iter().map(|&i| novelty.records[i]).collect();
+        let graph_ops: Vec<u8> = indices.iter().map(|&i| novelty.ops[i]).collect();
 
-    struct BranchWorkItem {
-        g_id: u16,
-        order: RunSortOrder,
-        /// Shared unsorted records for this graph — sorting is deferred until
-        /// the semaphore permit is acquired so only `max_concurrency` sorted
-        /// copies exist at once.
-        graph_records: Arc<Vec<RunRecord>>,
-        existing_manifest: Option<fluree_db_binary_index::format::branch::BranchManifest>,
-        old_branch_cid: Option<ContentId>,
-    }
-
-    struct BranchWorkResult {
-        g_id: u16,
-        order: RunSortOrder,
-        update: run_index::incremental_branch::BranchUpdateResult,
-        old_branch_cid: Option<ContentId>,
-    }
-
-    /// Forward pack result for a single dict (string or subject ns).
-    struct FwdPackResult {
-        all_pack_refs: Vec<PackBranchEntry>,
-    }
-
-    enum DictWorkResult {
-        StringForwardPacks(FwdPackResult),
-        SubjectForwardPacks { ns_code: u16, result: FwdPackResult },
-        SubjectReverseTree(UpdatedReverseTree),
-        StringReverseTree(UpdatedReverseTree),
-    }
-
-    /// Sort key for deterministic result application.
-    /// Branch results sort before dict results; within each category,
-    /// items sort by their natural keys.
-    #[derive(PartialEq, Eq, PartialOrd, Ord)]
-    enum WorkResultKey {
-        Branch { g_id: u16, order: RunSortOrder },
-        DictStringFwdPacks,
-        DictSubjectFwdPacks { ns_code: u16 },
-        DictSubjectReverseTree,
-        DictStringReverseTree,
-    }
-
-    enum WorkResult {
-        Branch(BranchWorkResult),
-        Dict(DictWorkResult),
-    }
-
-    impl WorkResult {
-        fn sort_key(&self) -> WorkResultKey {
-            match self {
-                WorkResult::Branch(b) => WorkResultKey::Branch {
-                    g_id: b.g_id,
-                    order: b.order,
-                },
-                WorkResult::Dict(d) => match d {
-                    DictWorkResult::StringForwardPacks(_) => WorkResultKey::DictStringFwdPacks,
-                    DictWorkResult::SubjectForwardPacks { ns_code, .. } => {
-                        WorkResultKey::DictSubjectFwdPacks { ns_code: *ns_code }
-                    }
-                    DictWorkResult::SubjectReverseTree(_) => WorkResultKey::DictSubjectReverseTree,
-                    DictWorkResult::StringReverseTree(_) => WorkResultKey::DictStringReverseTree,
-                },
-            }
-        }
-    }
-
-    // -- Shared state for all tasks --
-
-    let max_concurrency = config.incremental_max_concurrency.max(1);
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
-    let content_store_shared = content_store.clone();
-    let storage_shared = Arc::new(storage.clone());
-    let branch_config = Arc::new(branch_config);
-    let ledger_id_shared: Arc<str> = Arc::from(ledger_id);
-
-    let mut join_set: tokio::task::JoinSet<Result<WorkResult>> = tokio::task::JoinSet::new();
-
-    // -- Build branch work items --
-
-    // Build per-graph shared record vectors (one copy per graph, shared across
-    // 4 orders via Arc). Sorting is deferred to inside each task.
-    let mut shared_graph_records: std::collections::BTreeMap<u16, Arc<Vec<RunRecord>>> =
-        std::collections::BTreeMap::new();
-    for (&g_id, refs) in &by_graph {
-        let records: Vec<RunRecord> = refs.iter().map(|r| **r).collect();
-        shared_graph_records.insert(g_id, Arc::new(records));
-    }
-
-    let mut n_branch_items = 0usize;
-    for (&g_id, graph_records) in &shared_graph_records {
         let is_default_graph = g_id == 0;
 
-        for &order in all_orders {
-            let (existing_manifest, old_branch_cid) = if is_default_graph {
-                let manifest = base_root
+        for &order in &all_orders {
+            // Sort records for this order.
+            let cmp = cmp_v2_for_order(order);
+            let mut sorted_indices: Vec<usize> = (0..graph_records.len()).collect();
+            sorted_indices.sort_unstable_by(|&a, &b| cmp(&graph_records[a], &graph_records[b]));
+            let sorted_records: Vec<RunRecordV2> =
+                sorted_indices.iter().map(|&i| graph_records[i]).collect();
+            let sorted_ops: Vec<u8> = sorted_indices.iter().map(|&i| graph_ops[i]).collect();
+
+            if is_default_graph {
+                // Default graph: leaf entries are inline in the root.
+                let existing_leaves = base_root
                     .default_graph_orders
                     .iter()
                     .find(|o| o.order == order)
-                    .map(|o| fluree_db_binary_index::format::branch::BranchManifest {
-                        leaves: o.leaves.clone(),
-                    });
-                (manifest, None)
+                    .map(|o| &o.leaves);
+
+                if let Some(leaves) = existing_leaves {
+                    // Build a temporary FBR3 manifest for update_branch.
+                    let branch_bytes = fluree_db_binary_index::format::branch::build_branch_bytes(
+                        order, g_id, leaves,
+                    );
+
+                    let branch_config = BranchUpdateConfig {
+                        order,
+                        g_id,
+                        zstd_level: 1,
+                        leaflet_target_rows: config.leaflet_rows.max(1),
+                        leaf_target_rows: config
+                            .leaflet_rows
+                            .max(1)
+                            .saturating_mul(config.leaflets_per_leaf.max(1)),
+                    };
+
+                    let cs = content_store.clone();
+                    let cs2 = content_store.clone();
+                    let result = update_branch(
+                        &branch_bytes,
+                        &sorted_records,
+                        &sorted_ops,
+                        &branch_config,
+                        &|cid| {
+                            futures::executor::block_on(async { cs.get(cid).await })
+                                .map_err(std::io::Error::other)
+                        },
+                        &|cid| {
+                            futures::executor::block_on(async { cs2.get(cid).await })
+                                .map(Some)
+                                .or(Ok(None))
+                        },
+                    )
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!(
+                            "V6 branch update g={g_id} {order:?}: {e}"
+                        ))
+                    })?;
+
+                    // Upload new leaf + sidecar blobs.
+                    for blob in &result.new_leaf_blobs {
+                        storage
+                            .content_write_bytes(
+                                ContentKind::IndexLeaf,
+                                ledger_id,
+                                &blob.info.leaf_bytes,
+                            )
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
+                            storage
+                                .content_write_bytes(
+                                    ContentKind::HistorySidecar,
+                                    ledger_id,
+                                    sc_bytes,
+                                )
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        }
+                    }
+
+                    total_new_leaves += result.new_leaf_blobs.len();
+
+                    // Update root with new leaf entries + GC.
+                    root_builder.set_default_graph_order(order, result.leaf_entries);
+                    root_builder.add_replaced_cids(result.replaced_leaf_cids);
+                    root_builder.add_replaced_cids(result.replaced_sidecar_cids);
+                } else {
+                    // No existing branch for this order — build from scratch.
+                    let result = build_fresh_default_graph_v3(
+                        &sorted_records,
+                        &sorted_ops,
+                        order,
+                        g_id,
+                        &config,
+                    )?;
+
+                    // Upload blobs.
+                    for blob in &result.new_leaf_blobs {
+                        storage
+                            .content_write_bytes(
+                                ContentKind::IndexLeaf,
+                                ledger_id,
+                                &blob.info.leaf_bytes,
+                            )
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
+                            storage
+                                .content_write_bytes(
+                                    ContentKind::HistorySidecar,
+                                    ledger_id,
+                                    sc_bytes,
+                                )
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        }
+                    }
+
+                    total_new_leaves += result.new_leaf_blobs.len();
+                    root_builder.set_default_graph_order(order, result.leaf_entries);
+                }
             } else {
-                let branch_ref = base_root
+                // Named graph: branch stored as separate CAS object (FBR3).
+                let branch_cid = base_root
                     .named_graphs
                     .iter()
                     .find(|ng| ng.g_id == g_id)
                     .and_then(|ng| ng.orders.iter().find(|(o, _)| *o == order))
                     .map(|(_, cid)| cid);
 
-                if let Some(cid) = branch_ref {
-                    let branch_bytes = content_store.get(cid).await.map_err(|e| {
-                        IndexerError::StorageRead(format!(
-                            "load branch g_id={g_id} order={order:?}: {e}"
+                if let Some(existing_branch_cid) = branch_cid {
+                    // Fetch existing branch manifest.
+                    let branch_bytes =
+                        content_store.get(existing_branch_cid).await.map_err(|e| {
+                            IndexerError::StorageRead(format!(
+                                "fetch V3 branch g_id={g_id} {order:?}: {e}"
+                            ))
+                        })?;
+
+                    let branch_config = BranchUpdateConfig {
+                        order,
+                        g_id,
+                        zstd_level: 1,
+                        leaflet_target_rows: config.leaflet_rows.max(1),
+                        leaf_target_rows: config
+                            .leaflet_rows
+                            .max(1)
+                            .saturating_mul(config.leaflets_per_leaf.max(1)),
+                    };
+
+                    let cs = content_store.clone();
+                    let cs2 = content_store.clone();
+                    let result = update_branch(
+                        &branch_bytes,
+                        &sorted_records,
+                        &sorted_ops,
+                        &branch_config,
+                        &|cid| {
+                            futures::executor::block_on(async { cs.get(cid).await })
+                                .map_err(std::io::Error::other)
+                        },
+                        &|cid| {
+                            futures::executor::block_on(async { cs2.get(cid).await })
+                                .map(Some)
+                                .or(Ok(None))
+                        },
+                    )
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!(
+                            "V6 branch update g={g_id} {order:?}: {e}"
                         ))
                     })?;
-                    let manifest = read_branch_v2_from_bytes(&branch_bytes).map_err(|e| {
-                        IndexerError::StorageRead(format!(
-                            "decode branch g_id={g_id} order={order:?}: {e}"
-                        ))
-                    })?;
-                    (Some(manifest), Some(cid.clone()))
-                } else {
-                    (None, None)
-                }
-            };
 
-            let item = BranchWorkItem {
-                g_id,
-                order,
-                graph_records: Arc::clone(graph_records),
-                existing_manifest,
-                old_branch_cid,
-            };
+                    // Upload new leaf + sidecar blobs.
+                    for blob in &result.new_leaf_blobs {
+                        storage
+                            .content_write_bytes(
+                                ContentKind::IndexLeaf,
+                                ledger_id,
+                                &blob.info.leaf_bytes,
+                            )
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            n_branch_items += 1;
-            let sem = semaphore.clone();
-            let cs = content_store_shared.clone();
-            let st = storage_shared.clone();
-            let cfg = branch_config.clone();
-            let lid = ledger_id_shared.clone();
-
-            join_set.spawn(async move {
-                let _permit = sem
-                    .acquire()
-                    .await
-                    .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
-
-                let g_id = item.g_id;
-                let order = item.order;
-                let is_default = g_id == 0;
-
-                // Sort records for this order (deferred from work-item construction).
-                let mut sorted_records: Vec<RunRecord> = (*item.graph_records).clone();
-                drop(item.graph_records);
-                let cmp = cmp_for_order(order);
-                sorted_records.sort_unstable_by(cmp);
-
-                let update_result = if let Some(manifest) = item.existing_manifest {
-                    // Pre-fetch affected leaves from CAS (async I/O).
-                    let cmp = cmp_for_order(order);
-                    let mut prefetched: std::collections::HashMap<ContentId, Vec<u8>> =
-                        std::collections::HashMap::new();
-
-                    let n_leaves = manifest.leaves.len();
-                    let mut start = 0usize;
-                    for (i, leaf) in manifest.leaves.iter().enumerate() {
-                        let end = if i == n_leaves - 1 {
-                            sorted_records.len()
-                        } else {
-                            let next_key = &manifest.leaves[i + 1].first_key;
-                            start
-                                + sorted_records[start..].partition_point(|r| {
-                                    cmp(r, next_key) == std::cmp::Ordering::Less
-                                })
-                        };
-                        let has_novelty = end > start;
-                        if has_novelty && !prefetched.contains_key(&leaf.leaf_cid) {
-                            let bytes = cs.get(&leaf.leaf_cid).await.map_err(|e| {
-                                IndexerError::StorageRead(format!(
-                                    "fetch leaf {}: {e}",
-                                    leaf.leaf_cid
-                                ))
-                            })?;
-                            prefetched.insert(leaf.leaf_cid.clone(), bytes);
+                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
+                            storage
+                                .content_write_bytes(
+                                    ContentKind::HistorySidecar,
+                                    ledger_id,
+                                    sc_bytes,
+                                )
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                         }
-                        start = end;
                     }
 
-                    // CPU-bound merge/encode in spawn_blocking.
-                    let cfg_inner = cfg.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let mut fetch_leaf = |cid: &ContentId| -> std::result::Result<
-                            Vec<u8>,
-                            IncrementalBranchError,
-                        > {
-                            prefetched.get(cid).cloned().ok_or_else(|| {
-                                IncrementalBranchError::Io(std::io::Error::other(format!(
-                                    "leaf not pre-fetched: {cid}"
-                                )))
-                            })
-                        };
-
-                        update_branch(
-                            &manifest,
-                            &sorted_records,
-                            order,
-                            g_id,
-                            &cfg_inner,
-                            &mut fetch_leaf,
+                    // Upload new branch manifest.
+                    storage
+                        .content_write_bytes(
+                            ContentKind::IndexBranch,
+                            ledger_id,
+                            &result.branch_bytes,
                         )
-                        .map_err(|e| match e {
-                            IncrementalBranchError::EmptyLeafletWithHistory => {
-                                IndexerError::StorageWrite(
-                                    "incremental: empty leaflet with history".to_string(),
-                                )
-                            }
-                            IncrementalBranchError::Io(io_err) => {
-                                IndexerError::StorageWrite(format!("incremental branch: {io_err}"))
-                            }
-                        })
-                    })
-                    .await
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!("branch update task panicked: {e}"))
-                    })??
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    total_new_leaves += result.new_leaf_blobs.len();
+                    root_builder.set_named_graph_branch(g_id, order, result.branch_cid);
+                    root_builder.add_replaced_cids(result.replaced_leaf_cids);
+                    root_builder.add_replaced_cids(result.replaced_sidecar_cids);
                 } else {
-                    let cfg_inner = cfg.clone();
-                    tokio::task::spawn_blocking(move || {
-                        build_fresh_branch(
-                            &sorted_records,
-                            order,
-                            g_id,
-                            &cfg_inner,
-                            p_width,
-                            base_dt_width,
+                    // No existing branch for this named graph + order — build from scratch.
+                    let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, &config)?;
+
+                    // Upload blobs.
+                    for blob in &result.new_leaf_blobs {
+                        storage
+                            .content_write_bytes(
+                                ContentKind::IndexLeaf,
+                                ledger_id,
+                                &blob.info.leaf_bytes,
+                            )
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
+                            storage
+                                .content_write_bytes(
+                                    ContentKind::HistorySidecar,
+                                    ledger_id,
+                                    sc_bytes,
+                                )
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        }
+                    }
+
+                    // Upload branch manifest.
+                    storage
+                        .content_write_bytes(
+                            ContentKind::IndexBranch,
+                            ledger_id,
+                            &result.branch_bytes,
                         )
-                    })
-                    .await
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!("fresh branch build task panicked: {e}"))
-                    })??
-                };
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-                // Upload new leaf blobs to CAS.
-                for blob in &update_result.new_leaf_blobs {
-                    st.content_write_bytes_with_hash(
-                        ContentKind::IndexLeaf,
-                        &lid,
-                        &blob.cid.digest_hex(),
-                        &blob.bytes,
-                    )
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    total_new_leaves += result.new_leaf_blobs.len();
+                    root_builder.set_named_graph_branch(g_id, order, result.branch_cid);
                 }
-
-                // Upload branch manifest for named graphs.
-                if !is_default {
-                    st.content_write_bytes_with_hash(
-                        ContentKind::IndexBranch,
-                        &lid,
-                        &update_result.branch_cid.digest_hex(),
-                        &update_result.branch_bytes,
-                    )
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                }
-
-                Ok(WorkResult::Branch(BranchWorkResult {
-                    g_id,
-                    order,
-                    update: update_result,
-                    old_branch_cid: item.old_branch_cid,
-                }))
-            });
+            }
         }
     }
 
-    // Drop shared_graph_records — each work item holds its own Arc.
-    drop(shared_graph_records);
+    tracing::info!(
+        new_leaves = total_new_leaves,
+        graphs = by_graph.len(),
+        "V6 Phase 2 complete: branch updates"
+    );
 
-    // -- Build dict work items --
+    // ---- Phase 3: Dict updates ----
+    // Incremental dict tree updates.
+    use super::dicts::{
+        upload_incremental_reverse_tree_async, upload_incremental_reverse_tree_async_strings,
+    };
+    let mut new_dict_refs = base_root.dict_refs.clone();
 
-    let mut n_dict_items = 0usize;
+    if !novelty.new_subjects.is_empty() {
+        tracing::info!(
+            count = novelty.new_subjects.len(),
+            "V6 Phase 3: updating subject reverse tree"
+        );
+        let updated = upload_incremental_reverse_tree_async(
+            storage,
+            ledger_id,
+            fluree_db_core::DictKind::SubjectReverse,
+            &content_store,
+            &base_root.dict_refs.subject_reverse,
+            novelty.new_subjects.clone(),
+        )
+        .await?;
+        root_builder.add_replaced_cids(updated.replaced_cids);
+        new_dict_refs.subject_reverse = updated.tree_refs;
+    }
 
-    // 4a: String forward packs.
     if !novelty.new_strings.is_empty() {
-        n_dict_items += 1;
-        let sem = semaphore.clone();
-        let st = storage_shared.clone();
-        let lid = ledger_id_shared.clone();
-        let existing_refs = base_root.dict_refs.forward_packs.string_fwd_packs.clone();
-        // Own the entries so they're Send + 'static.
-        let new_entries: Vec<(u32, Vec<u8>)> = novelty
-            .new_strings
-            .iter()
-            .map(|(id, val)| (*id, val.clone()))
-            .collect();
+        tracing::info!(
+            count = novelty.new_strings.len(),
+            "V6 Phase 3: updating string reverse tree"
+        );
+        let updated = upload_incremental_reverse_tree_async_strings(
+            storage,
+            ledger_id,
+            fluree_db_core::DictKind::StringReverse,
+            &content_store,
+            &base_root.dict_refs.string_reverse,
+            novelty.new_strings.clone(),
+        )
+        .await?;
+        root_builder.add_replaced_cids(updated.replaced_cids);
+        new_dict_refs.string_reverse = updated.tree_refs;
+    }
 
-        join_set.spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
+    // Forward pack updates (FPK1): append new pack artifacts for new subjects/strings.
+    // Forward packs are append-only: existing pack refs are preserved, new entries get
+    // their own pack artifacts appended to the routing list.
+    {
+        use super::upload::cid_from_write;
+        use fluree_db_binary_index::dict::incremental::{
+            build_incremental_string_packs, build_incremental_subject_packs_for_ns,
+        };
+        use fluree_db_binary_index::PackBranchEntry;
 
-            // CPU-bound pack building in spawn_blocking.
-            let existing_refs_inner = existing_refs.clone();
-            let pack_result = tokio::task::spawn_blocking(move || {
-                let refs: Vec<(u32, &[u8])> = new_entries
-                    .iter()
-                    .map(|(id, v)| (*id, v.as_slice()))
-                    .collect();
-                fluree_db_binary_index::dict::incremental::build_incremental_string_packs(
-                    &existing_refs_inner,
-                    &refs,
-                )
-            })
-            .await
-            .map_err(|e| IndexerError::StorageWrite(format!("string fwd pack task panicked: {e}")))?
-            .map_err(|e| IndexerError::StorageWrite(format!("incremental string packs: {e}")))?;
+        // String forward packs.
+        // Invariant: new_strings is sorted by string_id ascending (enforced by resolver).
+        if !novelty.new_strings.is_empty() {
+            debug_assert!(
+                novelty.new_strings.windows(2).all(|w| w[0].0 < w[1].0),
+                "new_strings must be sorted by string_id ascending"
+            );
 
-            // Upload new pack artifacts.
+            let existing_refs = &base_root.dict_refs.forward_packs.string_fwd_packs;
+            let entries: Vec<(u32, &[u8])> = novelty
+                .new_strings
+                .iter()
+                .map(|(id, val)| (*id, val.as_slice()))
+                .collect();
+
+            let pack_result = build_incremental_string_packs(existing_refs, &entries)
+                .map_err(|e| IndexerError::StorageWrite(format!("string fwd pack build: {e}")))?;
+
+            // Upload new pack artifacts and build updated refs.
+            let mut updated_refs = existing_refs.clone();
             let kind = ContentKind::DictBlob {
                 dict: fluree_db_core::DictKind::StringForward,
             };
-            let mut updated_refs = existing_refs;
             for pack in &pack_result.new_packs {
-                let cas_result = st
-                    .content_write_bytes(kind, &lid, &pack.bytes)
+                let cas_result = storage
+                    .content_write_bytes(kind, ledger_id, &pack.bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 updated_refs.push(PackBranchEntry {
@@ -537,77 +467,70 @@ where
                     pack_cid: cid_from_write(kind, &cas_result),
                 });
             }
+            new_dict_refs.forward_packs.string_fwd_packs = updated_refs;
 
-            Ok(WorkResult::Dict(DictWorkResult::StringForwardPacks(
-                FwdPackResult {
-                    all_pack_refs: updated_refs,
-                },
-            )))
-        });
-    }
-
-    // 4a: Subject forward packs (one task per ns_code).
-    if !novelty.new_subjects.is_empty() {
-        // Group by ns_code.
-        let mut by_ns: std::collections::BTreeMap<u16, Vec<(u64, Vec<u8>)>> =
-            std::collections::BTreeMap::new();
-        for (ns_code, local_id, suffix) in &novelty.new_subjects {
-            by_ns
-                .entry(*ns_code)
-                .or_default()
-                .push((*local_id, suffix.clone()));
+            tracing::info!(
+                new_packs = pack_result.new_packs.len(),
+                new_strings = novelty.new_strings.len(),
+                "V6 Phase 3: string forward packs updated"
+            );
         }
 
-        for (ns_code, entries) in by_ns {
-            n_dict_items += 1;
-            let sem = semaphore.clone();
-            let st = storage_shared.clone();
-            let lid = ledger_id_shared.clone();
-            let existing_ns_refs: Vec<PackBranchEntry> = base_root
-                .dict_refs
-                .forward_packs
-                .subject_fwd_ns_packs
-                .iter()
-                .find(|(ns, _)| *ns == ns_code)
-                .map(|(_, refs)| refs.clone())
-                .unwrap_or_default();
+        // Subject forward packs (per namespace).
+        // Invariant: new_subjects is sorted by (ns_code, local_id) ascending (enforced by resolver).
+        if !novelty.new_subjects.is_empty() {
+            debug_assert!(
+                novelty
+                    .new_subjects
+                    .windows(2)
+                    .all(|w| (w[0].0, w[0].1) <= (w[1].0, w[1].1)),
+                "new_subjects must be sorted by (ns_code, local_id) ascending"
+            );
 
-            join_set.spawn(async move {
-                let _permit = sem
-                    .acquire()
-                    .await
-                    .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
+            // Group by namespace. BTreeMap preserves ns_code order;
+            // within each namespace, local_ids are already sorted.
+            let mut by_ns: std::collections::BTreeMap<u16, Vec<(u64, Vec<u8>)>> =
+                std::collections::BTreeMap::new();
+            for (ns_code, local_id, suffix) in &novelty.new_subjects {
+                by_ns
+                    .entry(*ns_code)
+                    .or_default()
+                    .push((*local_id, suffix.clone()));
+            }
 
-                // CPU-bound pack building in spawn_blocking.
-                let existing_inner = existing_ns_refs.clone();
-                let pack_result = tokio::task::spawn_blocking(move || {
-                    let refs: Vec<(u64, &[u8])> =
-                        entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
-                    fluree_db_binary_index::dict::incremental::build_incremental_subject_packs_for_ns(
-                        ns_code,
-                        &existing_inner,
-                        &refs,
-                    )
-                })
-                .await
+            let kind = ContentKind::DictBlob {
+                dict: fluree_db_core::DictKind::SubjectForward,
+            };
+
+            for (ns_code, entries) in &by_ns {
+                // Find existing refs for this namespace.
+                let existing_ns_refs: Vec<PackBranchEntry> = new_dict_refs
+                    .forward_packs
+                    .subject_fwd_ns_packs
+                    .iter()
+                    .find(|(ns, _)| ns == ns_code)
+                    .map(|(_, refs)| refs.clone())
+                    .unwrap_or_default();
+
+                let entry_refs: Vec<(u64, &[u8])> = entries
+                    .iter()
+                    .map(|(id, val)| (*id, val.as_slice()))
+                    .collect();
+
+                let pack_result = build_incremental_subject_packs_for_ns(
+                    *ns_code,
+                    &existing_ns_refs,
+                    &entry_refs,
+                )
                 .map_err(|e| {
-                    IndexerError::StorageWrite(format!(
-                        "subject fwd pack ns={ns_code} task panicked: {e}"
-                    ))
-                })?
-                .map_err(|e| {
-                    IndexerError::StorageWrite(format!(
-                        "incremental subject packs ns={ns_code}: {e}"
-                    ))
+                    IndexerError::StorageWrite(format!("subject fwd pack build ns={ns_code}: {e}"))
                 })?;
 
-                let kind = ContentKind::DictBlob {
-                    dict: fluree_db_core::DictKind::SubjectForward,
-                };
+                // Upload new packs and build updated refs.
                 let mut updated_refs = existing_ns_refs;
                 for pack in &pack_result.new_packs {
-                    let cas_result = st
-                        .content_write_bytes(kind, &lid, &pack.bytes)
+                    let cas_result = storage
+                        .content_write_bytes(kind, ledger_id, &pack.bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     updated_refs.push(PackBranchEntry {
@@ -617,178 +540,84 @@ where
                     });
                 }
 
-                Ok(WorkResult::Dict(DictWorkResult::SubjectForwardPacks {
-                    ns_code,
-                    result: FwdPackResult {
-                        all_pack_refs: updated_refs,
-                    },
-                }))
-            });
-        }
-    }
-
-    // 4b: Subject reverse tree.
-    if !novelty.new_subjects.is_empty() {
-        n_dict_items += 1;
-        let sem = semaphore.clone();
-        let cs = content_store_shared.clone();
-        let st = storage_shared.clone();
-        let lid = ledger_id_shared.clone();
-        let existing_refs = base_root.dict_refs.subject_reverse.clone();
-        // Own the entries.
-        let new_subjects: Vec<(u16, u64, Vec<u8>)> = novelty.new_subjects.clone();
-
-        join_set.spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
-
-            let updated = upload_incremental_reverse_tree_async(
-                &*st,
-                &lid,
-                fluree_db_core::DictKind::SubjectReverse,
-                &cs,
-                &existing_refs,
-                new_subjects,
-            )
-            .await?;
-
-            Ok(WorkResult::Dict(DictWorkResult::SubjectReverseTree(
-                updated,
-            )))
-        });
-    }
-
-    // 4b: String reverse tree.
-    if !novelty.new_strings.is_empty() {
-        n_dict_items += 1;
-        let sem = semaphore.clone();
-        let cs = content_store_shared.clone();
-        let st = storage_shared.clone();
-        let lid = ledger_id_shared.clone();
-        let existing_refs = base_root.dict_refs.string_reverse.clone();
-        let new_strings: Vec<(u32, Vec<u8>)> = novelty.new_strings.clone();
-
-        join_set.spawn(async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
-
-            let updated = upload_incremental_reverse_tree_async_strings(
-                &*st,
-                &lid,
-                fluree_db_core::DictKind::StringReverse,
-                &cs,
-                &existing_refs,
-                new_strings,
-            )
-            .await?;
-
-            Ok(WorkResult::Dict(DictWorkResult::StringReverseTree(updated)))
-        });
-    }
-
-    let n_total_items = n_branch_items + n_dict_items;
-
-    // ---- Collect all results and apply deterministically ----
-
-    let mut results: Vec<WorkResult> = Vec::with_capacity(n_total_items);
-    while let Some(join_result) = join_set.join_next().await {
-        let result = join_result.map_err(|e| {
-            IndexerError::StorageWrite(format!("incremental work task panicked: {e}"))
-        })??;
-        results.push(result);
-    }
-
-    // Sort by deterministic key: branches by (g_id, order), then dict items
-    // in a fixed canonical order.
-    results.sort_by_key(|a| a.sort_key());
-
-    let mut total_new_leaves = 0usize;
-    let mut total_replaced_leaves = 0usize;
-    let mut new_dict_refs = base_root.dict_refs.clone();
-
-    for result in results {
-        match result {
-            WorkResult::Branch(b) => {
-                total_new_leaves += b.update.new_leaf_blobs.len();
-                total_replaced_leaves += b.update.replaced_leaf_cids.len();
-                root_builder.add_replaced_cids(b.update.replaced_leaf_cids);
-
-                if b.g_id == 0 {
-                    root_builder.set_default_graph_order(b.order, b.update.leaf_entries);
+                // Update or insert namespace entry.
+                if let Some(entry) = new_dict_refs
+                    .forward_packs
+                    .subject_fwd_ns_packs
+                    .iter_mut()
+                    .find(|(ns, _)| ns == ns_code)
+                {
+                    entry.1 = updated_refs;
                 } else {
-                    root_builder.set_named_graph_branch(b.g_id, b.order, b.update.branch_cid);
-                    if let Some(old_cid) = b.old_branch_cid {
-                        root_builder.add_replaced_cids([old_cid]);
-                    }
-                }
-            }
-            WorkResult::Dict(d) => match d {
-                DictWorkResult::StringForwardPacks(fwd) => {
-                    new_dict_refs.forward_packs.string_fwd_packs = fwd.all_pack_refs;
-                }
-                DictWorkResult::SubjectForwardPacks { ns_code, result } => {
-                    if let Some(entry) = new_dict_refs
+                    new_dict_refs
                         .forward_packs
                         .subject_fwd_ns_packs
-                        .iter_mut()
-                        .find(|(ns, _)| *ns == ns_code)
-                    {
-                        entry.1 = result.all_pack_refs;
-                    } else {
-                        new_dict_refs
-                            .forward_packs
-                            .subject_fwd_ns_packs
-                            .push((ns_code, result.all_pack_refs));
-                    }
+                        .push((*ns_code, updated_refs));
                 }
-                DictWorkResult::SubjectReverseTree(updated) => {
-                    root_builder.add_replaced_cids(updated.replaced_cids);
-                    new_dict_refs.subject_reverse = updated.tree_refs;
-                }
-                DictWorkResult::StringReverseTree(updated) => {
-                    root_builder.add_replaced_cids(updated.replaced_cids);
-                    new_dict_refs.string_reverse = updated.tree_refs;
-                }
-            },
+
+                tracing::info!(
+                    ns_code,
+                    new_packs = pack_result.new_packs.len(),
+                    new_subjects = entries.len(),
+                    "V6 Phase 3: subject forward packs updated"
+                );
+            }
         }
     }
 
-    tracing::info!(
-        graphs = by_graph.len(),
-        branch_items = n_branch_items,
-        dict_items = n_dict_items,
-        max_concurrency = max_concurrency,
-        new_leaves = total_new_leaves,
-        replaced_leaves = total_replaced_leaves,
-        new_strings = novelty.new_strings.len(),
-        new_subjects = novelty.new_subjects.len(),
-        "Phase 2-4 complete: branch + dict updates"
+    root_builder.set_dict_refs(new_dict_refs);
+
+    // Update metadata from resolver state.
+    let new_ns_codes: std::collections::BTreeMap<u16, String> = novelty
+        .shared
+        .ns_prefixes
+        .iter()
+        .map(|(&code, prefix)| (code, prefix.clone()))
+        .collect();
+    root_builder.set_namespace_codes(new_ns_codes.clone());
+
+    let new_pred_sids = build_predicate_sids(&novelty.shared, &new_ns_codes);
+    root_builder.set_predicate_sids(new_pred_sids);
+
+    let new_graph_iris: Vec<String> = (0..novelty.shared.graphs.len())
+        .filter_map(|id| novelty.shared.graphs.resolve(id).map(|s| s.to_string()))
+        .collect();
+    root_builder.set_graph_iris(new_graph_iris);
+
+    let new_datatype_iris: Vec<String> = (0..novelty.shared.datatypes.len())
+        .filter_map(|id| novelty.shared.datatypes.resolve(id).map(|s| s.to_string()))
+        .collect();
+    root_builder.set_datatype_iris(new_datatype_iris);
+
+    let new_language_tags: Vec<String> = novelty
+        .shared
+        .languages
+        .iter()
+        .map(|(_, tag)| tag.to_string())
+        .collect();
+    root_builder.set_language_tags(new_language_tags);
+
+    root_builder.set_watermarks(
+        novelty.updated_watermarks.clone(),
+        novelty.updated_string_watermark,
     );
 
-    // ---- Phase 4.5: Arena updates (numbig + vectors) ----
+    // ---- Phase 3a: Arena updates (numbig + vectors + spatial + fulltext) ----
     //
     // Build updated graph_arenas by starting from the base root's arenas
     // and patching any (g_id, p_id) that have new/extended data.
+    // The resolver already populated shared.numbigs/vectors/spatial_hook/fulltext_hook.
     {
-        use fluree_db_binary_index::format::index_root::{GraphArenaRefsV5, VectorDictRefV5};
-        use fluree_db_binary_index::FulltextArenaRefV5;
+        use fluree_db_binary_index::{
+            FulltextArenaRef, GraphArenaRefs, SpatialArenaRef, VectorDictRef,
+        };
         use std::collections::BTreeMap;
 
-        // Index base arenas by g_id for efficient lookup.
-        let mut arenas_by_gid: BTreeMap<u16, GraphArenaRefsV5> = BTreeMap::new();
+        let mut arenas_by_gid: BTreeMap<u16, GraphArenaRefs> = BTreeMap::new();
         for ga in &base_root.graph_arenas {
             arenas_by_gid.insert(ga.g_id, ga.clone());
         }
 
-        // Track which (g_id, p_id) have new numbig arenas from the resolver.
-        // The resolver's numbigs include pre-seeded arenas (old + new entries)
-        // when the base root had numbigs, and fresh arenas when the base root
-        // had none. We re-serialize the full arena in both cases because
-        // numbig arenas are small (kilobytes).
         let has_new_numbigs = !novelty.shared.numbigs.is_empty();
         let has_new_vectors = !novelty.shared.vectors.is_empty();
         let has_new_spatial = novelty
@@ -805,30 +634,25 @@ where
         if has_new_numbigs || has_new_vectors || has_new_spatial || has_new_fulltext {
             // ---- NumBig arena upload ----
             for (&g_id, per_pred) in &novelty.shared.numbigs {
-                let ga = arenas_by_gid
-                    .entry(g_id)
-                    .or_insert_with(|| GraphArenaRefsV5 {
-                        g_id,
-                        numbig: Vec::new(),
-                        vectors: Vec::new(),
-                        spatial: Vec::new(),
-                        fulltext: vec![],
-                    });
+                let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
+                    g_id,
+                    numbig: Vec::new(),
+                    vectors: Vec::new(),
+                    spatial: Vec::new(),
+                    fulltext: vec![],
+                });
 
                 for (&p_id, arena) in per_pred {
                     if arena.is_empty() {
                         continue;
                     }
-                    // No-op guard: if arena.len() == base count, no new entries were
-                    // added during resolution (the arena was pre-seeded but not extended).
-                    // Reuse the existing CID to avoid GC churn.
                     let base_nb_count = novelty
                         .base_numbig_counts
                         .get(&(g_id, p_id))
                         .copied()
                         .unwrap_or(0);
                     if arena.len() == base_nb_count {
-                        continue; // Unchanged — existing CID already in ga.numbig
+                        continue;
                     }
 
                     let bytes =
@@ -837,19 +661,18 @@ where
                             IndexerError::StorageWrite(format!("numbig arena serialize: {e}"))
                         })?;
                     let dict_kind = fluree_db_core::DictKind::NumBig { p_id };
-                    let (cid, _) = upload_dict_blob(
+                    let (cid, _) = super::upload::upload_dict_blob(
                         storage,
                         ledger_id,
                         dict_kind,
                         &bytes,
-                        "incremental numbig arena uploaded",
+                        "incremental V6 numbig arena uploaded",
                     )
                     .await?;
 
-                    // Replace or insert the (p_id, cid) entry, collecting old CID for GC.
                     if let Some(pos) = ga.numbig.iter().position(|(pid, _)| *pid == p_id) {
                         let old_cid = ga.numbig[pos].1.clone();
-                        root_builder.add_replaced_cids([old_cid]);
+                        root_builder.add_replaced_cids(vec![old_cid]);
                         ga.numbig[pos].1 = cid;
                     } else {
                         ga.numbig.push((p_id, cid));
@@ -860,22 +683,19 @@ where
 
             // ---- Vector arena upload ----
             for (&g_id, per_pred) in &novelty.shared.vectors {
-                let ga = arenas_by_gid
-                    .entry(g_id)
-                    .or_insert_with(|| GraphArenaRefsV5 {
-                        g_id,
-                        numbig: Vec::new(),
-                        vectors: Vec::new(),
-                        spatial: Vec::new(),
-                        fulltext: vec![],
-                    });
+                let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
+                    g_id,
+                    numbig: Vec::new(),
+                    vectors: Vec::new(),
+                    spatial: Vec::new(),
+                    fulltext: vec![],
+                });
 
                 for (&p_id, arena) in per_pred {
                     if arena.is_empty() {
                         continue;
                     }
 
-                    // Handle space overflow guard.
                     let base_count = novelty
                         .base_vector_counts
                         .get(&(g_id, p_id))
@@ -883,9 +703,7 @@ where
                         .unwrap_or(0);
                     if (base_count as u64) + (arena.len() as u64) > u32::MAX as u64 {
                         return Err(IndexerError::IncrementalAbort(format!(
-                            "vector handle overflow for g_id={g_id}, p_id={p_id}: \
-                             base={base_count} + new={} exceeds u32::MAX",
-                            arena.len()
+                            "vector handle overflow for g_id={g_id}, p_id={p_id}"
                         )));
                     }
 
@@ -911,7 +729,8 @@ where
 
                         if old_manifest.dims != arena.dims() {
                             return Err(IndexerError::IncrementalAbort(format!(
-                                "vector dims mismatch for g_id={g_id}, p_id={p_id}: existing={}, new={}",
+                                "vector dims mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, new={}",
                                 old_manifest.dims,
                                 arena.dims()
                             )));
@@ -920,36 +739,26 @@ where
                             != fluree_db_binary_index::arena::vector::SHARD_CAPACITY
                         {
                             return Err(IndexerError::IncrementalAbort(format!(
-                                "vector shard_capacity mismatch for g_id={g_id}, p_id={p_id}: existing={}, expected={}",
+                                "vector shard_capacity mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, expected={}",
                                 old_manifest.shard_capacity,
                                 fluree_db_binary_index::arena::vector::SHARD_CAPACITY
                             )));
                         }
                         if old_manifest.normalized != arena.is_normalized() {
                             return Err(IndexerError::IncrementalAbort(format!(
-                                "vector normalization mismatch for g_id={g_id}, p_id={p_id}: existing={}, new={}",
+                                "vector normalization mismatch for g_id={g_id}, p_id={p_id}: \
+                                 existing={}, new={}",
                                 old_manifest.normalized,
                                 arena.is_normalized()
                             )));
                         }
 
-                        if existing.shards.len() != old_manifest.shards.len() {
-                            return Err(IndexerError::IncrementalAbort(format!(
-                                "vector shard list length mismatch for g_id={g_id}, p_id={p_id}: shards={}, manifest={}",
-                                existing.shards.len(),
-                                old_manifest.shards.len()
-                            )));
-                        }
-
                         let shard_cap = old_manifest.shard_capacity;
                         let dims_usize = arena.dims() as usize;
-
                         let mut combined_shards = existing.shards.clone();
                         let mut combined_shard_infos = old_manifest.shards.clone();
 
-                        // If the existing last shard is partially filled, we must fill/replace it
-                        // before appending new shards. Otherwise the handle -> (shard_idx, offset)
-                        // arithmetic breaks (partial shard becomes "middle").
                         let mut consumed_new: u32 = 0;
                         if let Some(last_info) = combined_shard_infos.last().cloned() {
                             if last_info.count < shard_cap {
@@ -958,11 +767,10 @@ where
                                 if take > 0 {
                                     let last_idx = combined_shard_infos.len() - 1;
                                     let old_last_cid = combined_shards[last_idx].clone();
-
                                     let old_last_bytes =
                                         content_store.get(&old_last_cid).await.map_err(|e| {
                                             IndexerError::StorageRead(format!(
-                                                "read existing vector last shard: {e}"
+                                                "read vector last shard: {e}"
                                             ))
                                         })?;
                                     let old_last_shard =
@@ -971,21 +779,9 @@ where
                                         )
                                         .map_err(|e| {
                                             IndexerError::StorageRead(format!(
-                                                "decode existing vector last shard: {e}"
+                                                "decode vector last shard: {e}"
                                             ))
                                         })?;
-                                    if old_last_shard.dims != old_manifest.dims
-                                        || old_last_shard.count != last_info.count
-                                    {
-                                        return Err(IndexerError::IncrementalAbort(format!(
-                                            "existing vector last shard metadata mismatch for g_id={g_id}, p_id={p_id}: \
-                                             shard(dims={}, count={}) manifest(dims={}, count={})",
-                                            old_last_shard.dims,
-                                            old_last_shard.count,
-                                            old_manifest.dims,
-                                            last_info.count
-                                        )));
-                                    }
 
                                     let take_f32 = take as usize * dims_usize;
                                     let mut merged: Vec<f32> =
@@ -1005,27 +801,24 @@ where
                                         })?;
 
                                     let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                                    let (new_last_cid, wr) = upload_dict_blob(
+                                    let (new_last_cid, wr) = super::upload::upload_dict_blob(
                                         storage,
                                         ledger_id,
                                         dict_kind,
                                         &shard_bytes,
-                                        "incremental vector last shard replaced",
+                                        "incremental V6 vector last shard replaced",
                                     )
                                     .await?;
 
-                                    // Replace last shard CID + info and collect old CID for GC.
                                     combined_shards[last_idx] = new_last_cid;
                                     combined_shard_infos[last_idx].cas = wr.address;
                                     combined_shard_infos[last_idx].count = last_info.count + take;
-                                    root_builder.add_replaced_cids([old_last_cid]);
+                                    root_builder.add_replaced_cids(vec![old_last_cid]);
                                     consumed_new = take;
                                 }
                             }
                         }
 
-                        // Serialize remaining new vectors to new shards (may be empty if all were
-                        // consumed filling the prior last shard).
                         let start_f32 = consumed_new as usize * dims_usize;
                         let remaining_raw = &arena.raw_values()[start_f32..];
                         let shard_results =
@@ -1037,26 +830,20 @@ where
                                 IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
                             })?;
 
-                        let mut new_shard_cids = Vec::with_capacity(shard_results.len());
-                        let mut new_shard_infos = Vec::with_capacity(shard_results.len());
-
                         for (shard_bytes, mut shard_info) in shard_results {
                             let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                            let (shard_cid, wr) = upload_dict_blob(
+                            let (shard_cid, wr) = super::upload::upload_dict_blob(
                                 storage,
                                 ledger_id,
                                 dict_kind,
                                 &shard_bytes,
-                                "incremental vector shard uploaded",
+                                "incremental V6 vector shard uploaded",
                             )
                             .await?;
                             shard_info.cas = wr.address;
-                            new_shard_cids.push(shard_cid);
-                            new_shard_infos.push(shard_info);
+                            combined_shards.push(shard_cid);
+                            combined_shard_infos.push(shard_info);
                         }
-
-                        combined_shards.extend(new_shard_cids);
-                        combined_shard_infos.extend(new_shard_infos);
 
                         let combined_manifest =
                             fluree_db_binary_index::arena::vector::VectorManifest {
@@ -1072,37 +859,28 @@ where
                         let manifest_json =
                             serde_json::to_vec_pretty(&combined_manifest).map_err(|e| {
                                 IndexerError::StorageWrite(format!(
-                                    "serialize combined vector manifest: {e}"
+                                    "serialize vector manifest: {e}"
                                 ))
                             })?;
 
                         let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
-                        let (manifest_cid, _) = upload_dict_blob(
+                        let (manifest_cid, _) = super::upload::upload_dict_blob(
                             storage,
                             ledger_id,
                             dict_kind,
                             &manifest_json,
-                            "incremental vector manifest uploaded",
+                            "incremental V6 vector manifest uploaded",
                         )
                         .await?;
 
-                        // GC the old manifest (old shards are still referenced by combined;
-                        // any replaced shard CIDs were added above).
-                        root_builder.add_replaced_cids([existing.manifest.clone()]);
-
-                        ga.vectors[pos] = VectorDictRefV5 {
+                        root_builder.add_replaced_cids(vec![existing.manifest.clone()]);
+                        ga.vectors[pos] = VectorDictRef {
                             p_id,
                             manifest: manifest_cid,
                             shards: combined_shards,
                         };
                     } else {
-                        // Brand new vector arena for this (g_id, p_id).
-                        if base_count > 0 {
-                            return Err(IndexerError::IncrementalAbort(format!(
-                                "base vector count exists but no prior vector refs found for g_id={g_id}, p_id={p_id}"
-                            )));
-                        }
-
+                        // Brand new vector arena.
                         let shard_results =
                             fluree_db_binary_index::arena::vector::write_vector_shards_to_bytes(
                                 arena,
@@ -1116,12 +894,12 @@ where
 
                         for (shard_bytes, mut shard_info) in shard_results {
                             let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                            let (shard_cid, wr) = upload_dict_blob(
+                            let (shard_cid, wr) = super::upload::upload_dict_blob(
                                 storage,
                                 ledger_id,
                                 dict_kind,
                                 &shard_bytes,
-                                "incremental vector shard uploaded",
+                                "incremental V6 vector shard uploaded",
                             )
                             .await?;
                             shard_info.cas = wr.address;
@@ -1140,28 +918,130 @@ where
                         };
 
                         let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
-                            IndexerError::StorageWrite(format!(
-                                "serialize new vector manifest: {e}"
-                            ))
+                            IndexerError::StorageWrite(format!("serialize vector manifest: {e}"))
                         })?;
 
                         let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
-                        let (manifest_cid, _) = upload_dict_blob(
+                        let (manifest_cid, _) = super::upload::upload_dict_blob(
                             storage,
                             ledger_id,
                             dict_kind,
                             &manifest_json,
-                            "incremental vector manifest uploaded",
+                            "incremental V6 vector manifest uploaded",
                         )
                         .await?;
 
-                        ga.vectors.push(VectorDictRefV5 {
+                        ga.vectors.push(VectorDictRef {
                             p_id,
                             manifest: manifest_cid,
                             shards: new_shard_cids,
                         });
                         ga.vectors.sort_by_key(|v| v.p_id);
                     }
+                }
+            }
+
+            // ---- Fulltext arena incremental update ----
+            if has_new_fulltext {
+                let fulltext_entries = novelty
+                    .shared
+                    .fulltext_hook
+                    .as_ref()
+                    .map(|h| h.entries())
+                    .unwrap_or(&[]);
+
+                let mut ft_grouped: BTreeMap<
+                    (u16, u32),
+                    Vec<&crate::fulltext_hook::FulltextEntry>,
+                > = BTreeMap::new();
+                for entry in fulltext_entries {
+                    ft_grouped
+                        .entry((entry.g_id, entry.p_id))
+                        .or_default()
+                        .push(entry);
+                }
+
+                for ((g_id, p_id), group_entries) in ft_grouped {
+                    let ga_ref = arenas_by_gid.get(&g_id);
+                    let existing_ref =
+                        ga_ref.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+
+                    let prior_arena = if let Some(ft_ref) = existing_ref {
+                        match content_store.get(&ft_ref.arena_cid).await {
+                            Ok(blob) => {
+                                fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
+                                    &blob,
+                                )
+                                .unwrap_or_else(|_| {
+                                    fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                                })
+                            }
+                            Err(_) => fluree_db_binary_index::arena::fulltext::FulltextArena::new(),
+                        }
+                    } else {
+                        fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                    };
+
+                    let arena = super::fulltext::build_incremental_fulltext_arena(
+                        &prior_arena,
+                        &group_entries,
+                        &novelty.fulltext_string_bytes,
+                    );
+
+                    if arena.is_empty() {
+                        if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
+                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                                let old = &ga.fulltext[pos];
+                                root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
+                                ga.fulltext.remove(pos);
+                            }
+                        }
+                        continue;
+                    }
+
+                    let blob = arena.encode();
+                    let cas_result = storage
+                        .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
+                        .await
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("fulltext CAS write: {e}"))
+                        })?;
+
+                    let codec = ContentKind::IndexLeaf.to_codec();
+                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
+                        .ok_or_else(|| {
+                            IndexerError::Other(format!(
+                                "invalid fulltext arena hash: {}",
+                                cas_result.content_hash
+                            ))
+                        })?;
+
+                    let new_ref = FulltextArenaRef { p_id, arena_cid };
+
+                    let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                        fulltext: vec![],
+                    });
+
+                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                        let old = &ga.fulltext[pos];
+                        root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
+                        ga.fulltext[pos] = new_ref;
+                    } else {
+                        ga.fulltext.push(new_ref);
+                        ga.fulltext.sort_by_key(|f| f.p_id);
+                    }
+
+                    tracing::info!(
+                        g_id,
+                        p_id,
+                        docs = arena.doc_count(),
+                        terms = arena.terms().len(),
+                        "incremental V6: fulltext arena rebuilt"
+                    );
                 }
             }
 
@@ -1172,8 +1052,6 @@ where
             // snapshot, combine with novelty, build + upload a new index.
             // Unchanged spatial arenas carry forward by CID.
             if has_new_spatial {
-                use std::collections::BTreeMap;
-
                 let spatial_entries = novelty
                     .shared
                     .spatial_hook
@@ -1231,14 +1109,12 @@ where
                         // Pre-fetch all blobs for the sync load_from_cas closure.
                         let mut blob_cache: std::collections::HashMap<String, Vec<u8>> =
                             std::collections::HashMap::new();
-                        // Manifest + arena
                         for cid in [&sp_ref.manifest, &sp_ref.arena] {
                             let bytes = content_store.get(cid).await.map_err(|e| {
                                 IndexerError::StorageRead(format!("spatial blob fetch: {e}"))
                             })?;
                             blob_cache.insert(cid.digest_hex(), bytes);
                         }
-                        // Leaflets
                         for leaflet_cid in &sp_ref.leaflets {
                             let bytes = content_store.get(leaflet_cid).await.map_err(|e| {
                                 IndexerError::StorageRead(format!("spatial leaflet fetch: {e}"))
@@ -1258,7 +1134,6 @@ where
                             },
                         ) {
                             Ok(snapshot) => {
-                                // Scan all existing entries and feed into builder.
                                 let all_entries = snapshot
                                     .cell_index()
                                     .scan_range(0, u64::MAX)
@@ -1279,8 +1154,9 @@ where
                             }
                             Err(e) => {
                                 return Err(IndexerError::IncrementalAbort(format!(
-                                    "spatial snapshot load failed for g_id={g_id}, p_id={p_id}: {e}; \
-                                     falling back to full rebuild for correctness"
+                                    "spatial snapshot load failed for g_id={g_id}, \
+                                     p_id={p_id}: {e}; falling back to full rebuild \
+                                     for correctness"
                                 )));
                             }
                         }
@@ -1361,13 +1237,14 @@ where
                         .map(|(i, h)| {
                             ContentId::from_hex_digest(spatial_codec, h).ok_or_else(|| {
                                 IndexerError::StorageWrite(format!(
-                                    "invalid spatial leaflet hash [{i}] for g_id={g_id}, p_id={p_id}: {h}"
+                                    "invalid spatial leaflet hash [{i}] for \
+                                     g_id={g_id}, p_id={p_id}: {h}"
                                 ))
                             })
                         })
                         .collect::<Result<Vec<_>>>()?;
 
-                    let new_ref = SpatialArenaRefV5 {
+                    let new_ref = SpatialArenaRef {
                         p_id,
                         root_cid,
                         manifest: manifest_cid,
@@ -1376,20 +1253,18 @@ where
                     };
 
                     // Replace or insert in graph arenas.
-                    let ga = arenas_by_gid
-                        .entry(g_id)
-                        .or_insert_with(|| GraphArenaRefsV5 {
-                            g_id,
-                            numbig: Vec::new(),
-                            vectors: Vec::new(),
-                            spatial: Vec::new(),
-                            fulltext: vec![],
-                        });
+                    let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                        fulltext: vec![],
+                    });
 
                     if let Some(pos) = ga.spatial.iter().position(|s| s.p_id == p_id) {
                         // GC old spatial CIDs.
                         let old = &ga.spatial[pos];
-                        root_builder.add_replaced_cids([
+                        root_builder.add_replaced_cids(vec![
                             old.root_cid.clone(),
                             old.manifest.clone(),
                             old.arena.clone(),
@@ -1407,644 +1282,381 @@ where
                         predicate = %pred_iri,
                         prior_entries = prior_count,
                         novelty_entries = new_entries.len(),
-                        "spatial index rebuilt for (graph, predicate)"
+                        "incremental V6: spatial index rebuilt for (graph, predicate)"
                     );
                 }
             }
 
-            // ---- Fulltext arena incremental update (per affected predicate) ----
-            //
-            // For each (g_id, p_id) with novelty fulltext entries:
-            // 1. Load the prior FTA1 arena from CAS (if any)
-            // 2. Merge prior + novelty into a new arena (handles term_id remapping)
-            // 3. Encode FTA1, upload, update arena refs
-            // Unchanged fulltext arenas carry forward by CID.
-            if has_new_fulltext {
-                let fulltext_entries = novelty
-                    .shared
-                    .fulltext_hook
-                    .as_ref()
-                    .map(|h| h.entries())
-                    .unwrap_or(&[]);
-
-                // Group novelty entries by (g_id, p_id).
-                let mut ft_grouped: BTreeMap<
-                    (u16, u32),
-                    Vec<&crate::fulltext_hook::FulltextEntry>,
-                > = BTreeMap::new();
-                for entry in fulltext_entries {
-                    ft_grouped
-                        .entry((entry.g_id, entry.p_id))
-                        .or_default()
-                        .push(entry);
-                }
-
-                for ((g_id, p_id), group_entries) in ft_grouped {
-                    // Load prior FTA1 arena from CAS (if this (g_id, p_id) was indexed before).
-                    let ga = arenas_by_gid.get(&g_id);
-                    let existing_ref = ga.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
-
-                    let prior_arena = if let Some(ft_ref) = existing_ref {
-                        match content_store.get(&ft_ref.arena_cid).await {
-                            Ok(blob) => {
-                                match fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
-                                    &blob,
-                                ) {
-                                    Ok(arena) => arena,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            g_id,
-                                            p_id,
-                                            %e,
-                                            "failed to decode prior FTA1 arena; \
-                                             rebuilding from novelty only"
-                                        );
-                                        fluree_db_binary_index::arena::fulltext::FulltextArena::new(
-                                        )
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    g_id,
-                                    p_id,
-                                    %e,
-                                    "failed to load prior FTA1 arena; \
-                                     rebuilding from novelty only"
-                                );
-                                fluree_db_binary_index::arena::fulltext::FulltextArena::new()
-                            }
-                        }
-                    } else {
-                        fluree_db_binary_index::arena::fulltext::FulltextArena::new()
-                    };
-
-                    // Build incremental arena (merges prior + novelty, handles term_id remap).
-                    let arena = super::fulltext::build_incremental_fulltext_arena(
-                        &prior_arena,
-                        &group_entries,
-                        &novelty.fulltext_string_bytes,
-                    );
-
-                    if arena.is_empty() {
-                        // All entries retracted — remove from arena refs.
-                        if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
-                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
-                                let old = &ga.fulltext[pos];
-                                root_builder.add_replaced_cids([old.arena_cid.clone()]);
-                                ga.fulltext.remove(pos);
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Encode FTA1 and upload to CAS.
-                    let blob = arena.encode();
-                    let cas_result = storage
-                        .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
-                        .await
-                        .map_err(|e| {
-                            IndexerError::StorageWrite(format!("fulltext CAS write: {}", e))
-                        })?;
-
-                    let codec = ContentKind::IndexLeaf.to_codec();
-                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
-                        .ok_or_else(|| {
-                            IndexerError::Other(format!(
-                                "invalid fulltext arena hash: {}",
-                                cas_result.content_hash
-                            ))
-                        })?;
-
-                    let new_ref = FulltextArenaRefV5 { p_id, arena_cid };
-
-                    // Replace or insert in graph arenas.
-                    let ga = arenas_by_gid
-                        .entry(g_id)
-                        .or_insert_with(|| GraphArenaRefsV5 {
-                            g_id,
-                            numbig: Vec::new(),
-                            vectors: Vec::new(),
-                            spatial: Vec::new(),
-                            fulltext: vec![],
-                        });
-
-                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
-                        // GC old fulltext CID.
-                        let old = &ga.fulltext[pos];
-                        root_builder.add_replaced_cids([old.arena_cid.clone()]);
-                        ga.fulltext[pos] = new_ref;
-                    } else {
-                        ga.fulltext.push(new_ref);
-                        ga.fulltext.sort_by_key(|f| f.p_id);
-                    }
-
-                    tracing::info!(
-                        g_id,
-                        p_id,
-                        docs = arena.doc_count(),
-                        terms = arena.terms().len(),
-                        bytes = blob.len(),
-                        "fulltext arena rebuilt for (graph, predicate)"
-                    );
-                }
-            }
-
-            let updated_arenas: Vec<GraphArenaRefsV5> = arenas_by_gid.into_values().collect();
+            let updated_arenas: Vec<GraphArenaRefs> = arenas_by_gid.into_values().collect();
             root_builder.set_graph_arenas(updated_arenas);
 
             tracing::info!(
-                "Phase 4.5 complete: arena updates (numbig + vectors + spatial + fulltext)"
+                "Phase 3a complete: arena updates (numbig + vectors + fulltext + spatial)"
             );
         }
     }
 
-    // ---- Phase 4.6: Incremental stats refresh ----
-    //
-    // Build predicate SIDs first (needed for stats p_id → SID conversion).
-    let new_ns_codes: std::collections::BTreeMap<u16, String> = novelty
-        .shared
-        .ns_prefixes
-        .iter()
-        .map(|(&k, v)| (k, v.clone()))
-        .collect();
-    let new_pred_sids = build_predicate_sids(&novelty.shared, &new_ns_codes);
-
+    // ---- Phase 3b: Stats / HLL refresh ----
+    // Load prior sketches, feed novelty records, upload updated sketch.
     {
-        use crate::stats::{
-            load_sketch_blob, value_hash, GraphPropertyKey, HllSketchBlob, IdPropertyHll,
-            IdStatsHook, StatsRecord,
-        };
-        use fluree_db_core::value_id::ValueTypeTag;
-        use std::collections::{HashMap, HashSet};
+        use crate::stats;
 
-        // 4.6a: Load prior HLL sketches from CAS.
-        //
-        // If the base root has stats but we cannot load sketches, we must NOT
-        // "start fresh" (delta-only), because that would produce inconsistent
-        // totals (base per-graph flakes + delta-only per-property counts/NDV).
-        //
-        // Instead, we fall back to carrying forward base stats unchanged
-        // (optionally applying class-count deltas below).
-        let mut can_refresh_hll = base_root.stats.is_some();
-        let prior_properties: HashMap<GraphPropertyKey, IdPropertyHll> = if let Some(ref cid) =
-            base_root.sketch_ref
-        {
-            match load_sketch_blob(content_store.as_ref(), cid).await {
-                Ok(Some(blob)) => {
-                    match blob.into_properties() {
-                        Ok(props) => props,
-                        Err(e) => {
-                            tracing::warn!("failed to decode prior sketch blob: {e}; carrying forward base stats");
-                            can_refresh_hll = false;
-                            HashMap::new()
-                        }
+        // Load prior sketches from the base root's sketch_ref (if present).
+        let prior_properties = if let Some(ref cid) = base_root.sketch_ref {
+            match stats::load_sketch_blob(content_store.as_ref(), cid).await {
+                Ok(Some(blob)) => match blob.into_properties() {
+                    Ok(props) => {
+                        tracing::debug!(
+                            entries = props.len(),
+                            "loaded prior HLL sketches for incremental refresh"
+                        );
+                        props
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to decode prior sketches, starting fresh");
+                        std::collections::HashMap::new()
+                    }
+                },
                 Ok(None) => {
-                    tracing::warn!("prior sketch blob not found; carrying forward base stats");
-                    can_refresh_hll = false;
-                    HashMap::new()
+                    tracing::debug!(
+                        "sketch blob CID present but content not found, starting fresh"
+                    );
+                    std::collections::HashMap::new()
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "failed to load prior sketch blob: {e}; carrying forward base stats"
-                    );
-                    can_refresh_hll = false;
-                    HashMap::new()
+                    tracing::warn!(error = %e, "failed to load sketch blob, starting fresh");
+                    std::collections::HashMap::new()
                 }
             }
         } else {
-            tracing::warn!("base root has no sketch_ref; carrying forward base stats");
-            can_refresh_hll = false;
-            HashMap::new()
+            std::collections::HashMap::new()
         };
 
-        // 4.6b: Seed IdStatsHook with priors + graph_flakes from base root.
-        let rdf_type_p_id = novelty.shared.predicates.get(fluree_vocab::rdf::TYPE);
-
-        let mut stats_hook = IdStatsHook::with_prior_properties(prior_properties);
-        if let Some(pid) = rdf_type_p_id {
-            stats_hook.set_rdf_type_p_id(pid);
-        }
-        // Enable ref-target tracking in incremental path.
-        // The batched PSOT lookup for ref object SIDs provides the class context
-        // needed to compute class→property→ref-class edges incrementally.
+        // Seed hook with prior properties.
+        let rdf_type_p_id = novelty
+            .shared
+            .predicates
+            .get(fluree_vocab::rdf::TYPE)
+            .unwrap_or(u32::MAX);
+        let mut stats_hook = stats::IdStatsHook::with_prior_properties(prior_properties);
+        stats_hook.set_rdf_type_p_id(rdf_type_p_id);
         stats_hook.set_track_ref_targets(true);
 
-        // Seed per-graph flake totals from base root so finalize produces
-        // base+delta, not delta-only.
-        if let Some(ref stats) = base_root.stats {
-            if let Some(ref graphs) = stats.graphs {
+        // Seed per-graph flake totals from base root stats.
+        if let Some(ref base_stats) = base_root.stats {
+            if let Some(ref graphs) = base_stats.graphs {
                 for g in graphs {
                     *stats_hook.graph_flakes_mut().entry(g.g_id).or_insert(0) += g.flakes as i64;
-                }
-            } else {
-                // Fallback for older roots that only carry sketches (no per-graph stats):
-                // derive base per-graph flake totals from prior per-(g_id, p_id) counts.
-                let mut derived: HashMap<u16, i64> = HashMap::new();
-                for (k, hll) in stats_hook.properties() {
-                    *derived.entry(k.g_id).or_insert(0) += hll.count.max(0);
-                }
-                for (g_id, flakes) in derived {
-                    *stats_hook.graph_flakes_mut().entry(g_id).or_insert(0) += flakes;
                 }
             }
         }
 
-        // 4.6c: Feed novelty records into the hook.
-        for record in &novelty.records {
-            let dt = novelty
-                .shared
-                .dt_tags
-                .get(record.dt as usize)
-                .copied()
-                .unwrap_or(ValueTypeTag::UNKNOWN);
-            stats_hook.on_record(&StatsRecord {
-                g_id: record.g_id,
-                p_id: record.p_id,
-                s_id: record.s_id.as_u64(),
-                dt,
-                o_hash: value_hash(record.o_kind, record.o_key),
-                o_kind: record.o_kind,
-                o_key: record.o_key,
-                t: record.t as i64,
-                op: record.op != 0,
-                lang_id: record.lang_id,
-            });
+        // Feed all novelty records.
+        for (i, rec) in novelty.records.iter().enumerate() {
+            let op = novelty.ops[i];
+            let sr = stats::stats_record_from_v2(rec, op);
+            stats_hook.on_record(&sr);
         }
 
-        // 4.6d: Class-property attribution via batched PSOT lookup.
-        //
-        // Replaces the simpler "carry forward + count deltas" approach with full
-        // class-property attribution: for each class, we compute both instance
-        // counts and which properties appear on instances of that class.
-        //
-        // Strategy:
-        //   1. Capture subject_class_deltas and subject_props from the hook
-        //      BEFORE finalize consumes them.
-        //   2. Load a BinaryIndexStore from the base root for PSOT scans.
-        //   3. Batched PSOT lookup for base class memberships of novelty subjects.
-        //   4. Merge base classes + novelty rdf:type deltas -> subject->classes.
-        //   5. Cross-reference with subject->properties -> class->properties.
-        //   6. Merge with prior class stats and convert to ClassStatEntry.
-        let class_deltas: HashMap<(u16, u64), i64> = stats_hook.class_count_deltas().clone();
-        let novelty_subject_class_deltas: HashMap<(u16, u64), HashMap<u64, i64>> =
-            stats_hook.subject_class_deltas().clone();
-        let novelty_subject_props: HashMap<(u16, u64), HashSet<u32>> =
-            stats_hook.subject_props().clone();
-        let novelty_subject_prop_dts: HashMap<(u16, u64), HashMap<u32, HashMap<u8, i64>>> =
-            stats_hook.subject_prop_dts().clone();
-        let novelty_subject_prop_langs: HashMap<(u16, u64), HashMap<u32, HashMap<u16, i64>>> =
-            stats_hook.subject_prop_langs().clone();
-
-        // Build language tag list for resolving lang_id → string in class stats.
-        let incr_language_tags: Vec<String> = novelty
-            .shared
-            .languages
-            .iter()
-            .map(|(_, tag)| tag.to_string())
-            .collect();
-
-        // per_graph_classes: HashMap<GraphId, Vec<ClassStatEntry>> — graph-scoped class stats
-        // root_classes: Option<Vec<ClassStatEntry>> — union for backward compat
-        let (per_graph_classes, root_classes) = {
-            use fluree_db_binary_index::dict::reverse_leaf::subject_reverse_key;
-            use fluree_db_binary_index::read::batched_lookup::batched_lookup_predicate_refs;
-
-            let base_classes = base_root.stats.as_ref().and_then(|s| s.classes.as_ref());
-            // Also check per-graph classes from base root
-            let base_per_graph_classes: HashMap<u16, &Vec<fluree_db_core::ClassStatEntry>> =
-                base_root
-                    .stats
-                    .as_ref()
-                    .and_then(|s| s.graphs.as_ref())
-                    .map(|gs| {
-                        gs.iter()
-                            .filter_map(|g| g.classes.as_ref().map(|c| (g.g_id, c)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-            let has_novelty_class_changes =
-                !class_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
-
-            if !has_novelty_class_changes && novelty_subject_props.is_empty() {
-                // No class or property changes in novelty — carry forward base stats.
-                let pgc: HashMap<u16, Vec<fluree_db_core::ClassStatEntry>> = base_per_graph_classes
-                    .into_iter()
-                    .map(|(g_id, v)| (g_id, v.clone()))
-                    .collect();
-                (pgc, base_classes.cloned())
+        // Upload HLL sketches (before finalize consumes the hook).
+        let sketch_ref = {
+            let sketch_blob =
+                stats::HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
+            if !sketch_blob.entries.is_empty() {
+                let sketch_bytes = sketch_blob
+                    .to_json_bytes()
+                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
+                let sketch_wr = storage
+                    .content_write_bytes(ContentKind::StatsSketch, ledger_id, &sketch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let cid = super::upload::cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                tracing::debug!(
+                    %cid,
+                    bytes = sketch_wr.size_bytes,
+                    entries = sketch_blob.entries.len(),
+                    "incremental V6: HLL sketch uploaded"
+                );
+                Some(cid)
             } else {
-                // Load the subject reverse tree for Sid<->sid64 conversion.
-                let subject_tree = run_index::incremental_resolve::load_reverse_tree(
-                    &content_store,
-                    &base_root.dict_refs.subject_reverse,
-                )
-                .await
-                .map_err(|e| {
-                    IndexerError::StorageRead(format!(
-                        "load subject reverse tree for class stats: {e}"
-                    ))
-                })?;
+                None
+            }
+        };
 
-                // Build (g_id, sid64) -> ClassStatEntry map from base per-graph class stats.
-                // Fall back to root-level base_classes with g_id=0 if no per-graph data.
-                let mut entries_by_key: HashMap<(u16, u64), fluree_db_core::ClassStatEntry> =
-                    HashMap::new();
+        // Capture class tracking data before finalize consumes the hook.
+        let class_count_deltas = stats_hook.class_count_deltas().clone();
+        let novelty_subject_class_deltas = stats_hook.subject_class_deltas().clone();
+        let novelty_subject_props = stats_hook.subject_props().clone();
+        let novelty_subject_prop_dts = stats_hook.subject_prop_dts().clone();
+        let novelty_subject_prop_langs = stats_hook.subject_prop_langs().clone();
+        let subject_ref_history = stats_hook.subject_ref_history().clone();
 
-                if !base_per_graph_classes.is_empty() {
-                    for (&g_id, class_entries) in &base_per_graph_classes {
-                        for entry in *class_entries {
-                            let key = subject_reverse_key(
-                                entry.class_sid.namespace_code,
-                                entry.class_sid.name.as_bytes(),
-                            );
-                            if let Ok(Some(sid64)) = subject_tree.reverse_lookup(&key) {
-                                entries_by_key.insert((g_id, sid64), entry.clone());
-                            } else {
-                                entries_by_key.insert(
-                                    (g_id, u64::MAX - entries_by_key.len() as u64),
-                                    entry.clone(),
-                                );
+        // Finalize stats.
+        let id_stats_result = stats_hook.finalize();
+
+        // Build IndexStats with per-graph and aggregate properties.
+        let trie = fluree_db_core::PrefixTrie::from_namespace_codes(&novelty.shared.ns_prefixes);
+        let db_stats = {
+            use fluree_db_core::index_stats as is;
+
+            struct PropAgg {
+                count: u64,
+                ndv_values: u64,
+                ndv_subjects: u64,
+                last_modified_t: i64,
+                datatypes: Vec<(u8, u64)>,
+            }
+            let mut agg: std::collections::HashMap<u32, PropAgg> = std::collections::HashMap::new();
+            for g in &id_stats_result.graphs {
+                for p in &g.properties {
+                    let e = agg.entry(p.p_id).or_insert(PropAgg {
+                        count: 0,
+                        ndv_values: 0,
+                        ndv_subjects: 0,
+                        last_modified_t: 0,
+                        datatypes: Vec::new(),
+                    });
+                    e.count += p.count;
+                    e.ndv_values = e.ndv_values.max(p.ndv_values);
+                    e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                    e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                    for &(dt, cnt) in &p.datatypes {
+                        if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
+                            existing.1 += cnt;
+                        } else {
+                            e.datatypes.push((dt, cnt));
+                        }
+                    }
+                }
+            }
+            let properties: Vec<is::PropertyStatEntry> = agg
+                .into_iter()
+                .map(|(p_id, pa)| {
+                    let iri = novelty.shared.predicates.resolve(p_id).unwrap_or("");
+                    let (ns, name) = match trie.longest_match(iri) {
+                        Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                        None => (0u16, iri.to_string()),
+                    };
+                    is::PropertyStatEntry {
+                        sid: (ns, name),
+                        count: pa.count,
+                        ndv_values: pa.ndv_values,
+                        ndv_subjects: pa.ndv_subjects,
+                        last_modified_t: pa.last_modified_t,
+                        datatypes: pa.datatypes,
+                    }
+                })
+                .collect();
+
+            // Class-property attribution: build full ClassStatEntry with property usage.
+            //
+            // Strategy:
+            // 1. Load store for PSOT lookup + SID resolution
+            // 2. Per-graph batched PSOT lookup for base class memberships
+            // 3. Merge base + novelty class deltas → subject→classes
+            // 4. Cross-reference subject→properties with subject→classes
+            // 5. Build ClassStatEntry with datatypes, langs, ref-class edges
+            // 6. Apply count deltas to base entries, add new entries
+            let mut final_graphs = id_stats_result.graphs;
+
+            let has_class_changes =
+                !class_count_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
+
+            if has_class_changes || !novelty_subject_props.is_empty() {
+                let cache_dir = config
+                    .data_dir
+                    .as_ref()
+                    .map(|d| d.join("class_cache"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("fluree_class_cache_v6"));
+                let _ = std::fs::create_dir_all(&cache_dir);
+
+                // subject_classes: (g_id, s_id) → HashSet<class_sid64>
+                let mut subject_classes: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u64>,
+                > = std::collections::HashMap::new();
+
+                // SID resolver closure (populated when store loads successfully).
+                let resolve_class_sid =
+                    |sid64: u64,
+                     store: Option<
+                        &fluree_db_binary_index::read::binary_index_store::BinaryIndexStore,
+                    >,
+                     new_subs: &std::collections::HashMap<(u16, u64), String>|
+                     -> fluree_db_core::Sid {
+                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
+                        // Try novelty subjects first.
+                        if let Some(suffix) = new_subs.get(&(sid.ns_code(), sid.local_id())) {
+                            return fluree_db_core::Sid::new(sid.ns_code(), suffix.as_str());
+                        }
+                        // Try store resolution.
+                        if let Some(s) = store {
+                            if let Ok(iri) = s.resolve_subject_iri(sid64) {
+                                return s.encode_iri(&iri);
                             }
                         }
-                    }
-                } else if let Some(base_cls) = base_classes {
-                    // Legacy: root-level classes only, assign to g_id=0
-                    for entry in base_cls {
-                        let key = subject_reverse_key(
-                            entry.class_sid.namespace_code,
-                            entry.class_sid.name.as_bytes(),
-                        );
-                        if let Ok(Some(sid64)) = subject_tree.reverse_lookup(&key) {
-                            entries_by_key.insert((0, sid64), entry.clone());
-                        } else {
-                            entries_by_key
-                                .insert((0, u64::MAX - entries_by_key.len() as u64), entry.clone());
+                        // Fallback: ns_code + local_id (will be opaque but stable).
+                        fluree_db_core::Sid::new(sid.ns_code(), sid.local_id().to_string())
+                    };
+
+                let new_subject_suffix: std::collections::HashMap<(u16, u64), String> = novelty
+                    .new_subjects
+                    .iter()
+                    .filter_map(|(ns_code, local_id, suffix)| {
+                        let s = std::str::from_utf8(suffix).ok()?.to_string();
+                        Some(((*ns_code, *local_id), s))
+                    })
+                    .collect();
+
+                // Load store for PSOT lookup + SID resolution.
+                let store_opt = if rdf_type_p_id != u32::MAX {
+                    match fluree_db_binary_index::read::binary_index_store::BinaryIndexStore::load_from_root_v6(
+                        content_store.clone(),
+                        base_root,
+                        &cache_dir,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(s) => Some(Arc::new(s)),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "V6 store load for class attribution failed");
+                            None
                         }
                     }
-                }
+                } else {
+                    None
+                };
 
-                // Apply graph-scoped class count deltas to existing entries.
-                for (&(g_id, sid64), &delta) in &class_deltas {
-                    if let Some(entry) = entries_by_key.get_mut(&(g_id, sid64)) {
-                        entry.count = (entry.count as i64 + delta).max(0) as u64;
-                    } else if delta > 0 {
-                        // New class not in base stats — create a placeholder entry.
-                        entries_by_key.insert(
-                            (g_id, sid64),
-                            fluree_db_core::ClassStatEntry {
-                                class_sid: fluree_db_core::sid::Sid::new(0, ""),
-                                count: delta as u64,
-                                properties: Vec::new(),
-                            },
-                        );
+                // Partition novelty subjects by g_id for per-graph PSOT scans.
+                // Also include ref-object s_ids so we can resolve ref-class edges.
+                if let Some(ref store) = store_opt {
+                    let iri_ref_otype = fluree_db_core::o_type::OType::IRI_REF.as_u16();
+                    let mut subjects_by_graph: std::collections::HashMap<u16, Vec<u64>> =
+                        std::collections::HashMap::new();
+                    for &(g_id, s_id) in novelty_subject_class_deltas
+                        .keys()
+                        .chain(novelty_subject_props.keys())
+                    {
+                        subjects_by_graph.entry(g_id).or_default().push(s_id);
                     }
-                }
-
-                // ---- Batched PSOT lookup for base class memberships (graph-scoped) ----
-                let mut subject_classes: HashMap<(u16, u64), HashSet<u64>> = HashMap::new();
-
-                if let Some(rdf_type_pid) = rdf_type_p_id {
-                    // Collect distinct novelty subjects that might have class memberships.
-                    let novelty_s_ids: Vec<u64> = {
-                        let mut ids: Vec<u64> =
-                            novelty.records.iter().map(|r| r.s_id.as_u64()).collect();
-                        ids.sort_unstable();
-                        ids.dedup();
-                        ids
-                    };
-
-                    // Collect ref object SIDs for batched class lookup (needed for ref-class edges).
-                    let ref_object_sids: Vec<u64> = {
-                        let rdf_type_pid_val = rdf_type_pid;
-                        let mut ids: Vec<u64> = novelty
-                            .records
-                            .iter()
-                            .filter(|r| {
-                                r.o_kind == fluree_db_core::value_id::ObjKind::REF_ID.as_u8()
-                                    && r.p_id != rdf_type_pid_val
-                            })
-                            .map(|r| r.o_key)
-                            .collect();
-                        ids.sort_unstable();
-                        ids.dedup();
-                        ids
-                    };
-
-                    if !novelty_s_ids.is_empty() || !ref_object_sids.is_empty() {
-                        // Load BinaryIndexStore from base root for PSOT scan.
-                        let cache_dir = config
-                            .data_dir
-                            .as_deref()
-                            .map(|d| d.join("_class_cache"))
-                            .unwrap_or_else(|| std::env::temp_dir().join("fluree-class-cache"));
-
-                        // Map of new subject IDs to suffix strings for Sid resolution.
-                        let new_subject_suffix: HashMap<(u16, u64), String> = novelty
-                            .new_subjects
-                            .iter()
-                            .filter_map(|(ns_code, local_id, suffix)| {
-                                let s = std::str::from_utf8(suffix).ok()?.to_string();
-                                Some(((*ns_code, *local_id), s))
-                            })
-                            .collect();
-
-                        match BinaryIndexStore::load_from_root_v5(
-                            content_store.clone(),
-                            base_root,
-                            &cache_dir,
-                            None,
-                        )
-                        .await
+                    // Add ref-object targets so we can look up their class memberships.
+                    for (i, rec) in novelty.records.iter().enumerate() {
+                        if rec.o_type == iri_ref_otype
+                            && rec.p_id != rdf_type_p_id
+                            && novelty.ops[i] != 0
                         {
-                            Ok(store) => {
-                                let store = Arc::new(store);
-                                let mut graphs_to_scan: Vec<u16> = Vec::new();
-                                graphs_to_scan.push(0);
-                                for ng in &base_root.named_graphs {
-                                    if ng.g_id != 1 {
-                                        graphs_to_scan.push(ng.g_id);
-                                    }
-                                }
-                                graphs_to_scan.sort_unstable();
-                                graphs_to_scan.dedup();
+                            subjects_by_graph
+                                .entry(rec.g_id)
+                                .or_default()
+                                .push(rec.o_key);
+                        }
+                    }
+                    // Dedup within each graph.
+                    for sids in subjects_by_graph.values_mut() {
+                        sids.sort_unstable();
+                        sids.dedup();
+                    }
 
-                                // Batched PSOT lookup for novelty subjects (graph-scoped).
-                                for scan_g_id in &graphs_to_scan {
-                                    if !novelty_s_ids.is_empty() {
-                                        match batched_lookup_predicate_refs(
-                                            &store,
-                                            *scan_g_id,
-                                            rdf_type_pid,
-                                            &novelty_s_ids,
-                                            base_root.index_t,
-                                        ) {
-                                            Ok(base_map) => {
-                                                for (s_id, classes) in base_map {
-                                                    subject_classes
-                                                        .entry((*scan_g_id, s_id))
-                                                        .or_default()
-                                                        .extend(classes);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    g_id = scan_g_id,
-                                                    %e,
-                                                    "batched PSOT class lookup failed for graph; continuing"
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Batched PSOT lookup for ref object SIDs (for ref-class edges).
-                                    if !ref_object_sids.is_empty() {
-                                        match batched_lookup_predicate_refs(
-                                            &store,
-                                            *scan_g_id,
-                                            rdf_type_pid,
-                                            &ref_object_sids,
-                                            base_root.index_t,
-                                        ) {
-                                            Ok(ref_map) => {
-                                                for (s_id, classes) in ref_map {
-                                                    subject_classes
-                                                        .entry((*scan_g_id, s_id))
-                                                        .or_default()
-                                                        .extend(classes);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    g_id = scan_g_id,
-                                                    %e,
-                                                    "batched PSOT ref-object class lookup failed; continuing"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                tracing::debug!(
-                                    subjects = novelty_s_ids.len(),
-                                    ref_objects = ref_object_sids.len(),
-                                    classes_found = subject_classes.len(),
-                                    "batched PSOT class lookup complete (graph-scoped)"
-                                );
-
-                                // Resolve Sids for new class entries using the loaded store.
-                                for (&(_g_id, sid64), entry) in entries_by_key.iter_mut() {
-                                    if entry.class_sid.name.is_empty()
-                                        && entry.class_sid.namespace_code == 0
-                                    {
-                                        let sid =
-                                            fluree_db_core::subject_id::SubjectId::from_u64(sid64);
-                                        let ns_code = sid.ns_code();
-                                        let local_id = sid.local_id();
-                                        if let Some(suffix) =
-                                            new_subject_suffix.get(&(ns_code, local_id))
-                                        {
-                                            entry.class_sid =
-                                                fluree_db_core::sid::Sid::new(ns_code, suffix);
-                                        } else {
-                                            match store.resolve_subject_iri(sid64) {
-                                                Ok(iri) => {
-                                                    entry.class_sid = store.encode_iri(&iri);
-                                                }
-                                                Err(e) => {
-                                                    tracing::trace!(
-                                                        sid64,
-                                                        %e,
-                                                        "failed to resolve class IRI"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
+                    // Batched PSOT lookup per graph.
+                    for (&scan_g_id, scan_sids) in &subjects_by_graph {
+                        if scan_sids.is_empty() {
+                            continue;
+                        }
+                        match fluree_db_binary_index::batched_lookup_predicate_refs(
+                            store,
+                            scan_g_id,
+                            rdf_type_p_id,
+                            scan_sids,
+                            base_root.index_t,
+                        ) {
+                            Ok(base_map) => {
+                                for (s_id, classes) in base_map {
+                                    subject_classes
+                                        .entry((scan_g_id, s_id))
+                                        .or_default()
+                                        .extend(classes);
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    %e,
-                                    "failed to load BinaryIndexStore for class lookup; \
-                                     using novelty-only class data"
+                                    g_id = scan_g_id, error = %e,
+                                    "batched PSOT class lookup failed for graph"
                                 );
-                            }
-                        }
-                    }
-
-                    // Apply novelty rdf:type deltas on top of base memberships (graph-scoped).
-                    for (&(g_id, subj_sid64), class_map) in &novelty_subject_class_deltas {
-                        let classes = subject_classes.entry((g_id, subj_sid64)).or_default();
-                        for (&class_sid64, &delta) in class_map {
-                            if delta > 0 {
-                                classes.insert(class_sid64);
-                            } else {
-                                classes.remove(&class_sid64);
                             }
                         }
                     }
                 }
 
-                // ---- Class-property attribution (graph-scoped) ----
-                let mut class_properties: HashMap<(u16, u64), HashSet<u32>> = HashMap::new();
+                // Apply novelty rdf:type deltas on top of base memberships.
+                for (&(g_id, s_id), class_map) in &novelty_subject_class_deltas {
+                    let set = subject_classes.entry((g_id, s_id)).or_default();
+                    for (&class_sid64, &delta) in class_map {
+                        if delta > 0 {
+                            set.insert(class_sid64);
+                        } else {
+                            set.remove(&class_sid64);
+                        }
+                    }
+                }
 
-                // Reverse lookup for property Sid -> p_id.
-                let pred_sid_to_pid: HashMap<(u16, String), u32> = new_pred_sids
-                    .iter()
-                    .enumerate()
-                    .map(|(p_id, (ns_code, suffix))| ((*ns_code, suffix.clone()), p_id as u32))
-                    .collect();
+                // Build class→properties, class→prop→dts, class→prop→langs, ref_edges.
+                let mut class_properties: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u32>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_dts: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u8, i64>>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_lang_deltas: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u16, i64>>,
+                > = std::collections::HashMap::new();
+                let mut ref_edges: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
+                > = std::collections::HashMap::new();
 
-                // Seed from prior per-graph class stats.
-                for (&(g_id, _sid64), entry) in &entries_by_key {
-                    if !entry.properties.is_empty() {
-                        for prop_usage in &entry.properties {
-                            let key = (
-                                prop_usage.property_sid.namespace_code,
-                                prop_usage.property_sid.name.to_string(),
-                            );
-                            if let Some(&p_id) = pred_sid_to_pid.get(&key) {
-                                // Resolve the class's sid64 from entry
-                                let class_key = subject_reverse_key(
-                                    entry.class_sid.namespace_code,
-                                    entry.class_sid.name.as_bytes(),
-                                );
-                                if let Ok(Some(class_sid64)) =
-                                    subject_tree.reverse_lookup(&class_key)
-                                {
-                                    class_properties
+                for (&(g_id, s_id), props) in &novelty_subject_props {
+                    if let Some(classes) = subject_classes.get(&(g_id, s_id)) {
+                        for &class_sid64 in classes {
+                            class_properties
+                                .entry((g_id, class_sid64))
+                                .or_default()
+                                .extend(props);
+                            if let Some(s_dts) = novelty_subject_prop_dts.get(&(g_id, s_id)) {
+                                for (&pid, dt_map) in s_dts {
+                                    let cp = class_prop_dts
                                         .entry((g_id, class_sid64))
                                         .or_default()
-                                        .insert(p_id);
+                                        .entry(pid)
+                                        .or_default();
+                                    for (&dt, &cnt) in dt_map {
+                                        *cp.entry(dt).or_insert(0) += cnt;
+                                    }
+                                }
+                            }
+                            if let Some(s_langs) = novelty_subject_prop_langs.get(&(g_id, s_id)) {
+                                for (&pid, lang_map) in s_langs {
+                                    let cl = class_prop_lang_deltas
+                                        .entry((g_id, class_sid64))
+                                        .or_default()
+                                        .entry(pid)
+                                        .or_default();
+                                    for (&lid, &cnt) in lang_map {
+                                        *cl.entry(lid).or_insert(0) += cnt;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-
-                // Attribute novelty properties to classes (graph-scoped).
-                for (&(g_id, subj_sid64), props) in &novelty_subject_props {
-                    if let Some(classes) = subject_classes.get(&(g_id, subj_sid64)) {
-                        for &class_sid64 in classes {
-                            class_properties
-                                .entry((g_id, class_sid64))
-                                .or_default()
-                                .extend(props.iter().copied());
-                        }
-                    }
-                }
-
-                // ---- Compute ref edges (graph-scoped) ----
-                let mut ref_edges: HashMap<(u16, u64), HashMap<u32, HashMap<u64, i64>>> =
-                    HashMap::new();
-                for (&(g_id, subj), per_prop) in stats_hook.subject_ref_history() {
+                for (&(g_id, subj), per_prop) in &subject_ref_history {
                     let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
                         continue;
                     };
-                    for (&p_id, objs) in per_prop {
+                    for (&pid, objs) in per_prop {
                         for (&obj, &delta) in objs {
                             if delta == 0 {
                                 continue;
@@ -2057,7 +1669,7 @@ where
                                     *ref_edges
                                         .entry((g_id, sc))
                                         .or_default()
-                                        .entry(p_id)
+                                        .entry(pid)
                                         .or_default()
                                         .entry(oc)
                                         .or_insert(0) += delta;
@@ -2067,398 +1679,262 @@ where
                     }
                 }
 
-                // ---- Compute class-scoped datatype/lang deltas (graph-scoped) ----
-                // Attribute per-subject dt/lang observations to their classes
-                // using the PSOT-built subject_classes map (base + novelty).
-                let mut class_prop_dt_deltas: HashMap<(u16, u64), HashMap<u32, HashMap<u8, i64>>> =
-                    HashMap::new();
-                for (&(g_id, subj), per_prop) in &novelty_subject_prop_dts {
-                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
-                        continue;
-                    };
-                    for (&p_id, dt_map) in per_prop {
-                        for (&dt_tag, &delta) in dt_map {
-                            if delta == 0 {
-                                continue;
-                            }
-                            for &sc in subj_classes {
-                                *class_prop_dt_deltas
-                                    .entry((g_id, sc))
-                                    .or_default()
-                                    .entry(p_id)
-                                    .or_default()
-                                    .entry(dt_tag)
-                                    .or_insert(0) += delta;
-                            }
-                        }
-                    }
-                }
-
-                let mut class_prop_lang_deltas: HashMap<
-                    (u16, u64),
-                    HashMap<u32, HashMap<u16, i64>>,
-                > = HashMap::new();
-                for (&(g_id, subj), per_prop) in &novelty_subject_prop_langs {
-                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
-                        continue;
-                    };
-                    for (&p_id, lang_map) in per_prop {
-                        for (&lang_id, &delta) in lang_map {
-                            if delta == 0 {
-                                continue;
-                            }
-                            for &sc in subj_classes {
-                                *class_prop_lang_deltas
-                                    .entry((g_id, sc))
-                                    .or_default()
-                                    .entry(p_id)
-                                    .or_default()
-                                    .entry(lang_id)
-                                    .or_insert(0) += delta;
-                            }
-                        }
-                    }
-                }
-
-                // ---- Build per-graph ClassStatEntry lists ----
-
-                // Pre-build sid64 → Sid lookup map from all known entries.
-                let sid64_to_sid: HashMap<u64, fluree_db_core::sid::Sid> = entries_by_key
+                // Build lang_id → tag string map from the language dict (keyed by id, not Vec index).
+                let lang_id_to_tag: std::collections::HashMap<u16, String> = novelty
+                    .shared
+                    .languages
                     .iter()
-                    .filter(|(_, e)| !e.class_sid.name.is_empty())
-                    .map(|(&(_g, sid64), e)| (sid64, e.class_sid.clone()))
+                    .map(|(lang_id, tag)| (lang_id, tag.to_string()))
                     .collect();
 
-                // Pre-extract prior ref_classes, datatypes, and langs keyed by (g_id, class_sid64, p_id).
-                let mut prior_ref_counts: HashMap<(u16, u64, u32), Vec<(u64, i64)>> =
-                    HashMap::new();
-                let mut prior_dt_counts: HashMap<(u16, u64, u32), Vec<(u8, i64)>> = HashMap::new();
-                let mut prior_lang_counts: HashMap<(u16, u64, u32), Vec<(String, i64)>> =
-                    HashMap::new();
-                for (&(g_id, _class_sid64), entry) in &entries_by_key {
-                    let class_key = subject_reverse_key(
-                        entry.class_sid.namespace_code,
-                        entry.class_sid.name.as_bytes(),
-                    );
-                    let class_sid64 = subject_tree
-                        .reverse_lookup(&class_key)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(_class_sid64);
-                    for pu in &entry.properties {
-                        if let Some(&p_id) = pred_sid_to_pid.get(&(
-                            pu.property_sid.namespace_code,
-                            pu.property_sid.name.to_string(),
-                        )) {
-                            // Prior ref_classes
-                            let prior = prior_ref_counts
-                                .entry((g_id, class_sid64, p_id))
-                                .or_default();
-                            for rc in &pu.ref_classes {
-                                let rc_key = subject_reverse_key(
-                                    rc.class_sid.namespace_code,
-                                    rc.class_sid.name.as_bytes(),
-                                );
-                                if let Ok(Some(rc_sid64)) = subject_tree.reverse_lookup(&rc_key) {
-                                    prior.push((rc_sid64, rc.count as i64));
-                                }
-                            }
-                            // Prior datatypes
-                            if !pu.datatypes.is_empty() {
-                                let prior_dts = prior_dt_counts
-                                    .entry((g_id, class_sid64, p_id))
-                                    .or_default();
-                                for &(tag, count) in &pu.datatypes {
-                                    prior_dts.push((tag, count as i64));
-                                }
-                            }
-                            // Prior langs
-                            if !pu.langs.is_empty() {
-                                let prior_langs = prior_lang_counts
-                                    .entry((g_id, class_sid64, p_id))
-                                    .or_default();
-                                for (lang, count) in &pu.langs {
-                                    prior_langs.push((lang.clone(), *count as i64));
-                                }
-                            }
-                        }
-                    }
-                }
+                // Build entries_by_key from base + apply deltas.
+                let mut entries_by_key: std::collections::HashMap<(u16, u64), is::ClassStatEntry> =
+                    std::collections::HashMap::new();
 
-                // Merge class_properties and ref_edges into entries_by_key.
-                for (&(g_id, class_sid64), prop_ids) in &class_properties {
-                    let entry = entries_by_key
-                        .entry((g_id, class_sid64))
-                        .or_insert_with(|| fluree_db_core::ClassStatEntry {
-                            class_sid: fluree_db_core::sid::Sid::new(0, ""),
-                            count: 0,
-                            properties: Vec::new(),
-                        });
-
-                    let mut props: Vec<fluree_db_core::ClassPropertyUsage> = Vec::new();
-                    for &p_id in prop_ids {
-                        if let Some((ns_code, suffix)) = new_pred_sids.get(p_id as usize) {
-                            let mut ref_counts: HashMap<u64, i64> = HashMap::new();
-
-                            // Seed from prior ref_classes.
-                            if let Some(prior) = prior_ref_counts.get(&(g_id, class_sid64, p_id)) {
-                                for &(target_sid64, count) in prior {
-                                    *ref_counts.entry(target_sid64).or_insert(0) += count;
-                                }
-                            }
-
-                            // Apply ref edge deltas.
-                            if let Some(prop_edges) = ref_edges
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                            {
-                                for (&target_class, &delta) in prop_edges {
-                                    *ref_counts.entry(target_class).or_insert(0) += delta;
-                                }
-                            }
-
-                            // Convert to ClassRefCount using the pre-built sid64→Sid map.
-                            let mut ref_classes: Vec<fluree_db_core::ClassRefCount> = ref_counts
-                                .into_iter()
-                                .filter(|(_, count)| *count > 0)
-                                .filter_map(|(target_sid64, count)| {
-                                    sid64_to_sid.get(&target_sid64).map(|sid| {
-                                        fluree_db_core::ClassRefCount {
-                                            class_sid: sid.clone(),
-                                            count: count as u64,
-                                        }
-                                    })
-                                })
-                                .collect();
-                            ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-
-                            // Build datatypes: merge prior + novelty deltas, clamp to >= 0.
-                            let mut dt_accum: HashMap<u8, i64> = HashMap::new();
-                            if let Some(prior_dts) = prior_dt_counts.get(&(g_id, class_sid64, p_id))
-                            {
-                                for &(tag, count) in prior_dts {
-                                    *dt_accum.entry(tag).or_insert(0) += count;
-                                }
-                            }
-                            if let Some(dt_deltas) = class_prop_dt_deltas
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                            {
-                                for (&tag, &delta) in dt_deltas {
-                                    *dt_accum.entry(tag).or_insert(0) += delta;
-                                }
-                            }
-                            let mut datatypes: Vec<(u8, u64)> = dt_accum
-                                .into_iter()
-                                .filter(|(_, count)| *count > 0)
-                                .map(|(tag, count)| (tag, count as u64))
-                                .collect();
-                            datatypes.sort_by_key(|d| d.0);
-
-                            // Build langs: merge prior + novelty deltas, resolve lang_id → string, clamp to >= 0.
-                            let mut lang_accum: HashMap<String, i64> = HashMap::new();
-                            if let Some(prior_langs) =
-                                prior_lang_counts.get(&(g_id, class_sid64, p_id))
-                            {
-                                for (lang, count) in prior_langs {
-                                    *lang_accum.entry(lang.clone()).or_insert(0) += count;
-                                }
-                            }
-                            if let Some(lang_deltas) = class_prop_lang_deltas
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                            {
-                                for (&lang_id, &delta) in lang_deltas {
-                                    // Resolve lang_id (1-indexed) to string.
-                                    if let Some(lang_str) =
-                                        incr_language_tags.get((lang_id as usize).wrapping_sub(1))
-                                    {
-                                        *lang_accum.entry(lang_str.clone()).or_insert(0) += delta;
+                // Seed from base root per-graph class entries.
+                if let Some(ref base_stats) = base_root.stats {
+                    if let Some(ref graphs) = base_stats.graphs {
+                        for g in graphs {
+                            if let Some(ref classes) = g.classes {
+                                for entry in classes {
+                                    // Try to resolve class Sid → sid64 via store.
+                                    let sid64 = store_opt
+                                        .as_ref()
+                                        .and_then(|s| {
+                                            s.sid_to_s_id(&entry.class_sid).ok().flatten()
+                                        })
+                                        .unwrap_or(0);
+                                    if sid64 != 0 {
+                                        entries_by_key.insert((g.g_id, sid64), entry.clone());
                                     }
                                 }
                             }
-                            let mut langs: Vec<(String, u64)> = lang_accum
-                                .into_iter()
-                                .filter(|(_, count)| *count > 0)
-                                .map(|(lang, count)| (lang, count as u64))
-                                .collect();
-                            langs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                            props.push(fluree_db_core::ClassPropertyUsage {
-                                property_sid: fluree_db_core::sid::Sid::new(*ns_code, suffix),
-                                datatypes,
-                                langs,
-                                ref_classes,
-                            });
                         }
                     }
-                    props.sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
-                    entry.properties = props;
                 }
 
-                // Group entries_by_key into per-graph maps.
-                let mut per_graph: HashMap<u16, Vec<fluree_db_core::ClassStatEntry>> =
-                    HashMap::new();
-                for ((g_id, _sid64), entry) in entries_by_key {
-                    if (entry.count > 0 || !entry.properties.is_empty())
-                        && !entry.class_sid.name.is_empty()
-                    {
-                        per_graph.entry(g_id).or_default().push(entry);
+                // Apply class count deltas (both positive and negative).
+                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
+                    let entry = entries_by_key
+                        .entry((g_id, class_sid64))
+                        .or_insert_with(|| {
+                            let class_sid = resolve_class_sid(
+                                class_sid64,
+                                store_opt.as_deref(),
+                                &new_subject_suffix,
+                            );
+                            is::ClassStatEntry {
+                                class_sid,
+                                count: 0,
+                                properties: Vec::new(),
+                            }
+                        });
+                    entry.count = (entry.count as i64 + delta).max(0) as u64;
+                }
+
+                // Build property attribution for each class entry.
+                for (&(g_id, class_sid64), entry) in entries_by_key.iter_mut() {
+                    if let Some(props) = class_properties.get(&(g_id, class_sid64)) {
+                        let class_dts = class_prop_dts.get(&(g_id, class_sid64));
+                        let class_refs = ref_edges.get(&(g_id, class_sid64));
+                        let class_langs = class_prop_lang_deltas.get(&(g_id, class_sid64));
+
+                        // Merge novelty properties with existing properties.
+                        let mut prop_set: std::collections::HashSet<u32> = entry
+                            .properties
+                            .iter()
+                            .filter_map(|pu| {
+                                novelty.shared.predicates.get(&format!(
+                                    "{}{}",
+                                    novelty
+                                        .shared
+                                        .ns_prefixes
+                                        .get(&pu.property_sid.namespace_code)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or(""),
+                                    pu.property_sid.name
+                                ))
+                            })
+                            .collect();
+                        prop_set.extend(props);
+
+                        // Index base property usage by p_id for merging.
+                        let base_prop_by_pid: std::collections::HashMap<
+                            u32,
+                            &is::ClassPropertyUsage,
+                        > = entry
+                            .properties
+                            .iter()
+                            .filter_map(|pu| {
+                                let iri = format!(
+                                    "{}{}",
+                                    novelty
+                                        .shared
+                                        .ns_prefixes
+                                        .get(&pu.property_sid.namespace_code)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or(""),
+                                    pu.property_sid.name
+                                );
+                                novelty.shared.predicates.get(&iri).map(|pid| (pid, pu))
+                            })
+                            .collect();
+
+                        entry.properties = prop_set
+                            .iter()
+                            .map(|&cp_id| {
+                                let iri = novelty.shared.predicates.resolve(cp_id).unwrap_or("");
+                                let p_sid = match trie.longest_match(iri) {
+                                    Some((code, plen)) => {
+                                        fluree_db_core::Sid::new(code, &iri[plen..])
+                                    }
+                                    None => fluree_db_core::Sid::new(0, iri),
+                                };
+                                let base_pu = base_prop_by_pid.get(&cp_id).copied();
+
+                                // Merge base + novelty datatypes.
+                                let mut merged_dts: std::collections::HashMap<u8, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for &(dt, cnt) in &bpu.datatypes {
+                                        *merged_dts.entry(dt).or_insert(0) += cnt as i64;
+                                    }
+                                }
+                                if let Some(dt_delta) = class_dts.and_then(|m| m.get(&cp_id)) {
+                                    for (&dt, &cnt) in dt_delta {
+                                        *merged_dts.entry(dt).or_insert(0) += cnt;
+                                    }
+                                }
+                                let datatypes: Vec<(u8, u64)> = merged_dts
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(dt, v)| (dt, v as u64))
+                                    .collect();
+
+                                // Merge base + novelty langs.
+                                let mut merged_langs: std::collections::HashMap<String, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for (tag, cnt) in &bpu.langs {
+                                        *merged_langs.entry(tag.clone()).or_insert(0) +=
+                                            *cnt as i64;
+                                    }
+                                }
+                                if let Some(lang_delta) = class_langs.and_then(|m| m.get(&cp_id)) {
+                                    for (&lid, &cnt) in lang_delta {
+                                        let tag = lang_id_to_tag
+                                            .get(&lid)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("lang:{lid}"));
+                                        *merged_langs.entry(tag).or_insert(0) += cnt;
+                                    }
+                                }
+                                let langs: Vec<(String, u64)> = merged_langs
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(tag, v)| (tag, v as u64))
+                                    .collect();
+
+                                // Merge base + novelty ref_classes.
+                                let mut merged_refs: std::collections::HashMap<u64, i64> =
+                                    std::collections::HashMap::new();
+                                if let Some(bpu) = base_pu {
+                                    for rc in &bpu.ref_classes {
+                                        let rc_sid64 = store_opt
+                                            .as_ref()
+                                            .and_then(|s| {
+                                                s.sid_to_s_id(&rc.class_sid).ok().flatten()
+                                            })
+                                            .unwrap_or(0);
+                                        if rc_sid64 != 0 {
+                                            *merged_refs.entry(rc_sid64).or_insert(0) +=
+                                                rc.count as i64;
+                                        }
+                                    }
+                                }
+                                if let Some(ref_delta) = class_refs.and_then(|m| m.get(&cp_id)) {
+                                    for (&target, &cnt) in ref_delta {
+                                        *merged_refs.entry(target).or_insert(0) += cnt;
+                                    }
+                                }
+                                let ref_classes: Vec<is::ClassRefCount> = merged_refs
+                                    .into_iter()
+                                    .filter(|(_, v)| *v > 0)
+                                    .map(|(target_sid64, cnt)| {
+                                        let cs = resolve_class_sid(
+                                            target_sid64,
+                                            store_opt.as_deref(),
+                                            &new_subject_suffix,
+                                        );
+                                        is::ClassRefCount {
+                                            class_sid: cs,
+                                            count: cnt as u64,
+                                        }
+                                    })
+                                    .collect();
+
+                                is::ClassPropertyUsage {
+                                    property_sid: p_sid,
+                                    datatypes,
+                                    langs,
+                                    ref_classes,
+                                }
+                            })
+                            .collect();
+                    }
+                    // Resolve class SID if still placeholder.
+                    if entry.class_sid.name.is_empty() && entry.class_sid.namespace_code == 0 {
+                        entry.class_sid = resolve_class_sid(
+                            class_sid64,
+                            store_opt.as_deref(),
+                            &new_subject_suffix,
+                        );
                     }
                 }
-                // Sort each graph's classes for determinism.
-                for entries in per_graph.values_mut() {
-                    entries.sort_by(|a, b| {
-                        a.class_sid
-                            .namespace_code
-                            .cmp(&b.class_sid.namespace_code)
-                            .then_with(|| a.class_sid.name.cmp(&b.class_sid.name))
-                    });
+
+                // Remove entries with count=0 (fully retracted classes).
+                entries_by_key.retain(|_, e| e.count > 0);
+
+                // Group into per-graph class lists.
+                let mut by_graph: std::collections::HashMap<u16, Vec<is::ClassStatEntry>> =
+                    std::collections::HashMap::new();
+                for ((g_id, _), entry) in entries_by_key {
+                    by_graph.entry(g_id).or_default().push(entry);
                 }
 
-                // Derive root-level classes as union across graphs for backward compat.
-                let slices: Vec<&[fluree_db_core::ClassStatEntry]> =
-                    per_graph.values().map(|v| v.as_slice()).collect();
-                let root_classes = fluree_db_core::index_stats::union_class_stat_slices(&slices);
+                for g in &mut final_graphs {
+                    if let Some(classes) = by_graph.remove(&g.g_id) {
+                        g.classes = Some(classes);
+                    }
+                }
+            }
 
-                (per_graph, root_classes)
+            let root_classes = fluree_db_core::index_stats::union_per_graph_classes(&final_graphs);
+
+            is::IndexStats {
+                flakes: id_stats_result.total_flakes,
+                size: 0,
+                properties: Some(properties),
+                classes: root_classes,
+                graphs: Some(final_graphs),
             }
         };
 
-        // If we can't refresh HLL, carry forward base stats (but with updated class counts).
-        if !can_refresh_hll {
-            if let Some(mut base_stats) = base_root.stats.clone() {
-                base_stats.classes = root_classes.clone();
-                // Also attach per-graph classes to graph entries.
-                if let Some(ref mut graphs) = base_stats.graphs {
-                    for g in graphs.iter_mut() {
-                        g.classes = per_graph_classes.get(&g.g_id).cloned();
-                    }
-                }
-                root_builder.set_stats(base_stats);
-            }
-            // Preserve sketch_ref (don't overwrite or GC).
-            root_builder.set_sketch_ref(base_root.sketch_ref.clone());
-            tracing::info!("Phase 4.6 complete: sketches unavailable; carried forward base stats");
-            // Skip the HLL refresh path.
-            // (Remaining root assembly continues below.)
-            //
-            // NOTE: We intentionally do NOT try to "rebuild" HLL from base stats,
-            // because NDV estimates are not reversible from the stored aggregates.
-        } else {
-            let sketch_blob =
-                HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
-            let sketch_ref = if !sketch_blob.entries.is_empty() {
-                let sketch_bytes = sketch_blob
-                    .to_json_bytes()
-                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
-                let sketch_wr = storage
-                    .content_write_bytes(ContentKind::StatsSketch, ledger_id, &sketch_bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
-                tracing::debug!(
-                    %cid,
-                    bytes = sketch_wr.size_bytes,
-                    entries = sketch_blob.entries.len(),
-                    "incremental HLL sketch blob uploaded"
-                );
-                if let Some(old) = &base_root.sketch_ref {
-                    if old != &cid {
-                        root_builder.add_replaced_cids([old.clone()]);
-                    }
-                }
-                Some(cid)
-            } else {
-                base_root.sketch_ref.clone()
-            };
+        tracing::info!(
+            total_flakes = db_stats.flakes,
+            property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
+            "incremental V6: stats refreshed"
+        );
 
-            // 4.6e: Finalize and build IndexStats.
-            let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
-                stats_hook.finalize_with_aggregate_properties();
-
-            let graphs: Vec<fluree_db_core::GraphStatsEntry> = {
-                let base_sizes: HashMap<u16, u64> = base_root
-                    .stats
-                    .as_ref()
-                    .and_then(|s| s.graphs.as_ref())
-                    .map(|graphs| graphs.iter().map(|g| (g.g_id, g.size)).collect())
-                    .unwrap_or_default();
-
-                id_result
-                    .graphs
-                    .into_iter()
-                    .map(|mut g| {
-                        if let Some(sz) = base_sizes.get(&g.g_id) {
-                            g.size = *sz;
-                        }
-                        // Attach per-graph class stats.
-                        g.classes = per_graph_classes.get(&g.g_id).cloned();
-                        g
-                    })
-                    .collect()
-            };
-
-            let properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
-                .iter()
-                .filter_map(|p| {
-                    let sid = new_pred_sids.get(p.p_id as usize)?;
-                    Some(fluree_db_core::index_stats::PropertyStatEntry {
-                        sid: (sid.0, sid.1.clone()),
-                        count: p.count,
-                        ndv_values: p.ndv_values,
-                        ndv_subjects: p.ndv_subjects,
-                        last_modified_t: p.last_modified_t,
-                        datatypes: p.datatypes.clone(),
-                    })
-                })
-                .collect();
-
-            let base_size = base_root.stats.as_ref().map_or(0, |s| s.size);
-
-            let updated_stats = fluree_db_core::index_stats::IndexStats {
-                flakes: id_result.total_flakes,
-                size: base_size,
-                properties: if properties.is_empty() {
-                    None
-                } else {
-                    Some(properties)
-                },
-                classes: root_classes,
-                graphs: if graphs.is_empty() {
-                    None
-                } else {
-                    Some(graphs)
-                },
-            };
-
-            tracing::info!(
-                total_flakes = updated_stats.flakes,
-                property_count = updated_stats.properties.as_ref().map_or(0, |p| p.len()),
-                graph_count = updated_stats.graphs.as_ref().map_or(0, |g| g.len()),
-                class_count = updated_stats.classes.as_ref().map_or(0, |c| c.len()),
-                "Phase 4.6 complete: incremental stats refresh"
-            );
-
-            root_builder.set_stats(updated_stats);
-            root_builder.set_sketch_ref(sketch_ref);
-        }
+        root_builder.set_stats(Some(db_stats));
+        root_builder.set_sketch_ref(sketch_ref);
     }
 
-    // ---- Phase 4.7: Incremental schema (rdfs:subClassOf / rdfs:subPropertyOf) ----
-    //
-    // SchemaExtractor tracks class/property hierarchy from schema-relevant flakes.
-    // We seed it from the base root's schema, then feed only novelty records that
-    // match rdfs:subClassOf or rdfs:subPropertyOf. These are rare in typical novelty.
-    //
-    // Sid resolution for subject/object requires the subject forward dict (via
-    // BinaryIndexStore), so we only attempt schema extraction when the base store
-    // is available. Schema changes are extremely rare in incremental batches.
+    // ---- Phase 3c: Schema refresh (rdfs:subClassOf / rdfs:subPropertyOf) ----
     {
         use crate::stats::SchemaExtractor;
-        use fluree_db_core::subject_id::SubjectId;
+        use fluree_db_core::o_type::OType;
         use fluree_db_core::{Flake, FlakeValue, Sid};
-        use std::collections::HashMap;
 
         let rdfs_subclass_iri = format!("{}subClassOf", fluree_vocab::rdfs::NS);
         let rdfs_subprop_iri = format!("{}subPropertyOf", fluree_vocab::rdfs::NS);
@@ -2466,23 +1942,21 @@ where
         let subclass_p_id = novelty.shared.predicates.get(&rdfs_subclass_iri);
         let subprop_p_id = novelty.shared.predicates.get(&rdfs_subprop_iri);
 
-        // Only run schema extraction if the schema predicates exist in the dict
-        // AND there are novelty records that match them.
+        // Only run schema extraction if schema predicates exist and novelty has matching records.
         let has_schema_records = novelty.records.iter().any(|r| {
             (subclass_p_id == Some(r.p_id) || subprop_p_id == Some(r.p_id))
-                && r.o_kind == fluree_db_core::value_id::ObjKind::REF_ID.as_u8()
+                && r.o_type == OType::IRI_REF.as_u16()
         });
 
         if has_schema_records {
-            // Load a BinaryIndexStore for Sid resolution (subject/object IRIs).
             let cache_dir = config
                 .data_dir
                 .as_ref()
                 .map(|d| d.join("schema_cache"))
-                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache"));
+                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache_v6"));
             let _ = std::fs::create_dir_all(&cache_dir);
 
-            match BinaryIndexStore::load_from_root_v5(
+            match fluree_db_binary_index::read::binary_index_store::BinaryIndexStore::load_from_root_v6(
                 content_store.clone(),
                 base_root,
                 &cache_dir,
@@ -2491,9 +1965,8 @@ where
             .await
             {
                 Ok(store) => {
-                    // Map new subjects in this incremental window for local sid64 -> Sid resolution.
-                    // Base-root forward dicts won't include these until the new root is published.
-                    let new_subject_suffix: HashMap<(u16, u64), String> = novelty
+                    // Map new subjects for local resolution (not yet in base dicts).
+                    let new_subject_suffix: std::collections::HashMap<(u16, u64), String> = novelty
                         .new_subjects
                         .iter()
                         .filter_map(|(ns_code, local_id, suffix)| {
@@ -2503,7 +1976,7 @@ where
                         .collect();
 
                     let resolve_sid64 = |sid64: u64| -> Option<Sid> {
-                        let sid = SubjectId::from_u64(sid64);
+                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
                         let ns_code = sid.ns_code();
                         let local_id = sid.local_id();
                         if let Some(suffix) = new_subject_suffix.get(&(ns_code, local_id)) {
@@ -2517,13 +1990,13 @@ where
 
                     let mut extractor = SchemaExtractor::from_prior(base_root.schema.as_ref());
 
-                    for record in &novelty.records {
+                    for (i, record) in novelty.records.iter().enumerate() {
                         let is_subclass = subclass_p_id == Some(record.p_id);
                         let is_subprop = subprop_p_id == Some(record.p_id);
                         if !is_subclass && !is_subprop {
                             continue;
                         }
-                        if record.o_kind != fluree_db_core::value_id::ObjKind::REF_ID.as_u8() {
+                        if record.o_type != OType::IRI_REF.as_u16() {
                             continue;
                         }
 
@@ -2534,14 +2007,10 @@ where
                             continue;
                         };
 
-                        // Build predicate Sid
                         let p_sid = if is_subclass {
-                            fluree_db_core::Sid::new(fluree_vocab::namespaces::RDFS, "subClassOf")
+                            Sid::new(fluree_vocab::namespaces::RDFS, "subClassOf")
                         } else {
-                            fluree_db_core::Sid::new(
-                                fluree_vocab::namespaces::RDFS,
-                                "subPropertyOf",
-                            )
+                            Sid::new(fluree_vocab::namespaces::RDFS, "subPropertyOf")
                         };
 
                         let flake = Flake::new(
@@ -2550,66 +2019,36 @@ where
                             FlakeValue::Ref(o_sid),
                             Sid::new(0, ""),
                             record.t as i64,
-                            record.op != 0,
+                            novelty.ops[i] != 0,
                             None,
                         );
                         extractor.on_flake(&flake);
                     }
 
-                    // finalize() returns None when all relationships were removed.
-                    // In that case we must clear the schema section.
                     let updated_schema = extractor.finalize(novelty.max_t);
-                    root_builder.set_schema_opt(updated_schema);
-                    tracing::info!("Phase 4.7: incremental schema refreshed");
+                    root_builder.set_schema(updated_schema);
+                    tracing::info!("Phase 3c: incremental V6 schema refreshed");
                 }
                 Err(e) => {
-                    return Err(IndexerError::IncrementalAbort(format!(
-                        "Phase 4.7: store load for schema extraction failed: {e}; \
-                         aborting incremental to ensure schema correctness"
-                    )));
+                    tracing::warn!(
+                        error = %e,
+                        "Phase 3c: V6 store load for schema extraction failed; \
+                         carrying forward base schema"
+                    );
                 }
             }
         }
     }
 
-    // ---- Phase 5: Root assembly ----
-    root_builder.set_dict_refs(new_dict_refs);
-    root_builder.set_watermarks(
-        novelty.updated_watermarks.clone(),
-        novelty.updated_string_watermark,
-    );
-
-    root_builder.set_predicate_sids(new_pred_sids);
-    root_builder.set_namespace_codes(new_ns_codes);
-
-    let new_graph_iris: Vec<String> = (0..novelty.shared.graphs.len())
-        .filter_map(|id| novelty.shared.graphs.resolve(id).map(|s| s.to_string()))
-        .collect();
-    root_builder.set_graph_iris(new_graph_iris);
-
-    let new_datatype_iris: Vec<String> = (0..novelty.shared.datatypes.len())
-        .filter_map(|id| novelty.shared.datatypes.resolve(id).map(|s| s.to_string()))
-        .collect();
-    root_builder.set_datatype_iris(new_datatype_iris);
-
-    let new_language_tags: Vec<String> = novelty
-        .shared
-        .languages
-        .iter()
-        .map(|(_, tag)| tag.to_string())
-        .collect();
-    root_builder.set_language_tags(new_language_tags);
-
-    // Link to previous index root.
-    root_builder.set_prev_index(BinaryPrevIndexRef {
+    // ---- Phase 4: Root assembly ----
+    root_builder.set_prev_index(Some(BinaryPrevIndexRef {
         t: base_root.index_t,
         id: base_root_id.clone(),
-    });
+    }));
 
-    // Build garbage manifest.
     let (new_root, replaced_cids) = root_builder.build();
 
-    // Write garbage record if there are replaced CIDs.
+    // Write garbage manifest.
     if !replaced_cids.is_empty() {
         let garbage_strings: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
         let garbage_ref =
@@ -2617,12 +2056,10 @@ where
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-        // We need to set garbage on the root, but we already consumed the builder.
-        // Build a mutable root and set garbage + encode.
+        // Set garbage on the root before encoding.
         let mut final_root = new_root;
         final_root.garbage = garbage_ref.map(|id| BinaryGarbageRef { id });
 
-        // Encode and upload root.
         let root_bytes = final_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
@@ -2630,12 +2067,12 @@ where
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
         let root_id = ContentId::from_hex_digest(
-            fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
             &write_result.content_hash,
         )
         .ok_or_else(|| {
             IndexerError::StorageWrite(format!(
-                "invalid content_hash: {}",
+                "invalid root digest for FIR6: {}",
                 write_result.content_hash
             ))
         })?;
@@ -2644,7 +2081,8 @@ where
             %root_id,
             index_t = final_root.index_t,
             replaced = replaced_cids.len(),
-            "incremental index root published"
+            new_leaves = total_new_leaves,
+            "V6 incremental index root published"
         );
 
         Ok(IndexResult {
@@ -2659,7 +2097,6 @@ where
             },
         })
     } else {
-        // No garbage — encode and upload root directly.
         let root_bytes = new_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
@@ -2667,12 +2104,12 @@ where
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
         let root_id = ContentId::from_hex_digest(
-            fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
             &write_result.content_hash,
         )
         .ok_or_else(|| {
             IndexerError::StorageWrite(format!(
-                "invalid content_hash: {}",
+                "invalid root digest for FIR6: {}",
                 write_result.content_hash
             ))
         })?;
@@ -2680,7 +2117,8 @@ where
         tracing::info!(
             %root_id,
             index_t = new_root.index_t,
-            "incremental index root published (no garbage)"
+            new_leaves = total_new_leaves,
+            "V6 incremental index root published (no garbage)"
         );
 
         Ok(IndexResult {
@@ -2697,14 +2135,94 @@ where
     }
 }
 
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Build a fresh V3 branch from pure novelty for the default graph.
+fn build_fresh_default_graph_v3(
+    sorted_records: &[RunRecordV2],
+    _sorted_ops: &[u8],
+    order: RunSortOrder,
+    g_id: u16,
+    config: &IndexerConfig,
+) -> Result<BranchUpdateResult> {
+    use crate::run_index::build::incremental_leaf::NewLeafBlob;
+    use fluree_db_binary_index::format::branch::{build_branch_bytes, LeafEntry};
+    use fluree_db_binary_index::format::leaf::LeafWriter;
+    use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
+
+    let leaflet_target = config.leaflet_rows.max(1);
+    let leaf_target = leaflet_target.saturating_mul(config.leaflets_per_leaf.max(1));
+
+    let mut writer = LeafWriter::new(order, leaflet_target, leaf_target, 1);
+    for rec in sorted_records {
+        writer
+            .push_record(*rec)
+            .map_err(|e| IndexerError::StorageWrite(format!("V3 fresh branch writer: {e}")))?;
+    }
+
+    let leaf_infos = writer
+        .finish()
+        .map_err(|e| IndexerError::StorageWrite(format!("V3 fresh branch finish: {e}")))?;
+
+    let mut leaf_entries = Vec::with_capacity(leaf_infos.len());
+    let mut new_blobs = Vec::with_capacity(leaf_infos.len());
+
+    for info in leaf_infos {
+        let header = fluree_db_binary_index::format::leaf::decode_leaf_header_v3(&info.leaf_bytes)
+            .map_err(|e| IndexerError::StorageWrite(format!("decode fresh leaf header: {e}")))?;
+        let first_key = read_ordered_key_v2(order, &header.first_key);
+        let last_key = read_ordered_key_v2(order, &header.last_key);
+
+        leaf_entries.push(LeafEntry {
+            first_key,
+            last_key,
+            row_count: info.total_rows,
+            leaf_cid: info.leaf_cid.clone(),
+            sidecar_cid: info.sidecar_cid.clone(),
+        });
+
+        new_blobs.push(NewLeafBlob { info });
+    }
+
+    let branch_bytes = build_branch_bytes(order, g_id, &leaf_entries);
+    let branch_hash = fluree_db_core::sha256_hex(&branch_bytes);
+    let branch_cid = ContentId::from_hex_digest(
+        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_BRANCH,
+        &branch_hash,
+    )
+    .ok_or_else(|| IndexerError::StorageWrite(format!("invalid V3 branch hash: {branch_hash}")))?;
+
+    Ok(BranchUpdateResult {
+        leaf_entries,
+        new_leaf_blobs: new_blobs,
+        replaced_leaf_cids: Vec::new(),
+        replaced_sidecar_cids: Vec::new(),
+        branch_bytes,
+        branch_cid,
+    })
+}
+
+/// Build a fresh V3 branch from pure novelty for a named graph.
+///
+/// Same as `build_fresh_default_graph_v3` — the build pipeline is graph-agnostic.
+fn build_fresh_named_graph_v3(
+    sorted_records: &[RunRecordV2],
+    order: RunSortOrder,
+    g_id: u16,
+    config: &IndexerConfig,
+) -> Result<BranchUpdateResult> {
+    build_fresh_default_graph_v3(sorted_records, &[], order, g_id, config)
+}
+
 /// Build predicate SIDs from resolver state for the index root.
 fn build_predicate_sids(
-    shared: &run_index::resolver::SharedResolverState,
+    shared: &crate::run_index::resolve::resolver::SharedResolverState,
     namespace_codes: &std::collections::BTreeMap<u16, String>,
 ) -> Vec<(u16, String)> {
     use fluree_db_core::PrefixTrie;
 
-    // PrefixTrie::from_namespace_codes expects HashMap.
     let ns_map: std::collections::HashMap<u16, String> = namespace_codes
         .iter()
         .map(|(&k, v)| (k, v.clone()))
@@ -2722,147 +2240,4 @@ fn build_predicate_sids(
             }
         })
         .collect()
-}
-
-/// Build a fresh branch from pure novelty (no existing branch).
-///
-/// Used when novelty touches a graph+order that didn't exist in the base root.
-/// Uses `LeafWriter` with a temp directory, reads back leaf files, cleans up.
-fn build_fresh_branch(
-    sorted_records: &[RunRecord],
-    order: RunSortOrder,
-    g_id: u16,
-    config: &run_index::incremental_branch::IncrementalBranchConfig,
-    p_width: u8,
-    dt_width: u8,
-) -> Result<run_index::incremental_branch::BranchUpdateResult> {
-    use fluree_db_binary_index::format::branch::{build_branch_v2_bytes, LeafEntry};
-    use fluree_db_binary_index::format::leaf::LeafWriter;
-    use run_index::incremental_leaf::NewLeafBlob;
-
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "fluree-fresh-branch-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| IndexerError::StorageWrite(format!("create fresh branch tmp dir: {e}")))?;
-
-    let mut leaf_writer = LeafWriter::with_widths(
-        tmp_dir.clone(),
-        config.leaflet_target_rows,
-        config.leaflets_per_leaf,
-        config.zstd_level,
-        dt_width,
-        p_width,
-        order,
-    );
-
-    for record in sorted_records {
-        leaf_writer
-            .push_record(*record)
-            .map_err(|e| IndexerError::StorageWrite(format!("leaf writer: {e}")))?;
-    }
-
-    let leaf_infos = leaf_writer
-        .finish()
-        .map_err(|e| IndexerError::StorageWrite(format!("leaf writer finish: {e}")))?;
-
-    let mut leaf_entries = Vec::with_capacity(leaf_infos.len());
-    let mut new_blobs = Vec::with_capacity(leaf_infos.len());
-
-    for info in &leaf_infos {
-        // Read the leaf file from disk.
-        let leaf_path = tmp_dir.join(info.leaf_cid.to_string());
-        let leaf_bytes = std::fs::read(&leaf_path).map_err(|e| {
-            IndexerError::StorageRead(format!("read fresh leaf {}: {e}", leaf_path.display()))
-        })?;
-
-        leaf_entries.push(LeafEntry {
-            first_key: info.first_key,
-            last_key: info.last_key,
-            row_count: info.total_rows,
-            leaf_cid: info.leaf_cid.clone(),
-            resolved_path: None,
-        });
-
-        new_blobs.push(NewLeafBlob {
-            bytes: leaf_bytes,
-            cid: info.leaf_cid.clone(),
-            first_key: info.first_key,
-            last_key: info.last_key,
-            row_count: info.total_rows,
-        });
-    }
-
-    // Clean up temp dir.
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-
-    let branch_bytes = build_branch_v2_bytes(order, g_id, &leaf_entries);
-    let branch_hash = fluree_db_core::sha256_hex(&branch_bytes);
-    let branch_cid = ContentId::from_hex_digest(
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_BRANCH,
-        &branch_hash,
-    )
-    .ok_or_else(|| IndexerError::StorageWrite(format!("invalid branch hash: {branch_hash}")))?;
-
-    Ok(run_index::incremental_branch::BranchUpdateResult {
-        leaf_entries,
-        new_leaf_blobs: new_blobs,
-        replaced_leaf_cids: Vec::new(),
-        branch_bytes,
-        branch_cid,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify that build_predicate_sids correctly decomposes predicates using the
-    /// provided namespace table. If a new namespace is introduced, predicates
-    /// using that namespace should be split correctly.
-    #[test]
-    fn test_build_predicate_sids_with_new_namespace() {
-        use run_index::resolver::SharedResolverState;
-
-        // Create a SharedResolverState with predicates spanning two namespaces.
-        let mut shared = SharedResolverState::new_for_ledger("test:main");
-        // p_id 0: predicate in ns 1 ("http://example.org/")
-        let _p0 = shared.predicates.get_or_insert("http://example.org/name");
-        // p_id 1: predicate in ns 1
-        let _p1 = shared.predicates.get_or_insert("http://example.org/age");
-        // p_id 2: predicate in ns 2 ("http://schema.org/") — new namespace
-        let _p2 = shared.predicates.get_or_insert("http://schema.org/knows");
-
-        // Namespace table with ns 0 = "" (default), ns 1 = "http://example.org/", ns 2 = "http://schema.org/"
-        let ns_codes: std::collections::BTreeMap<u16, String> = [
-            (0, "".to_string()),
-            (1, "http://example.org/".to_string()),
-            (2, "http://schema.org/".to_string()),
-        ]
-        .into();
-
-        let result = build_predicate_sids(&shared, &ns_codes);
-
-        // p_id 0: "http://example.org/name" matches ns 1 "http://example.org/" -> (1, "name")
-        assert_eq!(result[0], (1, "name".to_string()));
-        // p_id 1: "http://example.org/age" matches ns 1 -> (1, "age")
-        assert_eq!(result[1], (1, "age".to_string()));
-        // p_id 2: "http://schema.org/knows" matches ns 2 "http://schema.org/" -> (2, "knows")
-        assert_eq!(result[2], (2, "knows".to_string()));
-
-        // Now test with STALE namespace table (missing ns 2).
-        // This simulates the bug: using base_root.namespace_codes instead of updated ones.
-        let stale_ns: std::collections::BTreeMap<u16, String> =
-            [(0, "".to_string()), (1, "http://example.org/".to_string())].into();
-        let stale_result = build_predicate_sids(&shared, &stale_ns);
-
-        // p_id 2 should fall back to (0, full_iri) — wrong encoding
-        assert_eq!(stale_result[2], (0, "http://schema.org/knows".to_string()));
-        // This demonstrates why using updated ns_codes is critical
-    }
 }

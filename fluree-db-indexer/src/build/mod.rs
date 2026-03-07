@@ -15,7 +15,6 @@ pub(crate) mod commit_chain;
 pub(crate) mod dicts;
 pub(crate) mod fulltext;
 pub(crate) mod incremental;
-pub(crate) mod incremental_v6;
 pub(crate) mod rebuild;
 pub(crate) mod root_assembly;
 pub(crate) mod spatial;

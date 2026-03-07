@@ -162,6 +162,7 @@ pub fn parse_datetime_from_binding(
             o_key,
             p_id,
             dt_id,
+            lang_id,
             ..
         } => {
             let ctx = ctx?;
@@ -181,7 +182,9 @@ pub fn parse_datetime_from_binding(
             }
 
             let gv = ctx.graph_view()?;
-            let val = gv.decode_value(*o_kind, *o_key, *p_id).ok()?;
+            let val = gv
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                .ok()?;
 
             flake_value_to_datetime(&val, Some(&dt_sid), datatypes)
         }
