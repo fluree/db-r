@@ -7,10 +7,13 @@ use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::fast_count_distinct_object::PredicateCountDistinctObjectOperator;
+use crate::fast_fused_scan_sum::{
+    DateComponentFn, NumericUnaryFn, PredicateFusedScanSumI64Operator, ScalarI64Fn,
+};
 use crate::fast_group_count_firsts::{
     PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
 };
-use crate::fast_sum_datetime_component::{DateComponentFn, PredicateSumDateComponentOperator};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
@@ -198,6 +201,76 @@ fn detect_predicate_object_count(
     Some((pred, *s_var, tp.o.clone(), agg.output_var))
 }
 
+fn detect_predicate_count_distinct_object(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+
+    // Must be ?s <p> ?o (predicate bound, object var).
+    let Ref::Var(_s_var) = &tp.s else {
+        return None;
+    };
+    let pred = match &tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+        _ => return None,
+    };
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
+    if tp.dtc.is_some() {
+        return None;
+    }
+
+    // Must be single aggregate, no grouping/having/binds/etc.
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+    {
+        return None;
+    }
+    // LIMIT is fine as long as it's >= 1 (single row output). OFFSET disallowed above.
+    if let Some(lim) = options.limit {
+        if lim == 0 {
+            return None;
+        }
+    }
+
+    // Must be COUNT(DISTINCT ?o).
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    if !matches!(agg.function, AggregateFn::CountDistinct) {
+        return None;
+    }
+    if agg.input_var != Some(*o_var) {
+        return None;
+    }
+
+    // SELECT must be exactly the aggregate output var.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((pred, agg.output_var))
+}
+
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
 /// Returns `Some((predicate_var, count_output_var))` if the query matches the pattern.
@@ -347,10 +420,10 @@ fn detect_property_join_count_all(
     Some((subject_var?, preds, agg.output_var))
 }
 
-fn detect_predicate_sum_datetime_component(
+fn detect_fused_scan_sum_i64(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, DateComponentFn, VarId)> {
+) -> Option<(Ref, ScalarI64Fn, VarId)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
@@ -408,7 +481,7 @@ fn detect_predicate_sum_datetime_component(
         return None;
     }
 
-    // Bind expression must be component(?o).
+    // Bind expression must be scalar(?o).
     let crate::ir::Expression::Call { func, args } = bind_expr else {
         return None;
     };
@@ -419,14 +492,18 @@ fn detect_predicate_sum_datetime_component(
         return None;
     }
 
-    let component = match func {
-        crate::ir::Function::Year => DateComponentFn::Year,
-        crate::ir::Function::Month => DateComponentFn::Month,
-        crate::ir::Function::Day => DateComponentFn::Day,
+    let scalar = match func {
+        crate::ir::Function::Year => ScalarI64Fn::DateComponent(DateComponentFn::Year),
+        crate::ir::Function::Month => ScalarI64Fn::DateComponent(DateComponentFn::Month),
+        crate::ir::Function::Day => ScalarI64Fn::DateComponent(DateComponentFn::Day),
+        crate::ir::Function::Abs => ScalarI64Fn::NumericUnary(NumericUnaryFn::Abs),
+        crate::ir::Function::Ceil => ScalarI64Fn::NumericUnary(NumericUnaryFn::Ceil),
+        crate::ir::Function::Floor => ScalarI64Fn::NumericUnary(NumericUnaryFn::Floor),
+        crate::ir::Function::Round => ScalarI64Fn::NumericUnary(NumericUnaryFn::Round),
         _ => return None,
     };
 
-    Some((pred, component, agg.output_var))
+    Some((pred, scalar, agg.output_var))
 }
 
 /// Build the complete operator tree for a query
@@ -445,22 +522,33 @@ fn build_operator_tree_inner(
     query: &ParsedQuery,
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
-    enable_sum_component_fast_path: bool,
+    enable_fused_fast_paths: bool,
 ) -> Result<BoxedOperator> {
     // Fast-path: `SELECT (SUM(DAY(?o)) AS ?sum) WHERE { ?s <p> ?o }` and friends.
     //
     // These are lowered as: Triple + Bind(expr) + SUM(synthetic_var).
     // This operator scans the predicate's POST range and aggregates directly from encoded values.
-    if enable_sum_component_fast_path {
-        if let Some((pred, component, out_var)) =
-            detect_predicate_sum_datetime_component(query, options)
-        {
+    if enable_fused_fast_paths {
+        if let Some((pred, scalar, out_var)) = detect_fused_scan_sum_i64(query, options) {
             // Build fallback operator tree without this fast path to preserve correctness in
             // pre-index / history / policy contexts.
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateSumDateComponentOperator::new(
+            return Ok(Box::new(PredicateFusedScanSumI64Operator::new(
                 pred,
-                component,
+                scalar,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `SELECT (COUNT(DISTINCT ?o) AS ?c) WHERE { ?s <p> ?o }`
+    // by scanning POST and counting distinct encoded object IDs.
+    if enable_fused_fast_paths {
+        if let Some((pred, out_var)) = detect_predicate_count_distinct_object(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(PredicateCountDistinctObjectOperator::new(
+                pred,
                 out_var,
                 Some(fallback),
             )));

@@ -1313,19 +1313,27 @@ fn emit_mask_for_triple(
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
 ) -> EmitMask {
-    // For now, only prune object vars. Subject and predicate vars are kept because
-    // they often participate in joins and/or are used for result identity.
+    let emit_var = |v: VarId| {
+        let count = var_counts.get(&v).copied().unwrap_or(0);
+        count > 1 || protected_vars.contains(&v)
+    };
+
+    let emit_s = match &tp.s {
+        Ref::Var(v) => emit_var(*v),
+        _ => true,
+    };
+    let emit_p = match &tp.p {
+        Ref::Var(v) => emit_var(*v),
+        _ => true,
+    };
     let emit_o = match &tp.o {
-        Term::Var(v) => {
-            let count = var_counts.get(v).copied().unwrap_or(0);
-            count > 1 || protected_vars.contains(v)
-        }
+        Term::Var(v) => emit_var(*v),
         _ => true,
     };
 
     EmitMask {
-        s: true,
-        p: true,
+        s: emit_s,
+        p: emit_p,
         o: emit_o,
     }
 }

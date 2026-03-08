@@ -1,4 +1,4 @@
-//! Fast-path fused scan + SUM(datetime-component(?o)) for a single predicate.
+//! Fast-path fused scan + SUM(scalar(?o)) for a single predicate.
 //!
 //! Targets benchmark-style queries like:
 //!
@@ -22,15 +22,11 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use chrono::Datelike;
 use fluree_db_binary_index::format::column_block::ColumnId;
-use fluree_db_binary_index::format::leaf::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3};
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
-use fluree_db_binary_index::read::column_loader::{
-    load_leaflet_columns, load_leaflet_columns_cached,
-};
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_binary_index::{ColumnProjection, ColumnSet};
-use fluree_db_core::o_type::OType;
+use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::{FlakeValue, GraphId, Sid};
@@ -53,10 +49,60 @@ impl DateComponentFn {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NumericUnaryFn {
+    Abs,
+    Ceil,
+    Floor,
+    Round,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScalarI64Fn {
+    DateComponent(DateComponentFn),
+    NumericUnary(NumericUnaryFn),
+}
+
+impl ScalarI64Fn {
+    fn name(self) -> &'static str {
+        match self {
+            Self::DateComponent(c) => c.name(),
+            Self::NumericUnary(NumericUnaryFn::Abs) => "ABS",
+            Self::NumericUnary(NumericUnaryFn::Ceil) => "CEIL",
+            Self::NumericUnary(NumericUnaryFn::Floor) => "FLOOR",
+            Self::NumericUnary(NumericUnaryFn::Round) => "ROUND",
+        }
+    }
+
+    fn constant_for_otype(self, o_type: u16) -> Option<i64> {
+        match self {
+            Self::DateComponent(component) => constant_component_for_otype(o_type, component),
+            Self::NumericUnary(_) => None,
+        }
+    }
+
+    fn eval_i64(self, o_type: u16, o_key: u64) -> Option<i64> {
+        match self {
+            Self::DateComponent(component) => component_from_otype_okey(o_type, o_key, component),
+            Self::NumericUnary(func) => {
+                let ot = OType::from_u16(o_type);
+                if ot.decode_kind() != DecodeKind::I64 {
+                    return None;
+                }
+                let v = ObjKey::from_u64(o_key).decode_i64();
+                match func {
+                    NumericUnaryFn::Abs => v.checked_abs(),
+                    NumericUnaryFn::Ceil | NumericUnaryFn::Floor | NumericUnaryFn::Round => Some(v),
+                }
+            }
+        }
+    }
+}
+
 /// Fused operator that outputs a single-row batch with the SUM result.
-pub struct PredicateSumDateComponentOperator {
+pub struct PredicateFusedScanSumI64Operator {
     predicate: Ref,
-    component: DateComponentFn,
+    scalar: ScalarI64Fn,
     out_var: VarId,
     state: OperatorState,
     done: bool,
@@ -64,16 +110,16 @@ pub struct PredicateSumDateComponentOperator {
     fallback: Option<BoxedOperator>,
 }
 
-impl PredicateSumDateComponentOperator {
+impl PredicateFusedScanSumI64Operator {
     pub fn new(
         predicate: Ref,
-        component: DateComponentFn,
+        scalar: ScalarI64Fn,
         out_var: VarId,
         fallback: Option<BoxedOperator>,
     ) -> Self {
         Self {
             predicate,
-            component,
+            scalar,
             out_var,
             state: OperatorState::Created,
             done: false,
@@ -94,7 +140,7 @@ impl PredicateSumDateComponentOperator {
 }
 
 #[async_trait]
-impl Operator for PredicateSumDateComponentOperator {
+impl Operator for PredicateFusedScanSumI64Operator {
     fn schema(&self) -> &[VarId] {
         // Note: when a fallback exists, its schema is identical by construction.
         std::slice::from_ref(&self.out_var)
@@ -111,24 +157,31 @@ impl Operator for PredicateSumDateComponentOperator {
         // Runtime gating: allow fast-path only in the same contexts as binary scans.
         let allow_fast = !ctx.history_mode
             && ctx.from_t.is_none()
-            && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root());
+            && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
+            && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0;
 
         if allow_fast {
             if let Some(binary_index_store) = ctx.binary_store.as_ref() {
-                let sum = sum_component(
-                    binary_index_store,
-                    ctx.binary_g_id,
-                    &self.predicate,
-                    self.component,
-                )?;
-                self.state = OperatorState::Open;
-                self.done = false;
-                // Store sum in fallback-less path by stashing it in done-state batch generation.
-                // We simply generate the batch on first next_batch().
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    self.build_output_batch(sum)?,
-                )));
-                return Ok(());
+                if ctx.to_t == binary_index_store.max_t() {
+                    match sum_scalar_i64(
+                        binary_index_store,
+                        ctx.binary_g_id,
+                        &self.predicate,
+                        self.scalar,
+                    )? {
+                        Some(sum) => {
+                            self.state = OperatorState::Open;
+                            self.done = false;
+                            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
+                                self.build_output_batch(sum)?,
+                            )));
+                            return Ok(());
+                        }
+                        None => {
+                            // Unsupported at runtime — fall through to planned pipeline.
+                        }
+                    }
+                }
             }
         }
 
@@ -136,7 +189,7 @@ impl Operator for PredicateSumDateComponentOperator {
         let Some(fallback) = &mut self.fallback else {
             return Err(QueryError::Internal(format!(
                 "{} fast-path unavailable and no fallback provided",
-                self.component.name()
+                self.scalar.name()
             )));
         };
         fallback.open(ctx).await?;
@@ -215,29 +268,31 @@ impl Operator for PrecomputedSingleBatchOperator {
     }
 }
 
-fn sum_component(
+fn sum_scalar_i64(
     store: &BinaryIndexStore,
     g_id: GraphId,
     predicate: &Ref,
-    component: DateComponentFn,
-) -> Result<i64> {
+    scalar: ScalarI64Fn,
+) -> Result<Option<i64>> {
     let pred_sid = match predicate {
         Ref::Sid(s) => s.clone(),
         Ref::Iri(i) => store.encode_iri(i),
         Ref::Var(_) => {
             return Err(QueryError::Internal(
-                "fast SUM(component) requires bound predicate".to_string(),
+                "fast SUM(scalar) requires bound predicate".to_string(),
             ))
         }
     };
-    let p_id = store
-        .sid_to_p_id(&pred_sid)
-        .ok_or_else(|| QueryError::Internal("predicate not found in v6 dictionary".to_string()))?;
+    let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
+        // Predicate not present in the persisted dict — empty result.
+        return Ok(Some(0));
+    };
 
-    // Restrict to the POST order leaf range for this predicate.
-    let branch = store
-        .branch_for_order(g_id, RunSortOrder::Post)
-        .ok_or_else(|| QueryError::Internal("no POST branch for graph".to_string()))?;
+    let branch = match store.branch_for_order(g_id, RunSortOrder::Post) {
+        Some(b) => b,
+        None => return Ok(Some(0)),
+    };
+
     let cmp = cmp_v2_for_order(RunSortOrder::Post);
     let min_key = RunRecordV2 {
         s_id: SubjectId(0),
@@ -261,19 +316,14 @@ fn sum_component(
 
     let mut sum: i64 = 0;
 
-    let cache = store.leaflet_cache();
-
     for leaf_entry in &branch.leaves[leaf_range] {
-        let bytes = store
-            .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
-            .map_err(|e| QueryError::Internal(format!("leaf fetch: {e}")))?;
-        let header =
-            decode_leaf_header_v3(&bytes).map_err(|e| QueryError::Internal(e.to_string()))?;
-        let dir = decode_leaf_dir_v3_with_base(&bytes, &header)
-            .map_err(|e| QueryError::Internal(e.to_string()))?;
-        let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
 
-        for (i, entry) in dir.entries.iter().enumerate() {
+        let dir = handle.dir();
+
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
             if entry.row_count == 0 {
                 continue;
             }
@@ -282,53 +332,43 @@ fn sum_component(
                 continue;
             }
 
-            // If the component is constant for this o_type, skip decoding all columns.
+            // Constant folding: if scalar is constant for this o_type, avoid any column IO.
             if let Some(ot) = entry.o_type_const {
-                if let Some(const_val) = constant_component_for_otype(ot, component) {
+                if let Some(const_val) = scalar.constant_for_otype(ot) {
                     sum = sum.saturating_add(const_val.saturating_mul(entry.row_count as i64));
                     continue;
                 }
             }
 
-            // Load columns (cached when available).
-            let batch = if let Some(c) = &cache {
-                load_leaflet_columns_cached(
-                    &bytes,
-                    entry,
-                    dir.payload_base,
-                    header.order,
-                    c,
-                    leaf_id,
-                    i as u8,
-                )
-                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
-            } else {
-                let mut needed = ColumnSet::EMPTY;
-                needed.insert(ColumnId::OKey);
-                if entry.o_type_const.is_none() {
-                    needed.insert(ColumnId::OType);
-                }
-                let projection = ColumnProjection {
-                    output: ColumnSet::EMPTY,
-                    internal: needed,
-                };
-                load_leaflet_columns(&bytes, entry, dir.payload_base, &projection, header.order)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            let mut needed = ColumnSet::EMPTY;
+            needed.insert(ColumnId::OKey);
+            if entry.o_type_const.is_none() {
+                needed.insert(ColumnId::OType);
+            }
+            let projection = ColumnProjection {
+                output: ColumnSet::EMPTY,
+                internal: needed,
             };
+
+            let batch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Post)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
 
             for row in 0..batch.row_count {
                 let o_key = batch.o_key.get(row);
                 let ot = entry
                     .o_type_const
                     .unwrap_or_else(|| batch.o_type.get_or(row, 0));
-                if let Some(v) = component_from_otype_okey(ot, o_key, component) {
-                    sum = sum.saturating_add(v);
-                }
+                let Some(v) = scalar.eval_i64(ot, o_key) else {
+                    // Unsupported datatype mix for this scalar fast-path.
+                    return Ok(None);
+                };
+                sum = sum.saturating_add(v);
             }
         }
     }
 
-    Ok(sum)
+    Ok(Some(sum))
 }
 
 fn constant_component_for_otype(o_type: u16, component: DateComponentFn) -> Option<i64> {
