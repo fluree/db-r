@@ -567,16 +567,16 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
     match kind {
         ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexRoot => format!("{}/index/roots/{}.fir6", prefix, hash_hex),
+        ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::DictBlob { dict } => {
             let ext = dict_kind_extension(dict);
             format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
         }
         ContentKind::IndexBranch => {
-            format!("{}/index/objects/branches/{}.fbr3", prefix, hash_hex)
+            format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex)
         }
-        ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli3", prefix, hash_hex),
+        ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
         ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
         ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
         ContentKind::GraphSourceSnapshot => {

@@ -1186,6 +1186,19 @@ where
         )
         .await?;
 
+        // Publish index CID to nameservice so the server can find the root.
+        if config.publish {
+            nameservice
+                .publish_index(alias, index_result.index_t, &index_result.root_id)
+                .await
+                .map_err(|e| ImportError::Storage(format!("publish index: {e}")))?;
+            tracing::info!(
+                index_t = index_result.index_t,
+                root_id = %index_result.root_id,
+                "published index root to nameservice"
+            );
+        }
+
         root_id = Some(index_result.root_id);
         index_t = index_result.index_t;
         summary = index_result.summary;
@@ -2749,7 +2762,7 @@ where
             stage: "Building V3 columnar indexes",
         });
 
-        let v3_handle =
+        let mut v3_handle =
             tokio::task::spawn_blocking(move || -> std::result::Result<_, ImportError> {
                 let registry = fluree_db_core::OTypeRegistry::new(&v3_datatype_iris);
 
@@ -2798,10 +2811,33 @@ where
                 Ok(result)
             });
 
-        let v3_result = v3_handle
-            .await
-            .map_err(|e| ImportError::IndexBuild(format!("V3 build task panicked: {e}")))?
-            .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+        // Poll the merge counter periodically so the CLI progress bar updates
+        // during the index build (which runs on a blocking thread).
+        let index_start = std::time::Instant::now();
+        let v3_result = loop {
+            tokio::select! {
+                result = &mut v3_handle => {
+                    // Build finished — emit final progress and break.
+                    let elapsed = index_start.elapsed().as_secs_f64();
+                    config.emit_progress(ImportPhase::Indexing {
+                        merged_flakes: merge_counter.load(std::sync::atomic::Ordering::Relaxed),
+                        total_flakes: total_index_flakes,
+                        elapsed_secs: elapsed,
+                    });
+                    break result
+                        .map_err(|e| ImportError::IndexBuild(format!("build task panicked: {e}")))?
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                    let elapsed = index_start.elapsed().as_secs_f64();
+                    config.emit_progress(ImportPhase::Indexing {
+                        merged_flakes: merge_counter.load(std::sync::atomic::Ordering::Relaxed),
+                        total_flakes: total_index_flakes,
+                        elapsed_secs: elapsed,
+                    });
+                }
+            }
+        };
 
         // Upload V3 artifacts to CAS.
         let v3_uploaded = fluree_db_indexer::upload_indexes_to_cas(storage, alias, &v3_result)
