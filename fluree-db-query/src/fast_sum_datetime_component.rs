@@ -182,7 +182,7 @@ impl PrecomputedSingleBatchOperator {
     fn new(batch: Batch) -> Self {
         Self {
             batch: Some(batch),
-            state: OperatorState::Created,
+            state: OperatorState::Open,
         }
     }
 }

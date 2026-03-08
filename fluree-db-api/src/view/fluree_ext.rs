@@ -187,6 +187,16 @@ where
                 // Augment namespace codes with entries from novelty commits.
                 store.augment_namespace_codes(&snapshot.snapshot.namespace_codes);
 
+                // Copy store's namespace codes back to the snapshot so
+                // result formatting can decode all namespace codes.
+                for (code, prefix) in store.namespace_codes() {
+                    snapshot
+                        .snapshot
+                        .namespace_codes
+                        .entry(*code)
+                        .or_insert_with(|| prefix.clone());
+                }
+
                 let arc_store = Arc::new(store);
                 let dn = snapshot.dict_novelty.clone();
                 let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);

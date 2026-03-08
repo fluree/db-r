@@ -546,6 +546,17 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // Augment namespace codes with entries from novelty commits (see loading.rs).
     store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
+    // Copy store's namespace codes back to the snapshot so result
+    // formatting can decode all namespace codes (e.g., custom prefixes
+    // from the index root that the commit-chain snapshot doesn't have).
+    for (code, prefix) in store.namespace_codes() {
+        state
+            .snapshot
+            .namespace_codes
+            .entry(*code)
+            .or_insert_with(|| prefix.clone());
+    }
+
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);

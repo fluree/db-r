@@ -34,9 +34,18 @@ impl BinaryRangeProvider {
             dict_novelty,
         }
     }
+
+    /// Access the underlying `BinaryIndexStore`.
+    pub fn store(&self) -> &Arc<BinaryIndexStore> {
+        &self.store
+    }
 }
 
 impl RangeProvider for BinaryRangeProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn range(
         &self,
         g_id: GraphId,

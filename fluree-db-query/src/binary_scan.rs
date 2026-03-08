@@ -582,7 +582,11 @@ impl Operator for BinaryScanOperator {
 
         // Pre-compute p_id → Sid table.
         let mut p_sids = Vec::new();
-        let store = self.store();
+        let store = self.store.as_ref().ok_or_else(|| {
+            QueryError::Internal(
+                "BinaryScanOperator::open: no binary_store on ExecutionContext".into(),
+            )
+        })?;
         for p_id in 0u32.. {
             match store.resolve_predicate_iri(p_id) {
                 Some(iri) => p_sids.push(store.encode_iri(iri)),
