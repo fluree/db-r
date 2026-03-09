@@ -624,3 +624,18 @@ mem:fact-01kk20kbgep6w9wdw6tvs8tgsn a mem:Fact ;
     mem:supersedes mem:fact-01kk1sq2xwmxsqe828pgk28svw ;
     mem:createdAt "2026-03-06T16:44:54.670405+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+
+mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
+    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-09)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 241/327 (73.7%)\n\nSPARQL 1.1 per-category:\n- bind: 10/10 (100%) — FIXED in #51\n- cast: 6/6 (100%) — PR #83\n- negation: 12/12 (100%)\n- bindings: 10/11 (91%) — FIXED in #51 (remaining: graph test needs named graph support)\n- syntax-query: 81/94 (86%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- aggregates: 27/46 (59%)\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
+    mem:tag "compliance" ;
+    mem:tag "issue-55" ;
+    mem:tag "sparql" ;
+    mem:tag "status" ;
+    mem:tag "w3c" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
+    mem:branch "main" ;
+    mem:supersedes mem:fact-01kk20kbgep6w9wdw6tvs8tgsn ;
+    mem:createdAt "2026-03-09T14:42:16.841273+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .

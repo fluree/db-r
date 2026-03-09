@@ -708,9 +708,14 @@ fn parse_number(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     alt((parse_double, parse_decimal, parse_integer)).parse_next(input)
 }
 
-/// Parse an integer literal.
+/// Parse an integer literal (unsigned only).
+///
+/// Per the SPARQL spec, `INTEGER ::= [0-9]+` is unsigned.
+/// `INTEGER_POSITIVE` and `INTEGER_NEGATIVE` (signed) are handled at the
+/// parser level — `+`/`-` are tokenized as `Plus`/`Minus` operators.
+/// This ensures `?o+10` correctly produces `Var, Plus, Integer` rather
+/// than `Var, Integer(+10)` which would break expression parsing.
 fn parse_integer(input: &mut Input<'_>) -> ModalResult<TokenKind> {
-    let sign = opt(one_of(['+', '-'])).parse_next(input)?;
     let digits: &str = digit1.parse_next(input)?;
 
     // Make sure it's not followed by an exponent (that would be a double)
@@ -729,20 +734,15 @@ fn parse_integer(input: &mut Input<'_>) -> ModalResult<TokenKind> {
         // Followed by . but not a digit - that's fine, 1. becomes Integer(1) + Dot
     }
 
-    let mut num_str = String::new();
-    if let Some(s) = sign {
-        num_str.push(s);
-    }
-    num_str.push_str(digits);
-
-    let value = num_str.parse::<i64>().unwrap_or(0);
+    let value = digits.parse::<i64>().unwrap_or(0);
     Ok(TokenKind::Integer(value))
 }
 
-/// Parse a decimal literal.
+/// Parse a decimal literal (unsigned only).
+///
+/// Per the SPARQL spec, `DECIMAL ::= [0-9]* '.' [0-9]+` is unsigned.
+/// Signs are handled at the parser level as `Plus`/`Minus` operators.
 fn parse_decimal(input: &mut Input<'_>) -> ModalResult<TokenKind> {
-    let sign = opt(one_of(['+', '-'])).parse_next(input)?;
-
     // Either digits.digits or .digits
     let (whole, frac) = alt((
         // digits.digits
@@ -758,9 +758,6 @@ fn parse_decimal(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     }
 
     let mut num_str = String::new();
-    if let Some(s) = sign {
-        num_str.push(s);
-    }
     if let Some(w) = whole {
         num_str.push_str(w);
     }
@@ -770,11 +767,13 @@ fn parse_decimal(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     Ok(TokenKind::Decimal(Arc::from(num_str)))
 }
 
-/// Parse a double (floating point) literal.
+/// Parse a double (floating point) literal (unsigned mantissa).
+///
+/// Per the SPARQL spec, `DOUBLE` has an unsigned mantissa.
+/// The leading sign is handled at the parser level as `Plus`/`Minus`.
+/// Note: the exponent sign (`e-5`) IS consumed here as part of the token.
 fn parse_double(input: &mut Input<'_>) -> ModalResult<TokenKind> {
-    let sign = opt(one_of(['+', '-'])).parse_next(input)?;
-
-    // Mantissa
+    // Mantissa (unsigned)
     let mantissa = alt((
         // digits.digits
         (digit1, '.', opt(digit1)).take(),
@@ -791,9 +790,6 @@ fn parse_double(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     let exp_digits: &str = digit1.parse_next(input)?;
 
     let mut num_str = String::new();
-    if let Some(s) = sign {
-        num_str.push(s);
-    }
     num_str.push_str(mantissa);
     num_str.push('e');
     if let Some(s) = exp_sign {
@@ -981,9 +977,13 @@ mod tests {
     #[test]
     fn test_numbers() {
         assert_eq!(tok("42"), vec![TokenKind::Integer(42)]);
-        assert_eq!(tok("-42"), vec![TokenKind::Integer(-42)]);
+        // Signs are tokenized as separate Plus/Minus operators (SPARQL spec:
+        // INTEGER is unsigned; INTEGER_POSITIVE/NEGATIVE are grammar-level)
+        assert_eq!(tok("-42"), vec![TokenKind::Minus, TokenKind::Integer(42)]);
+        assert_eq!(tok("+10"), vec![TokenKind::Plus, TokenKind::Integer(10)]);
         assert_eq!(tok("3.14"), vec![TokenKind::Decimal(Arc::from("3.14"))]);
         assert_eq!(tok("1e10"), vec![TokenKind::Double(1e10)]);
+        // Exponent signs are still consumed as part of the double token
         assert_eq!(tok("1.5e-3"), vec![TokenKind::Double(1.5e-3)]);
     }
 

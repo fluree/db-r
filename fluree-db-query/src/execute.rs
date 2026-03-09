@@ -339,6 +339,7 @@ mod tests {
             patterns: vec![],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
         let executable = ExecutableQuery::simple(query);
         let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
@@ -379,6 +380,7 @@ mod tests {
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let result = build_operator_tree(&query, &QueryOptions::default(), None);
@@ -397,6 +399,7 @@ mod tests {
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var

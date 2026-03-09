@@ -518,6 +518,19 @@ Each test creates an in-memory Fluree ledger, loads RDF data, executes a SPARQL 
 | Property-Path      | `/`, `\|`, `^`, `+`, `*`, `?` operators         | `property-path/manifest.ttl`      |
 | Subquery           | Nested SELECT within WHERE                      | `subquery/manifest.ttl`           |
 
+### BIND / VALUES Compliance Notes
+
+**BIND** (10/10 — 100%):
+- Fixed lexer to tokenize `+`/`-` as separate operators per the SPARQL spec (`INTEGER` is unsigned; `INTEGER_POSITIVE`/`INTEGER_NEGATIVE` are grammar-level). This fixed `?o+10` being mis-tokenized as `Var, Integer(10)` instead of `Var, Plus, Integer(10)`.
+- `compute_variable_deps` now traces BIND expression inputs via fixpoint expansion so projection pushdown retains variables needed by BIND evaluation (e.g., `?o` for `BIND(?o+10 AS ?z)`).
+- Explicitly nested `{ }` blocks inside WHERE are lowered as anonymous subqueries (`SubqueryPattern`) to preserve SPARQL scope boundaries (bind10).
+
+**VALUES / Bindings** (10/11 — 91%):
+- Post-query VALUES (`WHERE { ... } VALUES ?x { ... }`) is now parsed and lowered. Added `values` field on `SelectQuery` AST and `post_values` field on `ParsedQuery` to prevent the planner from reordering it relative to OPTIONAL/UNION.
+- `NestedLoopJoinOperator::combine_rows` fixed to handle `Unbound`/`Poisoned` left-side shared variables by falling back to right-side values. This fixes VALUES with UNDEF (values4, values5, values8).
+- `ValuesOperator` updated to treat `Poisoned` (from failed OPTIONAL) as wildcard in `is_compatible` and `merge_rows`, fixing values7 (OPTIONAL + VALUES).
+- Remaining failure: `graph` test requires named graph support (GRAPH keyword) — tracked separately.
+
 ## Managing the Skip List
 
 Skip entries are the `ignored_tests` parameter in `check_testsuite()` calls:

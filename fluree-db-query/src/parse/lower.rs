@@ -185,6 +185,12 @@ pub struct ParsedQuery {
     ///
     /// When present, controls nested JSON-LD object expansion during formatting.
     pub graph_select: Option<GraphSelectSpec>,
+    /// Post-query VALUES clause (SPARQL `ValuesClause` after `SolutionModifier`).
+    ///
+    /// Stored separately from `patterns` so the WHERE-clause planner does not
+    /// reorder it relative to OPTIONAL/UNION/etc.  Applied as a final inner-join
+    /// constraint after the WHERE operator tree is fully built.
+    pub post_values: Option<Pattern>,
 }
 
 impl ParsedQuery {
@@ -197,6 +203,7 @@ impl ParsedQuery {
             patterns: Vec::new(),
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         }
     }
 
@@ -250,6 +257,7 @@ impl ParsedQuery {
             patterns,
             options: self.options.clone(),
             graph_select: self.graph_select.clone(),
+            post_values: self.post_values.clone(),
         }
     }
 }
@@ -321,6 +329,7 @@ pub(crate) fn lower_query<E: IriEncoder>(
         patterns,
         options,
         graph_select,
+        post_values: None,
     })
 }
 

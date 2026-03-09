@@ -128,9 +128,9 @@ fn is_batched_eligible(
 ///
 /// # Invariant
 ///
-/// We assume shared vars are never `Unbound` from the left side (except via
-/// OPTIONAL which uses `Poisoned`). This is simpler than supporting "unbound
-/// shared-vars" semantics.
+/// When a shared variable is `Unbound` on the left (e.g., from VALUES with UNDEF),
+/// `combine_rows` falls back to the right-side value so the concrete binding
+/// propagates through the join.
 pub struct NestedLoopJoinOperator {
     /// Left (driving) operator
     left: Box<dyn Operator>,
@@ -591,9 +591,27 @@ impl NestedLoopJoinOperator {
     ) -> Vec<Binding> {
         let right_schema = right_batch.schema();
 
-        // Chain left columns with new right columns (skip shared vars already in left)
+        // Chain left columns with new right columns (skip shared vars already in left).
+        //
+        // Special case: when a left-side shared variable is Unbound or Poisoned
+        // (e.g., from VALUES with UNDEF, or failed OPTIONAL), the right scan may
+        // still produce a concrete value for it (because the bind substitution left
+        // it as a variable in the scan pattern).  In that case, we take the right-side
+        // value instead of propagating the unbound marker.
         (0..self.left_schema.len())
-            .map(|col| left_batch.get_by_col(left_row, col).clone())
+            .map(|col| {
+                let left_val = left_batch.get_by_col(left_row, col);
+                if left_val.is_unbound_or_poisoned() {
+                    let var = self.left_schema[col];
+                    if let Some(right_col) = right_schema.iter().position(|v| *v == var) {
+                        let right_val = right_batch.get_by_col(right_row, right_col);
+                        if !right_val.is_unbound_or_poisoned() {
+                            return right_val.clone();
+                        }
+                    }
+                }
+                left_val.clone()
+            })
             .chain(self.right_new_vars.iter().map(|var| {
                 right_schema
                     .iter()

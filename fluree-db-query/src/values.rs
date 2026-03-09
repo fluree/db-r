@@ -91,8 +91,9 @@ impl ValuesOperator {
                 let child_val = input_row[*child_pos];
                 let values_val = &value_row[val_idx];
 
-                // Skip if either is Unbound (compatible with anything)
-                if matches!(child_val, Binding::Unbound) || matches!(values_val, Binding::Unbound) {
+                // Skip if either side is effectively unbound (compatible with anything).
+                // Poisoned arises from failed OPTIONAL — semantically unbound for VALUES.
+                if child_val.is_unbound_or_poisoned() || values_val.is_unbound_or_poisoned() {
                     continue;
                 }
 
@@ -113,11 +114,28 @@ impl ValuesOperator {
     /// Merge an input row with a compatible value row
     ///
     /// Produces an output row with all child columns plus new value columns.
+    /// For overlap variables, if the child has an unbound/poisoned value but the
+    /// VALUES row has a concrete value, the VALUES value is used (fills in the gap).
     fn merge_rows(&self, input_row: &[&Binding], value_row: &[Binding]) -> Vec<Binding> {
         let mut output = Vec::with_capacity(self.schema.len());
 
-        // First, copy all child columns
-        for binding in input_row {
+        // Copy child columns, filling unbound overlap vars from VALUES row.
+        for (col, binding) in input_row.iter().enumerate() {
+            if binding.is_unbound_or_poisoned() {
+                // Check if this column is an overlap var with a concrete VALUES value.
+                if let Some((val_idx, _)) = self
+                    .overlap_positions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, pos)| **pos == Some(col))
+                {
+                    let values_val = &value_row[val_idx];
+                    if !values_val.is_unbound_or_poisoned() {
+                        output.push(values_val.clone());
+                        continue;
+                    }
+                }
+            }
             output.push((*binding).clone());
         }
 

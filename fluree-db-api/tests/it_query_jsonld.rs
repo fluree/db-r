@@ -1764,3 +1764,140 @@ async fn jsonld_lcase_preserves_language_tag() {
         assert_eq!(arr[0].as_str().unwrap(), "good stuff");
     }
 }
+
+// =============================================================================
+// JSON-LD parity tests for BIND/VALUES W3C compliance (#51)
+// =============================================================================
+
+/// Parity for W3C bind01: BIND with arithmetic expression in SELECT.
+/// SPARQL: SELECT ?z WHERE { ?s ?p ?o . BIND(?o+10 AS ?z) }
+#[tokio::test]
+async fn jsonld_bind_arithmetic_in_select() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/bind-arith:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1},
+            {"@id": "ex:s2", "ex:p": 2}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    // JSON-LD equivalent of: SELECT ?z WHERE { ?s ex:p ?o . BIND(?o+10 AS ?z) }
+    let query = json!({
+        "@context": ctx,
+        "select": ["?z"],
+        "where": [
+            {"@id": "?s", "ex:p": "?o"},
+            ["bind", "?z", ["expr", ["+", "?o", 10]]]
+        ]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let mut values: Vec<i64> = json_rows
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(
+        values,
+        vec![11, 12],
+        "JSON-LD parity: BIND(?o+10 AS ?z) with SELECT ?z"
+    );
+}
+
+/// Parity for W3C bind02: chained BINDs.
+/// SPARQL: SELECT ?o ?z ?z2 WHERE { ?s ex:p ?o . BIND(?o+10 AS ?z) BIND(?o+100 AS ?z2) }
+#[tokio::test]
+async fn jsonld_bind_chained() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/bind-chain:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1},
+            {"@id": "ex:s2", "ex:p": 2}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": ["?o", "?z", "?z2"],
+        "where": [
+            {"@id": "?s", "ex:p": "?o"},
+            ["bind", "?z", ["expr", ["+", "?o", 10]]],
+            ["bind", "?z2", ["expr", ["+", "?o", 100]]]
+        ],
+        "orderBy": "?o"
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    assert_eq!(
+        json_rows,
+        json!([[1, 11, 101], [2, 12, 102]]),
+        "JSON-LD parity: chained BINDs"
+    );
+}
+
+/// Parity for VALUES constraining WHERE results (mirrors SPARQL post-query VALUES).
+/// In JSON-LD, VALUES is a top-level key that joins with WHERE results.
+#[tokio::test]
+async fn jsonld_values_constraining_where() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/values-where:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:book1", "ex:title": "SPARQL Tutorial", "ex:price": 42},
+            {"@id": "ex:book2", "ex:title": "The Semantic Web", "ex:price": 23}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": ["?title", "?price"],
+        "where": [
+            {"@id": "?book", "ex:title": "?title", "ex:price": "?price"}
+        ],
+        "values": ["?book", [{"@value": "ex:book1", "@type": "@id"}]]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    assert_eq!(
+        json_rows,
+        json!([["SPARQL Tutorial", 42]]),
+        "JSON-LD parity: VALUES constraining WHERE results"
+    );
+}

@@ -10,6 +10,7 @@ use crate::ast::term::{Term as SparqlTerm, Var};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{
     GraphName as IrGraphName, Pattern, ServiceEndpoint as IrServiceEndpoint, ServicePattern,
+    SubqueryPattern,
 };
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::var_registry::VarId;
@@ -27,8 +28,25 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             SparqlGraphPattern::Group { patterns, .. } => {
                 let mut result = Vec::new();
                 for p in patterns {
-                    let lowered = self.lower_graph_pattern(p)?;
-                    result.extend(lowered);
+                    if matches!(p, SparqlGraphPattern::Group { .. }) {
+                        // An explicit nested { } block inside a group creates a
+                        // SPARQL scope boundary.  Variables bound outside are NOT
+                        // visible inside (see W3C bind10).  We lower it as an
+                        // anonymous subquery (SELECT * WHERE { ... }) to preserve
+                        // the scope.  Only variables BOUND inside the group
+                        // (by triples, BIND, VALUES) appear in the subquery's
+                        // SELECT — not variables merely referenced by FILTERs.
+                        //
+                        // Invariant: the parser only produces nested Group nodes for
+                        // explicitly braced `{ }` blocks inside a WHERE clause, not
+                        // for the outer WHERE group itself.  See parse_group_graph_pattern().
+                        let inner = self.lower_graph_pattern(p)?;
+                        let vars = collect_bound_variables(&inner);
+                        result.push(Pattern::Subquery(SubqueryPattern::new(vars, inner)));
+                    } else {
+                        let lowered = self.lower_graph_pattern(p)?;
+                        result.extend(lowered);
+                    }
                 }
                 Ok(result)
             }
@@ -250,4 +268,79 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             inner_patterns,
         ))])
     }
+}
+
+/// Collect variables that are **bound** (produced) by patterns.
+///
+/// This includes variables from triple patterns, BIND outputs, VALUES vars,
+/// and subquery selects — but NOT variables merely referenced by FILTERs or
+/// BIND expressions.  Used to build the SELECT list for anonymous subqueries
+/// that enforce SPARQL scope boundaries.
+fn collect_bound_variables(patterns: &[Pattern]) -> Vec<VarId> {
+    use fluree_db_query::triple::Ref;
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    fn collect(
+        patterns: &[Pattern],
+        seen: &mut std::collections::HashSet<VarId>,
+        out: &mut Vec<VarId>,
+    ) {
+        use fluree_db_query::triple::Term;
+        fn add(v: VarId, seen: &mut std::collections::HashSet<VarId>, out: &mut Vec<VarId>) {
+            if seen.insert(v) {
+                out.push(v);
+            }
+        }
+        for p in patterns {
+            match p {
+                Pattern::Triple(tp) => {
+                    if let Ref::Var(v) = &tp.s {
+                        add(*v, seen, out);
+                    }
+                    if let Ref::Var(v) = &tp.p {
+                        add(*v, seen, out);
+                    }
+                    if let Term::Var(v) = &tp.o {
+                        add(*v, seen, out);
+                    }
+                }
+                Pattern::Bind { var, .. } => {
+                    if seen.insert(*var) {
+                        out.push(*var);
+                    }
+                }
+                Pattern::Values { vars, .. } => {
+                    for v in vars {
+                        if seen.insert(*v) {
+                            out.push(*v);
+                        }
+                    }
+                }
+                Pattern::Optional(inner) | Pattern::Minus(inner) => {
+                    collect(inner, seen, out);
+                }
+                Pattern::Union(branches) => {
+                    for branch in branches {
+                        collect(branch, seen, out);
+                    }
+                }
+                Pattern::Subquery(sq) => {
+                    for v in &sq.select {
+                        if seen.insert(*v) {
+                            out.push(*v);
+                        }
+                    }
+                }
+                Pattern::Graph { patterns, .. } => {
+                    collect(patterns, seen, out);
+                }
+                // Filter, Exists, NotExists, PropertyPath, etc. only reference vars
+                _ => {}
+            }
+        }
+    }
+
+    collect(patterns, &mut seen, &mut result);
+    result
 }

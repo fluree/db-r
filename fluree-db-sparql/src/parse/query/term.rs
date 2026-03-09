@@ -288,6 +288,17 @@ impl<'a> super::Parser<'a> {
                 self.stream.advance();
                 return Some(Literal::double(n, span));
             }
+            // Signed numeric literals: +/-  followed by number (SPARQL
+            // INTEGER_POSITIVE, INTEGER_NEGATIVE, DECIMAL_POSITIVE, etc.)
+            // The lexer tokenizes signs as Plus/Minus; we recombine here.
+            TokenKind::Plus | TokenKind::Minus => {
+                let is_neg = matches!(token.kind, TokenKind::Minus);
+                let sign_span = span;
+                // Peek at the NEXT token to see if it's a number
+                if let Some(lit) = self.try_parse_signed_numeric(is_neg, sign_span) {
+                    return Some(lit);
+                }
+            }
             TokenKind::KwTrue => {
                 self.stream.advance();
                 return Some(Literal::boolean(true, span));
@@ -300,6 +311,55 @@ impl<'a> super::Parser<'a> {
         }
 
         None
+    }
+
+    /// Try to parse a signed numeric literal (`+N` or `-N`).
+    ///
+    /// Called when `parse_literal` sees `Plus`/`Minus` and needs to check
+    /// if the next token is a number. Uses save/restore to avoid consuming
+    /// the sign if the next token is not numeric.
+    fn try_parse_signed_numeric(
+        &mut self,
+        is_neg: bool,
+        sign_span: crate::span::SourceSpan,
+    ) -> Option<Literal> {
+        let pos = self.stream.position();
+        self.stream.advance(); // consume the sign
+
+        let next = self.stream.peek();
+        match &next.kind {
+            TokenKind::Integer(n) => {
+                let n = if is_neg { -*n } else { *n };
+                let num_span = self.stream.current_span();
+                self.stream.advance();
+                Some(Literal::integer(n, sign_span.union(num_span)))
+            }
+            TokenKind::Decimal(_) => {
+                let token = self.stream.consume();
+                if let TokenKind::Decimal(s) = token.kind {
+                    let mut signed = String::new();
+                    if is_neg {
+                        signed.push('-');
+                    }
+                    signed.push_str(s.as_ref());
+                    Some(Literal::decimal(&signed, sign_span.union(token.span)))
+                } else {
+                    self.stream.restore(pos);
+                    None
+                }
+            }
+            TokenKind::Double(n) => {
+                let n = if is_neg { -*n } else { *n };
+                let num_span = self.stream.current_span();
+                self.stream.advance();
+                Some(Literal::double(n, sign_span.union(num_span)))
+            }
+            _ => {
+                // Not a number after sign — restore position
+                self.stream.restore(pos);
+                None
+            }
+        }
     }
 
     /// Parse a blank node.

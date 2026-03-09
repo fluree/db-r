@@ -745,6 +745,7 @@ mod tests {
             ],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
         let options = QueryOptions::default().with_aggregates(vec![AggregateSpec {
             function: AggregateFn::CountAll,

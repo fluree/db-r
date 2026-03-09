@@ -5,6 +5,7 @@
 //! and GROUP BY. Variables without downstream dependencies are dead and can
 //! be projected away early.
 
+use crate::ir::Pattern;
 use crate::options::QueryOptions;
 use crate::parse::ParsedQuery;
 use crate::var_registry::VarId;
@@ -97,6 +98,11 @@ pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Opt
     // GROUP BY keys must survive.
     deps.extend(options.group_by.iter().copied());
 
+    // Trace backward through WHERE-level BIND patterns: if a BIND output variable
+    // is in deps, its expression's input variables must also be in deps.
+    // This is a planning-time fixpoint (bounded by number of BINDs, typically <10).
+    expand_deps_through_binds(&mut deps, &query.patterns);
+
     // deps now contains the full set of WHERE-produced variables needed downstream.
     let required_where_vars: Vec<VarId> = deps.iter().copied().collect();
 
@@ -108,6 +114,64 @@ pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Opt
         required_bind_vars,
         required_sort_vars,
     })
+}
+
+/// Expand `deps` through WHERE-level BIND patterns (transitive closure).
+///
+/// When a BIND output variable is needed downstream, its expression's input
+/// variables must also survive projection pushdown. This walks all patterns
+/// (including UNION branches, OPTIONAL blocks, etc.) to find BINDs.
+fn expand_deps_through_binds(deps: &mut HashSet<VarId>, patterns: &[Pattern]) {
+    // Collect all BINDs from the pattern tree (planning-time, not hot path).
+    let mut binds: Vec<(VarId, Vec<VarId>)> = Vec::new();
+    collect_binds(patterns, &mut binds);
+
+    // Fixpoint: expand deps until stable.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (var, input_vars) in &binds {
+            if deps.contains(var) {
+                for v in input_vars {
+                    if deps.insert(*v) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Recursively collect (output_var, input_vars) pairs from BIND patterns.
+fn collect_binds(patterns: &[Pattern], out: &mut Vec<(VarId, Vec<VarId>)>) {
+    for p in patterns {
+        match p {
+            Pattern::Bind { var, expr } => {
+                out.push((*var, expr.variables()));
+            }
+            Pattern::Optional(inner)
+            | Pattern::Minus(inner)
+            | Pattern::Exists(inner)
+            | Pattern::NotExists(inner) => {
+                collect_binds(inner, out);
+            }
+            Pattern::Union(branches) => {
+                for branch in branches {
+                    collect_binds(branch, out);
+                }
+            }
+            Pattern::Graph { patterns, .. } => {
+                collect_binds(patterns, out);
+            }
+            Pattern::Service(svc) => {
+                collect_binds(&svc.patterns, out);
+            }
+            Pattern::Subquery(sq) => {
+                collect_binds(&sq.patterns, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +205,7 @@ mod tests {
             patterns,
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         }
     }
 
@@ -261,6 +326,7 @@ mod tests {
             patterns: vec![],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
@@ -449,5 +515,113 @@ mod tests {
         assert!(deps.required_where_vars.contains(&VarId(0)));
         assert!(deps.required_where_vars.contains(&VarId(1)));
         assert!(!deps.required_where_vars.contains(&VarId(2)));
+    }
+
+    // ---- WHERE-level BIND dependency expansion tests ----
+
+    #[test]
+    fn where_bind_expands_deps_to_expression_inputs() {
+        // W3C bind01: SELECT ?z WHERE { ?s ?p ?o . BIND(?o+10 AS ?z) }
+        // ?z is BIND output, ?o is BIND input — both must be in required_where_vars.
+        let query = make_query(
+            vec![VarId(3)],
+            vec![
+                Pattern::Triple(make_tp(VarId(0), "p", VarId(2))),
+                Pattern::Bind {
+                    var: VarId(3),
+                    expr: Expression::Call {
+                        func: crate::ir::Function::Add,
+                        args: vec![
+                            Expression::Var(VarId(2)),
+                            Expression::Const(FilterValue::Long(10)),
+                        ],
+                    },
+                },
+            ],
+            SelectMode::Many,
+        );
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        // ?z (BIND output) and ?o (BIND input) must both be in required_where_vars
+        assert!(
+            deps.required_where_vars.contains(&VarId(3)),
+            "BIND output ?z must be in required_where_vars"
+        );
+        assert!(
+            deps.required_where_vars.contains(&VarId(2)),
+            "BIND input ?o must be in required_where_vars"
+        );
+    }
+
+    #[test]
+    fn where_bind_chained_expands_transitively() {
+        // W3C bind02: SELECT ?o ?z ?z2 { ... BIND(?o+10 AS ?z) BIND(?o+100 AS ?z2) }
+        let query = make_query(
+            vec![VarId(2), VarId(3), VarId(4)],
+            vec![
+                Pattern::Triple(make_tp(VarId(0), "p", VarId(2))),
+                Pattern::Bind {
+                    var: VarId(3),
+                    expr: Expression::Call {
+                        func: crate::ir::Function::Add,
+                        args: vec![
+                            Expression::Var(VarId(2)),
+                            Expression::Const(FilterValue::Long(10)),
+                        ],
+                    },
+                },
+                Pattern::Bind {
+                    var: VarId(4),
+                    expr: Expression::Call {
+                        func: crate::ir::Function::Add,
+                        args: vec![
+                            Expression::Var(VarId(2)),
+                            Expression::Const(FilterValue::Long(100)),
+                        ],
+                    },
+                },
+            ],
+            SelectMode::Many,
+        );
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(2))); // ?o
+        assert!(deps.required_where_vars.contains(&VarId(3))); // ?z
+        assert!(deps.required_where_vars.contains(&VarId(4))); // ?z2
+    }
+
+    #[test]
+    fn where_bind_in_union_expands_deps() {
+        // W3C bind07: SELECT ?z { { BIND(?o+10 AS ?z) } UNION { BIND(?o+20 AS ?z) } }
+        let query = make_query(
+            vec![VarId(3)],
+            vec![Pattern::Union(vec![
+                vec![Pattern::Bind {
+                    var: VarId(3),
+                    expr: Expression::Call {
+                        func: crate::ir::Function::Add,
+                        args: vec![
+                            Expression::Var(VarId(2)),
+                            Expression::Const(FilterValue::Long(10)),
+                        ],
+                    },
+                }],
+                vec![Pattern::Bind {
+                    var: VarId(3),
+                    expr: Expression::Call {
+                        func: crate::ir::Function::Add,
+                        args: vec![
+                            Expression::Var(VarId(2)),
+                            Expression::Const(FilterValue::Long(20)),
+                        ],
+                    },
+                }],
+            ])],
+            SelectMode::Many,
+        );
+
+        let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();
+        assert!(deps.required_where_vars.contains(&VarId(3))); // ?z
+        assert!(deps.required_where_vars.contains(&VarId(2))); // ?o
     }
 }
