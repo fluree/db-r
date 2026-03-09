@@ -127,11 +127,17 @@ pub use storage::{
     ContentAddressedWrite,
     ContentStore,
     ContentWriteResult,
+    ListResult,
     MemoryContentStore,
     MemoryStorage,
     ReadHint,
     Storage,
+    StorageCas,
     StorageContentStore,
+    StorageDelete,
+    StorageExtError,
+    StorageExtResult,
+    StorageList,
     StorageMethod,
     StorageRead,
     StorageWrite,
@@ -167,7 +173,8 @@ pub mod prelude {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;
     pub use crate::storage::{
-        ContentAddressedWrite, ContentStore, ContentWriteResult, MemoryContentStore, MemoryStorage,
-        ReadHint, Storage, StorageContentStore, StorageRead, StorageWrite,
+        ContentAddressedWrite, ContentStore, ContentWriteResult, ListResult, MemoryContentStore,
+        MemoryStorage, ReadHint, Storage, StorageCas, StorageContentStore, StorageDelete,
+        StorageExtError, StorageExtResult, StorageList, StorageRead, StorageWrite,
     };
 }

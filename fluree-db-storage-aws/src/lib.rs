@@ -55,15 +55,8 @@ pub use s3::{ListResult, S3Config, S3Storage};
 pub use dynamodb::{DynamoDbConfig, DynamoDbNameService};
 
 // Re-export core traits for convenience
-pub use fluree_db_core::{Storage, StorageWrite};
-pub use fluree_db_nameservice::{
-    NameService,
-    NsRecord,
-    Publisher,
-    // Extended storage traits
-    StorageCas,
-    StorageDelete,
-    StorageExtError,
-    StorageExtResult,
-    StorageList,
+pub use fluree_db_core::{
+    Storage, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
+    StorageWrite,
 };
+pub use fluree_db_nameservice::{NameService, NsRecord, Publisher};

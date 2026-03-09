@@ -8,15 +8,6 @@
 //! - [`RefPublisher`]: Explicit compare-and-set ref operations for sync
 //! - [`Publication`]: Optional subscription support for reactive updates
 //!
-//! # Extended Storage Traits
-//!
-//! For storage-backed nameservice implementations (e.g., S3), this crate also
-//! provides extended storage traits:
-//!
-//! - [`StorageDelete`]: Delete stored objects
-//! - [`StorageList`]: List objects by prefix
-//! - [`StorageCas`]: Compare-and-swap operations using ETags
-//!
 //! # Implementations
 //!
 //! - [`MemoryNameService`]: In-memory implementation for testing
@@ -29,7 +20,6 @@ pub mod file;
 pub mod ledger_config;
 pub mod memory;
 pub mod storage_ns;
-pub mod storage_traits;
 pub mod tracking;
 #[cfg(feature = "native")]
 pub mod tracking_file;
@@ -43,9 +33,6 @@ pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaul
 /// source index artifacts, e.g. `fluree:file://graph-sources/{name}/{branch}/bm25/...`.
 pub const STORAGE_SEGMENT_GRAPH_SOURCES: &str = "graph-sources";
 pub use storage_ns::StorageNameService;
-pub use storage_traits::{
-    ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
-};
 pub use tracking::{MemoryTrackingStore, RemoteName, RemoteTrackingStore, TrackingRecord};
 #[cfg(feature = "native")]
 pub use tracking_file::FileTrackingStore;

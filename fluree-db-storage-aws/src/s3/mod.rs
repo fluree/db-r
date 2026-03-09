@@ -3,7 +3,7 @@
 //! Provides `S3Storage` which implements the core `Storage` and `StorageWrite` traits
 //! for reading and writing data to Amazon S3.
 //!
-//! Also implements the extended storage traits from `fluree-db-nameservice`:
+//! Also implements the extended storage traits from `fluree-db-core`:
 //! - `StorageDelete`
 //! - `StorageList`
 //! - `StorageCas`
@@ -36,11 +36,8 @@ use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::error::Error as CoreError;
 use fluree_db_core::{
     content_address, sha256_hex, ContentAddressedWrite, ContentKind, ContentWriteResult,
-    StorageRead, StorageWrite,
-};
-use fluree_db_nameservice::{
     ListResult as NsListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult,
-    StorageList,
+    StorageList, StorageRead, StorageWrite,
 };
 use std::fmt::Debug;
 use std::time::Duration;
