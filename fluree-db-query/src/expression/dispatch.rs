@@ -94,7 +94,7 @@ impl Function {
             Function::IsIri => types::eval_is_iri(args, row, ctx),
             Function::IsLiteral => types::eval_is_literal(args, row, ctx),
             Function::IsNumeric => types::eval_is_numeric(args, row, ctx),
-            Function::IsBlank => types::eval_is_blank(),
+            Function::IsBlank => types::eval_is_blank(args, row, ctx),
 
             // RDF term functions
             Function::Datatype => rdf::eval_datatype(args, row, ctx),

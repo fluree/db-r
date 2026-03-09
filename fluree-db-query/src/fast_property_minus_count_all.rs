@@ -1,4 +1,4 @@
-//! Fast-path for `COUNT(*)` with a 2-predicate star join and an EXISTS constraint.
+//! Fast-path: `COUNT(*)` for a same-subject star join with a `MINUS` constraint.
 //!
 //! Targets benchmark-style queries like:
 //!
@@ -7,29 +7,24 @@
 //! WHERE {
 //!   ?s <p1> ?o1 .
 //!   ?s <p2> ?o2 .
-//!   FILTER EXISTS { ?s <p3> ?o3 . }
+//!   MINUS { ?s <p_minus> ?x . }
 //! }
 //! ```
 //!
-//! Semantics:
-//! - For each subject `s`, there are `count_p1(s) * count_p2(s)` join rows.
-//! - The EXISTS constraint keeps only subjects that have at least one `<p3>` row.
-//!
-//! This operator computes:
+//! Semantics for this supported shape:
+//! - For each subject `s`, the outer join yields `Π_i count_{pi}(s)` rows.
+//! - The MINUS block eliminates all rows for `s` iff `s` has at least one `<p_minus>` row.
+//! Therefore:
 //!
 //! \[
-//!   \sum_{s \in S3} count_{p1}(s) \times count_{p2}(s)
+//!   \sum_{s \notin S_{minus}} \prod_i count_{p_i}(s)
 //! \]
 //!
-//! where `S3 = { s | s p3 ?o3 }`.
-//!
-//! Implementation:
-//! - Build `S3` as a sorted `Vec<s_id>` by scanning PSOT(p3) (SId column only).
-//! - Stream grouped subject counts for p1 and p2 from PSOT (SId column only).
-//! - Merge-join the two count streams on `s_id` to compute products.
-//! - Merge-filter by `S3` (also sorted) and sum products.
-//!
-//! Avoids per-row EXISTS evaluation, join-row materialization, and value decoding.
+//! This operator:
+//! - Builds `S_minus` as sorted distinct subjects from PSOT(p_minus).
+//! - Streams grouped per-subject counts for each outer predicate from PSOT.
+//! - N-way merge-joins the count streams on `s_id`, skipping `s in S_minus`.
+//! - Never materializes join rows or decodes values.
 
 use crate::binding::Batch;
 use crate::context::ExecutionContext;
@@ -45,24 +40,24 @@ use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::GraphId;
 
-pub struct PredicateStarExistsJoinCountAllOperator {
-    preds: Vec<Ref>,
-    p_exists: Ref,
+pub struct PredicatePropertyMinusCountAllOperator {
+    outer_predicates: Vec<Ref>,
+    minus_predicate: Ref,
     out_var: VarId,
     state: OperatorState,
     fallback: Option<BoxedOperator>,
 }
 
-impl PredicateStarExistsJoinCountAllOperator {
+impl PredicatePropertyMinusCountAllOperator {
     pub fn new(
-        preds: Vec<Ref>,
-        p_exists: Ref,
+        outer_predicates: Vec<Ref>,
+        minus_predicate: Ref,
         out_var: VarId,
         fallback: Option<BoxedOperator>,
     ) -> Self {
         Self {
-            preds,
-            p_exists,
+            outer_predicates,
+            minus_predicate,
             out_var,
             state: OperatorState::Created,
             fallback,
@@ -71,7 +66,7 @@ impl PredicateStarExistsJoinCountAllOperator {
 }
 
 #[async_trait]
-impl Operator for PredicateStarExistsJoinCountAllOperator {
+impl Operator for PredicatePropertyMinusCountAllOperator {
     fn schema(&self) -> &[VarId] {
         std::slice::from_ref(&self.out_var)
     }
@@ -85,18 +80,23 @@ impl Operator for PredicateStarExistsJoinCountAllOperator {
         }
 
         if let Some(store) = fast_path_store(ctx) {
-            let count =
-                count_star_exists_join(store, ctx.binary_g_id, &self.preds, &self.p_exists)?;
+            let count = count_property_minus(
+                store,
+                ctx.binary_g_id,
+                &self.outer_predicates,
+                &self.minus_predicate,
+            )?;
             self.state = OperatorState::Open;
             self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                build_count_batch(self.out_var, count as i64)?,
+                build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
             )));
             return Ok(());
         }
 
         let Some(fallback) = &mut self.fallback else {
             return Err(QueryError::Internal(
-                "star+exists COUNT(*) fast-path unavailable and no fallback provided".to_string(),
+                "property+minus COUNT(*) fast-path unavailable and no fallback provided"
+                    .to_string(),
             ));
         };
         fallback.open(ctx).await?;
@@ -131,29 +131,36 @@ impl Operator for PredicateStarExistsJoinCountAllOperator {
     }
 }
 
-fn count_star_exists_join(
+fn count_property_minus(
     store: &BinaryIndexStore,
     g_id: GraphId,
-    preds: &[Ref],
-    p_exists: &Ref,
+    outer_predicates: &[Ref],
+    minus_predicate: &Ref,
 ) -> Result<u64> {
-    if preds.len() < 2 {
+    if outer_predicates.len() < 2 {
         return Err(QueryError::Internal(
-            "star+exists fast path requires 2+ join predicates".to_string(),
+            "property+minus fast path requires 2+ outer predicates".to_string(),
         ));
     }
 
-    let p_exists_sid = normalize_pred_sid(store, p_exists)?;
-    let Some(p_exists_id) = store.sid_to_p_id(&p_exists_sid) else {
-        return Ok(0);
+    // Excluded subjects.
+    let minus_sid = normalize_pred_sid(store, minus_predicate)?;
+    let Some(p_minus) = store.sid_to_p_id(&minus_sid) else {
+        // If the minus predicate doesn't exist, nothing is removed.
+        return Ok(count_property_join_all(store, g_id, outer_predicates, &[])?);
     };
-    let s_ok = collect_subjects_for_predicate_sorted(store, g_id, p_exists_id)?;
-    if s_ok.is_empty() {
-        return Ok(0);
-    }
+    let excluded = collect_subjects_for_predicate_sorted(store, g_id, p_minus)?;
+    count_property_join_all(store, g_id, outer_predicates, &excluded)
+}
 
-    let mut iters: Vec<PsotSubjectCountIter<'_>> = Vec::with_capacity(preds.len());
-    for p in preds {
+fn count_property_join_all(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    outer_predicates: &[Ref],
+    excluded_subjects_sorted: &[u64],
+) -> Result<u64> {
+    let mut iters: Vec<PsotSubjectCountIter<'_>> = Vec::with_capacity(outer_predicates.len());
+    for p in outer_predicates {
         let sid = normalize_pred_sid(store, p)?;
         let Some(pid) = store.sid_to_p_id(&sid) else {
             return Ok(0);
@@ -166,7 +173,7 @@ fn count_star_exists_join(
         curr.push(it.next_group()?);
     }
 
-    let mut ok_idx: usize = 0;
+    let mut excl_idx: usize = 0;
     let mut total: u128 = 0;
 
     loop {
@@ -176,10 +183,14 @@ fn count_star_exists_join(
 
         let max_s = curr.iter().filter_map(|c| c.map(|(s, _)| s)).max().unwrap();
         if curr.iter().all(|c| c.map(|(s, _)| s) == Some(max_s)) {
-            while ok_idx < s_ok.len() && s_ok[ok_idx] < max_s {
-                ok_idx += 1;
+            while excl_idx < excluded_subjects_sorted.len()
+                && excluded_subjects_sorted[excl_idx] < max_s
+            {
+                excl_idx += 1;
             }
-            if ok_idx < s_ok.len() && s_ok[ok_idx] == max_s {
+            let excluded = excl_idx < excluded_subjects_sorted.len()
+                && excluded_subjects_sorted[excl_idx] == max_s;
+            if !excluded {
                 let product: u128 = curr.iter().map(|c| c.unwrap().1 as u128).product();
                 total = total.saturating_add(product);
             }

@@ -84,6 +84,8 @@ enum AggState {
     Min { min: Option<Binding> },
     /// MAX - current maximum (stores materialized binding for correct comparison)
     Max { max: Option<Binding> },
+    /// SAMPLE - arbitrary value (we choose first observed value)
+    Sample { sample: Option<Binding> },
     /// Fallback: collect all values (for GROUP_CONCAT, MEDIAN, etc.)
     Collect { values: Vec<Binding> },
 }
@@ -93,6 +95,62 @@ enum AggState {
 /// EncodedSid/EncodedPid raw IDs don't have semantic ordering (s_id=100 for "zebra"
 /// would incorrectly compare > s_id=50 for "apple"). We must decode to get correct
 /// term ordering via namespace/name comparison.
+fn compare_for_minmax(
+    a: &Binding,
+    b: &Binding,
+    gv: Option<&BinaryGraphView>,
+) -> std::cmp::Ordering {
+    let Some(gv) = gv else {
+        return crate::sort::compare_bindings(a, b);
+    };
+    let store = gv.store();
+
+    // Fast path 1: subject IDs (IRIs) — compare lexicographically without allocation.
+    if let (Binding::EncodedSid { s_id: a_id }, Binding::EncodedSid { s_id: b_id }) = (a, b) {
+        if let Ok(ord) = store.compare_subject_iri_lex(*a_id, *b_id) {
+            return ord;
+        }
+        // Fall back to materialize+compare if dictionary lookup fails unexpectedly.
+    }
+
+    // Fast path 2: string-like encoded literals with identical type identity —
+    // compare their string dictionary values without allocating.
+    if let (
+        Binding::EncodedLit {
+            o_kind: a_kind,
+            o_key: a_key,
+            dt_id: a_dt,
+            lang_id: a_lang,
+            ..
+        },
+        Binding::EncodedLit {
+            o_kind: b_kind,
+            o_key: b_key,
+            dt_id: b_dt,
+            lang_id: b_lang,
+            ..
+        },
+    ) = (a, b)
+    {
+        let string_kinds = [
+            fluree_db_core::ObjKind::LEX_ID.as_u8(),
+            fluree_db_core::ObjKind::JSON_ID.as_u8(),
+        ];
+        if *a_kind == *b_kind && string_kinds.contains(a_kind) && a_dt == b_dt && a_lang == b_lang {
+            if let (Ok(ak), Ok(bk)) = (u32::try_from(*a_key), u32::try_from(*b_key)) {
+                if let Ok(ord) = store.compare_string_lex(ak, bk) {
+                    return ord;
+                }
+            }
+        }
+    }
+
+    // General path: materialize then use SPARQL ordering comparator.
+    let am = materialize_for_minmax(a, Some(gv));
+    let bm = materialize_for_minmax(b, Some(gv));
+    crate::sort::compare_bindings(&am, &bm)
+}
+
 fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Binding {
     let Some(gv) = gv else {
         // No store available - return as-is (will use raw ID comparison as fallback)
@@ -165,8 +223,9 @@ impl AggState {
             AggregateFn::Median
             | AggregateFn::Variance
             | AggregateFn::Stddev
-            | AggregateFn::GroupConcat { .. }
-            | AggregateFn::Sample => AggState::Collect { values: Vec::new() },
+            | AggregateFn::GroupConcat { .. } => AggState::Collect { values: Vec::new() },
+            // SAMPLE is explicitly arbitrary in SPARQL; we pick the first observed value.
+            AggregateFn::Sample => AggState::Sample { sample: None },
         }
     }
 
@@ -213,17 +272,12 @@ impl AggState {
                     binding,
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
-                    // Materialize encoded bindings for correct semantic comparison.
-                    // Raw s_id comparison would give wrong ordering (s_id=100 for "zebra"
-                    // would incorrectly be > s_id=50 for "apple").
-                    let materialized = materialize_for_minmax(binding, gv);
                     match min {
-                        None => *min = Some(materialized),
+                        None => *min = Some(binding.clone()),
                         Some(current) => {
-                            if crate::sort::compare_bindings(&materialized, current)
-                                == std::cmp::Ordering::Less
+                            if compare_for_minmax(binding, current, gv) == std::cmp::Ordering::Less
                             {
-                                *min = Some(materialized);
+                                *min = Some(binding.clone());
                             }
                         }
                     }
@@ -234,18 +288,26 @@ impl AggState {
                     binding,
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
-                    // Materialize encoded bindings for correct semantic comparison.
-                    let materialized = materialize_for_minmax(binding, gv);
                     match max {
-                        None => *max = Some(materialized),
+                        None => *max = Some(binding.clone()),
                         Some(current) => {
-                            if crate::sort::compare_bindings(&materialized, current)
+                            if compare_for_minmax(binding, current, gv)
                                 == std::cmp::Ordering::Greater
                             {
-                                *max = Some(materialized);
+                                *max = Some(binding.clone());
                             }
                         }
                     }
+                }
+            }
+            AggState::Sample { sample } => {
+                if sample.is_none()
+                    && !matches!(
+                        binding,
+                        Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+                    )
+                {
+                    *sample = Some(binding.clone());
                 }
             }
             AggState::Collect { values } => {
@@ -287,6 +349,7 @@ impl AggState {
             }
             AggState::Min { min } => min.unwrap_or(Binding::Unbound),
             AggState::Max { max } => max.unwrap_or(Binding::Unbound),
+            AggState::Sample { sample } => sample.unwrap_or(Binding::Unbound),
             AggState::Collect { values } => {
                 // Non-streamable aggregates collect all values, then delegate.
                 // DISTINCT SUM/AVG never reach this path — the planner routes
@@ -567,6 +630,7 @@ impl GroupAggregateOperator {
                     | AggregateFn::Avg
                     | AggregateFn::Min
                     | AggregateFn::Max
+                    | AggregateFn::Sample
             );
             // DISTINCT SUM/AVG need to collect all values for dedup — not streamable
             let distinct_blocks =

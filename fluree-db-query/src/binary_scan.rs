@@ -35,6 +35,8 @@ use crate::var_registry::VarId;
 // ============================================================================
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_core::ids::DatatypeDictId;
+use fluree_db_core::value_id::ObjKind;
 
 /// Mask indicating which triple components should be emitted as columns.
 ///
@@ -682,11 +684,97 @@ impl BinaryScanOperator {
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
         let view = BinaryGraphView::new(Arc::clone(self.store()), self.g_id);
 
+        // Late materialization is safe only when the BinaryIndexStore is authoritative
+        // for decoding (no novelty overlay with ephemeral IDs).
+        //
+        // Note: ExecutionContext always carries an overlay provider; `NoOverlay` has epoch=0.
+        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0);
+
+        let encode_object =
+            |o_type: u16, o_key: u64, p_id: u32, t: i64, o_i: u32| -> Option<Binding> {
+                let ot = OType::from_u16(o_type);
+                match ot.decode_kind() {
+                    fluree_db_core::o_type::DecodeKind::IriRef => {
+                        Some(Binding::EncodedSid { s_id: o_key })
+                    }
+                    fluree_db_core::o_type::DecodeKind::BlankNode => {
+                        // Blank nodes aren't subject-dict IDs in V3; materialize to a Sid now.
+                        Some(Binding::Sid(Sid::new(0, &format!("_:b{}", o_key))))
+                    }
+                    fluree_db_core::o_type::DecodeKind::StringDict => {
+                        let (dt_id, lang_id) = if ot.is_lang_string() {
+                            (DatatypeDictId::LANG_STRING.as_u16(), ot.payload())
+                        } else if o_type == OType::FULLTEXT.as_u16() {
+                            (DatatypeDictId::FULL_TEXT.as_u16(), 0)
+                        } else {
+                            // Default string dict values to xsd:string for late materialization.
+                            (DatatypeDictId::STRING.as_u16(), 0)
+                        };
+                        Some(Binding::EncodedLit {
+                            o_kind: ObjKind::LEX_ID.as_u8(),
+                            o_key,
+                            p_id,
+                            dt_id,
+                            lang_id,
+                            i_val: if o_i == u32::MAX {
+                                i32::MIN
+                            } else {
+                                o_i as i32
+                            },
+                            t,
+                        })
+                    }
+                    fluree_db_core::o_type::DecodeKind::JsonArena => Some(Binding::EncodedLit {
+                        o_kind: ObjKind::JSON_ID.as_u8(),
+                        o_key,
+                        p_id,
+                        dt_id: DatatypeDictId::JSON.as_u16(),
+                        lang_id: 0,
+                        i_val: if o_i == u32::MAX {
+                            i32::MIN
+                        } else {
+                            o_i as i32
+                        },
+                        t,
+                    }),
+                    fluree_db_core::o_type::DecodeKind::VectorArena => Some(Binding::EncodedLit {
+                        o_kind: ObjKind::VECTOR_ID.as_u8(),
+                        o_key,
+                        p_id,
+                        dt_id: DatatypeDictId::VECTOR.as_u16(),
+                        lang_id: 0,
+                        i_val: if o_i == u32::MAX {
+                            i32::MIN
+                        } else {
+                            o_i as i32
+                        },
+                        t,
+                    }),
+                    fluree_db_core::o_type::DecodeKind::NumBigArena => Some(Binding::EncodedLit {
+                        o_kind: ObjKind::NUM_BIG.as_u8(),
+                        o_key,
+                        p_id,
+                        // Best-effort: treat as decimal for late materialization; NUM_BIG identity
+                        // relies on (kind,key,dt/lang) and includes p_id in eq/hash when needed.
+                        dt_id: DatatypeDictId::DECIMAL.as_u16(),
+                        lang_id: 0,
+                        i_val: if o_i == u32::MAX {
+                            i32::MIN
+                        } else {
+                            o_i as i32
+                        },
+                        t,
+                    }),
+                    _ => None,
+                }
+            };
+
         for row in 0..batch.row_count {
             let s_id = batch.s_id.get(row);
             let p_id = batch.p_id.get_or(row, 0);
             let o_type = batch.o_type.get_or(row, 0);
             let o_key = batch.o_key.get(row);
+            let o_i = batch.o_i.get_or(row, u32::MAX);
             let t = batch.t.get_or(row, 0) as i64;
 
             // Skip internal db: predicates on wildcard scans.
@@ -713,11 +801,12 @@ impl BinaryScanOperator {
             }
 
             // Decode object when needed:
-            // - object is a variable (must emit)
             // - object is bound (must filter)
             // - object bounds are present (must filter)
-            let needs_o_decode =
-                self.o_var_pos.is_some() || self.bound_o.is_some() || self.object_bounds.is_some();
+            // - object is emitted but late-materialization is disabled (e.g., overlay)
+            let needs_o_decode = self.bound_o.is_some()
+                || self.object_bounds.is_some()
+                || (!late_materialize && self.o_var_pos.is_some());
             let decoded_o = if needs_o_decode {
                 Some(
                     view.decode_value(o_type, o_key, p_id)
@@ -754,40 +843,74 @@ impl BinaryScanOperator {
 
             // Subject binding.
             if let Some(pos) = self.s_var_pos {
-                let sid = self.resolve_s_id(s_id)?;
-                if !Self::set_binding_at(&mut bindings, pos, Binding::Sid(sid)) {
+                let binding = if late_materialize {
+                    Binding::EncodedSid { s_id }
+                } else {
+                    Binding::Sid(self.resolve_s_id(s_id)?)
+                };
+                if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
                 }
             }
 
             // Predicate binding.
             if let Some(pos) = self.p_var_pos {
-                let sid = self.resolve_p_id(p_id);
-                if !Self::set_binding_at(&mut bindings, pos, Binding::Sid(sid)) {
+                let binding = if late_materialize {
+                    Binding::EncodedPid { p_id }
+                } else {
+                    Binding::Sid(self.resolve_p_id(p_id))
+                };
+                if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
                 }
             }
 
             // Object binding.
             if let Some(pos) = self.o_var_pos {
-                let val = decoded_o.expect("o_var_pos implies decoded_o");
-                let binding = match &val {
-                    FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
-                    _ => {
-                        let dt = self
-                            .store()
-                            .resolve_datatype_sid(o_type)
-                            .unwrap_or_else(|| Sid::new(0, ""));
-                        let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
-                        Binding::Lit {
-                            val,
-                            dt,
-                            lang,
-                            t: Some(t),
-                            op: None,
-                            p_id: Some(p_id),
+                let binding = if needs_o_decode || !late_materialize {
+                    let val = decoded_o.expect("decoded object required");
+                    match &val {
+                        FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
+                        _ => {
+                            let dt = self
+                                .store()
+                                .resolve_datatype_sid(o_type)
+                                .unwrap_or_else(|| Sid::new(0, ""));
+                            let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
+                            Binding::Lit {
+                                val,
+                                dt,
+                                lang,
+                                t: Some(t),
+                                op: None,
+                                p_id: Some(p_id),
+                            }
                         }
                     }
+                } else {
+                    encode_object(o_type, o_key, p_id, t, o_i).unwrap_or_else(|| {
+                        // Fallback: decode if we don't have a safe encoded representation.
+                        // This preserves correctness for uncommon/custom OTypes.
+                        match view.decode_value(o_type, o_key, p_id) {
+                            Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
+                            Ok(val) => {
+                                let dt = self
+                                    .store()
+                                    .resolve_datatype_sid(o_type)
+                                    .unwrap_or_else(|| Sid::new(0, ""));
+                                let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
+                                Binding::Lit {
+                                    val,
+                                    dt,
+                                    lang,
+                                    t: Some(t),
+                                    op: None,
+                                    p_id: Some(p_id),
+                                }
+                            }
+                            Err(_) => Binding::Unbound,
+                        }
+                    })
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;

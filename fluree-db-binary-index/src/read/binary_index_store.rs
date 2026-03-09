@@ -4,6 +4,7 @@
 //! - `o_type` table for decode dispatch
 //! - `ColumnBatch` output
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -741,6 +742,111 @@ impl BinaryIndexStore {
         Ok(format!("{}{}", prefix, suffix))
     }
 
+    /// Compare two subject IDs by lexicographic full IRI order without allocating.
+    ///
+    /// This avoids constructing `String`s for MIN/MAX comparisons over `Binding::EncodedSid`.
+    pub fn compare_subject_iri_lex(&self, a: u64, b: u64) -> io::Result<Ordering> {
+        if a == b {
+            return Ok(Ordering::Equal);
+        }
+
+        let a_sid = fluree_db_core::subject_id::SubjectId::from_u64(a);
+        let b_sid = fluree_db_core::subject_id::SubjectId::from_u64(b);
+
+        let a_prefix = self
+            .dicts
+            .namespace_codes
+            .get(&a_sid.ns_code())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no namespace prefix for code={}", a_sid.ns_code()),
+                )
+            })?;
+        let b_prefix = self
+            .dicts
+            .namespace_codes
+            .get(&b_sid.ns_code())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no namespace prefix for code={}", b_sid.ns_code()),
+                )
+            })?;
+
+        let a_reader = self
+            .dicts
+            .subject_forward_packs
+            .get(&a_sid.ns_code())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no subject forward pack for ns_code={}", a_sid.ns_code()),
+                )
+            })?;
+        let b_reader = self
+            .dicts
+            .subject_forward_packs
+            .get(&b_sid.ns_code())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no subject forward pack for ns_code={}", b_sid.ns_code()),
+                )
+            })?;
+
+        let mut a_suffix = Vec::new();
+        let mut b_suffix = Vec::new();
+        let a_found = a_reader.forward_lookup_into(a_sid.local_id(), &mut a_suffix)?;
+        let b_found = b_reader.forward_lookup_into(b_sid.local_id(), &mut b_suffix)?;
+        if !a_found || !b_found {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "subject local_id not found in forward pack",
+            ));
+        }
+
+        Ok(compare_prefix_suffix_bytes(
+            a_prefix.as_bytes(),
+            &a_suffix,
+            b_prefix.as_bytes(),
+            &b_suffix,
+        ))
+    }
+
+    /// Compare two string dictionary IDs by lexicographic string value without allocating.
+    ///
+    /// Useful for MIN/MAX over `Binding::EncodedLit` values of string-like kinds.
+    pub fn compare_string_lex(&self, a: u32, b: u32) -> io::Result<Ordering> {
+        if a == b {
+            return Ok(Ordering::Equal);
+        }
+        let mut a_bytes = Vec::new();
+        let mut b_bytes = Vec::new();
+        let a_found = self
+            .dicts
+            .string_forward_packs
+            .forward_lookup_into(a as u64, &mut a_bytes)?;
+        let b_found = self
+            .dicts
+            .string_forward_packs
+            .forward_lookup_into(b as u64, &mut b_bytes)?;
+        if !a_found || !b_found {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "string id not found in forward packs",
+            ));
+        }
+        Ok(a_bytes.cmp(&b_bytes))
+    }
+
+    /// Hot-path: lookup string bytes into `out`. Returns `true` if ID found.
+    pub fn string_lookup_into(&self, str_id: u32, out: &mut Vec<u8>) -> io::Result<bool> {
+        self.dicts
+            .string_forward_packs
+            .forward_lookup_into(str_id as u64, out)
+    }
+
     /// Resolve a string dictionary ID to its value.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
         self.dicts
@@ -1121,6 +1227,35 @@ impl BinaryIndexStore {
         );
         self.decode_value_v3(o_type.as_u16(), o_key, p_id, g_id)
     }
+}
+
+#[inline]
+fn compare_prefix_suffix_bytes(
+    a_prefix: &[u8],
+    a_suffix: &[u8],
+    b_prefix: &[u8],
+    b_suffix: &[u8],
+) -> Ordering {
+    let a_total = a_prefix.len() + a_suffix.len();
+    let b_total = b_prefix.len() + b_suffix.len();
+    let n = a_total.min(b_total);
+
+    for i in 0..n {
+        let ab = if i < a_prefix.len() {
+            a_prefix[i]
+        } else {
+            a_suffix[i - a_prefix.len()]
+        };
+        let bb = if i < b_prefix.len() {
+            b_prefix[i]
+        } else {
+            b_suffix[i - b_prefix.len()]
+        };
+        if ab != bb {
+            return ab.cmp(&bb);
+        }
+    }
+    a_total.cmp(&b_total)
 }
 
 // ============================================================================
