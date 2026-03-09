@@ -148,7 +148,30 @@ fn terms_match(
                 datatype: ad,
                 language: al,
             },
-        ) => ev == av && normalize_datatype(ed) == normalize_datatype(ad) && el == al,
+        ) => {
+            if el != al {
+                return false;
+            }
+            let ed_norm = normalize_datatype(ed);
+            let ad_norm = normalize_datatype(ad);
+            if ed_norm != ad_norm {
+                return false;
+            }
+            // Lexical match (fast path)
+            if ev == av {
+                return true;
+            }
+            // For numeric/boolean datatypes, compare by value (W3C allows non-canonical forms)
+            if let Some(dt) = ed_norm {
+                if is_numeric_datatype(dt) {
+                    return numeric_values_equal(ev, av, dt);
+                }
+                if dt == "http://www.w3.org/2001/XMLSchema#boolean" {
+                    return boolean_values_equal(ev, av);
+                }
+            }
+            false
+        }
         (RdfTerm::Iri(e), RdfTerm::Iri(a)) => e == a,
         _ => false, // Type mismatch
     }
@@ -159,6 +182,107 @@ fn normalize_datatype(dt: &Option<String>) -> Option<&str> {
     match dt.as_deref() {
         None | Some("http://www.w3.org/2001/XMLSchema#string") => None,
         Some(s) => Some(s),
+    }
+}
+
+const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+
+fn is_numeric_datatype(dt: &str) -> bool {
+    matches!(
+        dt.strip_prefix(XSD),
+        Some(
+            "integer"
+                | "decimal"
+                | "float"
+                | "double"
+                | "long"
+                | "int"
+                | "short"
+                | "byte"
+                | "nonNegativeInteger"
+                | "positiveInteger"
+                | "nonPositiveInteger"
+                | "negativeInteger"
+                | "unsignedLong"
+                | "unsignedInt"
+                | "unsignedShort"
+                | "unsignedByte"
+        )
+    )
+}
+
+/// Compare two boolean literal values by parsed value rather than lexical form.
+///
+/// XSD boolean has lexical forms: "true", "1" (both true), "false", "0" (both false).
+fn boolean_values_equal(a: &str, b: &str) -> bool {
+    let parse_bool = |s: &str| -> Option<bool> {
+        match s {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        }
+    };
+    match (parse_bool(a), parse_bool(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Compare two numeric literal values by parsed value rather than lexical form.
+fn numeric_values_equal(a: &str, b: &str, datatype: &str) -> bool {
+    let local = datatype.strip_prefix(XSD).unwrap_or(datatype);
+    match local {
+        "integer" | "long" | "int" | "short" | "byte" | "nonNegativeInteger"
+        | "positiveInteger" | "nonPositiveInteger" | "negativeInteger" | "unsignedLong"
+        | "unsignedInt" | "unsignedShort" | "unsignedByte" => {
+            match (a.parse::<i128>().ok(), b.parse::<i128>().ok()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
+        }
+        "float" | "double" => {
+            let (pa, pb) = (a.parse::<f64>(), b.parse::<f64>());
+            match (pa, pb) {
+                (Ok(fa), Ok(fb)) => {
+                    if fa.is_nan() && fb.is_nan() {
+                        true
+                    } else {
+                        fa == fb
+                    }
+                }
+                _ => false,
+            }
+        }
+        "decimal" => {
+            // Compare decimal values as rational numbers to avoid f64 precision loss.
+            // Covers non-canonical forms like "0" == "0.0", "1" == "1.0", etc.
+            match (parse_decimal(a), parse_decimal(b)) {
+                (Some((an, ad)), Some((bn, bd))) => {
+                    // Cross-multiply to compare: a_num/a_den == b_num/b_den
+                    an * bd == bn * ad
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Parse a decimal string into (numerator, denominator) as i128 values.
+///
+/// Handles forms like "0", "0.0", "1.50", "-3.14" without floating-point
+/// precision loss. Returns None for unparseable strings.
+fn parse_decimal(s: &str) -> Option<(i128, i128)> {
+    let s = s.trim();
+    if let Some(dot_pos) = s.find('.') {
+        let frac_digits = s.len() - dot_pos - 1;
+        let without_dot: String = s.chars().filter(|c| *c != '.').collect();
+        let numerator = without_dot.parse::<i128>().ok()?;
+        let denominator = 10i128.checked_pow(frac_digits as u32)?;
+        Some((numerator, denominator))
+    } else {
+        let numerator = s.parse::<i128>().ok()?;
+        Some((numerator, 1))
     }
 }
 

@@ -15,6 +15,7 @@
 //!   `vector`, `geo`, `types`, `rdf`, `conditional`, `fluree`, `arithmetic`, `logical`
 
 mod arithmetic;
+mod cast;
 mod compare;
 mod conditional;
 mod datetime;
