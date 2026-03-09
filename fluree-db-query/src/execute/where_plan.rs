@@ -494,6 +494,7 @@ fn build_property_join_block(
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
     pushdown: &FilterPushdown,
+    required_where_vars: Option<&[VarId]>,
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
     group_by: &[VarId],
@@ -502,7 +503,7 @@ fn build_property_join_block(
         operator,
         triples,
         &pushdown.object_bounds,
-        None,
+        required_where_vars,
         var_counts,
         protected_vars,
         group_by,
@@ -1004,6 +1005,7 @@ pub fn build_where_operators_seeded_with_needed(
                         pending_binds,
                         pending_filters,
                         &pushdown,
+                        augmented_ref,
                         &var_counts,
                         &protected_vars,
                         group_by,
@@ -1393,8 +1395,26 @@ pub fn build_triple_operators(
     // object bounds during its scan phase, then intersects subjects. This is far cheaper
     // than falling back to NestedLoopJoin which does correlated novelty traversals.
     if operator.is_none() && triples.len() >= 2 && is_property_join(triples) {
-        // Use PropertyJoinOperator for multi-property patterns
-        let pj = PropertyJoinOperator::new(triples, object_bounds.clone());
+        // Use PropertyJoinOperator for multi-property patterns.
+        //
+        // If an object var is not needed downstream (not in required_where_vars and not
+        // otherwise protected), treat that predicate as existence-only (semijoin) to avoid
+        // cartesian-product blowups.
+        let mut needed: HashSet<VarId> = HashSet::new();
+        if let Some(rwv) = required_where_vars {
+            needed.extend(rwv.iter().copied());
+        }
+        for (v, c) in var_counts {
+            if *c > 1 || protected_vars.contains(v) {
+                needed.insert(*v);
+            }
+        }
+
+        let pj = PropertyJoinOperator::new_with_needed_vars(
+            triples,
+            object_bounds.clone(),
+            Some(&needed),
+        );
         return Ok(Box::new(pj));
     }
 

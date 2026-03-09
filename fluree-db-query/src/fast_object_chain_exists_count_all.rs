@@ -1,0 +1,490 @@
+//! Fast-path for `COUNT(*)` with an outer triple and a 2-hop EXISTS chain on the object.
+//!
+//! Targets benchmark-style queries like:
+//!
+//! ```sparql
+//! SELECT (COUNT(*) AS ?count)
+//! WHERE {
+//!   ?a <p_outer> ?b .
+//!   FILTER EXISTS { ?b <p2> ?c . ?c <p3> ?d . }
+//! }
+//! ```
+//!
+//! This computes:
+//! - Let `C = { c | c p3 ?d }`  (subjects that have any `p3` edge)
+//! - Let `B = { b | b p2 c and c in C }`
+//! - Answer = number of rows in `?a p_outer ?b` where `b in B`
+//!
+//! Implementation details (streaming, no row materialization):
+//! - Build `C` by scanning PSOT(p3) and collecting distinct subject IDs.
+//! - Build `B` by scanning PSOT(p2), grouping by subject `b`, and checking whether any
+//!   object `c` is in `C`. Output `B` as a sorted Vec.
+//! - Scan POST(p_outer), grouped by object `b`, summing group counts where `b in B`.
+//!
+//! Requires constant `o_type_const == IRI_REF` on the relevant leaflets so that `o_key`
+//! is a subject ID (join key).
+
+use crate::binding::{Batch, Binding};
+use crate::context::ExecutionContext;
+use crate::error::{QueryError, Result};
+use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::triple::Ref;
+use crate::var_registry::VarId;
+use async_trait::async_trait;
+use fluree_db_binary_index::format::branch::LeafEntry;
+use fluree_db_binary_index::format::column_block::ColumnId;
+use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch, ColumnProjection, ColumnSet};
+use fluree_db_core::o_type::OType;
+use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::{FlakeValue, GraphId, Sid};
+use rustc_hash::FxHashSet;
+use std::sync::Arc;
+
+pub struct PredicateObjectChainExistsJoinCountAllOperator {
+    p_outer: Ref,
+    p2: Ref,
+    p3: Ref,
+    out_var: VarId,
+    state: OperatorState,
+    fallback: Option<BoxedOperator>,
+}
+
+impl PredicateObjectChainExistsJoinCountAllOperator {
+    pub fn new(
+        p_outer: Ref,
+        p2: Ref,
+        p3: Ref,
+        out_var: VarId,
+        fallback: Option<BoxedOperator>,
+    ) -> Self {
+        Self {
+            p_outer,
+            p2,
+            p3,
+            out_var,
+            state: OperatorState::Created,
+            fallback,
+        }
+    }
+
+    fn schema_arc(&self) -> Arc<[VarId]> {
+        Arc::from(vec![self.out_var].into_boxed_slice())
+    }
+
+    fn build_output_batch(&self, count: i64) -> Result<Batch> {
+        let schema = self.schema_arc();
+        let col = vec![Binding::lit(FlakeValue::Long(count), Sid::xsd_integer())];
+        Batch::new(schema, vec![col]).map_err(|e| {
+            QueryError::execution(format!("fast object-chain-exists count batch build: {e}"))
+        })
+    }
+}
+
+#[async_trait]
+impl Operator for PredicateObjectChainExistsJoinCountAllOperator {
+    fn schema(&self) -> &[VarId] {
+        std::slice::from_ref(&self.out_var)
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        if !self.state.can_open() {
+            if self.state.is_closed() {
+                return Err(QueryError::OperatorClosed);
+            }
+            return Err(QueryError::OperatorAlreadyOpened);
+        }
+
+        let allow_fast = !ctx.history_mode
+            && ctx.from_t.is_none()
+            && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
+            && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0;
+
+        if allow_fast {
+            if let Some(store) = ctx.binary_store.as_ref() {
+                if ctx.to_t == store.max_t() {
+                    if let Some(count) = count_object_chain_exists_join(
+                        store,
+                        ctx.binary_g_id,
+                        &self.p_outer,
+                        &self.p2,
+                        &self.p3,
+                    )? {
+                        self.state = OperatorState::Open;
+                        self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
+                            self.build_output_batch(count as i64)?,
+                        )));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let Some(fallback) = &mut self.fallback else {
+            return Err(QueryError::Internal(
+                "object-chain EXISTS COUNT(*) fast-path unavailable and no fallback provided"
+                    .to_string(),
+            ));
+        };
+        fallback.open(ctx).await?;
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+        if !self.state.can_next() {
+            if self.state == OperatorState::Created {
+                return Err(QueryError::OperatorNotOpened);
+            }
+            return Ok(None);
+        }
+
+        let Some(fallback) = &mut self.fallback else {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        };
+        let b = fallback.next_batch(ctx).await?;
+        if b.is_none() {
+            self.state = OperatorState::Exhausted;
+        }
+        Ok(b)
+    }
+
+    fn close(&mut self) {
+        if let Some(fb) = &mut self.fallback {
+            fb.close();
+        }
+        self.state = OperatorState::Closed;
+    }
+}
+
+/// Tiny helper operator: yields exactly one precomputed batch.
+struct PrecomputedSingleBatchOperator {
+    batch: Option<Batch>,
+    state: OperatorState,
+}
+
+impl PrecomputedSingleBatchOperator {
+    fn new(batch: Batch) -> Self {
+        Self {
+            batch: Some(batch),
+            state: OperatorState::Open,
+        }
+    }
+}
+
+#[async_trait]
+impl Operator for PrecomputedSingleBatchOperator {
+    fn schema(&self) -> &[VarId] {
+        self.batch.as_ref().map(|b| b.schema()).unwrap_or(&[])
+    }
+
+    async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+        if !self.state.can_next() {
+            return Ok(None);
+        }
+        let out = self.batch.take();
+        if out.is_none() {
+            self.state = OperatorState::Exhausted;
+        }
+        Ok(out)
+    }
+
+    fn close(&mut self) {
+        self.batch = None;
+        self.state = OperatorState::Closed;
+    }
+}
+
+fn normalize_pred_sid(store: &BinaryIndexStore, pred: &Ref) -> Result<Sid> {
+    Ok(match pred {
+        Ref::Sid(s) => s.clone(),
+        Ref::Iri(i) => store.encode_iri(i),
+        Ref::Var(_) => {
+            return Err(QueryError::Internal(
+                "object-chain-exists fast-path requires bound predicates".to_string(),
+            ))
+        }
+    })
+}
+
+fn leaf_range_for_predicate(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    order: RunSortOrder,
+    p_id: u32,
+) -> Result<&[LeafEntry]> {
+    let branch = store
+        .branch_for_order(g_id, order)
+        .ok_or_else(|| QueryError::Internal("missing branch".to_string()))?;
+
+    let cmp = cmp_v2_for_order(order);
+    let min_key = RunRecordV2 {
+        s_id: SubjectId(0),
+        o_key: 0,
+        p_id,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId(u64::MAX),
+        o_key: u64::MAX,
+        p_id,
+        t: u32::MAX,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id,
+    };
+    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+    Ok(&branch.leaves[leaf_range])
+}
+
+fn collect_subjects_for_predicate_psot_set(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_id: u32,
+) -> Result<FxHashSet<u64>> {
+    let leaves = match store.branch_for_order(g_id, RunSortOrder::Psot) {
+        Some(branch) => {
+            let cmp = cmp_v2_for_order(RunSortOrder::Psot);
+            let min_key = RunRecordV2 {
+                s_id: SubjectId(0),
+                o_key: 0,
+                p_id,
+                t: 0,
+                o_i: 0,
+                o_type: 0,
+                g_id,
+            };
+            let max_key = RunRecordV2 {
+                s_id: SubjectId(u64::MAX),
+                o_key: u64::MAX,
+                p_id,
+                t: u32::MAX,
+                o_i: u32::MAX,
+                o_type: u16::MAX,
+                g_id,
+            };
+            let range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+            &branch.leaves[range]
+        }
+        None => return Ok(FxHashSet::default()),
+    };
+
+    let projection = ColumnProjection {
+        output: ColumnSet::EMPTY,
+        internal: {
+            let mut s = ColumnSet::EMPTY;
+            s.insert(ColumnId::SId);
+            s
+        },
+    };
+
+    let mut out: FxHashSet<u64> = FxHashSet::default();
+    let mut prev: Option<u64> = None;
+
+    for leaf_entry in leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+
+        let dir = handle.dir();
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+            let batch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Psot)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            for row in 0..batch.row_count {
+                let sid = batch.s_id.get(row);
+                if prev != Some(sid) {
+                    out.insert(sid);
+                    prev = Some(sid);
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn collect_subjects_with_object_in_set_psot_sorted(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_id: u32,
+    object_subjects: &FxHashSet<u64>,
+) -> Result<Option<Vec<u64>>> {
+    let leaves = leaf_range_for_predicate(store, g_id, RunSortOrder::Psot, p_id)?;
+
+    let projection = ColumnProjection {
+        output: ColumnSet::EMPTY,
+        internal: {
+            let mut s = ColumnSet::EMPTY;
+            s.insert(ColumnId::SId);
+            s.insert(ColumnId::OKey);
+            s
+        },
+    };
+
+    let mut out: Vec<u64> = Vec::new();
+
+    for leaf_entry in leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+
+        let dir = handle.dir();
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+            // We require `?c` to be an IRI ref so its ID is stored in o_key.
+            if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                return Ok(None);
+            }
+
+            let batch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Psot)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            let mut i = 0usize;
+            while i < batch.row_count {
+                let b_id = batch.s_id.get(i);
+                let mut ok = false;
+                while i < batch.row_count && batch.s_id.get(i) == b_id {
+                    let c_id = batch.o_key.get(i);
+                    if object_subjects.contains(&c_id) {
+                        ok = true;
+                    }
+                    i += 1;
+                }
+                if ok {
+                    out.push(b_id);
+                }
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+fn sum_post_object_group_counts_filtered(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_id: u32,
+    allowed_objects_sorted: &[u64],
+) -> Result<Option<u64>> {
+    let leaves = leaf_range_for_predicate(store, g_id, RunSortOrder::Post, p_id)?;
+
+    let projection = ColumnProjection {
+        output: ColumnSet::EMPTY,
+        internal: {
+            let mut s = ColumnSet::EMPTY;
+            s.insert(ColumnId::OKey);
+            s
+        },
+    };
+
+    let mut allowed_idx: usize = 0;
+    let mut total: u64 = 0;
+
+    for leaf_entry in leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+        let dir = handle.dir();
+
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+            // We require `?b` to be an IRI ref so its ID is stored in o_key.
+            if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                return Ok(None);
+            }
+
+            let batch: ColumnBatch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Post)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            let mut i = 0usize;
+            while i < batch.row_count {
+                let b_id = batch.o_key.get(i);
+                let mut count: u64 = 0;
+                while i < batch.row_count && batch.o_key.get(i) == b_id {
+                    count += 1;
+                    i += 1;
+                }
+
+                while allowed_idx < allowed_objects_sorted.len()
+                    && allowed_objects_sorted[allowed_idx] < b_id
+                {
+                    allowed_idx += 1;
+                }
+                if allowed_idx < allowed_objects_sorted.len()
+                    && allowed_objects_sorted[allowed_idx] == b_id
+                {
+                    total = total.saturating_add(count);
+                }
+            }
+        }
+    }
+
+    Ok(Some(total))
+}
+
+fn count_object_chain_exists_join(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_outer: &Ref,
+    p2: &Ref,
+    p3: &Ref,
+) -> Result<Option<u64>> {
+    let p_outer_sid = normalize_pred_sid(store, p_outer)?;
+    let p2_sid = normalize_pred_sid(store, p2)?;
+    let p3_sid = normalize_pred_sid(store, p3)?;
+
+    let Some(p_outer_id) = store.sid_to_p_id(&p_outer_sid) else {
+        return Ok(Some(0));
+    };
+    let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
+        return Ok(Some(0));
+    };
+    let Some(p3_id) = store.sid_to_p_id(&p3_sid) else {
+        return Ok(Some(0));
+    };
+
+    // C = subjects that have any p3 edge.
+    let c_subjects = collect_subjects_for_predicate_psot_set(store, g_id, p3_id)?;
+    if c_subjects.is_empty() {
+        return Ok(Some(0));
+    }
+
+    // B = subjects b that have any (b p2 c) where c in C. Output as sorted Vec.
+    let Some(mut b_subjects) =
+        collect_subjects_with_object_in_set_psot_sorted(store, g_id, p2_id, &c_subjects)?
+    else {
+        return Ok(None);
+    };
+    if b_subjects.is_empty() {
+        return Ok(Some(0));
+    }
+    // It is naturally produced in sorted s_id order; keep it monotone.
+    // (Defensive: if future code changes ordering, sort.)
+    if !b_subjects.windows(2).all(|w| w[0] <= w[1]) {
+        b_subjects.sort_unstable();
+        b_subjects.dedup();
+    }
+
+    sum_post_object_group_counts_filtered(store, g_id, p_outer_id, &b_subjects)
+}
