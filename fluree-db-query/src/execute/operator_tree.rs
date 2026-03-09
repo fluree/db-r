@@ -42,6 +42,88 @@ use super::dependency::compute_variable_deps;
 use super::where_plan::build_where_operators_with_needed;
 use super::where_plan::collect_var_stats;
 
+/// Validate that a query has a single `COUNT(*)` aggregate with standard constraints.
+///
+/// Returns `Some(output_var)` if the query has:
+/// - SELECT output (not CONSTRUCT/BOOLEAN/WILDCARD)
+/// - Exactly one aggregate: `COUNT(*)` (not distinct, no input var)
+/// - No group_by, having, post_binds, order_by, offset, or DISTINCT
+/// - LIMIT >= 1 (or no limit)
+/// - SELECT vars == `[agg.output_var]`
+fn detect_count_all_aggregate(query: &ParsedQuery, options: &QueryOptions) -> Option<VarId> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
+        return None;
+    }
+    if options.limit == Some(0) {
+        return None;
+    }
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+    Some(agg.output_var)
+}
+
+/// Validate that a query has a single `COUNT(DISTINCT ?var)` aggregate with standard constraints.
+///
+/// Returns `Some((input_var, output_var))` if the query has:
+/// - SELECT output (not CONSTRUCT/BOOLEAN/WILDCARD)
+/// - Exactly one aggregate: `COUNT(DISTINCT ?var)`
+/// - No group_by, having, post_binds, order_by, offset, or DISTINCT
+/// - LIMIT >= 1 (or no limit)
+/// - SELECT vars == `[agg.output_var]`
+fn detect_count_distinct_aggregate(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(VarId, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::CountDistinct) {
+        return None;
+    }
+    let in_var = agg.input_var?;
+    if options.limit == Some(0) {
+        return None;
+    }
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+    Some((in_var, agg.output_var))
+}
+
 fn detect_partitioned_group_by(query: &ParsedQuery, options: &QueryOptions) -> bool {
     if options.group_by.len() != 1 {
         return false;
@@ -211,12 +293,8 @@ fn detect_predicate_count_distinct_object(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
+    let (in_var, out_var) = detect_count_distinct_aggregate(query, options)?;
+
     if query.patterns.len() != 1 {
         return None;
     }
@@ -239,42 +317,12 @@ fn detect_predicate_count_distinct_object(
         return None;
     }
 
-    // Must be single aggregate, no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-    {
-        return None;
-    }
-    // LIMIT is fine as long as it's >= 1 (single row output). OFFSET disallowed above.
-    if let Some(lim) = options.limit {
-        if lim == 0 {
-            return None;
-        }
-    }
-
-    // Must be COUNT(DISTINCT ?o).
-    let agg = &options.aggregates[0];
-    if agg.distinct {
-        return None;
-    }
-    if !matches!(agg.function, AggregateFn::CountDistinct) {
-        return None;
-    }
-    if agg.input_var != Some(*o_var) {
+    // COUNT(DISTINCT ?o) must reference the object var.
+    if in_var != *o_var {
         return None;
     }
 
-    // SELECT must be exactly the aggregate output var.
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
-
-    Some((pred, agg.output_var))
+    Some((pred, out_var))
 }
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -516,41 +564,7 @@ fn detect_exists_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-
-    // Must be single COUNT(*) aggregate and no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-
-    // LIMIT is fine as long as it's >= 1 (single row output). OFFSET disallowed above.
-    if let Some(lim) = options.limit {
-        if lim == 0 {
-            return None;
-        }
-    }
-
-    // SELECT must be exactly the count output var.
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: Triple + EXISTS{ single Triple } in either order.
     if query.patterns.len() != 2 {
@@ -636,49 +650,14 @@ fn detect_exists_join_count_all(
         _ => return None,
     };
 
-    Some((outer_pred, exists_pred, agg.output_var))
+    Some((outer_pred, exists_pred, out_var))
 }
 
 fn detect_exists_join_count_distinct_object(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-
-    // Must be single COUNT(DISTINCT ?o1) aggregate and no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountDistinct) {
-        return None;
-    }
-    let in_var = agg.input_var?;
-
-    // LIMIT is fine as long as it's >= 1 (single row output). OFFSET disallowed above.
-    if let Some(lim) = options.limit {
-        if lim == 0 {
-            return None;
-        }
-    }
-
-    // SELECT must be exactly the count output var.
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let (in_var, out_var) = detect_count_distinct_aggregate(query, options)?;
 
     // WHERE must be exactly two triples: ?s <p1> ?o1 . ?s <p2> ?o2 .
     if query.patterns.len() != 2 {
@@ -721,7 +700,7 @@ fn detect_exists_join_count_distinct_object(
 
     // One of the object vars must be the COUNT DISTINCT input.
     if *ov_a == in_var {
-        Some((pred_a, pred_b, agg.output_var))
+        Some((pred_a, pred_b, out_var))
     } else {
         None
     }
@@ -731,32 +710,7 @@ fn detect_chain_exists_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-    // Single COUNT(*) aggregate, no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-    // SELECT must be exactly the count output var.
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: Triple, Triple, EXISTS(single triple), any order.
     if query.patterns.len() != 3 {
@@ -844,7 +798,7 @@ fn detect_chain_exists_join_count_all(
             Ref::Sid(_) | Ref::Iri(_) => second.p.clone(),
             _ => continue,
         };
-        return Some((pred1, pred2, pred3, agg.output_var));
+        return Some((pred1, pred2, pred3, out_var));
     }
 
     None
@@ -854,32 +808,7 @@ fn detect_object_chain_exists_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-    // Single COUNT(*) aggregate, no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-    // SELECT must be exactly the count output var.
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: outer Triple + EXISTS{ two triples chain }, any order (but only one EXISTS).
     if query.patterns.len() != 2 {
@@ -957,7 +886,7 @@ fn detect_object_chain_exists_join_count_all(
         _ => return None,
     };
 
-    Some((pred_outer, pred2, pred3, agg.output_var))
+    Some((pred_outer, pred2, pred3, out_var))
 }
 
 /// Build the complete operator tree for a query
@@ -976,31 +905,7 @@ fn detect_star_exists_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, Ref, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-    // Single COUNT(*) aggregate, no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: two Triple patterns with same subject var + EXISTS(single triple) on same subject.
     if query.patterns.len() != 3 {
@@ -1076,38 +981,14 @@ fn detect_star_exists_join_count_all(
         _ => return None,
     };
 
-    Some((p1, p2, p3, agg.output_var))
+    Some((p1, p2, p3, out_var))
 }
 
 fn detect_exists_star_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Vec<Ref>, VarId)> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-    // Single COUNT(*) aggregate, no grouping/having/binds/etc.
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
+    let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: outer Triple + EXISTS block with 2+ triples, all sharing the same subject var.
     if query.patterns.len() != 2 {
@@ -1125,9 +1006,7 @@ fn detect_exists_star_join_count_all(
             _ => return None,
         }
     }
-    let Some(outer) = outer else {
-        return None;
-    };
+    let outer = outer?;
 
     // Outer must be ?s <p_outer> ?o
     let Ref::Var(sv_outer) = &outer.s else {
@@ -1183,7 +1062,7 @@ fn detect_exists_star_join_count_all(
         preds.push(pred);
     }
 
-    Some((pred_outer, preds, agg.output_var))
+    Some((pred_outer, preds, out_var))
 }
 
 fn build_operator_tree_inner(

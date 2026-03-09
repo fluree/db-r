@@ -31,11 +31,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use fluree_db_binary_index::format::column_block::ColumnId;
-use fluree_db_binary_index::format::run_record::RunSortOrder;
-use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
-use fluree_db_binary_index::{BinaryIndexStore, ColumnProjection, ColumnSet};
-use fluree_db_core::subject_id::SubjectId;
+use crate::fast_path_common::{
+    collect_subjects_for_predicate_set, fast_path_store, try_normalize_pred_sid,
+};
 use fluree_db_core::Sid;
 
 /// Filter rows from a batch using two-valued logic.
@@ -104,20 +102,7 @@ struct ExistsSemijoinCache {
 }
 
 fn allow_exists_semijoin_fast_path(ctx: &ExecutionContext<'_>) -> bool {
-    // Match the "safe envelope" used by other fused fast paths:
-    // - no history mode / from_t
-    // - no policy
-    // - no overlay (epoch=0)
-    // - binary_store present, and at max_t
-    !ctx.history_mode
-        && ctx.from_t.is_none()
-        && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
-        && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0
-        && ctx.binary_store.is_some()
-        && ctx
-            .binary_store
-            .as_ref()
-            .is_some_and(|s| ctx.to_t == s.max_t())
+    fast_path_store(ctx).is_some()
 }
 
 fn collect_simple_exists_keys(expr: &Expression, out: &mut Vec<(VarId, Ref)>) {
@@ -157,87 +142,6 @@ fn collect_simple_exists_keys(expr: &Expression, out: &mut Vec<(VarId, Ref)>) {
     }
 }
 
-fn normalize_pred_sid(store: &BinaryIndexStore, pred: &Ref) -> Option<Sid> {
-    match pred {
-        Ref::Sid(s) => Some(s.clone()),
-        Ref::Iri(iri) => Some(store.encode_iri(iri)),
-        Ref::Var(_) => None,
-    }
-}
-
-fn build_subject_set_for_predicate(
-    store: &BinaryIndexStore,
-    g_id: u16,
-    p_id: u32,
-) -> Result<FxHashSet<u64>> {
-    let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
-        Some(b) => b,
-        None => return Ok(FxHashSet::default()),
-    };
-
-    let cmp = cmp_v2_for_order(RunSortOrder::Psot);
-    let min_key = RunRecordV2 {
-        s_id: SubjectId(0),
-        o_key: 0,
-        p_id,
-        t: 0,
-        o_i: 0,
-        o_type: 0,
-        g_id,
-    };
-    let max_key = RunRecordV2 {
-        s_id: SubjectId(u64::MAX),
-        o_key: u64::MAX,
-        p_id,
-        t: u32::MAX,
-        o_i: u32::MAX,
-        o_type: u16::MAX,
-        g_id,
-    };
-    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
-
-    let mut out: FxHashSet<u64> = FxHashSet::default();
-
-    for leaf_entry in &branch.leaves[leaf_range] {
-        let handle = store
-            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
-            .map_err(|e| crate::error::QueryError::Internal(format!("leaf open: {e}")))?;
-
-        let dir = handle.dir();
-        let projection = ColumnProjection {
-            output: ColumnSet::EMPTY,
-            internal: {
-                let mut s = ColumnSet::EMPTY;
-                s.insert(ColumnId::SId);
-                s
-            },
-        };
-
-        let mut prev: Option<u64> = None;
-        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
-            if entry.row_count == 0 {
-                continue;
-            }
-            if entry.p_const != Some(p_id) {
-                continue;
-            }
-            let batch = handle
-                .load_columns(leaflet_idx, &projection, RunSortOrder::Psot)
-                .map_err(|e| crate::error::QueryError::Internal(format!("load columns: {e}")))?;
-
-            for row in 0..batch.row_count {
-                let sid = batch.s_id.get(row);
-                if prev != Some(sid) {
-                    out.insert(sid);
-                    prev = Some(sid);
-                }
-            }
-        }
-    }
-
-    Ok(out)
-}
-
 fn build_exists_semijoin_cache(
     expr: &Expression,
     schema: &[VarId],
@@ -264,7 +168,7 @@ fn build_exists_semijoin_cache(
         if !schema_vars.contains(&sv) {
             continue;
         }
-        let Some(pred_sid) = normalize_pred_sid(store, &pred_ref) else {
+        let Some(pred_sid) = try_normalize_pred_sid(store, &pred_ref) else {
             continue;
         };
         let key = ExistsSemijoinKey {
@@ -281,7 +185,7 @@ fn build_exists_semijoin_cache(
             continue;
         };
 
-        let subjects = build_subject_set_for_predicate(store, ctx.binary_g_id, p_id)?;
+        let subjects = collect_subjects_for_predicate_set(store, ctx.binary_g_id, p_id)?;
         cache.subjects_by_key.insert(key, subjects);
     }
 
@@ -418,7 +322,7 @@ fn try_eval_simple_exists_semijoin(
     if !matches!(tp.o, crate::triple::Term::Var(_)) {
         return Ok(None);
     }
-    let Some(pred_sid) = normalize_pred_sid(store, &tp.p) else {
+    let Some(pred_sid) = try_normalize_pred_sid(store, &tp.p) else {
         return Ok(None);
     };
 

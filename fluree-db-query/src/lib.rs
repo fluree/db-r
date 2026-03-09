@@ -36,6 +36,7 @@ pub mod fast_exists_star_join_count_all;
 pub mod fast_fused_scan_sum;
 pub mod fast_group_count_firsts;
 pub mod fast_object_chain_exists_count_all;
+pub mod fast_path_common;
 pub mod fast_star_exists_count_all;
 pub mod filter;
 pub mod geo_rewrite;
