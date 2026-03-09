@@ -129,6 +129,10 @@ pub struct BinaryScanOperator {
     /// Whether predicate is a variable (for internal predicate filtering).
     p_is_var: bool,
     inline_ops: Vec<InlineOperator>,
+    /// Encoded pre-filters compiled from inline filter expressions.
+    ///
+    /// Evaluated on `(s_id, o_type, o_key)` before any value decoding.
+    encoded_pre_filters: Vec<EncodedPreFilter>,
     // Kept for: plan-time emit pruning and index override during query optimization.
     // Use when: planner emits BinaryScanOperator with pruned columns or forced index.
     #[expect(dead_code)]
@@ -144,6 +148,124 @@ pub struct BinaryScanOperator {
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
     range_iter: Option<std::vec::IntoIter<Flake>>,
+}
+
+/// A filter that can be evaluated on encoded index columns (no term decoding).
+#[derive(Clone, Debug)]
+enum EncodedPreFilter {
+    /// `FILTER(LANG(?o) = "<tag>")` for the object var `?o` in this scan.
+    LangEqualsOType { required_otype: u16 },
+    /// `FILTER(?s = ?o)` where `?o` is a REF (IRI or bnode) and equals the subject id.
+    SubjectEqObjectRef,
+    /// `FILTER(?s != ?o)` under two-valued logic: false only when both sides are comparable+equal.
+    SubjectNeObjectRef,
+}
+
+impl EncodedPreFilter {
+    #[inline]
+    fn eval_row(&self, s_id: u64, o_type: u16, o_key: u64) -> bool {
+        match self {
+            EncodedPreFilter::LangEqualsOType { required_otype } => o_type == *required_otype,
+            EncodedPreFilter::SubjectEqObjectRef => {
+                let is_ref = o_type == fluree_db_core::o_type::OType::IRI_REF.as_u16()
+                    || o_type == fluree_db_core::o_type::OType::BLANK_NODE.as_u16();
+                is_ref && s_id == o_key
+            }
+            EncodedPreFilter::SubjectNeObjectRef => {
+                let is_ref = o_type == fluree_db_core::o_type::OType::IRI_REF.as_u16()
+                    || o_type == fluree_db_core::o_type::OType::BLANK_NODE.as_u16();
+                !(is_ref && s_id == o_key)
+            }
+        }
+    }
+}
+
+fn compile_encoded_pre_filters_and_prune_inline_ops(
+    inline_ops: &[InlineOperator],
+    pattern: &TriplePattern,
+    store: &BinaryIndexStore,
+) -> (Vec<EncodedPreFilter>, Vec<InlineOperator>) {
+    use crate::ir::{Expression, FilterValue, Function};
+
+    let obj_var = match &pattern.o {
+        Term::Var(v) => Some(*v),
+        _ => None,
+    };
+    let subj_var = match &pattern.s {
+        Ref::Var(v) => Some(*v),
+        _ => None,
+    };
+
+    let mut out = Vec::new();
+    let mut pruned = Vec::with_capacity(inline_ops.len());
+    for op in inline_ops {
+        let InlineOperator::Filter(expr) = op else {
+            pruned.push(op.clone());
+            continue;
+        };
+        let Expression::Call { func, args } = expr else {
+            pruned.push(op.clone());
+            continue;
+        };
+        if args.len() != 2 {
+            pruned.push(op.clone());
+            continue;
+        }
+
+        // FILTER(LANG(?o) = "en")  (either side order)
+        let is_lang_o = |e: &Expression| match (e, obj_var) {
+            (Expression::Call { func, args }, Some(ov)) => {
+                *func == Function::Lang
+                    && args.len() == 1
+                    && matches!(&args[0], Expression::Var(v) if *v == ov)
+            }
+            _ => false,
+        };
+        if is_lang_o(&args[0]) {
+            if let Expression::Const(FilterValue::String(tag)) = &args[1] {
+                if let Some(lang_id) = store.resolve_lang_id(tag) {
+                    let required_otype =
+                        fluree_db_core::o_type::OType::lang_string(lang_id).as_u16();
+                    out.push(EncodedPreFilter::LangEqualsOType { required_otype });
+                    continue;
+                }
+            }
+            pruned.push(op.clone());
+            continue;
+        }
+        if is_lang_o(&args[1]) {
+            if let Expression::Const(FilterValue::String(tag)) = &args[0] {
+                if let Some(lang_id) = store.resolve_lang_id(tag) {
+                    let required_otype =
+                        fluree_db_core::o_type::OType::lang_string(lang_id).as_u16();
+                    out.push(EncodedPreFilter::LangEqualsOType { required_otype });
+                    continue;
+                }
+            }
+            pruned.push(op.clone());
+            continue;
+        }
+
+        // FILTER(?s = ?o) / FILTER(?s != ?o) (either side order)
+        let (Some(sv), Some(ov)) = (subj_var, obj_var) else {
+            pruned.push(op.clone());
+            continue;
+        };
+        let is_s = |e: &Expression| matches!(e, Expression::Var(v) if *v == sv);
+        let is_o = |e: &Expression| matches!(e, Expression::Var(v) if *v == ov);
+        if !(is_s(&args[0]) && is_o(&args[1]) || is_o(&args[0]) && is_s(&args[1])) {
+            pruned.push(op.clone());
+            continue;
+        }
+        match func {
+            Function::Eq => out.push(EncodedPreFilter::SubjectEqObjectRef),
+            Function::Ne => out.push(EncodedPreFilter::SubjectNeObjectRef),
+            _ => {
+                pruned.push(op.clone());
+            }
+        }
+    }
+    (out, pruned)
 }
 
 impl BinaryScanOperator {
@@ -199,6 +321,7 @@ impl BinaryScanOperator {
             sid_cache: HashMap::new(),
             p_is_var,
             inline_ops,
+            encoded_pre_filters: Vec::new(),
             emit,
             index_hint,
             object_bounds,
@@ -571,6 +694,15 @@ impl BinaryScanOperator {
                 continue;
             }
 
+            // Encoded pre-filters: run before any decoding work.
+            if !self
+                .encoded_pre_filters
+                .iter()
+                .all(|f| f.eval_row(s_id, o_type, o_key))
+            {
+                continue;
+            }
+
             if !self.within_row_var_equality_ok(s_id, p_id, o_type, o_key)? {
                 continue;
             }
@@ -749,25 +881,28 @@ impl Operator for BinaryScanOperator {
         let projection = ColumnProjection::all();
 
         // Get branch manifest (clone into Arc for cursor ownership).
-        let store = self.store();
-        let branch_ref = store.branch_for_order(self.g_id, order).ok_or_else(|| {
-            QueryError::Internal(format!(
-                "no V3 branch for g_id={}, order={:?}",
-                self.g_id, order
-            ))
-        })?;
+        let store_arc = Arc::clone(self.store.as_ref().expect("store set above"));
+        let store_ref = store_arc.as_ref();
+        let branch_ref = store_ref
+            .branch_for_order(self.g_id, order)
+            .ok_or_else(|| {
+                QueryError::Internal(format!(
+                    "no V3 branch for g_id={}, order={:?}",
+                    self.g_id, order
+                ))
+            })?;
         let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
             Arc::new(branch_ref.clone());
 
         // Create cursor: full scan with filter.
         let mut cursor =
-            BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection);
+            BinaryCursor::scan_all(Arc::clone(&store_arc), order, branch, filter, projection);
 
         // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
         if ctx.overlay.is_some() {
             let mut ops = translate_overlay_flakes(
                 ctx.overlay(),
-                store,
+                store_ref,
                 ctx.dict_novelty.as_ref(),
                 ctx.to_t,
                 self.g_id,
@@ -783,6 +918,15 @@ impl Operator for BinaryScanOperator {
 
         self.cursor = Some(cursor);
         self.state = OperatorState::Open;
+
+        // Compile pre-filters that can run on encoded columns (no decoding).
+        let (encoded, pruned) = compile_encoded_pre_filters_and_prune_inline_ops(
+            &self.inline_ops,
+            &self.pattern,
+            store_ref,
+        );
+        self.encoded_pre_filters = encoded;
+        self.inline_ops = pruned;
 
         tracing::debug!(
             index = ?self.index,

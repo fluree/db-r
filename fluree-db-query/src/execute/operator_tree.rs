@@ -5,6 +5,8 @@
 
 use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
+use crate::binary_scan::EmitMask;
+use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::fast_chain_exists_count_all::PredicateChainExistsJoinCountAllOperator;
@@ -26,6 +28,7 @@ use crate::having::HavingOperator;
 use crate::ir::Pattern;
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
+use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, QueryOutput};
@@ -34,6 +37,7 @@ use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::triple::{Ref, Term};
 use crate::var_registry::VarId;
+use crate::BinaryScanOperator;
 use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
@@ -323,6 +327,143 @@ fn detect_predicate_count_distinct_object(
     }
 
     Some((pred, out_var))
+}
+
+fn detect_count_rows_with_encoded_filters(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(
+    crate::triple::TriplePattern,
+    Vec<crate::ir::Expression>,
+    VarId,
+)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+
+    // Must be single COUNT aggregate, no grouping/having/binds/etc.
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    if options.limit == Some(0) {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if agg.distinct {
+        return None;
+    }
+    let is_count = matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll);
+    if !is_count {
+        return None;
+    }
+
+    // WHERE must be: one triple + one or more FILTER(...) patterns, and nothing else.
+    if query.patterns.len() < 2 {
+        return None;
+    }
+    let mut triple: Option<&crate::triple::TriplePattern> = None;
+    let mut filters: Vec<&crate::ir::Expression> = Vec::new();
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => triple = Some(tp),
+            Pattern::Filter(expr) => filters.push(expr),
+            _ => return None,
+        }
+    }
+    let tp = triple?;
+    if filters.is_empty() {
+        return None;
+    }
+
+    let Ref::Var(s_var) = &tp.s else {
+        return None;
+    };
+    if !matches!(&tp.p, Ref::Sid(_) | Ref::Iri(_)) {
+        return None;
+    }
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
+    if tp.dtc.is_some() {
+        return None;
+    }
+
+    // COUNT(?s) or COUNT(*) only.
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+        return None;
+    }
+
+    // All FILTERs must be compilable as encoded prefilters.
+    let is_s =
+        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == *s_var);
+    let is_o =
+        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == *o_var);
+    let is_lang_call = |e: &crate::ir::Expression| match e {
+        crate::ir::Expression::Call { func, args } => {
+            *func == crate::ir::Function::Lang
+                && args.len() == 1
+                && matches!(&args[0], crate::ir::Expression::Var(v) if *v == *o_var)
+        }
+        _ => false,
+    };
+    let is_lang_eq_const = |expr: &crate::ir::Expression| match expr {
+        crate::ir::Expression::Call { func, args } => {
+            if *func != crate::ir::Function::Eq || args.len() != 2 {
+                return false;
+            }
+            let has_lang = is_lang_call(&args[0]) || is_lang_call(&args[1]);
+            let has_const = matches!(
+                (&args[0], &args[1]),
+                (
+                    crate::ir::Expression::Const(crate::ir::FilterValue::String(_)),
+                    _
+                ) | (
+                    _,
+                    crate::ir::Expression::Const(crate::ir::FilterValue::String(_))
+                )
+            );
+            has_lang && has_const
+        }
+        _ => false,
+    };
+    for expr in &filters {
+        match expr {
+            crate::ir::Expression::Call { func, args } if args.len() == 2 => {
+                if matches!(func, crate::ir::Function::Eq | crate::ir::Function::Ne)
+                    && ((is_s(&args[0]) && is_o(&args[1])) || (is_o(&args[0]) && is_s(&args[1])))
+                {
+                    continue;
+                }
+                if is_lang_eq_const(expr) {
+                    continue;
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+
+    // SELECT must be exactly the count output var.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((
+        tp.clone(),
+        filters.into_iter().cloned().collect(),
+        agg.output_var,
+    ))
 }
 
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
@@ -1096,6 +1237,38 @@ fn build_operator_tree_inner(
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(PredicateCountDistinctObjectOperator::new(
                 pred,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `COUNT(?s)` / `COUNT(*)` on a single predicate with FILTERs that
+    // can be pushed down to encoded pre-filters in `BinaryScanOperator`:
+    // - FILTER(?s = ?o)
+    // - FILTER(?s != ?o)
+    // - FILTER(LANG(?o) = "en")
+    //
+    // We build a scan that emits no bindings (empty schema) and counts rows.
+    if enable_fused_fast_paths {
+        if let Some((tp, filters, out_var)) = detect_count_rows_with_encoded_filters(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            let inline_ops: Vec<InlineOperator> =
+                filters.into_iter().map(InlineOperator::Filter).collect();
+            let scan: BoxedOperator = Box::new(BinaryScanOperator::new_with_emit_and_index(
+                tp,
+                None,
+                inline_ops,
+                EmitMask {
+                    s: false,
+                    p: false,
+                    o: false,
+                },
+                None,
+            ));
+            return Ok(Box::new(CountRowsOperator::new(
+                scan,
                 out_var,
                 Some(fallback),
             )));

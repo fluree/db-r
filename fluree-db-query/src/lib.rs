@@ -19,6 +19,7 @@ pub mod bind;
 pub mod binding;
 pub mod bm25;
 pub mod context;
+pub mod count_rows;
 pub mod datalog_rules;
 pub mod dataset;
 pub mod dict_overlay;
