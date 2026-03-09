@@ -324,8 +324,8 @@ where
 #[cfg(feature = "nameservice")]
 mod nameservice_impls {
     use super::*;
-    use fluree_db_nameservice::{
-        ListResult, StorageCas, StorageDelete, StorageExtResult, StorageList,
+    use fluree_db_core::{
+        ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
     };
 
     /// StorageDelete passthrough - deletion doesn't need encryption
@@ -373,7 +373,7 @@ mod nameservice_impls {
         async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
             let encrypted = self
                 .encrypt(bytes)
-                .map_err(|e| fluree_db_nameservice::StorageExtError::other(e.to_string()))?;
+                .map_err(|e| StorageExtError::other(e.to_string()))?;
             self.inner.write_if_absent(address, &encrypted).await
         }
 
@@ -385,7 +385,7 @@ mod nameservice_impls {
         ) -> StorageExtResult<String> {
             let encrypted = self
                 .encrypt(bytes)
-                .map_err(|e| fluree_db_nameservice::StorageExtError::other(e.to_string()))?;
+                .map_err(|e| StorageExtError::other(e.to_string()))?;
             self.inner
                 .write_if_match(address, &encrypted, expected_etag)
                 .await
@@ -395,7 +395,7 @@ mod nameservice_impls {
             let (encrypted, etag) = self.inner.read_with_etag(address).await?;
             let plaintext = self
                 .decrypt(&encrypted)
-                .map_err(|e| fluree_db_nameservice::StorageExtError::other(e.to_string()))?;
+                .map_err(|e| StorageExtError::other(e.to_string()))?;
             Ok((plaintext, etag))
         }
     }

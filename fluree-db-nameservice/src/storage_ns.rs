@@ -17,7 +17,6 @@
 //! Uses ETag-based compare-and-swap (CAS) operations for atomic updates.
 //! Under contention, operations will retry with exponential backoff.
 
-use crate::storage_traits::{StorageCas, StorageExtError, StorageList};
 use crate::{
     parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
     ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
@@ -26,8 +25,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
-use fluree_db_core::ContentId;
-use fluree_db_core::{Error as CoreError, StorageRead, StorageWrite};
+use fluree_db_core::{
+    ContentId, Error as CoreError, StorageCas, StorageExtError, StorageList, StorageRead,
+    StorageWrite,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -1756,7 +1757,7 @@ mod tests {
     // In-memory CAS storage for testing StorageNameService
     // =========================================================================
 
-    use crate::storage_traits::{ListResult, StorageExtResult};
+    use fluree_db_core::{ListResult, StorageExtResult};
     use std::collections::HashMap;
     use std::sync::RwLock;
 
