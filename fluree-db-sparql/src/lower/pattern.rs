@@ -335,7 +335,12 @@ fn collect_bound_variables(patterns: &[Pattern]) -> Vec<VarId> {
                 Pattern::Graph { patterns, .. } => {
                     collect(patterns, seen, out);
                 }
-                // Filter, Exists, NotExists, PropertyPath, etc. only reference vars
+                Pattern::PropertyPath(pp) => {
+                    for v in pp.variables() {
+                        add(v, seen, out);
+                    }
+                }
+                // Filter, Exists, NotExists, etc. only reference vars
                 _ => {}
             }
         }

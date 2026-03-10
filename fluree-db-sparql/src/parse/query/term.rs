@@ -336,17 +336,15 @@ impl<'a> super::Parser<'a> {
             }
             TokenKind::Decimal(_) => {
                 let token = self.stream.consume();
-                if let TokenKind::Decimal(s) = token.kind {
-                    let mut signed = String::new();
-                    if is_neg {
-                        signed.push('-');
-                    }
-                    signed.push_str(s.as_ref());
-                    Some(Literal::decimal(&signed, sign_span.union(token.span)))
-                } else {
-                    self.stream.restore(pos);
-                    None
+                let TokenKind::Decimal(s) = token.kind else {
+                    unreachable!("already matched Decimal")
+                };
+                let mut signed = String::new();
+                if is_neg {
+                    signed.push('-');
                 }
+                signed.push_str(s.as_ref());
+                Some(Literal::decimal(&signed, sign_span.union(token.span)))
             }
             TokenKind::Double(n) => {
                 let n = if is_neg { -*n } else { *n };

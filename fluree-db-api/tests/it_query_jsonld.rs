@@ -1861,6 +1861,155 @@ async fn jsonld_bind_chained() {
     );
 }
 
+/// Parity for W3C bind05: BIND with FILTER — FILTER references BIND output.
+/// SPARQL: SELECT ?z WHERE { ?s ex:p ?o . BIND(?o+10 AS ?z) FILTER(?z > 11) }
+#[tokio::test]
+async fn jsonld_bind_with_filter() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/bind-filter:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1},
+            {"@id": "ex:s2", "ex:p": 2},
+            {"@id": "ex:s3", "ex:p": 3}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": ["?z"],
+        "where": [
+            {"@id": "?s", "ex:p": "?o"},
+            ["bind", "?z", ["expr", ["+", "?o", 10]]],
+            ["filter", "(> ?z 11)"]
+        ]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let mut values: Vec<i64> = json_rows
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(
+        values,
+        vec![12, 13],
+        "JSON-LD parity: FILTER(?z > 11) on BIND(?o+10 AS ?z)"
+    );
+}
+
+/// Parity for W3C bind07: BIND inside UNION branches.
+/// SPARQL: SELECT ?z WHERE { { ?s ex:p ?o . BIND(?o+10 AS ?z) } UNION { ?s ex:q ?o . BIND(?o+100 AS ?z) } }
+#[tokio::test]
+async fn jsonld_bind_in_union() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/bind-union:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1},
+            {"@id": "ex:s2", "ex:q": 10}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": ["?z"],
+        "where": [
+            ["union",
+                [
+                    {"@id": "?s", "ex:p": "?o"},
+                    ["bind", "?z", ["expr", ["+", "?o", 10]]]
+                ],
+                [
+                    {"@id": "?s", "ex:q": "?o"},
+                    ["bind", "?z", ["expr", ["+", "?o", 100]]]
+                ]
+            ]
+        ]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let mut values: Vec<i64> = json_rows
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(
+        values,
+        vec![11, 110],
+        "JSON-LD parity: BIND in each UNION branch"
+    );
+}
+
+/// Parity for W3C bind06: BIND with wildcard SELECT (*).
+/// SPARQL: SELECT * WHERE { ?s ex:p ?o . BIND(?o+10 AS ?z) }
+#[tokio::test]
+async fn jsonld_bind_wildcard_select() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/bind-wild:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": "*",
+        "where": [
+            {"@id": "?s", "ex:p": "?o"},
+            ["bind", "?z", ["expr", ["+", "?o", 10]]]
+        ]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let rows = json_rows.as_array().expect("array");
+    assert_eq!(rows.len(), 1, "one result row");
+    // Wildcard returns objects; ?z should be present with value 11
+    let row = rows[0].as_object().expect("object");
+    assert!(
+        row.values().any(|v| v.as_i64() == Some(11)),
+        "JSON-LD parity: BIND output ?z=11 should appear in SELECT * results: {row:?}"
+    );
+}
+
 /// Parity for VALUES constraining WHERE results (mirrors SPARQL post-query VALUES).
 /// In JSON-LD, VALUES is a top-level key that joins with WHERE results.
 #[tokio::test]
@@ -1899,5 +2048,49 @@ async fn jsonld_values_constraining_where() {
         json_rows,
         json!([["SPARQL Tutorial", 42]]),
         "JSON-LD parity: VALUES constraining WHERE results"
+    );
+}
+
+/// Parity for W3C values04: VALUES with null (UNDEF) — null acts as wildcard.
+/// SPARQL: SELECT ?s ?color WHERE { ?s ex:color ?color } VALUES (?s ?color) { (UNDEF "red") }
+#[tokio::test]
+async fn jsonld_values_with_undef() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/values-undef:main");
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:color": "red"},
+            {"@id": "ex:s2", "ex:color": "blue"},
+            {"@id": "ex:s3", "ex:color": "green"}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    // Multi-var VALUES with null (UNDEF) — constrains ?color to "red" for any ?s
+    let query = json!({
+        "@context": ctx,
+        "select": ["?s", "?color"],
+        "where": [
+            {"@id": "?s", "ex:color": "?color"}
+        ],
+        "values": [["?s", "?color"], [[null, "red"]]]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let rows = json_rows.as_array().expect("array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "JSON-LD parity: VALUES with null (UNDEF) should match exactly one row: {rows:?}"
     );
 }
