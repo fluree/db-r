@@ -1019,33 +1019,35 @@ impl StorageCas for FileStorage {
                 .map_err(|e| StorageExtError::io(format!("mkdir {}: {}", parent.display(), e)))?;
         }
 
-        // Open or create the file for read+write, then lock exclusively.
-        // All I/O is synchronous under the lock — this is intentional:
-        // the operations are local disk I/O (fast), and holding a file lock
-        // across an await point would risk deadlock.
-        let file = std::fs::OpenOptions::new()
+        // Use a separate lock file so that the atomic rename of the data
+        // file doesn't invalidate the lock (rename replaces the directory
+        // entry, creating a new inode on Linux — the lock on the old inode
+        // would no longer protect the new file).
+        let lock_path = path.with_extension("lock");
+        let lock_file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
-            .map_err(|e| StorageExtError::io(format!("open {}: {}", path.display(), e)))?;
+            .open(&lock_path)
+            .map_err(|e| StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e)))?;
 
         use fs2::FileExt;
-        file.lock_exclusive()
-            .map_err(|e| StorageExtError::io(format!("lock {}: {}", path.display(), e)))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| StorageExtError::io(format!("lock {}: {}", lock_path.display(), e)))?;
 
-        // Read current contents (empty file = absent)
-        let current = {
-            use std::io::Read;
-            let mut buf = Vec::new();
-            (&file)
-                .read_to_end(&mut buf)
-                .map_err(|e| StorageExtError::io(format!("read {}: {}", path.display(), e)))?;
-            if buf.is_empty() {
-                None
-            } else {
-                Some(buf)
+        // Read current data file contents (missing file = absent)
+        let current = match std::fs::read(&path) {
+            Ok(buf) if buf.is_empty() => None,
+            Ok(buf) => Some(buf),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(StorageExtError::io(format!(
+                    "read {}: {}",
+                    path.display(),
+                    e
+                )))
             }
         };
 
@@ -1075,7 +1077,7 @@ impl StorageCas for FileStorage {
             }
             CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
         }
-        // Lock released on file drop
+        // Lock released when lock_file is dropped
     }
 }
 
@@ -1112,6 +1114,13 @@ pub enum StorageExtError {
     /// Indicates the caller should back off and retry.
     #[error("Throttled: {0}")]
     Throttled(String),
+
+    /// Precondition failed (CAS conflict)
+    ///
+    /// Indicates a concurrent modification was detected. The caller should
+    /// retry with a fresh read.
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(String),
 
     /// Other error
     #[error("{0}")]
