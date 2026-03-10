@@ -14,6 +14,7 @@
 //! Supported semantics:
 //! - Shared var between outer and MINUS is `?c`.
 //! - MINUS removes an outer solution iff `?c` has at least one `<p3>` row.
+//!
 //! Therefore:
 //! - Let `S3 = { c | c p3 ?d }`
 //! - Answer = Σ_b count_{p1}(b) * count_{p2, c∉S3}(b)

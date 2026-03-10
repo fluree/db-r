@@ -63,6 +63,7 @@ impl OptionalBuilder for NoMatchOptionalBuilder {
         &self,
         _: &Batch,
         _: usize,
+        _: &fluree_db_query::ExecutionContext<'_>,
     ) -> fluree_db_query::Result<Option<fluree_db_query::BoxedOperator>> {
         Ok(None)
     }

@@ -699,7 +699,7 @@ impl BinaryScanOperator {
                     }
                     fluree_db_core::o_type::DecodeKind::BlankNode => {
                         // Blank nodes aren't subject-dict IDs in V3; materialize to a Sid now.
-                        Some(Binding::Sid(Sid::new(0, &format!("_:b{}", o_key))))
+                        Some(Binding::Sid(Sid::new(0, format!("_:b{}", o_key))))
                     }
                     fluree_db_core::o_type::DecodeKind::StringDict => {
                         let (dt_id, lang_id) = if ot.is_lang_string() {

@@ -373,14 +373,14 @@ impl OptionalBuilder for PatternOptionalBuilder {
                 }
                 Binding::Sid(sid) => {
                     // Fallback stable key: namespace code + suffix bytes.
-                    let mut v = Vec::with_capacity(1 + 2 + sid.name_str().as_bytes().len());
+                    let mut v = Vec::with_capacity(1 + 2 + sid.name_str().len());
                     v.push(b's');
                     v.extend_from_slice(&sid.namespace_code.to_le_bytes());
                     v.extend_from_slice(sid.name_str().as_bytes());
                     Ok(Some(v.into_boxed_slice()))
                 }
                 Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
-                    let mut v = Vec::with_capacity(1 + iri.as_bytes().len());
+                    let mut v = Vec::with_capacity(1 + iri.len());
                     v.push(b'i');
                     v.extend_from_slice(iri.as_bytes());
                     Ok(Some(v.into_boxed_slice()))
@@ -1108,7 +1108,14 @@ mod tests {
 
     #[test]
     fn test_pattern_optional_builder_with_poisoned() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
         use fluree_db_core::FlakeValue;
+        use fluree_db_core::LedgerSnapshot;
+
+        let snapshot = LedgerSnapshot::genesis("test/main");
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
@@ -1126,7 +1133,7 @@ mod tests {
         let batch_poisoned = Batch::new(required_schema.clone(), columns_poisoned).unwrap();
 
         // Builder should return Ok(None) for poisoned correlation var
-        assert!(builder.build(&batch_poisoned, 0).unwrap().is_none());
+        assert!(builder.build(&batch_poisoned, 0, &ctx).unwrap().is_none());
 
         // Create a batch with normal bindings
         let columns_normal = vec![
@@ -1139,7 +1146,7 @@ mod tests {
         let batch_normal = Batch::new(required_schema, columns_normal).unwrap();
 
         // Builder should return Ok(Some(...)) for normal bindings
-        assert!(builder.build(&batch_normal, 0).unwrap().is_some());
+        assert!(builder.build(&batch_normal, 0, &ctx).unwrap().is_some());
     }
 
     #[test]

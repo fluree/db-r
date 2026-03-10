@@ -199,10 +199,8 @@ impl<'a> PsotSeekSumCursor<'a> {
         let mut sum: u64 = 0;
 
         loop {
-            if self.batch.is_none() {
-                if self.load_next_batch(target_b)?.is_none() {
-                    return Ok(found.then_some(sum));
-                }
+            if self.batch.is_none() && self.load_next_batch(target_b)?.is_none() {
+                return Ok(found.then_some(sum));
             }
             let batch = self.batch.as_ref().unwrap();
 

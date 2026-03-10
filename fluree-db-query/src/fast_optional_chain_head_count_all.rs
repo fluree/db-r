@@ -76,12 +76,32 @@ impl Operator for PredicateOptionalChainHeadCountAllOperator {
             if let Some(count) =
                 count_optional_chain_head(store, ctx.binary_g_id, &self.p1, &self.p2, &self.p3)?
             {
+                tracing::debug!(
+                    "using optional chain-head COUNT(*) fast-path (p1={:?}, p2={:?}, p3={:?})",
+                    self.p1,
+                    self.p2,
+                    self.p3
+                );
                 self.state = OperatorState::Open;
                 self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
                     build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
                 )));
                 return Ok(());
             }
+            tracing::debug!(
+                "optional chain-head COUNT(*) fast-path not applicable, falling back (p1={:?}, p2={:?}, p3={:?})",
+                self.p1,
+                self.p2,
+                self.p3
+            );
+        } else {
+            tracing::debug!(
+                "optional chain-head COUNT(*) fast-path disabled by execution context, falling back (history_mode={}, from_t={:?}, has_policy={}, overlay_epoch={:?})",
+                ctx.history_mode,
+                ctx.from_t,
+                ctx.policy_enforcer.is_some(),
+                ctx.overlay.map(|o| o.epoch())
+            );
         }
 
         let Some(fallback) = &mut self.fallback else {
@@ -221,14 +241,12 @@ impl<'a> PsotSubjectSumN3Iter<'a> {
 
     fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
         loop {
-            if self.batch.is_none() {
-                if self.load_next_batch()?.is_none() {
-                    if let Some(b) = self.cur_b.take() {
-                        let n = std::mem::take(&mut self.cur_sum);
-                        return Ok(Some((b, n)));
-                    }
-                    return Ok(None);
+            if self.batch.is_none() && self.load_next_batch()?.is_none() {
+                if let Some(b) = self.cur_b.take() {
+                    let n = std::mem::take(&mut self.cur_sum);
+                    return Ok(Some((b, n)));
                 }
+                return Ok(None);
             }
 
             let batch = self.batch.as_ref().unwrap();

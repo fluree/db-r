@@ -2459,13 +2459,16 @@ mod tests {
         )
         .unwrap();
 
-        // The sequence expands to 2 triple patterns inside the optional.
-        // split_optional_groups splits each triple into its own optional group,
-        // producing: Triple(?s, ex:name, ?name), Optional([triple1]), Optional([triple2])
-        assert_eq!(query.patterns.len(), 3);
+        // The sequence expands to 2 triple patterns inside the OPTIONAL.
+        assert_eq!(query.patterns.len(), 2);
         assert!(matches!(query.patterns[0], Pattern::Triple(_)));
-        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
-        assert!(matches!(query.patterns[2], Pattern::Optional(_)));
+        if let Pattern::Optional(inner) = &query.patterns[1] {
+            assert_eq!(inner.len(), 2);
+            assert!(matches!(inner[0], Pattern::Triple(_)));
+            assert!(matches!(inner[1], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Optional pattern");
+        }
     }
 
     #[test]

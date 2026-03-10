@@ -48,6 +48,11 @@ use std::sync::Arc;
 pub struct PropertyJoinCountAllOperator {
     /// Triple patterns (must share the same subject var, bound predicate, var object).
     patterns: Vec<TriplePattern>,
+    /// OPTIONAL groups (each a same-subject star of 1+ triple patterns).
+    ///
+    /// These do not filter subjects; they only multiply the per-subject multiplicity by
+    /// `max(1, Π_i count_pi(s))` per OPTIONAL group.
+    optional_groups: Vec<Vec<TriplePattern>>,
     /// Output var for the count binding.
     count_var: crate::var_registry::VarId,
     /// Output schema (single column: count var).
@@ -65,23 +70,34 @@ pub struct PropertyJoinCountAllOperator {
 impl PropertyJoinCountAllOperator {
     pub fn new(
         subject_var: crate::var_registry::VarId,
-        preds: Vec<(Ref, crate::var_registry::VarId)>,
+        required: Vec<(Ref, crate::var_registry::VarId)>,
+        optional_groups: Vec<Vec<(Ref, crate::var_registry::VarId)>>,
         count_var: crate::var_registry::VarId,
+        fallback: Option<BoxedOperator>,
     ) -> Self {
         let schema: Arc<[crate::var_registry::VarId]> =
             Arc::from(vec![count_var].into_boxed_slice());
-        let patterns: Vec<TriplePattern> = preds
+        let patterns: Vec<TriplePattern> = required
             .into_iter()
             .map(|(p, o)| TriplePattern::new(Ref::Var(subject_var), p, Term::Var(o)))
             .collect();
+        let optional_groups: Vec<Vec<TriplePattern>> = optional_groups
+            .into_iter()
+            .map(|grp| {
+                grp.into_iter()
+                    .map(|(p, o)| TriplePattern::new(Ref::Var(subject_var), p, Term::Var(o)))
+                    .collect()
+            })
+            .collect();
         Self {
             patterns,
+            optional_groups,
             count_var,
             schema,
             state: OperatorState::Created,
             emitted: false,
             result: None,
-            fallback: None,
+            fallback,
         }
     }
 
@@ -208,6 +224,44 @@ impl PropertyJoinCountAllOperator {
             streams.push(SubjectCountStreamV6::new(cursor));
         }
 
+        // OPTIONAL streams (predicates absent are treated as factor 1).
+        struct OptPredStreamV6 {
+            stream: SubjectCountStreamV6,
+            cur: Option<(u64, u64)>,
+        }
+        struct OptGroupV6 {
+            preds: Vec<OptPredStreamV6>,
+            always_one: bool,
+        }
+
+        let mut opt_groups: Vec<OptGroupV6> = Vec::with_capacity(self.optional_groups.len());
+        for grp in &self.optional_groups {
+            let mut g = OptGroupV6 {
+                preds: Vec::with_capacity(grp.len()),
+                always_one: false,
+            };
+            for tp in grp {
+                let Some(cursor) = build_cursor_for_predicate_v6(
+                    ctx,
+                    binary_index_store,
+                    g_id,
+                    &tp.p,
+                    order,
+                    effective_to_t,
+                )?
+                else {
+                    // Absent predicate => group never matches => multiplier always 1.
+                    g.always_one = true;
+                    g.preds.clear();
+                    break;
+                };
+                let mut s = SubjectCountStreamV6::new(cursor);
+                let cur = s.next_subject_count()?;
+                g.preds.push(OptPredStreamV6 { stream: s, cur });
+            }
+            opt_groups.push(g);
+        }
+
         // N-way merge-join on subject ID (same algorithm as V5).
         let mut curr: Vec<Option<(u64, u64)>> = Vec::with_capacity(streams.len());
         for s in &mut streams {
@@ -221,7 +275,37 @@ impl PropertyJoinCountAllOperator {
             }
             let max_s = curr.iter().filter_map(|c| c.map(|(s, _)| s)).max().unwrap();
             if curr.iter().all(|c| c.map(|(s, _)| s) == Some(max_s)) {
-                let product: u128 = curr.iter().map(|c| c.unwrap().1 as u128).product();
+                let mut product: u128 = curr.iter().map(|c| c.unwrap().1 as u128).product();
+                // Multiply OPTIONAL group factors for this subject.
+                for g in &mut opt_groups {
+                    if g.always_one {
+                        continue;
+                    }
+                    let mut g_prod: u128 = 1;
+                    for p in &mut g.preds {
+                        while let Some((sid2, _)) = p.cur {
+                            if sid2 < max_s {
+                                p.cur = p.stream.next_subject_count()?;
+                                continue;
+                            }
+                            break;
+                        }
+                        let c = match p.cur {
+                            Some((sid2, c)) if sid2 == max_s => {
+                                p.cur = p.stream.next_subject_count()?;
+                                c
+                            }
+                            _ => 0u64,
+                        };
+                        if c == 0 {
+                            g_prod = 0;
+                            break;
+                        }
+                        g_prod = g_prod.saturating_mul(c as u128);
+                    }
+                    let mult = if g_prod == 0 { 1u128 } else { g_prod };
+                    product = product.saturating_mul(mult);
+                }
                 total = total.saturating_add(product);
                 for (i, s) in streams.iter_mut().enumerate() {
                     curr[i] = s.next_subject_count()?;
@@ -244,6 +328,13 @@ impl PropertyJoinCountAllOperator {
     }
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        // Prefer a planner-provided fallback operator tree (must preserve OPTIONAL semantics).
+        if let Some(fb) = &mut self.fallback {
+            fb.open(ctx).await?;
+            self.state = OperatorState::Open;
+            return Ok(());
+        }
+
         // Fallback: compute COUNT(*) by running the normal property join + streaming count-all.
         //
         // This keeps correctness in pre-index / multi-ledger / history / policy contexts,
@@ -356,8 +447,6 @@ impl Operator for PropertyJoinCountAllOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        self.fallback = None;
-
         // Fast path is only available in the same execution mode as BinaryScanOperator.
         let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
 
@@ -368,7 +457,11 @@ impl Operator for PropertyJoinCountAllOperator {
         // Try V6 fast-path first.
         if let Some(binary_index_store) = ctx.binary_store.as_ref() {
             match self.open_v6(ctx, binary_index_store) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    // Fast path succeeded; ensure we don't delegate to fallback.
+                    self.fallback = None;
+                    return Ok(());
+                }
                 Err(_) => {
                     // V6 path failed — fall through to V5.
                 }
@@ -397,6 +490,34 @@ impl Operator for PropertyJoinCountAllOperator {
                 return Ok(());
             };
             streams.push(SubjectCountStream::new(cursor));
+        }
+
+        struct OptPredStream {
+            stream: SubjectCountStream,
+            cur: Option<(u64, u64)>,
+        }
+        struct OptGroup {
+            preds: Vec<OptPredStream>,
+            always_one: bool,
+        }
+
+        let mut opt_groups: Vec<OptGroup> = Vec::with_capacity(self.optional_groups.len());
+        for grp in &self.optional_groups {
+            let mut g = OptGroup {
+                preds: Vec::with_capacity(grp.len()),
+                always_one: false,
+            };
+            for tp in grp {
+                let Some(cursor) = Self::build_cursor_for_predicate(ctx, &gv, &tp.p)? else {
+                    g.always_one = true;
+                    g.preds.clear();
+                    break;
+                };
+                let mut s = SubjectCountStream::new(cursor);
+                let cur = s.next_subject_count()?;
+                g.preds.push(OptPredStream { stream: s, cur });
+            }
+            opt_groups.push(g);
         }
 
         let mut curr: Vec<Option<(u64, u64)>> = Vec::with_capacity(streams.len());
@@ -442,6 +563,35 @@ impl Operator for PropertyJoinCountAllOperator {
             let mut prod: u128 = 1;
             for c in &curr {
                 prod = prod.saturating_mul(c.unwrap().1 as u128);
+            }
+            for g in &mut opt_groups {
+                if g.always_one {
+                    continue;
+                }
+                let mut g_prod: u128 = 1;
+                for p in &mut g.preds {
+                    while let Some((sid2, _)) = p.cur {
+                        if sid2 < s_id {
+                            p.cur = p.stream.next_subject_count()?;
+                            continue;
+                        }
+                        break;
+                    }
+                    let c = match p.cur {
+                        Some((sid2, c)) if sid2 == s_id => {
+                            p.cur = p.stream.next_subject_count()?;
+                            c
+                        }
+                        _ => 0u64,
+                    };
+                    if c == 0 {
+                        g_prod = 0;
+                        break;
+                    }
+                    g_prod = g_prod.saturating_mul(c as u128);
+                }
+                let mult = if g_prod == 0 { 1u128 } else { g_prod };
+                prod = prod.saturating_mul(mult);
             }
             total = total.saturating_add(prod);
 

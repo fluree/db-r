@@ -14,6 +14,7 @@
 //! - Shared var between outer and MINUS is `?b` (the outer object).
 //! - MINUS removes an outer solution iff `?b` has at least one `p2` edge to a `?c`
 //!   that has at least one `p3` edge.
+//!
 //! Therefore:
 //! - Let `C = { c | c p3 ?d }`
 //! - Let `B = { b | exists c in C: b p2 c }`

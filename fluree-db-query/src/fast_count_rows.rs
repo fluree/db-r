@@ -4,8 +4,8 @@
 //! matching row produces exactly one solution mapping with all vars bound.
 //! Therefore:
 //! - `COUNT(*) == COUNT(?s) == COUNT(?o)`
-//! and the answer can be obtained directly from PSOT leaflet directory metadata
-//! (`row_count`) without scanning or decoding any columns (including strings).
+//!   and the answer can be obtained directly from PSOT leaflet directory metadata
+//!   (`row_count`) without scanning or decoding any columns (including strings).
 
 use crate::binding::Batch;
 use crate::context::ExecutionContext;

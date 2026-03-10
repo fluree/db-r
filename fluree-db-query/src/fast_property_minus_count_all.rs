@@ -14,6 +14,7 @@
 //! Semantics for this supported shape:
 //! - For each subject `s`, the outer join yields `Π_i count_{pi}(s)` rows.
 //! - The MINUS block eliminates all rows for `s` iff `s` has at least one `<p_minus>` row.
+//!
 //! Therefore:
 //!
 //! \[
@@ -147,7 +148,7 @@ fn count_property_minus(
     let minus_sid = normalize_pred_sid(store, minus_predicate)?;
     let Some(p_minus) = store.sid_to_p_id(&minus_sid) else {
         // If the minus predicate doesn't exist, nothing is removed.
-        return Ok(count_property_join_all(store, g_id, outer_predicates, &[])?);
+        return count_property_join_all(store, g_id, outer_predicates, &[]);
     };
     let excluded = collect_subjects_for_predicate_sorted(store, g_id, p_minus)?;
     count_property_join_all(store, g_id, outer_predicates, &excluded)

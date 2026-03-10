@@ -35,8 +35,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             SparqlGraphPattern::Optional { pattern, .. } => {
                 let inner = self.lower_graph_pattern(pattern)?;
-                let groups = self.split_optional_groups(inner);
-                Ok(groups.into_iter().map(Pattern::Optional).collect())
+                // SPARQL OPTIONAL is a single left-join with the *join* of the inner patterns.
+                // Splitting the inner patterns into multiple OPTIONAL groups is not semantics-preserving.
+                Ok(vec![Pattern::Optional(inner)])
             }
 
             SparqlGraphPattern::Union { left, right, .. } => {
@@ -80,58 +81,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 span,
             } => self.lower_property_path(subject, path, object, *span),
         }
-    }
-
-    fn split_optional_groups(&self, patterns: Vec<Pattern>) -> Vec<Vec<Pattern>> {
-        let mut groups: Vec<Vec<Pattern>> = Vec::new();
-        let mut current: Vec<Pattern> = Vec::new();
-        let mut has_anchor = false;
-
-        for pattern in patterns {
-            let is_anchor = matches!(
-                pattern,
-                Pattern::Triple(_)
-                    | Pattern::PropertyPath(_)
-                    | Pattern::Subquery(_)
-                    | Pattern::Graph { .. }
-                    | Pattern::Service(_)
-                    | Pattern::IndexSearch(_)
-                    | Pattern::VectorSearch(_)
-                    | Pattern::R2rml(_)
-            );
-
-            if is_anchor {
-                if !current.is_empty() {
-                    groups.push(std::mem::take(&mut current));
-                }
-                has_anchor = true;
-                current.push(pattern);
-                continue;
-            }
-
-            match pattern {
-                Pattern::Filter(_) | Pattern::Bind { .. } => {
-                    if !has_anchor && current.is_empty() {
-                        // Allow standalone filter/bind groups if no anchor is present.
-                        // This mirrors the JSON-LD optional grouping behavior.
-                    }
-                    current.push(pattern);
-                }
-                other => {
-                    if current.is_empty() && !has_anchor {
-                        groups.push(vec![other]);
-                    } else {
-                        current.push(other);
-                    }
-                }
-            }
-        }
-
-        if !current.is_empty() {
-            groups.push(current);
-        }
-
-        groups
     }
 
     /// Lower FILTER pattern, handling EXISTS/NOT EXISTS specially

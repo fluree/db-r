@@ -216,14 +216,12 @@ impl<'a> PsotSubjectSumMultIter<'a> {
 
     fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
         loop {
-            if self.batch.is_none() {
-                if self.load_next_batch()?.is_none() {
-                    if let Some(b) = self.cur_b.take() {
-                        let n = std::mem::take(&mut self.cur_sum);
-                        return Ok(Some((b, n)));
-                    }
-                    return Ok(None);
+            if self.batch.is_none() && self.load_next_batch()?.is_none() {
+                if let Some(b) = self.cur_b.take() {
+                    let n = std::mem::take(&mut self.cur_sum);
+                    return Ok(Some((b, n)));
                 }
+                return Ok(None);
             }
 
             let batch = self.batch.as_ref().unwrap();

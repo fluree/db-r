@@ -26,6 +26,7 @@ use crate::fast_exists_star_join_count_all::PredicateExistsStarJoinCountAllOpera
 use crate::fast_fused_scan_sum::{
     DateComponentFn, NumericUnaryFn, PredicateFusedScanSumI64Operator, ScalarI64Fn,
 };
+use crate::fast_group_by_object_star_topk::GroupByObjectStarTopKOperator;
 use crate::fast_group_count_firsts::{
     PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
 };
@@ -38,12 +39,15 @@ use crate::fast_optional_chain_head_count_all::PredicateOptionalChainHeadCountAl
 use crate::fast_optional_chain_tail_count_all::PredicateChainOptionalTailCountAllOperator;
 use crate::fast_optional_join_count_all::PredicateOptionalJoinCountAllOperator;
 use crate::fast_property_minus_count_all::PredicatePropertyMinusCountAllOperator;
+use crate::fast_property_path_plus_count_all::PropertyPathPlusFixedSubjectCountAllOperator;
 use crate::fast_star_exists_count_all::PredicateStarExistsJoinCountAllOperator;
 use crate::fast_sum_strlen_group_concat::PredicateSumStrlenGroupConcatOperator;
+use crate::fast_transitive_path_plus_count_all::TransitivePathPlusCountAllOperator;
+use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
-use crate::ir::Pattern;
+use crate::ir::{PathModifier, Pattern};
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
 use crate::operator::inline::InlineOperator;
@@ -295,6 +299,183 @@ fn detect_predicate_group_by_object_count_topk(
     Some((pred, *s_var, *o_var, agg.output_var, limit))
 }
 
+/// Detect `GROUP BY ?o` top-k where WHERE is a same-subject star join:
+/// `?s <p_group> ?o . ?s <p_filter1> ?x1 . ...`
+///
+/// Supports subject aggregates: MIN(?s), MAX(?s), SAMPLE(?s) in addition to COUNT.
+#[allow(clippy::type_complexity)]
+fn detect_group_by_object_star_topk(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(
+    Ref,
+    Vec<Ref>,
+    Arc<[VarId]>,
+    VarId,
+    VarId,
+    VarId,
+    Option<VarId>,
+    Option<VarId>,
+    Option<VarId>,
+    usize,
+)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    let select_vars: Arc<[VarId]> =
+        Arc::from(query.output.select_vars()?.to_vec().into_boxed_slice());
+    if options.group_by.len() != 1 {
+        return None;
+    }
+    let group_var = options.group_by[0];
+    if options.distinct || options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+    if options.offset.is_some() {
+        return None;
+    }
+    let limit = options.limit?;
+    if options.order_by.len() != 1 {
+        return None;
+    }
+    if query.patterns.len() < 2 {
+        return None;
+    }
+
+    // All patterns must be triples with the same subject var.
+    let mut subj_var: Option<VarId> = None;
+    let mut group_tp: Option<&crate::triple::TriplePattern> = None;
+    let mut filter_preds: Vec<Ref> = Vec::new();
+    for p in &query.patterns {
+        let Pattern::Triple(tp) = p else {
+            return None;
+        };
+        if !tp.p_bound() || tp.dtc.is_some() {
+            return None;
+        }
+        let Ref::Var(sv) = &tp.s else {
+            return None;
+        };
+        if subj_var.is_none() {
+            subj_var = Some(*sv);
+        } else if subj_var != Some(*sv) {
+            return None;
+        }
+        let Term::Var(ov) = &tp.o else {
+            return None;
+        };
+        if *ov == group_var {
+            if group_tp.is_some() {
+                return None;
+            }
+            group_tp = Some(tp);
+        } else {
+            // Filter triple (existence constraint).
+            match &tp.p {
+                Ref::Sid(_) | Ref::Iri(_) => filter_preds.push(tp.p.clone()),
+                _ => return None,
+            }
+        }
+    }
+    let subj_var = subj_var?;
+    let group_tp = group_tp?;
+    let group_pred = match &group_tp.p {
+        Ref::Sid(_) | Ref::Iri(_) => group_tp.p.clone(),
+        _ => return None,
+    };
+    if filter_preds.is_empty() {
+        return None;
+    }
+
+    // Aggregates: require COUNT (or COUNT(*)) and allow MIN/MAX/SAMPLE on ?s.
+    let mut count_out: Option<VarId> = None;
+    let mut min_out: Option<VarId> = None;
+    let mut max_out: Option<VarId> = None;
+    let mut sample_out: Option<VarId> = None;
+    for agg in &options.aggregates {
+        if agg.distinct {
+            return None;
+        }
+        match agg.function {
+            AggregateFn::CountAll => {
+                if count_out.is_some() {
+                    return None;
+                }
+                count_out = Some(agg.output_var);
+            }
+            AggregateFn::Count => {
+                if count_out.is_some() {
+                    return None;
+                }
+                if agg.input_var != Some(subj_var) {
+                    return None;
+                }
+                count_out = Some(agg.output_var);
+            }
+            AggregateFn::Min => {
+                if min_out.is_some() || agg.input_var != Some(subj_var) {
+                    return None;
+                }
+                min_out = Some(agg.output_var);
+            }
+            AggregateFn::Max => {
+                if max_out.is_some() || agg.input_var != Some(subj_var) {
+                    return None;
+                }
+                max_out = Some(agg.output_var);
+            }
+            AggregateFn::Sample => {
+                if sample_out.is_some() || agg.input_var != Some(subj_var) {
+                    return None;
+                }
+                sample_out = Some(agg.output_var);
+            }
+            _ => return None,
+        }
+    }
+    let count_out = count_out?;
+
+    // ORDER BY DESC(?count).
+    let ob = &options.order_by[0];
+    if ob.var != count_out || ob.direction != crate::sort::SortDirection::Descending {
+        return None;
+    }
+
+    // SELECT vars must be exactly the group var + the aggregate output vars (in any order).
+    let mut expected: Vec<VarId> = vec![group_var, count_out];
+    if let Some(v) = min_out {
+        expected.push(v);
+    }
+    if let Some(v) = max_out {
+        expected.push(v);
+    }
+    if let Some(v) = sample_out {
+        expected.push(v);
+    }
+    expected.sort_unstable();
+    let mut actual: Vec<VarId> = select_vars.iter().copied().collect();
+    actual.sort_unstable();
+    if actual != expected {
+        return None;
+    }
+
+    Some((
+        group_pred,
+        filter_preds,
+        select_vars,
+        subj_var,
+        group_var,
+        count_out,
+        min_out,
+        max_out,
+        sample_out,
+        limit,
+    ))
+}
+
 fn detect_sum_strlen_group_concat_subquery(
     query: &ParsedQuery,
     options: &QueryOptions,
@@ -307,7 +488,7 @@ fn detect_sum_strlen_group_concat_subquery(
     ) {
         return None;
     }
-    if options.group_by.len() != 0 {
+    if !options.group_by.is_empty() {
         return None;
     }
     if options.aggregates.len() != 1 {
@@ -797,70 +978,118 @@ fn detect_stats_count_by_predicate(
     Some((*p_var, agg.output_var))
 }
 
-/// Detect a same-subject, N-predicate COUNT(*) query that can be answered without
-/// materializing the cartesian join rows.
+/// Detect a same-subject star-join COUNT(*) query that can be answered without
+/// materializing join rows.
 ///
 /// Matches:
-/// - all patterns are triple patterns
-/// - all share the same subject var
+/// - required patterns are triple patterns sharing the same subject var
+/// - OPTIONAL patterns are allowed when each OPTIONAL group contains 1+ triples that all
+///   share the same subject var
 /// - all predicates are bound (Sid/Iri)
-/// - all objects are vars (and object vars are distinct)
+/// - all objects are vars (and object vars are distinct across required+optional, and within each OPTIONAL group)
 /// - SELECT is exactly the COUNT(*) output var
 /// - options: one CountAll aggregate, no GROUP BY / HAVING / post-binds
 ///
-/// Returns `(subject_var, predicate/object pairs, count_var)`.
+/// Returns `(subject_var, required predicate/object pairs, optional groups (each a list of predicate/object pairs), count_var)`.
 #[allow(clippy::type_complexity)]
 fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(VarId, Vec<(crate::triple::Ref, VarId)>, VarId)> {
+) -> Option<(
+    VarId,
+    Vec<(crate::triple::Ref, VarId)>,
+    Vec<Vec<(crate::triple::Ref, VarId)>>,
+    VarId,
+)> {
     let out_var = detect_count_all_aggregate(query, options)?;
     if query.patterns.len() < 2 {
         return None;
     }
 
     let mut subject_var: Option<VarId> = None;
-    let mut preds: Vec<(Ref, VarId)> = Vec::with_capacity(query.patterns.len());
+    let mut required: Vec<(Ref, VarId)> = Vec::with_capacity(query.patterns.len());
+    let mut optional_groups: Vec<Vec<(Ref, VarId)>> = Vec::new();
     let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
 
+    let mut any_required = false;
     for p in &query.patterns {
-        let Pattern::Triple(tp) = p else {
-            return None;
-        };
+        match p {
+            Pattern::Triple(tp) => {
+                any_required = true;
 
-        // Subject must be a variable, shared across all patterns.
-        let Ref::Var(s) = &tp.s else {
-            return None;
-        };
-        match subject_var {
-            None => subject_var = Some(*s),
-            Some(existing) if existing != *s => return None,
-            Some(_) => {}
-        }
+                // Subject must be a variable, shared across all patterns.
+                let Ref::Var(s) = &tp.s else { return None };
+                match subject_var {
+                    None => subject_var = Some(*s),
+                    Some(existing) if existing != *s => return None,
+                    Some(_) => {}
+                }
 
-        // Predicates must be bound, objects must be vars, and no dt/lang constraints.
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+                let pred = match &tp.p {
+                    Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+                    _ => return None,
+                };
+                let Term::Var(o) = &tp.o else { return None };
+                if tp.dtc.is_some() {
+                    return None;
+                }
+                if !seen_obj.insert(*o) {
+                    return None;
+                }
+                if subject_var == Some(*o) {
+                    return None;
+                }
+                required.push((pred, *o));
+            }
+            Pattern::Optional(inner) => {
+                if inner.is_empty() {
+                    return None;
+                }
+                let mut group: Vec<(Ref, VarId)> = Vec::with_capacity(inner.len());
+                let mut group_seen: std::collections::HashSet<VarId> =
+                    std::collections::HashSet::with_capacity(inner.len());
+                for pat in inner {
+                    let Pattern::Triple(tp) = pat else {
+                        return None;
+                    };
+
+                    let Ref::Var(s) = &tp.s else { return None };
+                    match subject_var {
+                        None => subject_var = Some(*s),
+                        Some(existing) if existing != *s => return None,
+                        Some(_) => {}
+                    }
+
+                    let pred = match &tp.p {
+                        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+                        _ => return None,
+                    };
+                    let Term::Var(o) = &tp.o else { return None };
+                    if tp.dtc.is_some() {
+                        return None;
+                    }
+                    if !group_seen.insert(*o) {
+                        return None;
+                    }
+                    if !seen_obj.insert(*o) {
+                        return None;
+                    }
+                    if subject_var == Some(*o) {
+                        return None;
+                    }
+                    group.push((pred, *o));
+                }
+                optional_groups.push(group);
+            }
             _ => return None,
-        };
-        let Term::Var(o) = &tp.o else {
-            return None;
-        };
-        if tp.dtc.is_some() {
-            return None;
         }
-        // Object vars must be distinct; otherwise join is not a cartesian product.
-        if !seen_obj.insert(*o) {
-            return None;
-        }
-        if subject_var == Some(*o) {
-            return None;
-        }
-
-        preds.push((pred, *o));
     }
 
-    Some((subject_var?, preds, out_var))
+    if !any_required || required.is_empty() {
+        return None;
+    }
+
+    Some((subject_var?, required, optional_groups, out_var))
 }
 
 fn detect_fused_scan_sum_i64(
@@ -1703,6 +1932,12 @@ fn detect_optional_chain_head_join_count_all(
     };
     let (p2, p3) = chain(t1, t2).or_else(|| chain(t2, t1))?;
 
+    tracing::debug!(
+        "detected optional chain-head COUNT(*) fast-path (p1={:?}, p2={:?}, p3={:?})",
+        p1,
+        p2,
+        p3
+    );
     Some((p1, p2, p3, out_var))
 }
 
@@ -1789,6 +2024,199 @@ fn detect_object_chain_exists_join_count_all(
     };
 
     Some((pred_outer, pred2, pred3, out_var))
+}
+
+fn detect_transitive_path_plus_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Ref, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let Pattern::Triple(t1) = &query.patterns[0] else {
+        return None;
+    };
+    let Pattern::PropertyPath(pp) = &query.patterns[1] else {
+        return None;
+    };
+
+    // ?s <p1> ?x
+    let Ref::Var(_s) = &t1.s else {
+        return None;
+    };
+    let p1 = match &t1.p {
+        Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
+        _ => return None,
+    };
+    let Term::Var(x1) = &t1.o else {
+        return None;
+    };
+    if t1.dtc.is_some() {
+        return None;
+    }
+
+    // ?x <p2>+ ?o
+    let Ref::Var(x2) = &pp.subject else {
+        return None;
+    };
+    if *x2 != *x1 {
+        return None;
+    }
+    if pp.modifier != PathModifier::OneOrMore {
+        return None;
+    }
+    let Ref::Var(_o) = &pp.object else {
+        return None;
+    };
+
+    Some((p1, Ref::Sid(pp.predicate.clone()), out_var))
+}
+
+fn detect_property_path_plus_fixed_subject_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(fluree_db_core::Sid, Ref, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::PropertyPath(pp) = &query.patterns[0] else {
+        return None;
+    };
+    if pp.modifier != PathModifier::OneOrMore {
+        return None;
+    }
+    if !pp.subject.is_bound() {
+        return None;
+    }
+    let Ref::Var(_o) = &pp.object else {
+        return None;
+    };
+    Some((pp.predicate.clone(), pp.subject.clone(), out_var))
+}
+
+fn detect_union_star_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Vec<Ref>, Vec<Ref>, UnionCountMode, VarId)> {
+    use crate::ir::{Expression, Function};
+    let out_var = detect_count_all_aggregate(query, options)?;
+
+    // Find exactly one UNION pattern.
+    let mut union: Option<&Vec<Vec<Pattern>>> = None;
+    let mut other: Vec<&Pattern> = Vec::new();
+    for p in &query.patterns {
+        match p {
+            Pattern::Union(branches) => {
+                if union.is_some() {
+                    return None;
+                }
+                union = Some(branches);
+            }
+            _ => other.push(p),
+        }
+    }
+    let branches = union?;
+    if branches.len() < 2 {
+        return None;
+    }
+
+    // Each branch must be exactly one triple: ?s <p> ?o1 (same ?s and same ?o1 across branches).
+    let mut subj: Option<VarId> = None;
+    let mut obj: Option<VarId> = None;
+    let mut union_preds: Vec<Ref> = Vec::with_capacity(branches.len());
+    for b in branches {
+        if b.len() != 1 {
+            return None;
+        }
+        let Pattern::Triple(tp) = &b[0] else {
+            return None;
+        };
+        let Ref::Var(s) = &tp.s else {
+            return None;
+        };
+        match subj {
+            None => subj = Some(*s),
+            Some(x) if x != *s => return None,
+            _ => {}
+        }
+        let Term::Var(o) = &tp.o else {
+            return None;
+        };
+        match obj {
+            None => obj = Some(*o),
+            Some(x) if x != *o => return None,
+            _ => {}
+        }
+        if tp.dtc.is_some() {
+            return None;
+        }
+        let pred = match &tp.p {
+            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+            _ => return None,
+        };
+        union_preds.push(pred);
+    }
+    let subj = subj?;
+    let obj = obj?;
+
+    // Optional FILTER(?s = ?o1) (either arg order).
+    let mut mode = UnionCountMode::AllRows;
+    let mut extra_preds: Vec<Ref> = Vec::new();
+
+    for p in other {
+        match p {
+            Pattern::Filter(expr) => {
+                let Expression::Call { func, args } = expr else {
+                    return None;
+                };
+                if *func != Function::Eq || args.len() != 2 {
+                    return None;
+                }
+                let is_s_o = |a: &Expression, b: &Expression| {
+                    matches!(a, Expression::Var(v) if *v == subj)
+                        && matches!(b, Expression::Var(v) if *v == obj)
+                };
+                if !(is_s_o(&args[0], &args[1]) || is_s_o(&args[1], &args[0])) {
+                    return None;
+                }
+                mode = UnionCountMode::SubjectEqObject;
+            }
+            Pattern::Triple(tp) => {
+                // Extra required same-subject star predicate(s): ?s <p> ?o2
+                let Ref::Var(s) = &tp.s else {
+                    return None;
+                };
+                if *s != subj {
+                    return None;
+                }
+                let Term::Var(o2) = &tp.o else {
+                    return None;
+                };
+                if *o2 == subj || *o2 == obj {
+                    return None;
+                }
+                if tp.dtc.is_some() {
+                    return None;
+                }
+                let pred = match &tp.p {
+                    Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+                    _ => return None,
+                };
+                extra_preds.push(pred);
+            }
+            _ => return None,
+        }
+    }
+
+    tracing::debug!(
+        union_pred_count = union_preds.len(),
+        extra_pred_count = extra_preds.len(),
+        ?mode,
+        "detected UNION-star COUNT(*) fast-path"
+    );
+    Some((union_preds, extra_preds, mode, out_var))
 }
 
 /// Build the complete operator tree for a query
@@ -2267,6 +2695,15 @@ fn build_operator_tree_inner(
     stats: Option<Arc<StatsView>>,
     enable_fused_fast_paths: bool,
 ) -> Result<BoxedOperator> {
+    if enable_fused_fast_paths {
+        tracing::debug!(
+            patterns = ?query.patterns,
+            group_by = ?options.group_by,
+            agg_count = options.aggregates.len(),
+            "operator_tree: considering fused fast paths"
+        );
+    }
+
     // Fast-path: `SELECT (SUM(DAY(?o)) AS ?sum) WHERE { ?s <p> ?o }` and friends.
     //
     // These are lowered as: Triple + Bind(expr) + SUM(synthetic_var).
@@ -2595,8 +3032,9 @@ fn build_operator_tree_inner(
         }
     }
 
-    // Fast-path: `SELECT (COUNT(*) AS ?c) WHERE { ?s <p1> ?o1 . OPTIONAL { ?s <p2> ?o2 } }`
-    // answered by merge-joining PSOT per-subject counts (metadata-friendly).
+    // NOTE: star+OPTIONAL single-triple COUNT(*) queries are now covered by the more generic
+    // `PropertyJoinCountAllOperator` fast path (same-subject star join with OPTIONAL factors),
+    // so this specialized fast path can be retired once we have enough coverage confidence.
     if enable_fused_fast_paths {
         if let Some((pred_required, pred_optional, out_var)) =
             detect_optional_single_triple_join_count_all(query, options)
@@ -2645,6 +3083,52 @@ fn build_operator_tree_inner(
         }
     }
 
+    // Fast-path: `SELECT (COUNT(*) AS ?c) WHERE { <S> <p>+ ?o }`
+    // Avoids repeated range scans by building adjacency once and traversing.
+    if enable_fused_fast_paths {
+        if let Some((pred_sid, subject, out_var)) =
+            detect_property_path_plus_fixed_subject_count_all(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(PropertyPathPlusFixedSubjectCountAllOperator::new(
+                pred_sid,
+                subject,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: UNION-of-triples optionally constrained by same-subject star joins and/or FILTER(?s = ?o).
+    if enable_fused_fast_paths {
+        if let Some((union_preds, extra_preds, mode, out_var)) =
+            detect_union_star_count_all(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(UnionStarCountAllOperator::new(
+                union_preds,
+                extra_preds,
+                mode,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `SELECT (COUNT(*) AS ?c) WHERE { ?s <p1> ?x . ?x <p2>+ ?o }`
+    // Avoids closure materialization by counting reachability.
+    if enable_fused_fast_paths {
+        if let Some((p1, p2, out_var)) = detect_transitive_path_plus_count_all(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(TransitivePathPlusCountAllOperator::new(
+                p1,
+                p2,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
     // Fast-path: `SELECT (COUNT(DISTINCT ?o) AS ?c) WHERE { ?s ?p ?o }`
     // answered metadata-only from OPST leaflet `lead_group_count` + boundary correction.
     if enable_fused_fast_paths {
@@ -2652,6 +3136,40 @@ fn build_operator_tree_inner(
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(CountDistinctObjectsOperator::new(
                 out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `?s <p_group> ?o GROUP BY ?o` top-k with same-subject star constraints:
+    // `?s <p_group> ?o . ?s <p_filter1> ?x1 . ...`
+    //
+    // Avoids join materialization and generic group-by for common benchmark shapes.
+    if enable_fused_fast_paths {
+        if let Some((
+            group_pred,
+            filter_preds,
+            select_schema,
+            _s_var,
+            o_var,
+            count_var,
+            min_var,
+            max_var,
+            sample_var,
+            limit,
+        )) = detect_group_by_object_star_topk(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(GroupByObjectStarTopKOperator::new(
+                group_pred,
+                filter_preds,
+                o_var,
+                count_var,
+                min_var,
+                max_var,
+                sample_var,
+                limit,
+                select_schema,
                 Some(fallback),
             )));
         }
@@ -2772,45 +3290,26 @@ fn build_operator_tree_inner(
         }
     }
 
-    // Fast-path: same-subject N-predicate COUNT(*) without join-row materialization.
+    // Fast-path: same-subject star join COUNT(*) (required triples + OPTIONAL single-triple groups)
+    // without join-row materialization.
     //
-    // This is safe because it preserves SPARQL solution multiplicity semantics:
-    // COUNT(*) = sum_s Π_i count_pi(s)
-    if let Some((s, preds, count_var)) = detect_property_join_count_all(query, options) {
-        tracing::debug!("detected property-join COUNT(*) fast-path");
-        let mut operator: BoxedOperator =
-            Box::new(PropertyJoinCountAllOperator::new(s, preds, count_var));
-
-        // ORDER BY (on count)
-        if !options.order_by.is_empty() {
-            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+    // Safe for SPARQL multiplicity semantics:
+    // - required: COUNT(*) = sum_s Π_i count_pi(s)
+    // - OPTIONAL single triple: multiply by max(1, count_p(s)) per optional predicate.
+    if enable_fused_fast_paths {
+        if let Some((s, required, optional_groups, count_var)) =
+            detect_property_join_count_all(query, options)
+        {
+            tracing::debug!("detected property-join COUNT(*) fast-path");
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(PropertyJoinCountAllOperator::new(
+                s,
+                required,
+                optional_groups,
+                count_var,
+                Some(fallback),
+            )));
         }
-
-        // PROJECT
-        if let Some(vars) = query.output.select_vars() {
-            if !vars.is_empty() {
-                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
-            }
-        }
-
-        // DISTINCT
-        if options.distinct {
-            operator = Box::new(DistinctOperator::new(operator));
-        }
-
-        // OFFSET
-        if let Some(offset) = options.offset {
-            if offset > 0 {
-                operator = Box::new(OffsetOperator::new(operator, offset));
-            }
-        }
-
-        // LIMIT
-        if let Some(limit) = options.limit {
-            operator = Box::new(LimitOperator::new(operator, limit));
-        }
-
-        return Ok(operator);
     }
 
     // Compute per-operator downstream dependency sets for trimming.

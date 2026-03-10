@@ -15,11 +15,14 @@ use fluree_db_binary_index::format::branch::LeafEntry;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
-use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch, ColumnProjection, ColumnSet};
+use fluree_db_binary_index::{
+    BinaryCursor, BinaryFilter, BinaryIndexStore, ColumnBatch, ColumnProjection, ColumnSet,
+};
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{FlakeValue, GraphId, Sid};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -131,6 +134,37 @@ pub fn projection_otype_only() -> ColumnProjection {
             s.insert(ColumnId::OType);
             s
         },
+    }
+}
+
+/// Projection for `BinaryCursor` that outputs SId + OType + OKey columns.
+///
+/// Unlike `projection_sid_otype_okey` (which uses `internal` for raw leaf access),
+/// this places columns in `output` as required by `BinaryCursor`.
+#[inline]
+pub fn cursor_projection_sid_otype_okey() -> ColumnProjection {
+    ColumnProjection {
+        output: {
+            let mut s = ColumnSet::EMPTY;
+            s.insert(ColumnId::SId);
+            s.insert(ColumnId::OType);
+            s.insert(ColumnId::OKey);
+            s
+        },
+        internal: ColumnSet::EMPTY,
+    }
+}
+
+/// Projection for `BinaryCursor` that outputs only the SId column.
+#[inline]
+pub fn cursor_projection_sid_only() -> ColumnProjection {
+    ColumnProjection {
+        output: {
+            let mut s = ColumnSet::EMPTY;
+            s.insert(ColumnId::SId);
+            s
+        },
+        internal: ColumnSet::EMPTY,
     }
 }
 
@@ -670,7 +704,217 @@ impl<'a> PostObjectGroupCountIter<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Operator plumbing
+// 8. BinaryCursor construction
+// ---------------------------------------------------------------------------
+
+/// Build a `BinaryCursor` for a single predicate in PSOT order with overlay support.
+///
+/// This is the cursor-based counterpart of the leaf-entry iterators in sections 7/7b.
+/// It supports overlay merging (uncommitted flakes), so it works even when
+/// `ctx.overlay` is set — unlike the raw leaf-entry scan which requires `fast_path_store`.
+///
+/// Returns `None` if the PSOT branch does not exist for the given graph.
+pub fn build_psot_cursor_for_predicate(
+    ctx: &ExecutionContext<'_>,
+    store: &Arc<BinaryIndexStore>,
+    g_id: GraphId,
+    pred_sid: Sid,
+    p_id: u32,
+    projection: ColumnProjection,
+) -> Result<Option<BinaryCursor>> {
+    let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
+        return Ok(None);
+    };
+    let branch = Arc::new(branch.clone());
+
+    let (min_key, max_key) = predicate_range_keys(p_id, g_id);
+
+    let filter = BinaryFilter {
+        p_id: Some(p_id),
+        ..Default::default()
+    };
+
+    let mut cursor = BinaryCursor::new(
+        Arc::clone(store),
+        RunSortOrder::Psot,
+        branch,
+        &min_key,
+        &max_key,
+        filter,
+        projection,
+    );
+    cursor.set_to_t(ctx.to_t);
+
+    // Overlay merge — pre-filter by predicate.
+    if ctx.overlay.is_some() {
+        use std::collections::HashMap;
+        let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
+            Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+        });
+        let mut ephemeral_preds = HashMap::new();
+        let mut next_ep = store.predicate_count();
+        let mut ops = Vec::new();
+
+        ctx.overlay().for_each_overlay_flake(
+            g_id,
+            fluree_db_core::IndexType::Psot,
+            None,
+            None,
+            true,
+            ctx.to_t,
+            &mut |flake| {
+                if flake.p != pred_sid {
+                    return;
+                }
+                match crate::binary_scan::translate_one_flake_v3_pub(
+                    flake,
+                    store,
+                    Some(&dn),
+                    &mut ephemeral_preds,
+                    &mut next_ep,
+                ) {
+                    Ok(op) => ops.push(op),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "fast-path cursor: failed to translate overlay flake");
+                    }
+                }
+            },
+        );
+
+        if !ops.is_empty() {
+            fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            cursor.set_overlay_ops(ops);
+        }
+        cursor.set_epoch(ctx.overlay().epoch());
+    }
+
+    Ok(Some(cursor))
+}
+
+/// Resolve a bound `Ref` (Iri or Sid) to its internal `s_id` (u64).
+///
+/// Returns `Ok(None)` for `Ref::Var` or if the subject is not found in the store.
+pub fn subject_ref_to_s_id(store: &BinaryIndexStore, r: &Ref) -> Result<Option<u64>> {
+    match r {
+        Ref::Iri(iri) => Ok(store
+            .find_subject_id(iri)
+            .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?),
+        Ref::Sid(sid) => Ok(store
+            .sid_to_s_id(sid)
+            .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {e}")))?),
+        Ref::Var(_) => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9. Graph reachability (transitive property paths)
+// ---------------------------------------------------------------------------
+
+/// BFS one-or-more reachability count from a single start node.
+///
+/// Returns the number of unique nodes reachable from `start` via one or more
+/// hops in the adjacency map. The start node itself is only counted if a cycle
+/// leads back to it.
+pub fn reach_count_plus(adj: &FxHashMap<u64, Vec<u64>>, start: u64) -> u64 {
+    let mut visited: FxHashSet<u64> = FxHashSet::default();
+    let mut q: VecDeque<u64> = VecDeque::new();
+    let mut count: u64 = 0;
+    let mut added_start_via_cycle = false;
+
+    visited.insert(start);
+    q.push_back(start);
+
+    while let Some(cur) = q.pop_front() {
+        if let Some(nexts) = adj.get(&cur) {
+            for &n in nexts {
+                if n == start && !added_start_via_cycle {
+                    count = count.saturating_add(1);
+                    added_start_via_cycle = true;
+                    continue;
+                }
+                if visited.insert(n) {
+                    count = count.saturating_add(1);
+                    q.push_back(n);
+                }
+            }
+        }
+    }
+
+    count
+}
+
+/// BFS one-or-more reachability count from multiple start nodes (union semantics).
+///
+/// Returns `|⋃ reach_plus(s_i)|` — the number of unique nodes reachable from
+/// *any* start node via one or more hops. Start nodes themselves are counted
+/// only if a cycle leads back to them.
+pub fn reach_count_plus_multi(adj: &FxHashMap<u64, Vec<u64>>, starts: &[u64]) -> u64 {
+    if starts.is_empty() {
+        return 0;
+    }
+    if starts.len() == 1 {
+        return reach_count_plus(adj, starts[0]);
+    }
+
+    let mut starts_set: FxHashSet<u64> = FxHashSet::default();
+    let mut counted_starts: FxHashSet<u64> = FxHashSet::default();
+    let mut visited: FxHashSet<u64> = FxHashSet::default();
+    let mut q: VecDeque<u64> = VecDeque::new();
+    let mut count: u64 = 0;
+
+    for &s in starts {
+        starts_set.insert(s);
+        visited.insert(s);
+        q.push_back(s);
+    }
+
+    while let Some(cur) = q.pop_front() {
+        if let Some(nexts) = adj.get(&cur) {
+            for &n in nexts {
+                if starts_set.contains(&n) {
+                    if counted_starts.insert(n) {
+                        count = count.saturating_add(1);
+                    }
+                    continue;
+                }
+                if visited.insert(n) {
+                    count = count.saturating_add(1);
+                    q.push_back(n);
+                }
+            }
+        }
+    }
+
+    count
+}
+
+/// Build an IRI-ref-only adjacency map from a PSOT cursor.
+///
+/// Scans all batches from `cursor`, collecting `(s_id -> [o_key])` edges
+/// where `o_type == IRI_REF`. Used by transitive property path operators.
+pub fn build_iri_adjacency_from_cursor(
+    cursor: &mut BinaryCursor,
+) -> Result<FxHashMap<u64, Vec<u64>>> {
+    let iri_ref = OType::IRI_REF.as_u16();
+    let mut adj: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
+    while let Some(batch) = cursor
+        .next_batch()
+        .map_err(|e| QueryError::Internal(format!("cursor batch: {e}")))?
+    {
+        for i in 0..batch.row_count {
+            if batch.o_type.get(i) != iri_ref {
+                continue;
+            }
+            let s = batch.s_id.get(i);
+            let o = batch.o_key.get(i);
+            adj.entry(s).or_default().push(o);
+        }
+    }
+    Ok(adj)
+}
+
+// ---------------------------------------------------------------------------
+// 10. Operator plumbing
 // ---------------------------------------------------------------------------
 
 /// Tiny helper operator: yields exactly one precomputed batch, then exhausts.
