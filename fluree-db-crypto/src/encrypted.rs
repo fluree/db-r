@@ -325,7 +325,8 @@ where
 mod nameservice_impls {
     use super::*;
     use fluree_db_core::{
-        ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
+        CasAction, CasOutcome, ListResult, StorageCas, StorageDelete, StorageExtError,
+        StorageExtResult, StorageList,
     };
 
     /// StorageDelete passthrough - deletion doesn't need encryption
@@ -363,40 +364,53 @@ mod nameservice_impls {
         }
     }
 
-    /// StorageCas with encryption - encrypts data before CAS operations
+    /// StorageCas with encryption - encrypts/decrypts data transparently
     #[async_trait]
     impl<S, K> StorageCas for EncryptedStorage<S, K>
     where
         S: StorageCas,
         K: KeyProvider,
     {
-        async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
             let encrypted = self
                 .encrypt(bytes)
                 .map_err(|e| StorageExtError::other(e.to_string()))?;
-            self.inner.write_if_absent(address, &encrypted).await
+            self.inner.insert(address, &encrypted).await
         }
 
-        async fn write_if_match(
+        async fn compare_and_swap<T, F>(
             &self,
             address: &str,
-            bytes: &[u8],
-            expected_etag: &str,
-        ) -> StorageExtResult<String> {
-            let encrypted = self
-                .encrypt(bytes)
-                .map_err(|e| StorageExtError::other(e.to_string()))?;
+            f: F,
+        ) -> StorageExtResult<CasOutcome<T>>
+        where
+            F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError>
+                + Send
+                + Sync,
+            T: Send,
+        {
             self.inner
-                .write_if_match(address, &encrypted, expected_etag)
-                .await
-        }
+                .compare_and_swap(address, |current_encrypted| {
+                    // Decrypt current value if present
+                    let current_plaintext = current_encrypted
+                        .map(|enc| {
+                            self.decrypt(enc)
+                                .map_err(|e| StorageExtError::other(e.to_string()))
+                        })
+                        .transpose()?;
 
-        async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)> {
-            let (encrypted, etag) = self.inner.read_with_etag(address).await?;
-            let plaintext = self
-                .decrypt(&encrypted)
-                .map_err(|e| StorageExtError::other(e.to_string()))?;
-            Ok((plaintext, etag))
+                    let current_ref = current_plaintext.as_deref();
+                    match f(current_ref)? {
+                        CasAction::Write(plaintext) => {
+                            let encrypted = self
+                                .encrypt(&plaintext)
+                                .map_err(|e| StorageExtError::other(e.to_string()))?;
+                            Ok(CasAction::Write(encrypted))
+                        }
+                        CasAction::Abort(t) => Ok(CasAction::Abort(t)),
+                    }
+                })
+                .await
         }
     }
 }

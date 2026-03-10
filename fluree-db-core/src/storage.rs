@@ -52,9 +52,9 @@ use crate::address_path::ledger_id_to_path_prefix;
 use crate::error::Result;
 use async_trait::async_trait;
 use sha2::Digest;
-use thiserror::Error;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
 
 // ============================================================================
 // Read Hints
@@ -1107,13 +1107,6 @@ pub enum StorageExtError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// Precondition failed (CAS conflict - 412)
-    ///
-    /// This is expected under contention and should trigger retry logic,
-    /// not be treated as a fatal error.
-    #[error("Precondition failed (CAS conflict)")]
-    PreconditionFailed,
-
     /// Unauthorized - invalid credentials
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -1256,56 +1249,58 @@ pub trait StorageList: Debug + Send + Sync {
     ) -> StorageExtResult<ListResult>;
 }
 
-/// Compare-and-swap operations using ETags
+/// What a `compare_and_swap` closure decided to do.
+pub enum CasAction<T = ()> {
+    /// Write these bytes back to storage.
+    Write(Vec<u8>),
+    /// Abort without writing; carry an application-level value out.
+    Abort(T),
+}
+
+/// Outcome of a `compare_and_swap` call.
+#[derive(Debug)]
+pub enum CasOutcome<T = ()> {
+    /// The write succeeded.
+    Written,
+    /// The closure chose to abort.
+    Aborted(T),
+}
+
+/// Atomic storage operations
 ///
-/// This trait provides atomic conditional writes using HTTP ETags.
-/// It enables building concurrent-safe data structures on eventually-consistent storage.
+/// Provides insert-if-absent and read-modify-write (compare-and-swap) semantics.
+/// Implementations choose their own concurrency mechanism:
+/// - In-memory: hold a write lock across the operation
+/// - Filesystem: file locking
+/// - S3: ETag-based optimistic concurrency with internal retry
 ///
-/// # ETag Semantics
-///
-/// ETags are opaque strings that change whenever the object content changes.
-/// They are typically MD5 hashes for single-part uploads, but the exact format
-/// is implementation-dependent.
-///
-/// ETags should be normalized (quotes stripped) before comparison.
+/// Callers never see ETags, version counters, or other concurrency tokens.
 #[async_trait]
 pub trait StorageCas: Debug + Send + Sync {
-    /// Write only if the object does not exist
+    /// Write bytes only if the key does not already exist.
     ///
-    /// Uses `If-None-Match: *` semantics.
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(true)` if the write succeeded (object was created)
-    /// - `Ok(false)` if the object already existed
-    /// - `Err(StorageExtError::PreconditionFailed)` on conflict (equivalent to Ok(false))
-    async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool>;
+    /// Returns `true` if the write succeeded (key was created),
+    /// `false` if the key already existed (no write performed).
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool>;
 
-    /// Write only if the object's ETag matches
+    /// Atomic read-modify-write.
     ///
-    /// Uses `If-Match: <etag>` semantics for atomic update.
+    /// Reads the current value at `address` (or `None` if absent), passes it to
+    /// the closure, and writes the result back atomically. If another writer
+    /// modifies the value concurrently, the implementation re-reads and calls
+    /// the closure again.
     ///
-    /// # Returns
+    /// The closure receives `Option<&[u8]>` and returns:
+    /// - `Ok(CasAction::Write(bytes))` to write new bytes
+    /// - `Ok(CasAction::Abort(t))` to stop without writing
+    /// - `Err(e)` to stop with an error
     ///
-    /// - `Ok(new_etag)` if the write succeeded
-    /// - `Err(StorageExtError::PreconditionFailed)` if the ETag didn't match
-    /// - `Err(StorageExtError::NotFound)` if the object doesn't exist
-    async fn write_if_match(
-        &self,
-        address: &str,
-        bytes: &[u8],
-        expected_etag: &str,
-    ) -> StorageExtResult<String>;
-
-    /// Read an object with its ETag
-    ///
-    /// Used to get the current state for subsequent `write_if_match` operations.
-    ///
-    /// # Returns
-    ///
-    /// - `Ok((bytes, etag))` with the object content and its ETag
-    /// - `Err(StorageExtError::NotFound)` if the object doesn't exist
-    async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)>;
+    /// The closure should be a pure function of its input — it may be called
+    /// multiple times on retry.
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send;
 }
 
 // ============================================================================
