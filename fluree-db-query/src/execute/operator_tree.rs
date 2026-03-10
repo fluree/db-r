@@ -12,23 +12,20 @@ use crate::error::{QueryError, Result};
 use crate::fast_chain_exists_count_all::PredicateChainExistsJoinCountAllOperator;
 use crate::fast_chain_join_count_all::PredicateChainJoinCountAllOperator;
 use crate::fast_chain_minus_count_all::PredicateChainMinusCountAllOperator;
-use crate::fast_count_blank_nodes::CountBlankNodeSubjectsOperator;
-use crate::fast_count_distinct_object::PredicateCountDistinctObjectOperator;
-use crate::fast_count_distinct_objects::CountDistinctObjectsOperator;
-use crate::fast_count_distinct_predicates::CountDistinctPredicatesOperator;
-use crate::fast_count_distinct_subjects::CountDistinctSubjectsOperator;
-use crate::fast_count_literals::CountLiteralObjectsOperator;
-use crate::fast_count_rows::PredicateCountRowsOperator;
-use crate::fast_count_triples::CountTriplesOperator;
+use crate::fast_count::{
+    CountBlankNodeSubjectsOperator, CountDistinctObjectsOperator, CountDistinctPredicatesOperator,
+    CountDistinctSubjectsOperator, CountLiteralObjectsOperator, CountTriplesOperator,
+    PredicateCountDistinctObjectOperator, PredicateCountRowsOperator,
+};
 use crate::fast_exists_join_count_all::PredicateExistsJoinCountAllOperator;
 use crate::fast_exists_join_count_distinct_object::PredicateExistsJoinCountDistinctObjectOperator;
 use crate::fast_exists_star_join_count_all::PredicateExistsStarJoinCountAllOperator;
 use crate::fast_fused_scan_sum::{
     DateComponentFn, NumericUnaryFn, PredicateFusedScanSumI64Operator, ScalarI64Fn,
 };
-use crate::fast_group_by_object_star_topk::GroupByObjectStarTopKOperator;
 use crate::fast_group_count_firsts::{
-    PredicateGroupCountFirstsOperator, PredicateObjectCountFirstsOperator,
+    GroupByObjectStarTopKOperator, PredicateGroupCountFirstsOperator,
+    PredicateObjectCountFirstsOperator,
 };
 use crate::fast_min_max_string::{MinMaxMode, PredicateMinMaxStringOperator};
 use crate::fast_minus_join_count_all::PredicateMinusJoinCountAllOperator;
