@@ -35,6 +35,16 @@ pub fn is_inferable_datatype(dt_iri: &str) -> bool {
             | xsd::BOOLEAN
             | xsd::DECIMAL
             | fluree::EMBEDDING_VECTOR
+            // Some code paths may provide already-compacted datatype strings
+            // (e.g., "xsd:string") instead of full IRIs. Treat these the same
+            // as their full-IRI counterparts for Clojure-parity JSON-LD output.
+            | "xsd:string"
+            | "xsd:long"
+            | "xsd:integer"
+            | "xsd:double"
+            | "xsd:boolean"
+            | "xsd:decimal"
+            | "f:embeddingVector"
     )
 }
 

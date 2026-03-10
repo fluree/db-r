@@ -103,8 +103,7 @@ pub fn build_indexes_from_commits(
         let s_remap = MmapSubjectRemap::open(&commit.subject_remap_path)?;
         let str_remap = MmapStringRemap::open(&commit.string_remap_path)?;
 
-        let hook_for_commit: Option<&mut crate::stats::IdStatsHook> =
-            stats_hook.as_deref_mut();
+        let hook_for_commit: Option<&mut crate::stats::IdStatsHook> = stats_hook.as_deref_mut();
         let count = remap_commit_to_runs(
             &commit.commit_path,
             commit.record_count,

@@ -737,7 +737,12 @@ where
                 // Load subject forward dict artifacts for resolving class sid64 -> Sid.
                 // (Reuses the persisted merge artifacts in run_dir.)
                 #[allow(clippy::type_complexity)]
-                let subject_lookup: Option<(Vec<u64>, Vec<u64>, Vec<u32>, memmap2::Mmap)> = {
+                let subject_lookup: Option<(
+                    Vec<u64>,
+                    Vec<u64>,
+                    Vec<u32>,
+                    memmap2::Mmap,
+                )> = {
                     use crate::run_index::dict_io;
                     let sids_path = run_dir.join("subjects.sids");
                     let idx_path = run_dir.join("subjects.idx");

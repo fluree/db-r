@@ -889,11 +889,15 @@ fn parse_inline_policy(
 // (`fluree-db-query`) to avoid duplicating query parsing/lowering and to ensure
 // full feature support (e.g., FILTER patterns) in f:query policies.
 
-/// Resolve an IRI string to a SID using the database's encoding.
+/// Resolve an IRI string to a SID using the snapshot's namespace table.
+///
+/// This is intentionally **lenient**: it uses `encode_iri()` (EMPTY-namespace fallback)
+/// rather than `encode_iri_strict()`. Policy inputs often contain full IRIs that may
+/// not have an explicit namespace-code registration in unindexed / in-memory ledgers.
+/// Using the EMPTY fallback keeps policy enforcement consistent with how queries and
+/// transactions encode such IRIs (Clojure parity).
 fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
-    snapshot
-        .encode_iri_strict(iri)
-        .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{}'", iri)))
+    Ok(snapshot.encode_iri(iri).unwrap_or_else(|| Sid::new(0, iri)))
 }
 
 /// Build policy values map from JSON values.

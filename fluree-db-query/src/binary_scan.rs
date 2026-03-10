@@ -18,8 +18,8 @@ use fluree_db_binary_index::{
 use fluree_db_core::o_type::OType;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, NoOverlay,
-    ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
+    NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 
 use crate::binding::{Batch, Binding};
@@ -473,7 +473,7 @@ impl BinaryScanOperator {
                     history_mode: ctx.history_mode,
                     ..Default::default()
                 };
-                let flakes = range_with_overlay(
+                let mut flakes = range_with_overlay(
                     ctx.snapshot,
                     self.g_id,
                     overlay,
@@ -484,6 +484,17 @@ impl BinaryScanOperator {
                 )
                 .await
                 .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+
+                // Apply policy filtering (including f:query) when present.
+                flakes = Self::filter_flakes_by_policy(
+                    ctx,
+                    ctx.snapshot,
+                    overlay,
+                    ctx.to_t,
+                    self.g_id,
+                    flakes,
+                )
+                .await?;
                 out.extend(flakes.into_iter().map(|flake| RangeFlake {
                     flake,
                     ledger_alias: None,
@@ -500,7 +511,7 @@ impl BinaryScanOperator {
                         history_mode: ctx.history_mode,
                         ..Default::default()
                     };
-                    let flakes = range_with_overlay(
+                    let mut flakes = range_with_overlay(
                         graph.snapshot,
                         graph.g_id,
                         graph.overlay,
@@ -511,6 +522,17 @@ impl BinaryScanOperator {
                     )
                     .await
                     .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+
+                    // Apply graph-scoped policy filtering when present.
+                    flakes = Self::filter_flakes_by_policy(
+                        ctx,
+                        graph.snapshot,
+                        graph.overlay,
+                        graph.to_t,
+                        graph.g_id,
+                        flakes,
+                    )
+                    .await?;
                     let alias = Arc::clone(&graph.ledger_id);
                     out.extend(flakes.into_iter().map(|flake| RangeFlake {
                         flake,
@@ -524,6 +546,42 @@ impl BinaryScanOperator {
         self.cursor = None;
         self.state = OperatorState::Open;
         Ok(())
+    }
+
+    /// Apply policy filtering to a batch of flakes for a specific graph.
+    ///
+    /// When a policy enforcer is present on the execution context, we:
+    /// 1) Populate the class cache for subjects in this batch (required for f:onClass)
+    /// 2) Filter flakes (async, supports f:query) using the graph's snapshot/overlay/to_t.
+    async fn filter_flakes_by_policy(
+        ctx: &ExecutionContext<'_>,
+        snapshot: &LedgerSnapshot,
+        overlay: &dyn OverlayProvider,
+        to_t: i64,
+        g_id: GraphId,
+        flakes: Vec<Flake>,
+    ) -> Result<Vec<Flake>> {
+        let Some(enforcer) = ctx.policy_enforcer.as_ref() else {
+            return Ok(flakes);
+        };
+        if enforcer.is_root() || flakes.is_empty() {
+            return Ok(flakes);
+        }
+
+        // Populate class cache for all subjects in this batch (deduped).
+        let mut subjects: Vec<Sid> = flakes.iter().map(|f| f.s.clone()).collect();
+        subjects.sort();
+        subjects.dedup();
+        let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        enforcer
+            .populate_class_cache_for_graph(db, &subjects)
+            .await
+            .map_err(|e| QueryError::Policy(e.to_string()))?;
+
+        enforcer
+            .filter_flakes_for_graph(snapshot, overlay, to_t, &ctx.tracker, flakes)
+            .await
+            .map_err(|e| QueryError::Policy(e.to_string()))
     }
 
     /// Extract bound Sids from the pattern, normalizing to the V6 store's
@@ -1207,6 +1265,13 @@ impl Operator for BinaryScanOperator {
         self.g_id = ctx.binary_g_id;
 
         if self.store.is_none() {
+            return self.open_range_fallback(ctx).await;
+        }
+        // Policy enforcement requires async per-flake checks (including f:query)
+        // and class-cache population. The binary cursor path currently does not
+        // apply policy filtering, so force the range fallback when a non-root
+        // policy enforcer is present.
+        if ctx.policy_enforcer.as_ref().is_some_and(|p| !p.is_root()) {
             return self.open_range_fallback(ctx).await;
         }
 
