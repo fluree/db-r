@@ -537,9 +537,9 @@ impl S3Storage {
                 let new_etag = output.e_tag().map(normalize_etag).unwrap_or_default();
                 Ok(new_etag)
             }
-            Err(e) if is_precondition_failed_sdk(&e) => Err(StorageExtError::io(
-                "ETag mismatch (concurrent modification)",
-            )),
+            Err(e) if is_precondition_failed_sdk(&e) => {
+                Err(StorageExtError::PreconditionFailed("ETag mismatch".into()))
+            }
             Err(e) => Err(map_s3_error_ext(e, key)),
         }
     }
@@ -603,16 +603,16 @@ impl StorageCas for S3Storage {
                         Some((_, etag)) => self.put_if_match(&key, &new_bytes, etag).await,
                         None => match self.put_if_absent(&key, &new_bytes).await {
                             Ok(true) => Ok(String::new()),
-                            Ok(false) => Err(StorageExtError::io("Concurrent insert (retry)")),
+                            Ok(false) => Err(StorageExtError::PreconditionFailed(
+                                "concurrent insert".into(),
+                            )),
                             Err(e) => Err(e),
                         },
                     };
 
                     match write_result {
                         Ok(_) => return Ok(CasOutcome::Written),
-                        Err(StorageExtError::Io(msg))
-                            if msg.contains("mismatch") || msg.contains("retry") =>
-                        {
+                        Err(StorageExtError::PreconditionFailed(_)) => {
                             // Concurrent modification — retry with backoff
                             if attempt + 1 < MAX_S3_CAS_RETRIES {
                                 let jitter = rand::random::<u64>() % 50;
@@ -681,7 +681,7 @@ fn map_s3_error_ext<E: std::fmt::Debug>(
                 404 => StorageExtError::not_found(format!("Key not found: {}", key)),
                 401 => StorageExtError::unauthorized(format!("Unauthorized for key: {}", key)),
                 403 => StorageExtError::forbidden(format!("Access denied for key: {}", key)),
-                412 => StorageExtError::io(format!("Precondition failed for key: {}", key)),
+                412 => StorageExtError::PreconditionFailed(format!("key: {}", key)),
                 // Retryable server errors: throttling (429), server errors (500/502/503/504)
                 429 | 500 | 502 | 503 | 504 => StorageExtError::throttled(format!(
                     "Retryable error for key '{}' (HTTP {})",
@@ -721,6 +721,9 @@ fn ext_error_to_core(err: StorageExtError) -> CoreError {
         StorageExtError::Unauthorized(msg) => CoreError::storage(format!("Unauthorized: {}", msg)),
         StorageExtError::Forbidden(msg) => CoreError::storage(format!("Forbidden: {}", msg)),
         StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {}", msg)),
+        StorageExtError::PreconditionFailed(msg) => {
+            CoreError::storage(format!("Precondition failed: {}", msg))
+        }
         StorageExtError::Other(msg) => CoreError::other(msg),
     }
 }

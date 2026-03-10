@@ -293,11 +293,7 @@ impl FileNameService {
                 let parsed = serde_json::from_slice(&bytes)?;
                 Ok(Some(parsed))
             }
-            Err(e)
-                if e.to_string().contains("not found") || e.to_string().contains("Not found") =>
-            {
-                Ok(None)
-            }
+            Err(fluree_db_core::Error::NotFound(_)) => Ok(None),
             Err(e) => Err(NameServiceError::from(e)),
         }
     }
