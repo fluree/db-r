@@ -837,6 +837,7 @@ fn remap_records_to_runs<I, S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     subject_remap: &S,
     string_remap: &R,
     lang_remap: Option<&[u16]>,
+    target_g_id: Option<u16>,
     registry: &OTypeRegistry,
     writer: &mut super::run_writer::MultiOrderRunWriter,
     mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
@@ -849,6 +850,13 @@ where
 
     for result in records {
         let mut record = result?;
+
+        // V2 run files do not carry g_id on the wire. The pipeline must be graph-scoped.
+        if let Some(target) = target_g_id {
+            if record.g_id != target {
+                continue;
+            }
+        }
 
         remap_record(&mut record, subject_remap, string_remap)?;
 
@@ -916,6 +924,7 @@ pub fn remap_spool_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
         subject_remap,
         string_remap,
         None,
+        None,
         registry,
         writer,
         stats_hook,
@@ -952,6 +961,7 @@ pub fn remap_commit_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     subject_remap: &S,
     string_remap: &R,
     lang_remap: &[u16],
+    target_g_id: u16,
     registry: &OTypeRegistry,
     writer: &mut super::run_writer::MultiOrderRunWriter,
     stats_hook: Option<&mut crate::stats::IdStatsHook>,
@@ -963,6 +973,7 @@ pub fn remap_commit_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
         subject_remap,
         string_remap,
         Some(lang_remap),
+        Some(target_g_id),
         registry,
         writer,
         stats_hook,
@@ -1009,6 +1020,7 @@ pub(crate) fn remap_commit_to_runs_with_op<S: SubjectRemap, R: StringRemap>(
     subject_remap: &S,
     string_remap: &R,
     lang_remap: &[u16],
+    target_g_id: u16,
     registry: &OTypeRegistry,
     writer: &mut super::run_writer::MultiOrderRunWriterWithOp,
 ) -> io::Result<u64> {
@@ -1022,6 +1034,9 @@ pub(crate) fn remap_commit_to_runs_with_op<S: SubjectRemap, R: StringRemap>(
     let mut count = 0u64;
     for result in reader {
         let v1_record = result?;
+        if v1_record.g_id != target_g_id {
+            continue;
+        }
         let op = v1_record.op;
         let v2_record = remap_v1_to_v2(
             &v1_record,
@@ -1034,10 +1049,6 @@ pub(crate) fn remap_commit_to_runs_with_op<S: SubjectRemap, R: StringRemap>(
         count += 1;
     }
 
-    debug_assert_eq!(
-        count, record_count,
-        "expected {record_count} records, got {count}"
-    );
     Ok(count)
 }
 

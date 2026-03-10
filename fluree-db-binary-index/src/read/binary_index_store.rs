@@ -998,6 +998,26 @@ impl BinaryIndexStore {
         }
     }
 
+    /// Find all string IDs whose value starts with `prefix`.
+    ///
+    /// Uses a range scan on the reverse string tree over the key range
+    /// `[prefix, prefix || 0xFF)`. (0xFF sorts after all valid UTF-8 bytes.)
+    pub fn find_strings_by_prefix(&self, prefix: &str) -> io::Result<Vec<u32>> {
+        match &self.dicts.string_reverse_tree {
+            Some(tree) => {
+                let start_key = prefix.as_bytes();
+                let mut end_key = prefix.as_bytes().to_vec();
+                end_key.push(0xFF);
+                let entries = tree.reverse_range_scan(start_key, &end_key)?;
+                Ok(entries
+                    .into_iter()
+                    .filter_map(|(_, id)| u32::try_from(id).ok())
+                    .collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Number of predicates in the persisted dictionary.
     pub fn predicate_count(&self) -> u32 {
         self.dicts.predicates.len()

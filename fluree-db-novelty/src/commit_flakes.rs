@@ -24,6 +24,20 @@ use fluree_vocab::{db, xsd_names};
 
 use crate::Commit;
 
+/// Stamp commit metadata flakes with a txn-meta graph SID.
+///
+/// Commit metadata flakes are identified by having no graph (`g: None`)
+/// and a subject in the `FLUREE_COMMIT` namespace. This function mutates
+/// them in-place to route them to the txn-meta graph instead of the
+/// default graph.
+pub fn stamp_graph_on_commit_flakes(flakes: &mut [Flake], graph_sid: &Sid) {
+    for flake in flakes.iter_mut() {
+        if flake.g.is_none() && flake.s.namespace_code == FLUREE_COMMIT {
+            flake.g = Some(graph_sid.clone());
+        }
+    }
+}
+
 /// Parse ISO-8601 timestamp to epoch milliseconds
 ///
 /// Falls back to 0 if parsing fails.

@@ -106,6 +106,7 @@ pub fn build_indexes_from_commits(
             &s_remap,
             &str_remap,
             &commit.lang_remap,
+            config.g_id,
             registry,
             &mut writer,
             None, // no stats_hook
@@ -208,6 +209,7 @@ pub fn build_indexes_from_remapped_commits(
             &s_remap,
             &str_remap,
             lang_remap,
+            config.g_id,
             registry,
             &mut writer,
         )?;

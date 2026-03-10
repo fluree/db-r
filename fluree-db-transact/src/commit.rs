@@ -8,11 +8,11 @@ use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
 use fluree_db_core::{
     ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, FlakeValue, Storage,
-    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN,
+    TXN_META_GRAPH_ID, CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN,
 };
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
-use fluree_db_novelty::generate_commit_flakes;
+use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use std::sync::Arc;
 use tracing::Instrument;
@@ -339,7 +339,12 @@ where
         let commit_metadata_flakes = {
             let span = tracing::debug_span!("commit_generate_metadata_flakes");
             let _g = span.enter();
-            generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
+            let mut flakes = generate_commit_flakes(&commit_record, base.ledger_id(), new_t);
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base.ledger_id());
+            if let Some(g_sid) = base.snapshot.encode_iri(&txn_meta_iri) {
+                stamp_graph_on_commit_flakes(&mut flakes, &g_sid);
+            }
+            flakes
         };
         tracing::info!(
             metadata_flakes = commit_metadata_flakes.len(),
@@ -362,7 +367,12 @@ where
         {
             let span = tracing::debug_span!("commit_apply_to_novelty");
             let _g = span.enter();
-            let reverse_graph = base.snapshot.build_reverse_graph()?;
+            let mut reverse_graph = base.snapshot.build_reverse_graph()?;
+            // Ensure txn-meta graph is always routable for commit metadata flakes.
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base.ledger_id());
+            if let Some(g_sid) = base.snapshot.encode_iri(&txn_meta_iri) {
+                reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+            }
             Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 

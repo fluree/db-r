@@ -2781,23 +2781,92 @@ where
                     })
                     .collect();
 
-                let v3_config = fluree_db_indexer::BuildConfig {
-                    run_dir: v3_run_dir.join("v3_runs"),
-                    index_dir: v3_index_dir,
-                    g_id: 0, // default graph (import initially targets g_id=0)
+                // Build V3 indexes for:
+                // - g_id=0 (default graph) across all chunks
+                // - g_id=1 (txn-meta) from the dedicated meta chunk
+                //
+                // The meta chunk is appended as the final "chunk" during import so that
+                // `ledger#txn-meta` queries work immediately after import without re-reading
+                // commit blobs. We build g_id=1 separately to avoid a full second pass.
+                let v3_runs_g0 = v3_run_dir.join("v3_runs_g0");
+                let v3_runs_g1 = v3_run_dir.join("v3_runs_g1");
+
+                let cfg_g0 = fluree_db_indexer::BuildConfig {
+                    run_dir: v3_runs_g0,
+                    index_dir: v3_index_dir.clone(),
+                    g_id: 0,
                     leaflet_target_rows: v3_leaflet_target_rows,
                     leaf_target_rows: v3_leaf_target_rows,
                     zstd_level: 1,
                     run_budget_bytes: v3_run_budget,
                     progress: Some(v3_counter),
                 };
-
-                std::fs::create_dir_all(&v3_config.run_dir)
+                std::fs::create_dir_all(&cfg_g0.run_dir)
                     .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-                let result =
-                    fluree_db_indexer::build_indexes_from_commits(&commits, &registry, &v3_config)
+                let g0_result =
+                    fluree_db_indexer::build_indexes_from_commits(&commits, &registry, &cfg_g0)
                         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                // Meta chunk is always the last chunk when present.
+                let g1_result = if let Some(meta_commit) = commits.last() {
+                    let cfg_g1 = fluree_db_indexer::BuildConfig {
+                        run_dir: v3_runs_g1,
+                        index_dir: v3_index_dir,
+                        g_id: 1,
+                        leaflet_target_rows: v3_leaflet_target_rows,
+                        leaf_target_rows: v3_leaf_target_rows,
+                        zstd_level: 1,
+                        run_budget_bytes: v3_run_budget,
+                        progress: None,
+                    };
+                    std::fs::create_dir_all(&cfg_g1.run_dir)
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                    Some(
+                        fluree_db_indexer::build_indexes_from_commits(
+                            std::slice::from_ref(meta_commit),
+                            &registry,
+                            &cfg_g1,
+                        )
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+
+                // Merge g_id=0 and g_id=1 results for upload/root assembly.
+                let mut order_results = g0_result.order_results;
+                let mut total_rows = g0_result.total_rows;
+                let mut total_remapped = g0_result.total_remapped;
+                let mut remap_elapsed = g0_result.remap_elapsed;
+                let mut build_elapsed = g0_result.build_elapsed;
+
+                if let Some(g1) = g1_result {
+                    total_rows += g1.total_rows;
+                    total_remapped += g1.total_remapped;
+                    remap_elapsed += g1.remap_elapsed;
+                    build_elapsed += g1.build_elapsed;
+
+                    for (order, g1_order) in g1.order_results {
+                        if let Some((_, existing)) =
+                            order_results.iter_mut().find(|(o, _)| *o == order)
+                        {
+                            existing.graphs.extend(g1_order.graphs);
+                            existing.total_rows += g1_order.total_rows;
+                        } else {
+                            order_results.push((order, g1_order));
+                        }
+                    }
+                }
+
+                let result = fluree_db_indexer::BuildResult {
+                    order_results,
+                    total_rows,
+                    total_remapped,
+                    remap_elapsed,
+                    build_elapsed,
+                };
 
                 tracing::info!(
                     total_rows = result.total_rows,

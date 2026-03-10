@@ -431,10 +431,12 @@ async fn commit_db_metadata_spo_queries_parity() {
 
     let q_commit = json!({
         "@context": {"f": "https://ns.flur.ee/db#"},
+        "from": "misc/commit-metadata:main#txn-meta",
         "select": ["?c","?alias"],
         "where": {"@id": "?c", "f:alias": "?alias"}
     });
-    let r_commit = support::query_jsonld(&fluree, &ledger2, &q_commit)
+    let r_commit = fluree
+        .query_connection(&q_commit)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -459,10 +461,12 @@ async fn commit_db_metadata_spo_queries_parity() {
 
     let q_db = json!({
         "@context": {"f": "https://ns.flur.ee/db#"},
+        "from": "misc/commit-metadata:main#txn-meta",
         "select": ["?c","?t"],
         "where": {"@id": "?c", "f:t": "?t"}
     });
-    let r_db = support::query_jsonld(&fluree, &ledger2, &q_db)
+    let r_db = fluree
+        .query_connection(&q_db)
         .await
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
@@ -872,14 +876,15 @@ async fn untyped_value_matching_parity() {
             "f": "https://ns.flur.ee/db#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
+        "from": "misc/untyped-value-matching:main#txn-meta",
         "select": "?c",
         "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
     });
-    let r_typed = support::query_jsonld(&fluree, &ledger2, &q_typed)
+    let r_typed = fluree
+        .query_connection(&q_typed)
         .await
         .unwrap()
-        .to_jsonld_async(ledger2.as_graph_db_ref(0))
-        .await
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(r_typed.as_array().map(|a| a.len()), Some(1));
     assert!(
@@ -893,14 +898,15 @@ async fn untyped_value_matching_parity() {
 
     let q_untyped = json!({
         "@context": {"f": "https://ns.flur.ee/db#"},
+        "from": "misc/untyped-value-matching:main#txn-meta",
         "select": "?c",
         "where": [{"@id": "?c", "f:t": commit_t}]
     });
-    let r_untyped = support::query_jsonld(&fluree, &ledger2, &q_untyped)
+    let r_untyped = fluree
+        .query_connection(&q_untyped)
         .await
         .unwrap()
-        .to_jsonld_async(ledger2.as_graph_db_ref(0))
-        .await
+        .to_jsonld(&ledger2.snapshot)
         .unwrap();
     assert_eq!(r_untyped.as_array().map(|a| a.len()), Some(1));
     assert!(

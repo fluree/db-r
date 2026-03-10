@@ -28,13 +28,13 @@ use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, GraphId, IndexType,
-    Sid,
+    Sid, TXN_META_GRAPH_ID,
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
-use fluree_db_novelty::{generate_commit_flakes, Novelty};
+use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes, Novelty};
 use fluree_db_policy::PolicyContext;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -170,7 +170,13 @@ where
         // when processing separate commits independently (each starts max_g_id=1).
         let all_push_flakes: Vec<&Flake> = decoded.iter().flat_map(|c| &c.commit.flakes).collect();
         let routing = derive_graph_routing(&base_state, &all_push_flakes);
-        let reverse_graph = reverse_graph_lookup(&routing.graph_sids);
+        let mut reverse_graph = reverse_graph_lookup(&routing.graph_sids);
+        // Ensure txn-meta graph is always routable — commit metadata flakes
+        // are stamped with this graph SID after routing is derived.
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base_state.ledger_id());
+        if let Some(g_sid) = base_state.snapshot.encode_iri(&txn_meta_iri) {
+            reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+        }
 
         for c in &decoded {
             // Current state is base db + evolving novelty.
@@ -231,7 +237,12 @@ where
 
             // 4.5 Advance evolving novelty with this commit's flakes + derived metadata flakes.
             let mut all_flakes = c.commit.flakes.clone();
-            let meta_flakes = generate_commit_flakes(&c.commit, base_state.ledger_id(), c.commit.t);
+            let mut meta_flakes =
+                generate_commit_flakes(&c.commit, base_state.ledger_id(), c.commit.t);
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base_state.ledger_id());
+            if let Some(g_sid) = base_state.snapshot.encode_iri(&txn_meta_iri) {
+                stamp_graph_on_commit_flakes(&mut meta_flakes, &g_sid);
+            }
             all_flakes.extend(meta_flakes);
 
             // Note: Novelty::apply_commit bumps to max(commit_t) internally.
@@ -794,7 +805,7 @@ fn apply_pushed_commits_to_state(
     // routing in novelty will be incomplete until the server restarts and rebuilds
     // state from the stored commits.  Propagating an error here would mislead the
     // caller into thinking the commit failed when it was actually stored.
-    let reverse_graph = base.snapshot.build_reverse_graph().unwrap_or_else(|e| {
+    let mut reverse_graph = base.snapshot.build_reverse_graph().unwrap_or_else(|e| {
         error!(
             error = ?e,
             "post-CAS build_reverse_graph failed; in-memory graph routing will be \
@@ -803,6 +814,11 @@ fn apply_pushed_commits_to_state(
         );
         HashMap::new()
     });
+    // Ensure txn-meta graph is always routable for commit metadata flakes.
+    let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base.ledger_id());
+    if let Some(g_sid) = base.snapshot.encode_iri(&txn_meta_iri) {
+        reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+    }
 
     // Apply all flakes to novelty (we already validated them; re-apply for state).
     let mut novelty = (*base.novelty).clone();
@@ -1400,12 +1416,17 @@ where
         }
 
         // 8) Update in-memory state (novelty + dict novelty + namespace deltas).
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base_state.ledger_id());
+        let txn_meta_g_sid = base_state.snapshot.encode_iri(&txn_meta_iri);
         let all_flakes: Vec<(i64, Vec<Flake>)> = decoded
             .iter()
             .map(|c| {
                 let mut flakes = c.commit.flakes.clone();
-                let meta_flakes =
+                let mut meta_flakes =
                     generate_commit_flakes(&c.commit, base_state.ledger_id(), c.commit.t);
+                if let Some(ref g_sid) = txn_meta_g_sid {
+                    stamp_graph_on_commit_flakes(&mut meta_flakes, g_sid);
+                }
                 flakes.extend(meta_flakes);
                 (c.commit.t, flakes)
             })
