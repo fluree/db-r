@@ -7,13 +7,14 @@ use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
 use fluree_db_core::{
-    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, FlakeValue, Storage,
-    TXN_META_GRAPH_ID, CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN,
+    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
+    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
 };
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
+use fluree_db_query::BinaryRangeProvider;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -376,8 +377,21 @@ where
             Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 
+        // If the snapshot has an attached BinaryRangeProvider, re-attach it with the
+        // updated `dict_novelty` so overlay translation can resolve newly-introduced
+        // subject/string IDs (otherwise the provider holds a stale Arc).
+        let mut snapshot = base.snapshot;
+        if let Some(provider) = snapshot.range_provider.as_ref() {
+            if let Some(brp) = provider.as_any().downcast_ref::<BinaryRangeProvider>() {
+                snapshot.range_provider = Some(Arc::new(BinaryRangeProvider::new(
+                    Arc::clone(brp.store()),
+                    Arc::clone(&dict_novelty),
+                )));
+            }
+        }
+
         let new_state = LedgerState {
-            snapshot: base.snapshot,
+            snapshot,
             novelty: new_novelty,
             dict_novelty,
             head_commit_id: Some(commit_cid.clone()),
@@ -411,29 +425,7 @@ where
 /// This is safe because `DictOverlay` checks the persisted tree first for reverse
 /// lookups (canonical ID wins).
 fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.ensure_initialized();
-
-    for flake in flakes {
-        // Subject
-        dict_novelty
-            .subjects
-            .assign_or_lookup(flake.s.namespace_code, &flake.s.name);
-
-        // Object references
-        if let FlakeValue::Ref(ref sid) = flake.o {
-            dict_novelty
-                .subjects
-                .assign_or_lookup(sid.namespace_code, &sid.name);
-        }
-
-        // String values
-        match &flake.o {
-            FlakeValue::String(s) | FlakeValue::Json(s) => {
-                dict_novelty.strings.assign_or_lookup(s);
-            }
-            _ => {}
-        }
-    }
+    dict_novelty.populate_from_flakes(flakes);
 }
 
 /// Verify that this commit follows the expected sequence

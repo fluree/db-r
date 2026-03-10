@@ -535,6 +535,28 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
+    // Decode FIR6 root metadata to populate snapshot watermarks.
+    // `LedgerSnapshot::from_root_bytes` only parses the header; watermarks are needed for
+    // DictNovelty/DictOverlay correctness (especially bound-object filters and overlay merges).
+    let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
+        .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
+    state.snapshot.subject_watermarks = root.subject_watermarks;
+    state.snapshot.string_watermark = root.string_watermark;
+    state.dict_novelty = Arc::new(DictNovelty::with_watermarks(
+        state.snapshot.subject_watermarks.clone(),
+        state.snapshot.string_watermark,
+    ));
+    // Re-populate DictNovelty with any already-loaded novelty flakes so overlay
+    // translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+    if !state.novelty.is_empty() {
+        let novelty = state.novelty.as_ref();
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+            novelty
+                .iter_index(fluree_db_core::IndexType::Post)
+                .map(|id| novelty.get_flake(id)),
+        );
+    }
+
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
         &state.snapshot.ledger_id,
@@ -558,8 +580,8 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     }
 
     let arc_store = Arc::new(store);
-    let dn = Arc::new(DictNovelty::new_uninitialized());
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
+    let provider =
+        BinaryRangeProvider::new(Arc::clone(&arc_store), Arc::clone(&state.dict_novelty));
     state.snapshot.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct

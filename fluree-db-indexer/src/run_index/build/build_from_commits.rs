@@ -17,6 +17,7 @@ use crate::run_index::runs::spool::{
 };
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_core::o_type_registry::OTypeRegistry;
+use fluree_db_core::value_id::ValueTypeTag;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,6 +85,8 @@ pub fn build_indexes_from_commits(
     commits: &[CommitInput],
     registry: &OTypeRegistry,
     config: &BuildConfig,
+    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    dt_tags: Option<&[ValueTypeTag]>,
 ) -> io::Result<BuildResult> {
     // Phase 1: Remap sorted commits → V2 run files for all 4 orders.
     let remap_start = Instant::now();
@@ -100,6 +103,8 @@ pub fn build_indexes_from_commits(
         let s_remap = MmapSubjectRemap::open(&commit.subject_remap_path)?;
         let str_remap = MmapStringRemap::open(&commit.string_remap_path)?;
 
+        let hook_for_commit: Option<&mut crate::stats::IdStatsHook> =
+            stats_hook.as_deref_mut();
         let count = remap_commit_to_runs(
             &commit.commit_path,
             commit.record_count,
@@ -109,8 +114,8 @@ pub fn build_indexes_from_commits(
             config.g_id,
             registry,
             &mut writer,
-            None, // no stats_hook
-            None, // no dt_tags
+            hook_for_commit,
+            dt_tags,
         )?;
         total_remapped += count;
 
@@ -366,7 +371,7 @@ mod tests {
             progress: None,
         };
 
-        let result = build_indexes_from_commits(&commits, &registry, &config).unwrap();
+        let result = build_indexes_from_commits(&commits, &registry, &config, None, None).unwrap();
 
         // Should have results for all 4 orders.
         assert_eq!(result.order_results.len(), 4);

@@ -99,7 +99,17 @@ pub fn build_index(config: &IndexBuildConfig) -> Result<IndexBuildResult, IndexB
     // Discover run files.
     let run_paths = discover_run_files_v2(&config.run_dir)?;
     if run_paths.is_empty() {
-        return Err(IndexBuildError::NoRunFiles);
+        // Empty graph/order: produce no artifacts.
+        //
+        // This is expected for reserved graphs (e.g., config graph) that may have
+        // no data yet, and for user-defined named graphs that exist in graph_iris
+        // but have no triples at the indexed t.
+        return Ok(IndexBuildResult {
+            graphs: Vec::new(),
+            total_rows: 0,
+            index_dir: config.index_dir.clone(),
+            elapsed: t0.elapsed(),
+        });
     }
 
     // Open streaming readers.

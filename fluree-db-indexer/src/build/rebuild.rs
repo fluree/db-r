@@ -653,6 +653,14 @@ where
                 }
             };
 
+            // Capture class tracking state before finalize consumes the hook.
+            let class_count_deltas = stats_hook.class_count_deltas().clone();
+            let subject_class_deltas = stats_hook.subject_class_deltas().clone();
+            let subject_props = stats_hook.subject_props().clone();
+            let subject_prop_dts = stats_hook.subject_prop_dts().clone();
+            let subject_prop_langs = stats_hook.subject_prop_langs().clone();
+            let subject_ref_history = stats_hook.subject_ref_history().clone();
+
             let id_stats_result = stats_hook.finalize();
 
             // Build the full IndexStats for the FIR6 root.
@@ -660,6 +668,7 @@ where
                 fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
             let db_stats = {
                 use fluree_db_core::index_stats as is;
+                use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry};
 
                 // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
                 // Aggregate across graphs by p_id.
@@ -713,12 +722,306 @@ where
                     })
                     .collect();
 
+                // ---- Class stats (graph-scoped) ----
+                //
+                // Rebuild has the full record stream in `IdStatsHook`, so we can derive
+                // class stats directly (no PSOT lookups needed).
+
+                // Resolve lang_id -> tag for per-class language distributions.
+                let lang_id_to_tag: std::collections::HashMap<u16, String> = shared
+                    .languages
+                    .iter()
+                    .map(|(lang_id, tag)| (lang_id, tag.to_string()))
+                    .collect();
+
+                // Load subject forward dict artifacts for resolving class sid64 -> Sid.
+                // (Reuses the persisted merge artifacts in run_dir.)
+                #[allow(clippy::type_complexity)]
+                let subject_lookup: Option<(Vec<u64>, Vec<u64>, Vec<u32>, memmap2::Mmap)> = {
+                    use crate::run_index::dict_io;
+                    let sids_path = run_dir.join("subjects.sids");
+                    let idx_path = run_dir.join("subjects.idx");
+                    let fwd_path = run_dir.join("subjects.fwd");
+
+                    let sids_vec = dict_io::read_subject_sid_map(&sids_path).ok();
+                    let fwd_idx = dict_io::read_forward_index(&idx_path).ok();
+                    let fwd_mmap = std::fs::File::open(&fwd_path).ok().and_then(|fwd_file| {
+                        // SAFETY: opened read-only; index artifacts are immutable.
+                        unsafe { memmap2::Mmap::map(&fwd_file) }.ok()
+                    });
+
+                    match (sids_vec, fwd_idx, fwd_mmap) {
+                        (Some(sids_vec), Some((fwd_offsets, fwd_lens)), Some(fwd_mmap)) => {
+                            Some((sids_vec, fwd_offsets, fwd_lens, fwd_mmap))
+                        }
+                        _ => None,
+                    }
+                };
+
+                let resolve_class_sid = |sid64: u64,
+                                         ns_prefixes: &std::collections::HashMap<u16, String>|
+                 -> fluree_db_core::Sid {
+                    use fluree_db_core::subject_id::SubjectId;
+                    let subj = SubjectId::from_u64(sid64);
+                    let ns_code = subj.ns_code();
+                    let local_id = subj.local_id();
+
+                    let Some((sids_vec, fwd_offsets, fwd_lens, fwd_mmap)) = subject_lookup.as_ref()
+                    else {
+                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
+                    };
+
+                    let Some(pos) = sids_vec.binary_search(&sid64).ok() else {
+                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
+                    };
+                    let off = fwd_offsets[pos] as usize;
+                    let len = fwd_lens[pos] as usize;
+                    if off + len > fwd_mmap.len() {
+                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
+                    }
+                    let iri_bytes = &fwd_mmap[off..off + len];
+                    let Ok(iri) = std::str::from_utf8(iri_bytes) else {
+                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
+                    };
+                    let prefix = ns_prefixes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+                    let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+                        &iri[prefix.len()..]
+                    } else {
+                        iri
+                    };
+                    fluree_db_core::Sid::new(ns_code, suffix)
+                };
+
+                // subject_classes: (g_id, subject_sid64) -> set of class_sid64
+                let mut subject_classes: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u64>,
+                > = std::collections::HashMap::new();
+                for (&(g_id, s_id), class_map) in &subject_class_deltas {
+                    if g_id == 1 {
+                        continue; // txn-meta excluded
+                    }
+                    let mut set = std::collections::HashSet::new();
+                    for (&class_sid64, &delta) in class_map {
+                        if delta > 0 {
+                            set.insert(class_sid64);
+                        }
+                    }
+                    if !set.is_empty() {
+                        subject_classes.insert((g_id, s_id), set);
+                    }
+                }
+
+                // class -> properties, datatype/lang usage, ref target edges
+                let mut class_properties: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashSet<u32>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_dts: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u8, i64>>,
+                > = std::collections::HashMap::new();
+                let mut class_prop_langs: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u16, i64>>,
+                > = std::collections::HashMap::new();
+                let mut ref_edges: std::collections::HashMap<
+                    (u16, u64),
+                    std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
+                > = std::collections::HashMap::new();
+
+                for (&(g_id, s_id), props) in &subject_props {
+                    if g_id == 1 {
+                        continue;
+                    }
+                    let Some(classes) = subject_classes.get(&(g_id, s_id)) else {
+                        continue;
+                    };
+                    for &class_sid64 in classes {
+                        class_properties
+                            .entry((g_id, class_sid64))
+                            .or_default()
+                            .extend(props.iter().copied());
+
+                        if let Some(s_dts) = subject_prop_dts.get(&(g_id, s_id)) {
+                            for (&p_id, dt_map) in s_dts {
+                                let cp = class_prop_dts
+                                    .entry((g_id, class_sid64))
+                                    .or_default()
+                                    .entry(p_id)
+                                    .or_default();
+                                for (&dt, &cnt) in dt_map {
+                                    *cp.entry(dt).or_insert(0) += cnt;
+                                }
+                            }
+                        }
+                        if let Some(s_langs) = subject_prop_langs.get(&(g_id, s_id)) {
+                            for (&p_id, lang_map) in s_langs {
+                                let cl = class_prop_langs
+                                    .entry((g_id, class_sid64))
+                                    .or_default()
+                                    .entry(p_id)
+                                    .or_default();
+                                for (&lang_id, &cnt) in lang_map {
+                                    *cl.entry(lang_id).or_insert(0) += cnt;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (&(g_id, subj), per_prop) in &subject_ref_history {
+                    if g_id == 1 {
+                        continue;
+                    }
+                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
+                        continue;
+                    };
+                    for (&p_id, objs) in per_prop {
+                        for (&obj, &delta) in objs {
+                            if delta == 0 {
+                                continue;
+                            }
+                            let Some(obj_classes) = subject_classes.get(&(g_id, obj)) else {
+                                continue;
+                            };
+                            for &sc in subj_classes {
+                                for &oc in obj_classes {
+                                    *ref_edges
+                                        .entry((g_id, sc))
+                                        .or_default()
+                                        .entry(p_id)
+                                        .or_default()
+                                        .entry(oc)
+                                        .or_insert(0) += delta;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Build graph-scoped class entries.
+                let mut per_graph_classes: std::collections::HashMap<u16, Vec<ClassStatEntry>> =
+                    std::collections::HashMap::new();
+                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
+                    if g_id == 1 || delta <= 0 {
+                        continue;
+                    }
+                    let class_sid = resolve_class_sid(class_sid64, &shared.ns_prefixes);
+
+                    let props = class_properties
+                        .get(&(g_id, class_sid64))
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut p_ids: Vec<u32> = props.into_iter().collect();
+                    p_ids.sort_unstable();
+
+                    let properties: Vec<ClassPropertyUsage> = p_ids
+                        .into_iter()
+                        .map(|p_id| {
+                            let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                            let property_sid = match trie_for_stats.longest_match(iri) {
+                                Some((code, prefix_len)) => {
+                                    fluree_db_core::Sid::new(code, &iri[prefix_len..])
+                                }
+                                None => fluree_db_core::Sid::new(0, iri),
+                            };
+
+                            // Datatypes (ValueTypeTag u8)
+                            let mut dt_out: Vec<(u8, u64)> = class_prop_dts
+                                .get(&(g_id, class_sid64))
+                                .and_then(|m| m.get(&p_id))
+                                .map(|dt_map| {
+                                    dt_map
+                                        .iter()
+                                        .filter_map(|(&dt, &cnt)| {
+                                            (cnt > 0).then_some((dt, cnt as u64))
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            dt_out.sort_by_key(|(dt, _)| *dt);
+
+                            // Langs (lang_id -> tag)
+                            let mut langs: Vec<(String, u64)> = class_prop_langs
+                                .get(&(g_id, class_sid64))
+                                .and_then(|m| m.get(&p_id))
+                                .map(|lang_map| {
+                                    lang_map
+                                        .iter()
+                                        .filter_map(|(&lang_id, &cnt)| {
+                                            if cnt <= 0 {
+                                                return None;
+                                            }
+                                            let tag = lang_id_to_tag
+                                                .get(&lang_id)
+                                                .cloned()
+                                                .unwrap_or_else(|| format!("lang:{lang_id}"));
+                                            Some((tag, cnt as u64))
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            langs.sort_by(|a, b| a.0.cmp(&b.0));
+
+                            // Ref-classes (target class sid64 -> count)
+                            let mut ref_classes: Vec<ClassRefCount> = ref_edges
+                                .get(&(g_id, class_sid64))
+                                .and_then(|m| m.get(&p_id))
+                                .map(|target_map| {
+                                    target_map
+                                        .iter()
+                                        .filter_map(|(&target_sid64, &cnt)| {
+                                            (cnt > 0).then_some(ClassRefCount {
+                                                class_sid: resolve_class_sid(
+                                                    target_sid64,
+                                                    &shared.ns_prefixes,
+                                                ),
+                                                count: cnt as u64,
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+
+                            ClassPropertyUsage {
+                                property_sid,
+                                datatypes: dt_out,
+                                langs,
+                                ref_classes,
+                            }
+                        })
+                        .collect();
+
+                    per_graph_classes
+                        .entry(g_id)
+                        .or_default()
+                        .push(ClassStatEntry {
+                            class_sid,
+                            count: delta as u64,
+                            properties,
+                        });
+                }
+
+                // Attach class stats onto per-graph stats entries.
+                let mut final_graphs = id_stats_result.graphs;
+                for g in &mut final_graphs {
+                    if let Some(mut classes) = per_graph_classes.remove(&g.g_id) {
+                        classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+                        g.classes = Some(classes);
+                    }
+                }
+
+                let root_classes =
+                    fluree_db_core::index_stats::union_per_graph_classes(&final_graphs);
+
                 is::IndexStats {
                     flakes: id_stats_result.total_flakes,
                     size: 0,
                     properties: Some(properties),
-                    classes: None, // Class stats deferred (requires batched PSOT).
-                    graphs: Some(id_stats_result.graphs),
+                    classes: root_classes,
+                    graphs: Some(final_graphs),
                 }
             };
 

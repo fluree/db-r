@@ -609,7 +609,122 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     .map_err(TransactError::Query)?;
 
     // Merge batches into one
-    merge_batches(batches, &txn.vars)
+    let merged = merge_batches(batches, &txn.vars)?;
+
+    // Transaction flake generation requires concrete (materialized) bindings.
+    // Query execution may return late-materialized `Binding::Encoded*` values
+    // when the binary index store is available.
+    materialize_encoded_bindings_for_txn(ledger, merged)
+}
+
+/// Materialize any late-materialized (`Binding::Encoded*`) values in a WHERE-result batch.
+///
+/// Transaction flake generation (`FlakeGenerator`) expects concrete `Binding::Sid` and
+/// `Binding::Lit` values, and will error on encoded bindings.
+fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> Result<Batch> {
+    if batch.is_empty() {
+        return Ok(batch);
+    }
+
+    // If no binary store is present, encoded bindings should not appear.
+    let Some(te) = &ledger.binary_store else {
+        return Ok(batch);
+    };
+    let Ok(store) = Arc::clone(&te.0).downcast::<fluree_db_binary_index::BinaryIndexStore>() else {
+        return Ok(batch);
+    };
+
+    let gv = fluree_db_binary_index::BinaryGraphView::new(Arc::clone(&store), 0);
+    let store_ref = gv.store();
+
+    let schema: Arc<[VarId]> = Arc::from(batch.schema().to_vec().into_boxed_slice());
+    let mut columns: Vec<Vec<Binding>> = Vec::with_capacity(schema.len());
+
+    for col_idx in 0..schema.len() {
+        let mut out_col: Vec<Binding> = Vec::with_capacity(batch.len());
+        let Some(col) = batch.column_by_idx(col_idx) else {
+            return Err(TransactError::Query(fluree_db_query::QueryError::Internal(
+                "batch column missing during materialization".to_string(),
+            )));
+        };
+
+        for b in col.iter() {
+            let materialized = match b {
+                Binding::EncodedSid { s_id } => {
+                    let iri = store_ref.resolve_subject_iri(*s_id).map_err(|e| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "resolve_subject_iri: {e}"
+                        )))
+                    })?;
+                    let sid = ledger
+                        .snapshot
+                        .encode_iri(&iri)
+                        .expect("encode_iri always returns Some");
+                    Binding::Sid(sid)
+                }
+                Binding::EncodedPid { p_id } => {
+                    let iri = store_ref.resolve_predicate_iri(*p_id).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "unknown predicate id: {p_id}"
+                        )))
+                    })?;
+                    let sid = ledger
+                        .snapshot
+                        .encode_iri(iri)
+                        .expect("encode_iri always returns Some");
+                    Binding::Sid(sid)
+                }
+                Binding::EncodedLit {
+                    o_kind,
+                    o_key,
+                    p_id,
+                    dt_id,
+                    lang_id,
+                    i_val,
+                    t,
+                } => {
+                    let val = gv
+                        .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                        .map_err(|e| {
+                            TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                                "decode_value_from_kind: {e}"
+                            )))
+                        })?;
+
+                    match val {
+                        FlakeValue::Ref(sid) => Binding::Sid(sid),
+                        other => {
+                            let dt_sid = store_ref
+                                .dt_sids()
+                                .get(*dt_id as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Sid::new(0, ""));
+                            let dt_iri = store_ref.sid_to_iri(&dt_sid);
+                            let dt = ledger
+                                .snapshot
+                                .encode_iri(&dt_iri)
+                                .expect("encode_iri always returns Some");
+                            let meta = store_ref.decode_meta(*lang_id, *i_val);
+                            Binding::Lit {
+                                val: other,
+                                dt,
+                                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                                t: Some(*t),
+                                op: None,
+                                p_id: Some(*p_id),
+                            }
+                        }
+                    }
+                }
+                _ => b.clone(),
+            };
+            out_col.push(materialized);
+        }
+
+        columns.push(out_col);
+    }
+
+    Batch::new(schema, columns).map_err(|e| TransactError::Query(e.into()))
 }
 
 /// Lower UnresolvedPattern list to Pattern list

@@ -970,7 +970,7 @@ pub struct SharedResolverState {
 
 impl SharedResolverState {
     /// Create a new shared state seeded with default namespace prefixes
-    /// and pre-reserved txn-meta graph (g_id=1).
+    /// and pre-reserved system graphs (txn-meta + config).
     ///
     /// The ledger_id is used to construct the ledger-scoped txn-meta IRI
     /// (`urn:fluree:{ledger_id}#txn-meta`).
@@ -978,9 +978,13 @@ impl SharedResolverState {
         use fluree_db_core::value_id::ValueTypeTag;
 
         let mut graphs = super::global_dict::PredicateDict::new();
-        // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
+        // Reserve system graph IDs in stable order:
+        // - dict_id=0 → g_id=1 txn-meta
+        // - dict_id=1 → g_id=2 config
         let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        let config_iri = fluree_db_core::graph_registry::config_graph_iri(ledger_id);
         graphs.get_or_insert(&txn_meta_iri);
+        graphs.get_or_insert(&config_iri);
 
         let datatypes = super::global_dict::new_datatype_dict();
 
@@ -1048,11 +1052,21 @@ impl SharedResolverState {
                 root.graph_iris.first()
             )));
         }
-        let graph_iris: Vec<Arc<str>> = root
+        // Upgrade legacy roots that only contain txn-meta by inserting the config graph IRI
+        // into slot 1 (g_id=2). This aligns indexed graph IDs with in-memory graph ID
+        // allocation (`GraphRegistry::apply_delta` starts user graphs at g_id=3).
+        //
+        // Safe because legacy roots with `graph_iris.len() == 1` cannot have any user
+        // named graphs yet — inserting config does not shift existing user graphs.
+        let mut graph_iris: Vec<Arc<str>> = root
             .graph_iris
             .iter()
             .map(|s| Arc::from(s.as_str()))
             .collect();
+        if graph_iris.len() == 1 {
+            let config_iri = fluree_db_core::graph_registry::config_graph_iri(&root.ledger_id);
+            graph_iris.push(Arc::from(config_iri.as_str()));
+        }
         let graphs = super::global_dict::PredicateDict::from_ordered_iris(graph_iris);
 
         let reference = super::global_dict::new_datatype_dict();

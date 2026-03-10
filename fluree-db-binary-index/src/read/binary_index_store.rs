@@ -1440,13 +1440,19 @@ async fn build_dictionary_set(
         })
         .collect();
 
-    // Graph IRIs → dict_index (0-based). g_id = dict_index + 1 at lookup time.
-    // Matches V5 convention: graphs_reverse stores 0-based dict index.
+    // Graph IRIs → GraphId (1-based).
+    //
+    // `IndexRoot.graph_iris` is stored 0-based in the root (vector index),
+    // but all query/index code treats `GraphId` as 1-based:
+    // - g_id=0 is the default graph (not present in `graph_iris`)
+    // - g_id=1 is `#txn-meta`
+    // - g_id=2 is `#config`
+    // - g_id>=3 are user named graphs
     let graphs_reverse: HashMap<String, GraphId> = root
         .graph_iris
         .iter()
         .enumerate()
-        .map(|(id, iri)| (iri.to_string(), id as GraphId))
+        .map(|(idx, iri)| (iri.to_string(), (idx as GraphId) + 1))
         .collect();
 
     // Subject count from watermarks.

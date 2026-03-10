@@ -1162,7 +1162,10 @@ impl Operator for GroupByObjectStarTopKOperator {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<crate::binding::Batch>> {
+    async fn next_batch(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<crate::binding::Batch>> {
         if let Some(fb) = &mut self.fallback {
             return fb.next_batch(ctx).await;
         }
@@ -1313,8 +1316,11 @@ fn collect_subject_set_for_predicate_group(
         output: out,
         internal: ColumnSet::EMPTY,
     };
-    let mut cursor = build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
-        .ok_or_else(|| QueryError::Internal("group-by-object star: missing PSOT branch".into()))?;
+    let mut cursor =
+        build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
+            .ok_or_else(|| {
+                QueryError::Internal("group-by-object star: missing PSOT branch".into())
+            })?;
 
     let mut set: FxHashSet<u64> = FxHashSet::default();
     let mut last_s: Option<u64> = None;
@@ -1339,6 +1345,7 @@ fn collect_subject_set_for_predicate_group(
     Ok(set)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_group_by_object_star_topk(
     store: &Arc<BinaryIndexStore>,
     ctx: &ExecutionContext<'_>,
@@ -1366,8 +1373,11 @@ fn compute_group_by_object_star_topk(
         output: out,
         internal: ColumnSet::EMPTY,
     };
-    let mut cursor = build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
-        .ok_or_else(|| QueryError::Internal("group-by-object star: missing PSOT branch".into()))?;
+    let mut cursor =
+        build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
+            .ok_or_else(|| {
+                QueryError::Internal("group-by-object star: missing PSOT branch".into())
+            })?;
 
     let want_min = min_var.is_some();
     let want_max = max_var.is_some();
@@ -1388,8 +1398,11 @@ fn compute_group_by_object_star_topk(
             output: fp_out,
             internal: ColumnSet::EMPTY,
         };
-        let mut fcur = build_psot_cursor_for_predicate_group(ctx, store, g_id, fp_sid, fp_id, fp_proj)?
-            .ok_or_else(|| QueryError::Internal("group-by-object star: missing PSOT branch".into()))?;
+        let mut fcur =
+            build_psot_cursor_for_predicate_group(ctx, store, g_id, fp_sid, fp_id, fp_proj)?
+                .ok_or_else(|| {
+                    QueryError::Internal("group-by-object star: missing PSOT branch".into())
+                })?;
 
         let mut g_batch: Option<ColumnBatch> = None;
         let mut g_i: usize = 0;
@@ -1424,36 +1437,32 @@ fn compute_group_by_object_star_topk(
         };
 
         let peek_group_subject = |cursor: &mut BinaryCursor,
-                                 g_batch: &mut Option<ColumnBatch>,
-                                 g_i: &mut usize|
+                                  g_batch: &mut Option<ColumnBatch>,
+                                  g_i: &mut usize|
          -> Result<Option<u64>> {
-            loop {
-                if g_batch.is_none() || *g_i >= g_batch.as_ref().unwrap().row_count {
-                    *g_batch = cursor
-                        .next_batch()
-                        .map_err(|e| QueryError::Internal(format!("cursor batch: {e}")))?;
-                    *g_i = 0;
-                    if g_batch.is_none() {
-                        return Ok(None);
-                    }
+            if g_batch.is_none() || *g_i >= g_batch.as_ref().unwrap().row_count {
+                *g_batch = cursor
+                    .next_batch()
+                    .map_err(|e| QueryError::Internal(format!("cursor batch: {e}")))?;
+                *g_i = 0;
+                if g_batch.is_none() {
+                    return Ok(None);
                 }
-                let b = g_batch.as_ref().unwrap();
-                return Ok(Some(b.s_id.get(*g_i)));
             }
+            let b = g_batch.as_ref().unwrap();
+            Ok(Some(b.s_id.get(*g_i)))
         };
 
         let mut fs = next_filter_subject(&mut fcur, &mut f_batch, &mut f_i, &mut f_last)?;
-        while let (Some(gs), Some(cur_fs)) = (
-            peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?,
-            fs,
-        ) {
+        while let (Some(gs), Some(cur_fs)) =
+            (peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?, fs)
+        {
             match gs.cmp(&cur_fs) {
                 Ordering::Less => {
                     // Skip all group rows for this subject.
                     let skip_s = gs;
                     loop {
-                        let Some(cur_gs) =
-                            peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
+                        let Some(cur_gs) = peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
                         else {
                             break;
                         };
@@ -1469,8 +1478,7 @@ fn compute_group_by_object_star_topk(
                 Ordering::Equal => {
                     let s = gs;
                     loop {
-                        let Some(cur_gs) =
-                            peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
+                        let Some(cur_gs) = peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
                         else {
                             break;
                         };
@@ -1482,9 +1490,12 @@ fn compute_group_by_object_star_topk(
                             o_type: b.o_type.get(g_i),
                             o_key: b.o_key.get(g_i),
                         };
-                        aggs.entry(k)
-                            .or_insert_with(AggStateStar::new)
-                            .observe(s, want_min, want_max, want_sample);
+                        aggs.entry(k).or_insert_with(AggStateStar::new).observe(
+                            s,
+                            want_min,
+                            want_max,
+                            want_sample,
+                        );
                         g_i += 1;
                     }
                     fs = next_filter_subject(&mut fcur, &mut f_batch, &mut f_i, &mut f_last)?;
@@ -1494,7 +1505,7 @@ fn compute_group_by_object_star_topk(
     } else {
         // General path: build subject set S by intersecting filter predicates.
         let mut s_set: Option<FxHashSet<u64>> = None;
-        for (i, p) in filter_preds.iter().enumerate() {
+        for p in filter_preds.iter() {
             let next = collect_subject_set_for_predicate_group(
                 store,
                 ctx,
@@ -1502,11 +1513,7 @@ fn compute_group_by_object_star_topk(
                 p,
                 s_set.as_ref().map(|s| s as &FxHashSet<u64>),
             )?;
-            if i == 0 {
-                s_set = Some(next);
-            } else {
-                s_set = Some(next);
-            }
+            s_set = Some(next);
             if s_set.as_ref().is_some_and(|s| s.is_empty()) {
                 break;
             }
@@ -1529,9 +1536,12 @@ fn compute_group_by_object_star_topk(
                     o_type: batch.o_type.get(i),
                     o_key: batch.o_key.get(i),
                 };
-                aggs.entry(k)
-                    .or_insert_with(AggStateStar::new)
-                    .observe(s, want_min, want_max, want_sample);
+                aggs.entry(k).or_insert_with(AggStateStar::new).observe(
+                    s,
+                    want_min,
+                    want_max,
+                    want_sample,
+                );
             }
         }
     }
@@ -1543,9 +1553,11 @@ fn compute_group_by_object_star_topk(
     // Select top-k by count desc.
     let mut rows: Vec<(ObjKey, AggStateStar)> = aggs.into_iter().collect();
     rows.sort_unstable_by(|a, b| {
-        b.1.count
-            .cmp(&a.1.count)
-            .then_with(|| a.0.o_type.cmp(&b.0.o_type).then_with(|| a.0.o_key.cmp(&b.0.o_key)))
+        b.1.count.cmp(&a.1.count).then_with(|| {
+            a.0.o_type
+                .cmp(&b.0.o_type)
+                .then_with(|| a.0.o_key.cmp(&b.0.o_key))
+        })
     });
     if rows.len() > limit {
         rows.truncate(limit);
@@ -1599,10 +1611,16 @@ fn compute_group_by_object_star_topk(
             p_id: None,
         });
         if want_min {
-            col_min.push(st.min_s.map_or(Binding::Unbound, |s| Binding::EncodedSid { s_id: s }));
+            col_min.push(
+                st.min_s
+                    .map_or(Binding::Unbound, |s| Binding::EncodedSid { s_id: s }),
+            );
         }
         if want_max {
-            col_max.push(st.max_s.map_or(Binding::Unbound, |s| Binding::EncodedSid { s_id: s }));
+            col_max.push(
+                st.max_s
+                    .map_or(Binding::Unbound, |s| Binding::EncodedSid { s_id: s }),
+            );
         }
         if want_sample {
             col_sample.push(

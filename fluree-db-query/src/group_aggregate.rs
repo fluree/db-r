@@ -839,13 +839,15 @@ impl Operator for GroupAggregateOperator {
                 // of aggregate results (e.g., COUNT(*) = 0).
                 if self.group_key_indices.is_empty() && input_rows == 0 {
                     let agg_specs_ref = &self.agg_specs;
-                    self.groups.entry(CompositeGroupKey(Vec::new())).or_insert_with(|| GroupState {
-                        key_bindings: Vec::new(),
-                        agg_states: agg_specs_ref
-                            .iter()
-                            .map(|spec| AggState::new(&spec.function))
-                            .collect(),
-                    });
+                    self.groups
+                        .entry(CompositeGroupKey(Vec::new()))
+                        .or_insert_with(|| GroupState {
+                            key_bindings: Vec::new(),
+                            agg_states: agg_specs_ref
+                                .iter()
+                                .map(|spec| AggState::new(&spec.function))
+                                .collect(),
+                        });
                 }
 
                 span.record("input_batches", input_batches);

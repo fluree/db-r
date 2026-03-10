@@ -289,14 +289,39 @@ where
             None => (None, primary.t, false),
         };
 
-        let spatial_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.spatial_provider_map());
-        let fulltext_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.fulltext_provider_map());
+        // Binary scans rely on a ledger-specific binary index store. For datasets that span
+        // multiple ledgers, using only the primary view's store will silently drop results.
+        //
+        // In multi-ledger mode we disable binary scans (and associated provider maps) so
+        // execution falls back to per-snapshot range scans which are correctly ledger-scoped.
+        let primary_ledger_id: &str = primary.ledger_id.as_ref();
+        let is_single_ledger_dataset = dataset
+            .default
+            .iter()
+            .all(|v| v.ledger_id.as_ref() == primary_ledger_id)
+            && dataset
+                .named
+                .values()
+                .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
+
+        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
+            let spatial_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.spatial_provider_map());
+            let fulltext_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.fulltext_provider_map());
+            (
+                primary.binary_store.clone(),
+                primary.dict_novelty.clone(),
+                spatial_map,
+                fulltext_map,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
@@ -306,9 +331,9 @@ where
             },
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
-            binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
-            dict_novelty: primary.dict_novelty.clone(),
+            binary_store,
+            dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
             history_mode,
@@ -348,22 +373,42 @@ where
             None => (None, primary.t, false),
         };
 
-        let spatial_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.spatial_provider_map());
-        let fulltext_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.fulltext_provider_map());
+        let primary_ledger_id: &str = primary.ledger_id.as_ref();
+        let is_single_ledger_dataset = dataset
+            .default
+            .iter()
+            .all(|v| v.ledger_id.as_ref() == primary_ledger_id)
+            && dataset
+                .named
+                .values()
+                .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
+
+        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
+            let spatial_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.spatial_provider_map());
+            let fulltext_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.fulltext_provider_map());
+            (
+                primary.binary_store.clone(),
+                primary.dict_novelty.clone(),
+                spatial_map,
+                fulltext_map,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
         let config = ContextConfig {
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
-            binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
-            dict_novelty: primary.dict_novelty.clone(),
+            binary_store,
+            dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
             history_mode,

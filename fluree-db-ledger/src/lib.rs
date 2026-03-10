@@ -143,7 +143,7 @@ impl LedgerState {
         let store = content_store_for(storage.clone(), &record.ledger_id);
 
         // Handle missing index (genesis fallback)
-        let (mut snapshot, dict_novelty) = match &record.index_head_id {
+        let (mut snapshot, mut dict_novelty) = match &record.index_head_id {
             Some(index_cid) => {
                 let root_bytes = store.get(index_cid).await?;
                 let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
@@ -168,6 +168,7 @@ impl LedgerState {
                     snapshot.t,
                     &record.ledger_id,
                     &mut snapshot,
+                    &mut dict_novelty,
                 )
                 .await?;
                 let head_index_id = record.index_head_id.clone();
@@ -216,6 +217,7 @@ impl LedgerState {
         index_t: i64,
         ledger_id: &str,
         snapshot: &mut LedgerSnapshot,
+        dict_novelty: &mut DictNovelty,
     ) -> Result<(Novelty, Option<ContentId>)> {
         use std::collections::{HashMap, HashSet};
 
@@ -281,6 +283,9 @@ impl LedgerState {
         // Replay oldest→newest (walk was HEAD→oldest, so reverse)
         commit_batches.reverse();
         for (flakes, commit_t) in commit_batches {
+            // Populate dict_novelty with subjects/strings from replayed commits so
+            // overlay translation can resolve IDs for unindexed commits.
+            dict_novelty.populate_from_flakes(&flakes);
             novelty.apply_commit(flakes, commit_t, &reverse_graph)?;
         }
 

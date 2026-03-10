@@ -10,10 +10,10 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, count_rows_for_predicate_psot, fast_path_store, leaf_entries_for_predicate,
-    normalize_pred_sid, projection_okey_only, projection_otype_only, projection_sid_only,
-    projection_otype_okey,
-    PrecomputedSingleBatchOperator,
+    normalize_pred_sid, projection_okey_only, projection_otype_okey, projection_otype_only,
+    projection_sid_only, PrecomputedSingleBatchOperator,
 };
+use crate::ir::{Expression, Function};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::Ref;
 use crate::var_registry::VarId;
@@ -27,7 +27,6 @@ use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::GraphId;
 use fluree_vocab::namespaces;
-use crate::ir::{Expression, Function};
 
 // ---------------------------------------------------------------------------
 // 1) COUNT(*) / COUNT(?x) for single predicate `?s <p> ?o`
@@ -529,9 +528,7 @@ impl Operator for CountDistinctPredicatesOperator {
         if let Some(store) = fast_path_store(ctx) {
             let count = count_distinct_predicates_psot(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution(
-                    "COUNT(DISTINCT) exceeds i64 in distinct-predicate fast-path",
-                )
+                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-predicate fast-path")
             })?;
             let batch = build_count_batch(self.out_var, count_i64)?;
             self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
@@ -889,9 +886,8 @@ impl Operator for CountBlankNodeSubjectsOperator {
 
         if let Some(store) = fast_path_store(ctx) {
             let count = count_blank_subject_rows_spot(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution("COUNT exceeds i64 in blank-node fast-path")
-            })?;
+            let count_i64 = i64::try_from(count)
+                .map_err(|_| QueryError::execution("COUNT exceeds i64 in blank-node fast-path"))?;
             let batch = build_count_batch(self.out_var, count_i64)?;
             self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
             self.state = OperatorState::Open;
@@ -1034,7 +1030,12 @@ pub struct PredicateRegexPrefixCountOperator {
 }
 
 impl PredicateRegexPrefixCountOperator {
-    pub fn new(predicate: Ref, prefix: String, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
+    pub fn new(
+        predicate: Ref,
+        prefix: String,
+        out_var: VarId,
+        fallback: Option<BoxedOperator>,
+    ) -> Self {
         Self {
             predicate,
             prefix,
@@ -1070,7 +1071,8 @@ impl Operator for PredicateRegexPrefixCountOperator {
             };
 
             // Determine (small) set of string-backed o_types observed for this predicate in POST order.
-            let Some(o_types) = string_otypes_for_predicate_post(store, ctx.binary_g_id, p_id)? else {
+            let Some(o_types) = string_otypes_for_predicate_post(store, ctx.binary_g_id, p_id)?
+            else {
                 // Can't guarantee correctness with this fast path.
                 // Fall back to the planned pipeline (filter eval).
                 if let Some(fb) = self.fallback.as_mut() {
@@ -1124,8 +1126,9 @@ impl Operator for PredicateRegexPrefixCountOperator {
                 total,
                 "regex-prefix fast-path: computed total rows"
             );
-            let total_i64 = i64::try_from(total)
-                .map_err(|_| QueryError::execution("COUNT exceeds i64 in regex-prefix fast-path"))?;
+            let total_i64 = i64::try_from(total).map_err(|_| {
+                QueryError::execution("COUNT exceeds i64 in regex-prefix fast-path")
+            })?;
             let batch = build_count_batch(self.out_var, total_i64)?;
             self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
             self.state = OperatorState::Open;
@@ -1307,7 +1310,11 @@ fn count_predicate_okey_post(
 
 /// Detection helper: extract a constant anchored prefix from `REGEX(?var, "^prefix")`.
 pub fn detect_regex_anchored_prefix(expr: &Expression, object_var: VarId) -> Option<String> {
-    let Expression::Call { func: Function::Regex, args } = expr else {
+    let Expression::Call {
+        func: Function::Regex,
+        args,
+    } = expr
+    else {
         return None;
     };
     if args.len() < 2 || args.len() > 3 {
@@ -1334,9 +1341,24 @@ pub fn detect_regex_anchored_prefix(expr: &Expression, object_var: VarId) -> Opt
         return None;
     }
     // Reject regex metacharacters in the remainder (simple literal prefix only).
-    if prefix.bytes().any(|b| matches!(b, b'.'|b'+'|b'*'|b'?'|b'['|b']'|b'('|b')'|b'{'|b'}'|b'|'|b'\\'|b'$')) {
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'['
+                | b']'
+                | b'('
+                | b')'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'$'
+        )
+    }) {
         return None;
     }
     Some(prefix.to_string())
 }
-

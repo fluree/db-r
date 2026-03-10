@@ -1103,13 +1103,10 @@ struct IndexBuildInput<'a> {
     #[expect(dead_code)]
     dt_width: u8,
     /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
-    #[expect(dead_code)]
     dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
     /// Predicate ID for rdf:type (for inline class stats during SPOT merge).
-    #[expect(dead_code)]
     rdf_type_p_id: u32,
     /// Whether to collect ID-based stats during Phase D remap.
-    #[expect(dead_code)]
     collect_id_stats: bool,
     /// Turtle @prefix IRI → short prefix name, for IRI compaction in display.
     #[expect(dead_code)]
@@ -2762,8 +2759,13 @@ where
             stage: "Building V3 columnar indexes",
         });
 
-        let mut v3_handle =
-            tokio::task::spawn_blocking(move || -> std::result::Result<_, ImportError> {
+        // Stats collection (optional): collect ID-based property stats during Phase D remap.
+        let v3_collect_id_stats = input.collect_id_stats;
+        let v3_dt_tags = input.dt_tags;
+        let v3_rdf_type_p_id = input.rdf_type_p_id;
+
+        let mut v3_handle = tokio::task::spawn_blocking(
+            move || -> std::result::Result<(_, Option<fluree_db_indexer::stats::IdStatsResult>), ImportError> {
                 let registry = fluree_db_core::OTypeRegistry::new(&v3_datatype_iris);
 
                 let commits: Vec<fluree_db_indexer::CommitInput> = v3_sorted_commit_infos
@@ -2780,6 +2782,15 @@ where
                         }
                     })
                     .collect();
+
+                let dt_tags = v3_collect_id_stats.then_some(v3_dt_tags.as_slice());
+                let mut stats_hook = v3_collect_id_stats.then(|| {
+                    let mut hook = fluree_db_indexer::stats::IdStatsHook::new();
+                    hook.set_rdf_type_p_id(v3_rdf_type_p_id);
+                    // Import does not currently surface class/ref-target stats; avoid extra memory.
+                    hook.set_track_ref_targets(false);
+                    hook
+                });
 
                 // Build V3 indexes for:
                 // - g_id=0 (default graph) across all chunks
@@ -2805,8 +2816,16 @@ where
                     .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
                 let g0_result =
-                    fluree_db_indexer::build_indexes_from_commits(&commits, &registry, &cfg_g0)
-                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+                    fluree_db_indexer::build_indexes_from_commits(
+                        &commits,
+                        &registry,
+                        &cfg_g0,
+                        stats_hook.as_mut(),
+                        dt_tags,
+                    )
+                    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                let id_stats_result = stats_hook.map(|h| h.finalize());
 
                 // Meta chunk is always the last chunk when present.
                 let g1_result = if let Some(meta_commit) = commits.last() {
@@ -2828,6 +2847,8 @@ where
                             std::slice::from_ref(meta_commit),
                             &registry,
                             &cfg_g1,
+                            None, // no stats in txn-meta build
+                            None, // no dt_tags
                         )
                         .map_err(|e| ImportError::IndexBuild(e.to_string()))?,
                     )
@@ -2877,13 +2898,14 @@ where
                     "V3 index build complete"
                 );
 
-                Ok(result)
-            });
+                Ok((result, id_stats_result))
+            },
+        );
 
         // Poll the merge counter periodically so the CLI progress bar updates
         // during the index build (which runs on a blocking thread).
         let index_start = std::time::Instant::now();
-        let v3_result = loop {
+        let (v3_result, id_stats_result) = loop {
             tokio::select! {
                 result = &mut v3_handle => {
                     // Build finished — emit final progress and break.
@@ -3001,6 +3023,68 @@ where
             Vec::new()
         };
 
+        let stats_v6: Option<fluree_db_core::IndexStats> = id_stats_result.map(|id_stats| {
+            use fluree_db_core::index_stats as is;
+
+            // Aggregate across graphs by p_id (deprecated SID-keyed view).
+            struct PropAgg {
+                count: u64,
+                ndv_values: u64,
+                ndv_subjects: u64,
+                last_modified_t: i64,
+                datatypes: Vec<(u8, u64)>,
+            }
+            let mut agg: std::collections::HashMap<u32, PropAgg> = std::collections::HashMap::new();
+            for g in &id_stats.graphs {
+                for p in &g.properties {
+                    let e = agg.entry(p.p_id).or_insert(PropAgg {
+                        count: 0,
+                        ndv_values: 0,
+                        ndv_subjects: 0,
+                        last_modified_t: 0,
+                        datatypes: Vec::new(),
+                    });
+                    e.count += p.count;
+                    e.ndv_values = e.ndv_values.max(p.ndv_values);
+                    e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                    e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                    for &(dt, cnt) in &p.datatypes {
+                        if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
+                            existing.1 += cnt;
+                        } else {
+                            e.datatypes.push((dt, cnt));
+                        }
+                    }
+                }
+            }
+
+            let properties: Vec<is::PropertyStatEntry> = agg
+                .into_iter()
+                .map(|(p_id, pa)| {
+                    let (ns, name) = predicate_sids_v6
+                        .get(p_id as usize)
+                        .cloned()
+                        .unwrap_or((0u16, "".to_string()));
+                    is::PropertyStatEntry {
+                        sid: (ns, name),
+                        count: pa.count,
+                        ndv_values: pa.ndv_values,
+                        ndv_subjects: pa.ndv_subjects,
+                        last_modified_t: pa.last_modified_t,
+                        datatypes: pa.datatypes,
+                    }
+                })
+                .collect();
+
+            is::IndexStats {
+                flakes: id_stats.total_flakes,
+                size: 0,
+                properties: Some(properties),
+                classes: None, // Class stats deferred
+                graphs: Some(id_stats.graphs),
+            }
+        });
+
         // Build default_graph_orders from V3 upload result.
         let default_graph_orders: Vec<DefaultGraphOrder> = v3_uploaded
             .default_graph_orders
@@ -3039,7 +3123,7 @@ where
             ),
             default_graph_orders,
             named_graphs: v3_uploaded.named_graphs,
-            stats: None,
+            stats: stats_v6,
             schema: None,
             prev_index: None,
             garbage: None,

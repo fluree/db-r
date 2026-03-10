@@ -909,7 +909,6 @@ fn detect_count_rows_with_encoded_filters(
     ))
 }
 
-
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
 /// Returns `Some((predicate_var, count_output_var))` if the query matches the pattern.

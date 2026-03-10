@@ -850,36 +850,7 @@ fn apply_pushed_commits_to_state(
 }
 
 fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    use fluree_db_core::FlakeValue;
-
-    dict_novelty.ensure_initialized();
-
-    for flake in flakes {
-        // Subject
-        dict_novelty
-            .subjects
-            .assign_or_lookup(flake.s.namespace_code, &flake.s.name);
-
-        // Predicate
-        dict_novelty
-            .subjects
-            .assign_or_lookup(flake.p.namespace_code, &flake.p.name);
-
-        // Object references
-        if let FlakeValue::Ref(ref sid) = flake.o {
-            dict_novelty
-                .subjects
-                .assign_or_lookup(sid.namespace_code, &sid.name);
-        }
-
-        // String values
-        match &flake.o {
-            FlakeValue::String(s) | FlakeValue::Json(s) => {
-                dict_novelty.strings.assign_or_lookup(s);
-            }
-            _ => {}
-        }
-    }
+    dict_novelty.populate_from_flakes(flakes);
 }
 
 /// Extract and **verify** the canonical content hash from a commit-v2 blob.

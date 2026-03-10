@@ -1966,6 +1966,7 @@ mod tests {
             &subject_remap,
             &string_remap,
             &[], // no lang remap
+            0,   // target g_id (default graph)
             &registry,
             &mut writer,
             Some(&mut stats_hook),

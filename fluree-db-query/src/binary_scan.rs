@@ -149,7 +149,15 @@ pub struct BinaryScanOperator {
     check_s_eq_p: bool,
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
-    range_iter: Option<std::vec::IntoIter<Flake>>,
+    range_iter: Option<std::vec::IntoIter<RangeFlake>>,
+}
+
+#[derive(Clone, Debug)]
+struct RangeFlake {
+    flake: Flake,
+    /// When present (dataset mode), identifies the originating ledger for SID decoding
+    /// and provenance-carrying bindings (`Binding::IriMatch`).
+    ledger_alias: Option<Arc<str>>,
 }
 
 /// A filter that can be evaluated on encoded index columns (no term decoding).
@@ -378,9 +386,11 @@ impl BinaryScanOperator {
         let mut produced = 0;
 
         while produced < batch_size {
-            let Some(flake) = self.range_iter.as_mut().and_then(|it| it.next()) else {
+            let Some(rf) = self.range_iter.as_mut().and_then(|it| it.next()) else {
                 break;
             };
+            let flake = rf.flake;
+            let ledger_alias = rf.ledger_alias;
 
             // Repeated-variable checks.
             if self.check_s_eq_p && flake.s != flake.p {
@@ -402,14 +412,14 @@ impl BinaryScanOperator {
             let mut bindings: Vec<Binding> = vec![Binding::Unbound; base_len];
 
             if let Some(pos) = self.s_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = Binding::Sid(flake.s.clone());
+                bindings[pos] = sid_binding(ctx, &flake.s, ledger_alias.as_ref());
             }
             if let Some(pos) = self.p_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = Binding::Sid(flake.p.clone());
+                bindings[pos] = sid_binding(ctx, &flake.p, ledger_alias.as_ref());
             }
             if let Some(pos) = self.o_var_pos.filter(|p| *p < base_len) {
                 bindings[pos] = match &flake.o {
-                    FlakeValue::Ref(r) => Binding::Sid(r.clone()),
+                    FlakeValue::Ref(r) => sid_binding(ctx, r, ledger_alias.as_ref()),
                     v => Binding::Lit {
                         val: v.clone(),
                         dt: flake.dt.clone(),
@@ -447,50 +457,70 @@ impl BinaryScanOperator {
 
     async fn open_range_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let no_overlay = NoOverlay;
-        let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
+        let mut out: Vec<RangeFlake> = Vec::new();
 
-        let mut match_val = RangeMatch::new();
-
-        match &self.pattern.s {
-            Ref::Sid(s) => match_val.s = Some(s.clone()),
-            Ref::Var(_) => {}
-            Ref::Iri(iri) => match_val.s = ctx.snapshot.encode_iri(iri),
+        // Dataset-aware range fallback:
+        // - In single-db mode, scan only `ctx.snapshot` / `self.g_id`.
+        // - In dataset mode, scan all active graphs and union results.
+        match ctx.active_graphs() {
+            crate::dataset::ActiveGraphs::Single => {
+                let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
+                let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
+                let opts = RangeOptions {
+                    to_t: Some(ctx.to_t),
+                    from_t: ctx.from_t,
+                    object_bounds: self.object_bounds.clone(),
+                    history_mode: ctx.history_mode,
+                    ..Default::default()
+                };
+                let flakes = range_with_overlay(
+                    ctx.snapshot,
+                    self.g_id,
+                    overlay,
+                    self.index,
+                    RangeTest::Eq,
+                    match_val,
+                    opts,
+                )
+                .await
+                .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+                out.extend(flakes.into_iter().map(|flake| RangeFlake {
+                    flake,
+                    ledger_alias: None,
+                }));
+            }
+            crate::dataset::ActiveGraphs::Many(graphs) => {
+                for graph in graphs {
+                    let match_val =
+                        build_match_val_for_snapshot(ctx, graph.snapshot, &self.pattern)?;
+                    let opts = RangeOptions {
+                        to_t: Some(graph.to_t),
+                        from_t: ctx.from_t,
+                        object_bounds: self.object_bounds.clone(),
+                        history_mode: ctx.history_mode,
+                        ..Default::default()
+                    };
+                    let flakes = range_with_overlay(
+                        graph.snapshot,
+                        graph.g_id,
+                        graph.overlay,
+                        self.index,
+                        RangeTest::Eq,
+                        match_val,
+                        opts,
+                    )
+                    .await
+                    .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+                    let alias = Arc::clone(&graph.ledger_id);
+                    out.extend(flakes.into_iter().map(|flake| RangeFlake {
+                        flake,
+                        ledger_alias: Some(Arc::clone(&alias)),
+                    }));
+                }
+            }
         }
 
-        match &self.pattern.p {
-            Ref::Sid(p) => match_val.p = Some(p.clone()),
-            Ref::Var(_) => {}
-            Ref::Iri(iri) => match_val.p = ctx.snapshot.encode_iri(iri),
-        }
-
-        match &self.pattern.o {
-            Term::Sid(o) => match_val.o = Some(FlakeValue::Ref(o.clone())),
-            Term::Value(v) => match_val.o = Some(v.clone()),
-            Term::Var(_) => {}
-            Term::Iri(iri) => match_val.o = ctx.snapshot.encode_iri(iri).map(FlakeValue::Ref),
-        }
-
-        let opts = RangeOptions {
-            to_t: Some(ctx.to_t),
-            from_t: ctx.from_t,
-            object_bounds: self.object_bounds.clone(),
-            history_mode: ctx.history_mode,
-            ..Default::default()
-        };
-
-        let flakes = range_with_overlay(
-            ctx.snapshot,
-            self.g_id,
-            overlay,
-            self.index,
-            RangeTest::Eq,
-            match_val,
-            opts,
-        )
-        .await
-        .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
-
-        self.range_iter = Some(flakes.into_iter());
+        self.range_iter = Some(out.into_iter());
         self.cursor = None;
         self.state = OperatorState::Open;
         Ok(())
@@ -682,7 +712,14 @@ impl BinaryScanOperator {
         let ncols = self.schema.len();
         let base_len = self.base_schema_len();
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
-        let view = BinaryGraphView::new(Arc::clone(self.store()), self.g_id);
+        let store_arc: Arc<BinaryIndexStore> = Arc::clone(self.store());
+        let view = BinaryGraphView::new(Arc::clone(&store_arc), self.g_id);
+        let dict_overlay = ctx.and_then(|c| c.dict_novelty.clone()).map(|dn| {
+            crate::dict_overlay::DictOverlay::new(
+                BinaryGraphView::new(Arc::clone(&store_arc), self.g_id),
+                dn,
+            )
+        });
 
         // Late materialization is safe only when the BinaryIndexStore is authoritative
         // for decoding (no novelty overlay with ephemeral IDs).
@@ -807,11 +844,30 @@ impl BinaryScanOperator {
             let needs_o_decode = self.bound_o.is_some()
                 || self.object_bounds.is_some()
                 || (!late_materialize && self.o_var_pos.is_some());
+            let decode_value = |o_type: u16, o_key: u64, p_id: u32| -> Result<FlakeValue> {
+                use fluree_db_core::o_type::{DecodeKind, OType};
+                let ot = OType::from_u16(o_type);
+                match (ot.decode_kind(), dict_overlay.as_ref()) {
+                    (DecodeKind::IriRef, Some(ov)) => {
+                        let iri = ov.resolve_subject_iri(o_key).map_err(|e| {
+                            QueryError::Internal(format!("resolve_subject_iri: {e}"))
+                        })?;
+                        Ok(FlakeValue::Ref(store_arc.encode_iri(&iri)))
+                    }
+                    (DecodeKind::StringDict, Some(ov)) => {
+                        let s = ov.resolve_string_value(o_key as u32).map_err(|e| {
+                            QueryError::Internal(format!("resolve_string_value: {e}"))
+                        })?;
+                        Ok(FlakeValue::String(s))
+                    }
+                    _ => Ok(view
+                        .decode_value(o_type, o_key, p_id)
+                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?),
+                }
+            };
+
             let decoded_o = if needs_o_decode {
-                Some(
-                    view.decode_value(o_type, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?,
-                )
+                Some(decode_value(o_type, o_key, p_id)?)
             } else {
                 None
             };
@@ -846,7 +902,15 @@ impl BinaryScanOperator {
                 let binding = if late_materialize {
                     Binding::EncodedSid { s_id }
                 } else {
-                    Binding::Sid(self.resolve_s_id(s_id)?)
+                    match dict_overlay.as_ref() {
+                        Some(ov) => {
+                            let iri = ov.resolve_subject_iri(s_id).map_err(|e| {
+                                QueryError::Internal(format!("resolve_subject_iri: {e}"))
+                            })?;
+                            Binding::Sid(store_arc.encode_iri(&iri))
+                        }
+                        None => Binding::Sid(self.resolve_s_id(s_id)?),
+                    }
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
@@ -891,7 +955,7 @@ impl BinaryScanOperator {
                     encode_object(o_type, o_key, p_id, t, o_i).unwrap_or_else(|| {
                         // Fallback: decode if we don't have a safe encoded representation.
                         // This preserves correctness for uncommon/custom OTypes.
-                        match view.decode_value(o_type, o_key, p_id) {
+                        match decode_value(o_type, o_key, p_id) {
                             Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
                             Ok(val) => {
                                 let dt = self
@@ -931,6 +995,174 @@ impl BinaryScanOperator {
 
         Ok(produced)
     }
+}
+
+impl BinaryScanOperator {
+    async fn open_overlay_only_fallback(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+        s_sid: &Option<Sid>,
+        p_sid: &Option<Sid>,
+    ) -> Result<()> {
+        let Some(overlay) = ctx.overlay else {
+            self.range_iter = Some(Vec::<RangeFlake>::new().into_iter());
+            self.cursor = None;
+            self.state = OperatorState::Open;
+            return Ok(());
+        };
+
+        let to_t = ctx.to_t;
+        let from_t = ctx.from_t;
+        let cmp = self.index.comparator();
+
+        // Collect all overlay flakes for this graph+index (novelty is expected to be small),
+        // then narrow by equality match.
+        let mut flakes: Vec<Flake> = Vec::new();
+        overlay.for_each_overlay_flake(self.g_id, self.index, None, None, true, to_t, &mut |f| {
+            if f.t <= to_t && from_t.is_none_or(|ft| f.t >= ft) {
+                flakes.push(f.clone());
+            }
+        });
+
+        flakes.sort_by(cmp);
+        flakes = remove_stale_overlay_flakes(flakes);
+
+        // Apply equality match (subject/predicate/object).
+        if s_sid.is_some() || p_sid.is_some() || self.bound_o.is_some() {
+            flakes.retain(|f| {
+                if let Some(s) = s_sid.as_ref() {
+                    if &f.s != s {
+                        return false;
+                    }
+                }
+                if let Some(p) = p_sid.as_ref() {
+                    if &f.p != p {
+                        return false;
+                    }
+                }
+                if let Some(o) = self.bound_o.as_ref() {
+                    if &f.o != o {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+
+        // Apply object bounds (post-filter) when present.
+        if let Some(bounds) = self.object_bounds.as_ref() {
+            flakes.retain(|f| bounds.matches(&f.o));
+        }
+
+        self.range_iter = Some(
+            flakes
+                .into_iter()
+                .map(|flake| RangeFlake {
+                    flake,
+                    ledger_alias: None,
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        );
+        self.cursor = None;
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+}
+
+fn remove_stale_overlay_flakes(flakes: Vec<Flake>) -> Vec<Flake> {
+    use std::collections::HashSet;
+
+    #[derive(Clone, Copy, Hash, PartialEq, Eq)]
+    struct FactKeyRef<'a> {
+        s: &'a Sid,
+        p: &'a Sid,
+        o: &'a FlakeValue,
+        dt: &'a Sid,
+    }
+
+    let mut seen: HashSet<FactKeyRef<'_>> = HashSet::new();
+    let mut keep = vec![false; flakes.len()];
+
+    for (idx, f) in flakes.iter().enumerate().rev() {
+        let key = FactKeyRef {
+            s: &f.s,
+            p: &f.p,
+            o: &f.o,
+            dt: &f.dt,
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        if f.op {
+            keep[idx] = true;
+        }
+    }
+
+    flakes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(f, k)| k.then_some(f))
+        .collect()
+}
+
+#[inline]
+fn sid_binding(ctx: &ExecutionContext<'_>, sid: &Sid, ledger_alias: Option<&Arc<str>>) -> Binding {
+    if ctx.is_multi_ledger() {
+        if let Some(alias) = ledger_alias {
+            if let Some(iri) = ctx.decode_sid_in_ledger(sid, alias.as_ref()) {
+                return Binding::iri_match(
+                    Arc::<str>::from(iri.as_str()),
+                    sid.clone(),
+                    alias.clone(),
+                );
+            }
+        }
+    }
+    Binding::Sid(sid.clone())
+}
+
+fn build_match_val_for_snapshot(
+    ctx: &ExecutionContext<'_>,
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    pattern: &TriplePattern,
+) -> Result<RangeMatch> {
+    let mut match_val = RangeMatch::new();
+
+    let reencode_sid = |sid: &Sid| -> Option<Sid> {
+        // Pattern SIDs are encoded in the primary snapshot's namespace space.
+        // Decode to canonical IRI and re-encode into the target snapshot.
+        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+            snapshot.encode_iri(&iri)
+        } else {
+            // If the SID can't be decoded (namespace code missing), preserve the
+            // raw SID. This is important when the namespace table has been
+            // extended in novelty but the snapshot's namespace map is not yet
+            // able to decode the SID. Range scans can still match by raw SID.
+            Some(sid.clone())
+        }
+    };
+
+    match &pattern.s {
+        Ref::Sid(s) => match_val.s = reencode_sid(s),
+        Ref::Var(_) => {}
+        Ref::Iri(iri) => match_val.s = snapshot.encode_iri(iri),
+    }
+
+    match &pattern.p {
+        Ref::Sid(p) => match_val.p = reencode_sid(p),
+        Ref::Var(_) => {}
+        Ref::Iri(iri) => match_val.p = snapshot.encode_iri(iri),
+    }
+
+    match &pattern.o {
+        Term::Sid(o) => match_val.o = reencode_sid(o).map(FlakeValue::Ref),
+        Term::Value(v) => match_val.o = Some(v.clone()),
+        Term::Var(_) => {}
+        Term::Iri(iri) => match_val.o = snapshot.encode_iri(iri).map(FlakeValue::Ref),
+    }
+
+    Ok(match_val)
 }
 
 /// Pre-compute which repeated-variable equality checks are needed for a pattern.
@@ -999,6 +1231,29 @@ impl Operator for BinaryScanOperator {
         let filter = self
             .build_filter(&s_sid, &p_sid)
             .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        if std::env::var_os("FLUREE_DEBUG_SCAN").is_some() {
+            eprintln!(
+                "BinaryScanOperator::open pattern={:?} s_bound={} p_bound={} filter_s_id={:?} filter_p_id={:?}",
+                self.pattern,
+                s_sid.is_some(),
+                p_sid.is_some(),
+                filter.s_id,
+                filter.p_id
+            );
+        }
+
+        // If a subject/predicate is bound but not present in the binary dictionaries
+        // (common when querying freshly-inserted novelty before the next index build),
+        // a binary scan would devolve into a full index scan because the filter can't
+        // constrain by IDs.
+        //
+        // IMPORTANT: RangeProvider-based scans also require dictionary IDs to constrain
+        // base index scans. If a SID isn't in the base dictionaries, a range scan can
+        // still devolve into a wide base scan. In this case we want an **overlay-only**
+        // fallback to return only novelty matches.
+        if s_sid.is_some() && filter.s_id.is_none() || p_sid.is_some() && filter.p_id.is_none() {
+            return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        }
 
         let order = index_type_to_sort_order(self.index);
         let projection = ColumnProjection::all();

@@ -182,59 +182,12 @@ impl LedgerSnapshot {
 
     /// Extract metadata from raw index root bytes (FIR6 binary format).
     pub fn from_root_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 4 {
-            return Err(Error::invalid_index("index root: too short"));
-        }
-        if &bytes[0..4] != b"FIR6" {
-            return Err(Error::invalid_index(
-                "index root: expected FIR6 magic bytes",
-            ));
-        }
-        Self::from_fir6_header(bytes)
+        let meta = decode_fir6_metadata(bytes)
+            .map_err(|e| Error::invalid_index(format!("index root: FIR6 decode: {e}")))?;
+        Self::new_meta(meta)
     }
 
-    /// Extract minimal metadata from FIR6 root bytes.
-    ///
-    /// Reads: index_t, base_t, ledger_id from the FIR6 header.
-    /// Watermarks are left empty — they're populated later when
-    /// `BinaryIndexStore::load_from_root_bytes` runs.
-    fn from_fir6_header(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 24 {
-            return Err(Error::invalid_index("FIR6: truncated root (< 24 bytes)"));
-        }
-        // Header: [4B magic][1B version][1B flags][2B pad][8B index_t][8B base_t]
-        let index_t = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
-        // base_t is at bytes[16..24] but LedgerSnapshot doesn't use it
-
-        // Ledger ID: u16-length-prefixed string after the 24-byte header.
-        // (write_str in index_root.rs uses a u16 length prefix)
-        let mut pos = 24;
-        let ledger_id = if pos + 2 <= bytes.len() {
-            let len = u16::from_le_bytes(bytes[pos..pos + 2].try_into().unwrap()) as usize;
-            pos += 2;
-            if pos + len <= bytes.len() {
-                String::from_utf8_lossy(&bytes[pos..pos + len]).to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        Ok(Self {
-            ledger_id,
-            t: index_t,
-            version: 6, // FIR6
-            namespace_codes: crate::default_namespace_codes(),
-            stats: None,
-            schema: None,
-            schema_hierarchy_cache: OnceCell::new(),
-            subject_watermarks: Vec::new(),
-            string_watermark: 0,
-            range_provider: None,
-            graph_registry: GraphRegistry::default(),
-        })
-    }
+    // FIR6 decoding lives in `decode_fir6_metadata` below.
 
     /// Attach a range provider for binary index queries.
     pub fn with_range_provider(mut self, provider: Arc<dyn RangeProvider>) -> Self {
@@ -372,6 +325,341 @@ impl LedgerSnapshot {
     pub fn schema_epoch(&self) -> Option<u64> {
         self.schema.as_ref().map(|s| s.t as u64)
     }
+}
+
+// =============================================================================
+// FIR6 root metadata decode (core-only, no binary-index dependency)
+// =============================================================================
+
+fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata> {
+    use crate::stats_wire;
+
+    // Mirror `fluree-db-binary-index` wire format:
+    // [magic(4)][version(1)][flags(1)][pad(2)][index_t(8)][base_t(8)] ...
+    if bytes.len() < 24 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "FIR6: truncated root (< 24 bytes)",
+        ));
+    }
+    if &bytes[0..4] != b"FIR6" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "FIR6: expected magic bytes",
+        ));
+    }
+    let version = bytes[4];
+    if version != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("FIR6: unsupported version {version}"),
+        ));
+    }
+    let flags = bytes[5];
+
+    // Optional-section flags (must match binary-index IndexRoot).
+    const FLAG_HAS_STATS: u8 = 1 << 0;
+    const FLAG_HAS_SCHEMA: u8 = 1 << 1;
+    const FLAG_HAS_PREV_INDEX: u8 = 1 << 2;
+    const FLAG_HAS_GARBAGE: u8 = 1 << 3;
+    const FLAG_HAS_SKETCH: u8 = 1 << 4;
+
+    #[inline]
+    fn ensure(bytes: &[u8], pos: usize, need: usize, ctx: &str) -> std::io::Result<()> {
+        if pos + need > bytes.len() {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "FIR6: truncated at {ctx} (need {need} at offset {pos}, have {})",
+                    bytes.len()
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn read_u8(bytes: &[u8], pos: &mut usize) -> std::io::Result<u8> {
+        ensure(bytes, *pos, 1, "u8")?;
+        let v = bytes[*pos];
+        *pos += 1;
+        Ok(v)
+    }
+    #[inline]
+    fn read_u16(bytes: &[u8], pos: &mut usize) -> std::io::Result<u16> {
+        ensure(bytes, *pos, 2, "u16")?;
+        let v = u16::from_le_bytes(bytes[*pos..*pos + 2].try_into().unwrap());
+        *pos += 2;
+        Ok(v)
+    }
+    #[inline]
+    fn read_u32(bytes: &[u8], pos: &mut usize) -> std::io::Result<u32> {
+        ensure(bytes, *pos, 4, "u32")?;
+        let v = u32::from_le_bytes(bytes[*pos..*pos + 4].try_into().unwrap());
+        *pos += 4;
+        Ok(v)
+    }
+    #[inline]
+    fn read_u64(bytes: &[u8], pos: &mut usize) -> std::io::Result<u64> {
+        ensure(bytes, *pos, 8, "u64")?;
+        let v = u64::from_le_bytes(bytes[*pos..*pos + 8].try_into().unwrap());
+        *pos += 8;
+        Ok(v)
+    }
+    #[inline]
+    fn read_i64(bytes: &[u8], pos: &mut usize) -> std::io::Result<i64> {
+        ensure(bytes, *pos, 8, "i64")?;
+        let v = i64::from_le_bytes(bytes[*pos..*pos + 8].try_into().unwrap());
+        *pos += 8;
+        Ok(v)
+    }
+
+    #[inline]
+    fn read_string(bytes: &[u8], pos: &mut usize) -> std::io::Result<String> {
+        let len = read_u16(bytes, pos)? as usize;
+        ensure(bytes, *pos, len, "string bytes")?;
+        let s = std::str::from_utf8(&bytes[*pos..*pos + len]).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("utf8: {e}"))
+        })?;
+        *pos += len;
+        Ok(s.to_string())
+    }
+
+    #[inline]
+    fn read_string_array(bytes: &[u8], pos: &mut usize) -> std::io::Result<Vec<String>> {
+        let count = read_u16(bytes, pos)? as usize;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            out.push(read_string(bytes, pos)?);
+        }
+        Ok(out)
+    }
+
+    #[inline]
+    fn skip_cid(bytes: &[u8], pos: &mut usize) -> std::io::Result<()> {
+        let len = read_u16(bytes, pos)? as usize;
+        ensure(bytes, *pos, len, "cid bytes")?;
+        *pos += len;
+        Ok(())
+    }
+
+    fn skip_dict_pack_refs(bytes: &[u8], pos: &mut usize) -> std::io::Result<()> {
+        // string forward packs
+        let sp_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..sp_count {
+            let _first = read_u64(bytes, pos)?;
+            let _last = read_u64(bytes, pos)?;
+            skip_cid(bytes, pos)?;
+        }
+        // subject forward packs per namespace
+        let ns_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..ns_count {
+            let _ns_code = read_u16(bytes, pos)?;
+            let pack_count = read_u16(bytes, pos)? as usize;
+            for _ in 0..pack_count {
+                let _first = read_u64(bytes, pos)?;
+                let _last = read_u64(bytes, pos)?;
+                skip_cid(bytes, pos)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn skip_dict_tree_refs(bytes: &[u8], pos: &mut usize) -> std::io::Result<()> {
+        skip_cid(bytes, pos)?; // branch CID
+        let leaf_count = read_u32(bytes, pos)? as usize;
+        for _ in 0..leaf_count {
+            skip_cid(bytes, pos)?;
+        }
+        Ok(())
+    }
+
+    fn skip_graph_arenas(bytes: &[u8], pos: &mut usize) -> std::io::Result<()> {
+        // Matches `write_graph_arenas_v5` in binary-index.
+        let _g_id = read_u16(bytes, pos)?;
+
+        // numbig
+        let nb_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..nb_count {
+            let _p_id = read_u32(bytes, pos)?;
+            skip_cid(bytes, pos)?;
+        }
+        // vectors
+        let vec_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..vec_count {
+            let _p_id = read_u32(bytes, pos)?;
+            skip_cid(bytes, pos)?; // manifest
+            let shard_count = read_u16(bytes, pos)? as usize;
+            for _ in 0..shard_count {
+                skip_cid(bytes, pos)?;
+            }
+        }
+        // spatial
+        let sp_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..sp_count {
+            let _p_id = read_u32(bytes, pos)?;
+            skip_cid(bytes, pos)?; // root_cid
+            skip_cid(bytes, pos)?; // manifest
+            skip_cid(bytes, pos)?; // arena
+            let leaflet_count = read_u16(bytes, pos)? as usize;
+            for _ in 0..leaflet_count {
+                skip_cid(bytes, pos)?;
+            }
+        }
+        // fulltext
+        let ft_count = read_u16(bytes, pos)? as usize;
+        for _ in 0..ft_count {
+            let _p_id = read_u32(bytes, pos)?;
+            skip_cid(bytes, pos)?;
+        }
+
+        Ok(())
+    }
+
+    let mut pos = 8; // skip pad(2)
+    let index_t = read_i64(bytes, &mut pos)?;
+    let _base_t = read_i64(bytes, &mut pos)?;
+
+    // Ledger ID
+    let ledger_id = read_string(bytes, &mut pos)?;
+
+    // Subject ID encoding (skip; stored on FIR6 root only)
+    let _subject_id_encoding = read_u8(bytes, &mut pos)?;
+
+    // Namespace codes
+    let ns_count = read_u16(bytes, &mut pos)? as usize;
+    let mut namespace_codes: HashMap<u16, String> = HashMap::with_capacity(ns_count);
+    for _ in 0..ns_count {
+        let ns_code = read_u16(bytes, &mut pos)?;
+        let prefix = read_string(bytes, &mut pos)?;
+        namespace_codes.insert(ns_code, prefix);
+    }
+
+    // Predicate SIDs (skip)
+    let pred_count = read_u32(bytes, &mut pos)? as usize;
+    for _ in 0..pred_count {
+        let _ns_code = read_u16(bytes, &mut pos)?;
+        let _suffix = read_string(bytes, &mut pos)?;
+    }
+
+    // Small dict inlines
+    let graph_iris = read_string_array(bytes, &mut pos)?;
+    let _datatype_iris = read_string_array(bytes, &mut pos)?;
+    let _language_tags = read_string_array(bytes, &mut pos)?;
+
+    // Dict refs (skip)
+    skip_dict_pack_refs(bytes, &mut pos)?;
+    skip_dict_tree_refs(bytes, &mut pos)?; // subject reverse
+    skip_dict_tree_refs(bytes, &mut pos)?; // string reverse
+
+    // Per-graph specialty arenas (skip)
+    let arena_count = read_u16(bytes, &mut pos)? as usize;
+    for _ in 0..arena_count {
+        skip_graph_arenas(bytes, &mut pos)?;
+    }
+
+    // Watermarks
+    let wm_count = read_u16(bytes, &mut pos)? as usize;
+    let mut subject_watermarks = Vec::with_capacity(wm_count);
+    for _ in 0..wm_count {
+        subject_watermarks.push(read_u64(bytes, &mut pos)?);
+    }
+    let string_watermark = read_u32(bytes, &mut pos)?;
+
+    // Cumulative commit stats (skip)
+    let _total_commit_size = read_u64(bytes, &mut pos)?;
+    let _total_asserts = read_u64(bytes, &mut pos)?;
+    let _total_retracts = read_u64(bytes, &mut pos)?;
+
+    // o_type table (skip)
+    let otype_count = read_u32(bytes, &mut pos)? as usize;
+    for _ in 0..otype_count {
+        let _o_type = read_u16(bytes, &mut pos)?;
+        let _decode_kind = read_u8(bytes, &mut pos)?;
+        let entry_flags = read_u8(bytes, &mut pos)?;
+        if entry_flags & 1 != 0 {
+            let _dt_iri = read_string(bytes, &mut pos)?;
+        }
+        if entry_flags & 2 != 0 {
+            let _dict_family = read_u8(bytes, &mut pos)?;
+        }
+    }
+
+    // Default graph routing (skip)
+    let default_order_count = read_u8(bytes, &mut pos)? as usize;
+    for _ in 0..default_order_count {
+        let _order_id = read_u8(bytes, &mut pos)?;
+        let leaf_count = read_u32(bytes, &mut pos)? as usize;
+        for _ in 0..leaf_count {
+            // first_key + last_key (RunRecordV2 ordered key)
+            const RECORD_V2_WIRE_SIZE: usize = 30;
+            ensure(bytes, pos, RECORD_V2_WIRE_SIZE, "RunRecordV2 first_key")?;
+            pos += RECORD_V2_WIRE_SIZE;
+            ensure(bytes, pos, RECORD_V2_WIRE_SIZE, "RunRecordV2 last_key")?;
+            pos += RECORD_V2_WIRE_SIZE;
+            let _row_count = read_u64(bytes, &mut pos)?;
+            skip_cid(bytes, &mut pos)?;
+            let has_sidecar = read_u8(bytes, &mut pos)?;
+            if has_sidecar != 0 {
+                skip_cid(bytes, &mut pos)?;
+            }
+        }
+    }
+
+    // Named graph routing (skip)
+    let named_count = read_u16(bytes, &mut pos)? as usize;
+    for _ in 0..named_count {
+        let _g_id = read_u16(bytes, &mut pos)?;
+        let order_count = read_u8(bytes, &mut pos)? as usize;
+        for _ in 0..order_count {
+            let _order_id = read_u8(bytes, &mut pos)?;
+            skip_cid(bytes, &mut pos)?;
+        }
+    }
+
+    // Optional sections
+    let stats = if flags & FLAG_HAS_STATS != 0 {
+        let stats_len = read_u32(bytes, &mut pos)? as usize;
+        ensure(bytes, pos, stats_len, "stats section")?;
+        let (s, _consumed) = stats_wire::decode_stats(&bytes[pos..pos + stats_len])?;
+        pos += stats_len;
+        Some(s)
+    } else {
+        None
+    };
+
+    let schema = if flags & FLAG_HAS_SCHEMA != 0 {
+        let schema_len = read_u32(bytes, &mut pos)? as usize;
+        ensure(bytes, pos, schema_len, "schema section")?;
+        let (s, _consumed) = stats_wire::decode_schema(&bytes[pos..pos + schema_len])?;
+        pos += schema_len;
+        Some(s)
+    } else {
+        None
+    };
+
+    if flags & FLAG_HAS_PREV_INDEX != 0 {
+        let _t = read_i64(bytes, &mut pos)?;
+        skip_cid(bytes, &mut pos)?;
+    }
+    if flags & FLAG_HAS_GARBAGE != 0 {
+        skip_cid(bytes, &mut pos)?;
+    }
+    if flags & FLAG_HAS_SKETCH != 0 {
+        skip_cid(bytes, &mut pos)?;
+    }
+
+    Ok(LedgerSnapshotMetadata {
+        ledger_id,
+        t: index_t,
+        namespace_codes,
+        stats,
+        schema,
+        subject_watermarks,
+        string_watermark,
+        graph_iris,
+    })
 }
 
 /// Load a database from an index root content ID.

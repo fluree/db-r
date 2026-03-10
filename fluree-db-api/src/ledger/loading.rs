@@ -6,6 +6,7 @@ use crate::{
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
+use fluree_db_core::DictNovelty;
 use fluree_db_nameservice::{NameServiceError, Publisher};
 
 impl<S, N> Fluree<S, N>
@@ -85,19 +86,38 @@ where
                 }
 
                 // Extract stats from the FIR6 root if present.
-                if state.snapshot.stats.is_none() || state.snapshot.schema.is_none() {
-                    if let Ok(root) =
-                        fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes)
-                    {
-                        if root.stats.is_some() && state.snapshot.stats.is_none() {
-                            state.snapshot.stats = root.stats;
-                            tracing::debug!("loaded stats from FIR6 root");
-                        }
-                        if root.schema.is_some() && state.snapshot.schema.is_none() {
-                            state.snapshot.schema = root.schema;
-                            tracing::debug!("loaded schema from FIR6 root");
-                        }
-                    }
+                // Decode FIR6 root metadata once and apply:
+                // - watermarks (needed for DictNovelty/DictOverlay correctness)
+                // - optional stats + schema (for formatting/reasoning)
+                let root = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes)
+                    .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {e}")))?;
+
+                // Watermarks + dict novelty.
+                state.snapshot.subject_watermarks = root.subject_watermarks.clone();
+                state.snapshot.string_watermark = root.string_watermark;
+                state.dict_novelty = Arc::new(DictNovelty::with_watermarks(
+                    state.snapshot.subject_watermarks.clone(),
+                    state.snapshot.string_watermark,
+                ));
+                // Re-populate DictNovelty with any already-loaded novelty flakes so
+                // overlay translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+                if !state.novelty.is_empty() {
+                    let novelty = state.novelty.as_ref();
+                    Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+                        novelty
+                            .iter_index(fluree_db_core::IndexType::Post)
+                            .map(|id| novelty.get_flake(id)),
+                    );
+                }
+
+                // Stats + schema.
+                if root.stats.is_some() && state.snapshot.stats.is_none() {
+                    state.snapshot.stats = root.stats;
+                    tracing::debug!("loaded stats from FIR6 root");
+                }
+                if root.schema.is_some() && state.snapshot.schema.is_none() {
+                    state.snapshot.schema = root.schema;
+                    tracing::debug!("loaded schema from FIR6 root");
                 }
 
                 let arc_store = Arc::new(binary_index_store);
