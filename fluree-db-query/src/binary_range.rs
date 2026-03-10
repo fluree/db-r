@@ -133,7 +133,24 @@ fn binary_range_eq_v3(
     let mut filter = BinaryFilter::default();
 
     if let Some(s_sid) = &match_val.s {
-        filter.s_id = store.sid_to_s_id(s_sid)?;
+        // Prefer persisted reverse dict, then DictNovelty. If neither can map this subject
+        // to an s_id, there are no base rows to scan; return overlay-only matches.
+        match store.sid_to_s_id(s_sid)? {
+            Some(id) => filter.s_id = Some(id),
+            None => {
+                if dict_novelty.is_initialized() {
+                    if let Some(id) =
+                        dict_novelty.subjects.find_subject(s_sid.namespace_code, &s_sid.name)
+                    {
+                        filter.s_id = Some(id);
+                    } else {
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                    }
+                } else {
+                    return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                }
+            }
+        }
     }
     if let Some(p_sid) = &match_val.p {
         filter.p_id = store.sid_to_p_id(p_sid);
@@ -215,7 +232,18 @@ fn binary_range_eq_v3(
                 None => continue, // ephemeral predicate from overlay — skip in flake output
             };
             // Decode object.
-            let o_val = view.decode_value(o_type, o_key, p_id)?;
+            //
+            // Overlay-only rows can introduce subject refs that are not present in the
+            // persisted subject forward packs yet (novel namespaces / local IDs). Decode
+            // IRI refs via DictNovelty-backed subject resolution to avoid hard failures.
+            let o_val = {
+                let ot = OType::from_u16(o_type);
+                if ot.is_iri_ref() || ot.is_blank_node() {
+                    fluree_db_core::FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?)
+                } else {
+                    view.decode_value(o_type, o_key, p_id)?
+                }
+            };
             // Resolve datatype.
             let dt = store
                 .resolve_datatype_sid(o_type)

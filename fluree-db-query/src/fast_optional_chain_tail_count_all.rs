@@ -22,15 +22,13 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    projection_sid_okey, FastPathOperator, PostObjectGroupCountIter, PsotSubjectCountIter,
+    build_count_batch, fast_path_store, normalize_pred_sid, FastPathOperator,
+    PostObjectGroupCountIter, PsotSubjectCountIter, PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use fluree_db_binary_index::format::run_record::RunSortOrder;
-use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch};
-use fluree_db_core::o_type::OType;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 
@@ -58,131 +56,6 @@ pub fn predicate_chain_optional_tail_count_all(
         fallback,
         "chain+optional COUNT(*)",
     )
-}
-
-/// Yield `(b, sum_m)` groups from PSOT(p2), where `sum_m = Σ_{c in p2(b)} m(c)`.
-struct PsotSubjectSumMultIter<'a> {
-    store: &'a BinaryIndexStore,
-    p_id: u32,
-    mult_c: &'a FxHashMap<u64, u64>,
-    leaf_entries: &'a [fluree_db_binary_index::format::branch::LeafEntry],
-    leaf_pos: usize,
-    leaflet_idx: usize,
-    row: usize,
-    handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
-    batch: Option<ColumnBatch>,
-    cur_b: Option<u64>,
-    cur_sum: u64,
-}
-
-impl<'a> PsotSubjectSumMultIter<'a> {
-    fn new(
-        store: &'a BinaryIndexStore,
-        g_id: GraphId,
-        p_id: u32,
-        mult_c: &'a FxHashMap<u64, u64>,
-    ) -> Result<Option<Self>> {
-        Ok(Some(Self {
-            store,
-            p_id,
-            mult_c,
-            leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
-            leaf_pos: 0,
-            leaflet_idx: 0,
-            row: 0,
-            handle: None,
-            batch: None,
-            cur_b: None,
-            cur_sum: 0,
-        }))
-    }
-
-    fn load_next_batch(&mut self) -> Result<Option<()>> {
-        let projection = projection_sid_okey();
-        loop {
-            if self.handle.is_none() {
-                if self.leaf_pos >= self.leaf_entries.len() {
-                    return Ok(None);
-                }
-                let leaf_entry = &self.leaf_entries[self.leaf_pos];
-                self.leaf_pos += 1;
-                self.leaflet_idx = 0;
-                self.row = 0;
-                self.batch = None;
-                self.handle = Some(
-                    self.store
-                        .open_leaf_handle(
-                            &leaf_entry.leaf_cid,
-                            leaf_entry.sidecar_cid.as_ref(),
-                            false,
-                        )
-                        .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
-                );
-            }
-
-            let handle = self.handle.as_ref().unwrap();
-            let dir = handle.dir();
-            while self.leaflet_idx < dir.entries.len() {
-                let entry = &dir.entries[self.leaflet_idx];
-                let idx = self.leaflet_idx;
-                self.leaflet_idx += 1;
-                if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
-                    continue;
-                }
-                if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
-                    return Ok(None);
-                }
-                let batch = handle
-                    .load_columns(idx, &projection, RunSortOrder::Psot)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
-                self.row = 0;
-                self.batch = Some(batch);
-                return Ok(Some(()));
-            }
-
-            self.handle = None;
-        }
-    }
-
-    fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
-        loop {
-            if self.batch.is_none() && self.load_next_batch()?.is_none() {
-                if let Some(b) = self.cur_b.take() {
-                    let n = std::mem::take(&mut self.cur_sum);
-                    return Ok(Some((b, n)));
-                }
-                return Ok(None);
-            }
-
-            let batch = self.batch.as_ref().unwrap();
-            if self.row >= batch.row_count {
-                self.batch = None;
-                continue;
-            }
-
-            let b = batch.s_id.get(self.row);
-            let c = batch.o_key.get(self.row);
-            let m = self.mult_c.get(&c).copied().unwrap_or(1);
-
-            match self.cur_b {
-                None => {
-                    self.cur_b = Some(b);
-                    self.cur_sum = 0;
-                }
-                Some(cur) if cur != b => {
-                    // Emit previous group, but consume this row into the next group's accumulator.
-                    let out_b = self.cur_b.replace(b).expect("checked: cur_b is Some");
-                    let out_n = std::mem::replace(&mut self.cur_sum, m);
-                    self.row += 1;
-                    return Ok(Some((out_b, out_n)));
-                }
-                Some(_) => {}
-            }
-
-            self.cur_sum += m;
-            self.row += 1;
-        }
-    }
 }
 
 fn count_chain_optional_tail(
@@ -244,7 +117,8 @@ fn count_chain_optional_tail(
     let mut it1 = PostObjectGroupCountIter::new(store, g_id, p1_id)?.ok_or(
         QueryError::Internal("chain+optional: POST iterator unavailable".into()),
     )?;
-    let mut it2 = PsotSubjectSumMultIter::new(store, g_id, p2_id, &mult_c)?.ok_or(
+    // default_weight=1: OPTIONAL semantics — missing objects get multiplier 1
+    let mut it2 = PsotSubjectWeightedSumIter::new(store, g_id, p2_id, &mult_c, 1)?.ok_or(
         QueryError::Internal("chain+optional: PSOT iterator unavailable".into()),
     )?;
 

@@ -156,7 +156,7 @@ pub async fn build_policy_context_from_opts(
     // Priority: opts.identity > policy_values["?$identity"]
     let identity_sid = if let Some(identity_iri) = &opts.identity {
         // Explicit identity option takes precedence
-        let sid = resolve_iri_to_sid(snapshot, identity_iri)?;
+        let sid = resolve_identity_iri_to_sid(snapshot, identity_iri)?;
         // Also add to policy_values so policy queries can bind ?$identity
         policy_values.insert("?$identity".to_string(), sid.clone());
         Some(sid)
@@ -898,6 +898,18 @@ fn parse_inline_policy(
 /// transactions encode such IRIs (Clojure parity).
 fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
     Ok(snapshot.encode_iri(iri).unwrap_or_else(|| Sid::new(0, iri)))
+}
+
+/// Resolve an identity IRI to a SID **strictly**.
+///
+/// Connection `opts.identity` is used to look up policies via `f:policyClass`.
+/// For parity with the existing API behavior and tests, we treat unknown IRIs
+/// (no registered namespace prefix) as an error rather than silently encoding
+/// them under the EMPTY namespace.
+fn resolve_identity_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
+    snapshot.encode_iri_strict(iri).ok_or_else(|| {
+        ApiError::query(format!("Failed to resolve IRI '{iri}' for identity policy"))
+    })
 }
 
 /// Build policy values map from JSON values.

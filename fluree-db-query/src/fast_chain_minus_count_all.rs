@@ -27,18 +27,14 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, collect_subjects_for_predicate_set, fast_path_store,
-    leaf_entries_for_predicate, normalize_pred_sid, projection_sid_okey, FastPathOperator,
-    PostObjectGroupCountIter,
+    build_count_batch, collect_subjects_for_predicate_set, fast_path_store, normalize_pred_sid,
+    FastPathOperator, ObjectFilterMode, PostObjectGroupCountIter, PsotObjectFilterCountIter,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use fluree_db_binary_index::format::run_record::RunSortOrder;
-use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch};
-use fluree_db_core::o_type::OType;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::GraphId;
-use rustc_hash::FxHashSet;
 
 pub fn chain_minus_count_all_operator(
     p1: Ref,
@@ -64,113 +60,6 @@ pub fn chain_minus_count_all_operator(
         fallback,
         "chain+minus COUNT(*)",
     )
-}
-
-/// Yield `(b, count)` groups from PSOT(p2) counting only edges where `c` is NOT in `excluded_c`.
-struct PsotObjectNotInSetCountIter<'a> {
-    store: &'a BinaryIndexStore,
-    p_id: u32,
-    excluded_c: &'a FxHashSet<u64>,
-    leaf_entries: &'a [fluree_db_binary_index::format::branch::LeafEntry],
-    leaf_pos: usize,
-    leaflet_idx: usize,
-    row: usize,
-    handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
-    batch: Option<ColumnBatch>,
-}
-
-impl<'a> PsotObjectNotInSetCountIter<'a> {
-    fn new(
-        store: &'a BinaryIndexStore,
-        g_id: GraphId,
-        p_id: u32,
-        excluded_c: &'a FxHashSet<u64>,
-    ) -> Result<Option<Self>> {
-        Ok(Some(Self {
-            store,
-            p_id,
-            excluded_c,
-            leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
-            leaf_pos: 0,
-            leaflet_idx: 0,
-            row: 0,
-            handle: None,
-            batch: None,
-        }))
-    }
-
-    fn load_next_batch(&mut self) -> Result<Option<()>> {
-        let projection = projection_sid_okey();
-        loop {
-            if self.handle.is_none() {
-                if self.leaf_pos >= self.leaf_entries.len() {
-                    return Ok(None);
-                }
-                let leaf_entry = &self.leaf_entries[self.leaf_pos];
-                self.leaf_pos += 1;
-                self.leaflet_idx = 0;
-                self.row = 0;
-                self.batch = None;
-                self.handle = Some(
-                    self.store
-                        .open_leaf_handle(
-                            &leaf_entry.leaf_cid,
-                            leaf_entry.sidecar_cid.as_ref(),
-                            false,
-                        )
-                        .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
-                );
-            }
-
-            let handle = self.handle.as_ref().unwrap();
-            let dir = handle.dir();
-            while self.leaflet_idx < dir.entries.len() {
-                let entry = &dir.entries[self.leaflet_idx];
-                let idx = self.leaflet_idx;
-                self.leaflet_idx += 1;
-                if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
-                    continue;
-                }
-                if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
-                    return Ok(None);
-                }
-                let batch = handle
-                    .load_columns(idx, &projection, RunSortOrder::Psot)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
-                self.row = 0;
-                self.batch = Some(batch);
-                return Ok(Some(()));
-            }
-
-            self.handle = None;
-        }
-    }
-
-    fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
-        loop {
-            if self.batch.is_none() && self.load_next_batch()?.is_none() {
-                return Ok(None);
-            }
-            let batch = self.batch.as_ref().unwrap();
-            if self.row >= batch.row_count {
-                self.batch = None;
-                continue;
-            }
-            let b = batch.s_id.get(self.row);
-            let mut count: u64 = 0;
-            while self.row < batch.row_count && batch.s_id.get(self.row) == b {
-                let c = batch.o_key.get(self.row);
-                if !self.excluded_c.contains(&c) {
-                    count += 1;
-                }
-                self.row += 1;
-            }
-            if count > 0 {
-                return Ok(Some((b, count)));
-            }
-            // If count == 0, skip this b group and keep scanning.
-        }
-    }
 }
 
 fn count_chain_minus(
@@ -201,8 +90,11 @@ fn count_chain_minus(
 
     let mut it1 = PostObjectGroupCountIter::new(store, g_id, p1_id)?
         .ok_or_else(|| QueryError::Internal("chain+minus requires IRI_REF objects in p1".into()))?;
-    let mut it2 = PsotObjectNotInSetCountIter::new(store, g_id, p2_id, &excluded_c)?
-        .ok_or_else(|| QueryError::Internal("chain+minus requires IRI_REF objects in p2".into()))?;
+    let mut it2 =
+        PsotObjectFilterCountIter::new(store, g_id, p2_id, &excluded_c, ObjectFilterMode::NotInSet)?
+            .ok_or_else(|| {
+                QueryError::Internal("chain+minus requires IRI_REF objects in p2".into())
+            })?;
 
     let mut a = it1.next_group()?;
     let mut b = it2.next_group()?;

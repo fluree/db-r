@@ -37,8 +37,9 @@ fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
     // Force many small leaves: 5 rows per leaflet, 25 rows per leaf.
     let mut writer = LeafWriter::new(RunSortOrder::Spot, 5, 25, 1);
 
-    // Base data: 20 subjects, all with p=1.
-    let base: Vec<RunRecordV2> = (0..20)
+    // Base data: enough subjects to span multiple leaf blobs.
+    // LeafWriter here targets 25 rows per leaf, so use 60 rows to ensure 2+ leaves.
+    let base: Vec<RunRecordV2> = (0..60)
         .map(|s| int_record_v2(0, s, 1, s as i64, 1))
         .collect();
     for r in &base {
@@ -69,7 +70,7 @@ fn incremental_branch_only_fetches_and_rewrites_touched_leaves() {
     let existing_branch = read_branch_from_bytes(&branch_bytes).expect("decode branch");
 
     // Choose a novelty record that falls squarely inside a middle leaf by subject id.
-    let novelty = vec![int_record_v2(0, 12, 2, 999, 2)];
+    let novelty = vec![int_record_v2(0, 30, 2, 999, 2)];
     let novelty_ops = vec![1u8]; // assert
 
     let config = BranchUpdateConfig {

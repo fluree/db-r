@@ -704,6 +704,418 @@ impl<'a> PostObjectGroupCountIter<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// 7c. PSOT subject-weighted-sum iterator (for OPTIONAL chain patterns)
+// ---------------------------------------------------------------------------
+
+/// Streaming iterator over PSOT leaflets for a predicate that yields
+/// `(subject_id, weighted_sum)` groups, where the weight of each object is
+/// looked up in a `FxHashMap<u64, u64>`.
+///
+/// Used by OPTIONAL chain patterns:
+/// - **Head** (`default_weight = 0`): `Σ_{c in p2(b)} n3(c)` where missing c → 0
+/// - **Tail** (`default_weight = 1`): `Σ_{c in p2(b)} max(1, n3(c))` where missing c → 1
+///
+/// Requires IRI_REF objects (o_key is a subject ID). Mixed-type leaflets are
+/// handled by treating non-IRI rows as weight 0.
+pub struct PsotSubjectWeightedSumIter<'a> {
+    store: &'a BinaryIndexStore,
+    p_id: u32,
+    weights: &'a FxHashMap<u64, u64>,
+    default_weight: u64,
+    leaf_entries: &'a [LeafEntry],
+    leaf_pos: usize,
+    leaflet_idx: usize,
+    row: usize,
+    handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
+    batch: Option<ColumnBatch>,
+    cur_b: Option<u64>,
+    cur_sum: u64,
+    mixed: bool,
+}
+
+impl<'a> PsotSubjectWeightedSumIter<'a> {
+    /// Create a new iterator. `default_weight` is used for objects not in `weights`.
+    pub fn new(
+        store: &'a BinaryIndexStore,
+        g_id: GraphId,
+        p_id: u32,
+        weights: &'a FxHashMap<u64, u64>,
+        default_weight: u64,
+    ) -> Result<Option<Self>> {
+        Ok(Some(Self {
+            store,
+            p_id,
+            weights,
+            default_weight,
+            leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
+            leaf_pos: 0,
+            leaflet_idx: 0,
+            row: 0,
+            handle: None,
+            batch: None,
+            cur_b: None,
+            cur_sum: 0,
+            mixed: false,
+        }))
+    }
+
+    fn load_next_batch(&mut self) -> Result<Option<()>> {
+        let proj_sid_okey = projection_sid_okey();
+        let proj_sid_otype_okey = projection_sid_otype_okey();
+        loop {
+            if self.handle.is_none() {
+                if self.leaf_pos >= self.leaf_entries.len() {
+                    return Ok(None);
+                }
+                let leaf_entry = &self.leaf_entries[self.leaf_pos];
+                self.leaf_pos += 1;
+                self.leaflet_idx = 0;
+                self.row = 0;
+                self.batch = None;
+                self.handle = Some(
+                    self.store
+                        .open_leaf_handle(
+                            &leaf_entry.leaf_cid,
+                            leaf_entry.sidecar_cid.as_ref(),
+                            false,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
+                );
+            }
+
+            let handle = self.handle.as_ref().unwrap();
+            let dir = handle.dir();
+            while self.leaflet_idx < dir.entries.len() {
+                let entry = &dir.entries[self.leaflet_idx];
+                let idx = self.leaflet_idx;
+                self.leaflet_idx += 1;
+                if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
+                    continue;
+                }
+                let mixed = entry.o_type_const.is_none();
+                if !mixed && entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                    return Ok(None);
+                }
+                let batch = handle
+                    .load_columns(
+                        idx,
+                        if mixed {
+                            &proj_sid_otype_okey
+                        } else {
+                            &proj_sid_okey
+                        },
+                        RunSortOrder::Psot,
+                    )
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                self.row = 0;
+                self.batch = Some(batch);
+                self.mixed = mixed;
+                return Ok(Some(()));
+            }
+
+            self.handle = None;
+        }
+    }
+
+    /// Return the next `(subject_id, weighted_sum)` group with non-zero sum,
+    /// or `None` when exhausted.
+    pub fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
+        loop {
+            if self.batch.is_none() && self.load_next_batch()?.is_none() {
+                if let Some(b) = self.cur_b.take() {
+                    let n = std::mem::take(&mut self.cur_sum);
+                    return Ok(Some((b, n)));
+                }
+                return Ok(None);
+            }
+
+            let batch = self.batch.as_ref().unwrap();
+            if self.row >= batch.row_count {
+                self.batch = None;
+                continue;
+            }
+
+            let b = batch.s_id.get(self.row);
+            let c = batch.o_key.get(self.row);
+            let w = if self.mixed && batch.o_type.get(self.row) != OType::IRI_REF.as_u16() {
+                0
+            } else {
+                self.weights.get(&c).copied().unwrap_or(self.default_weight)
+            };
+
+            match self.cur_b {
+                None => {
+                    self.cur_b = Some(b);
+                    self.cur_sum = 0;
+                }
+                Some(cur) if cur != b => {
+                    let out_b = self.cur_b.replace(b).expect("checked: cur_b is Some");
+                    let out_n = std::mem::replace(&mut self.cur_sum, w);
+                    self.row += 1;
+                    return Ok(Some((out_b, out_n)));
+                }
+                Some(_) => {}
+            }
+
+            self.cur_sum += w;
+            self.row += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7d. PSOT object-filtered group-count iterator (unified Include/Exclude)
+// ---------------------------------------------------------------------------
+
+/// Whether to count objects that ARE in the set or are NOT in the set.
+#[derive(Clone, Copy)]
+pub enum ObjectFilterMode {
+    /// Count objects whose `o_key` IS in the set (EXISTS / join semantics).
+    InSet,
+    /// Count objects whose `o_key` is NOT in the set (MINUS / anti-join semantics).
+    NotInSet,
+}
+
+/// Streaming iterator over PSOT leaflets for a predicate that yields
+/// `(subject_id, filtered_count)` groups — counting objects that either appear
+/// in or do not appear in a reference set, depending on [`ObjectFilterMode`].
+///
+/// Requires `o_type_const == IRI_REF` so that `o_key` is a subject ID.
+/// Returns `Ok(None)` from the constructor or `next_group` if a non-IRI_REF
+/// leaflet is encountered.
+pub struct PsotObjectFilterCountIter<'a> {
+    store: &'a BinaryIndexStore,
+    p_id: u32,
+    reference_set: &'a FxHashSet<u64>,
+    mode: ObjectFilterMode,
+    leaf_entries: &'a [LeafEntry],
+    leaf_pos: usize,
+    leaflet_idx: usize,
+    row: usize,
+    handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
+    batch: Option<ColumnBatch>,
+}
+
+impl<'a> PsotObjectFilterCountIter<'a> {
+    pub fn new(
+        store: &'a BinaryIndexStore,
+        g_id: GraphId,
+        p_id: u32,
+        reference_set: &'a FxHashSet<u64>,
+        mode: ObjectFilterMode,
+    ) -> Result<Option<Self>> {
+        Ok(Some(Self {
+            store,
+            p_id,
+            reference_set,
+            mode,
+            leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
+            leaf_pos: 0,
+            leaflet_idx: 0,
+            row: 0,
+            handle: None,
+            batch: None,
+        }))
+    }
+
+    fn load_next_batch(&mut self) -> Result<Option<()>> {
+        let projection = projection_sid_okey();
+        loop {
+            if self.handle.is_none() {
+                if self.leaf_pos >= self.leaf_entries.len() {
+                    return Ok(None);
+                }
+                let leaf_entry = &self.leaf_entries[self.leaf_pos];
+                self.leaf_pos += 1;
+                self.leaflet_idx = 0;
+                self.row = 0;
+                self.batch = None;
+                self.handle = Some(
+                    self.store
+                        .open_leaf_handle(
+                            &leaf_entry.leaf_cid,
+                            leaf_entry.sidecar_cid.as_ref(),
+                            false,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
+                );
+            }
+
+            let handle = self.handle.as_ref().unwrap();
+            let dir = handle.dir();
+            while self.leaflet_idx < dir.entries.len() {
+                let entry = &dir.entries[self.leaflet_idx];
+                let idx = self.leaflet_idx;
+                self.leaflet_idx += 1;
+                if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
+                    continue;
+                }
+                if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                    return Ok(None);
+                }
+                let batch = handle
+                    .load_columns(idx, &projection, RunSortOrder::Psot)
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                self.row = 0;
+                self.batch = Some(batch);
+                return Ok(Some(()));
+            }
+
+            self.handle = None;
+        }
+    }
+
+    /// Return the next `(subject_id, count)` group with non-zero count.
+    pub fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
+        loop {
+            if self.batch.is_none() && self.load_next_batch()?.is_none() {
+                return Ok(None);
+            }
+            let batch = self.batch.as_ref().unwrap();
+            if self.row >= batch.row_count {
+                self.batch = None;
+                continue;
+            }
+            let b_id = batch.s_id.get(self.row);
+            let mut count: u64 = 0;
+            while self.row < batch.row_count && batch.s_id.get(self.row) == b_id {
+                let c_id = batch.o_key.get(self.row);
+                let in_set = self.reference_set.contains(&c_id);
+                let counts = match self.mode {
+                    ObjectFilterMode::InSet => in_set,
+                    ObjectFilterMode::NotInSet => !in_set,
+                };
+                if counts {
+                    count += 1;
+                }
+                self.row += 1;
+            }
+            if count > 0 {
+                return Ok(Some((b_id, count)));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7e. Object-in-set subject collection and POST filtered counting
+// ---------------------------------------------------------------------------
+
+/// Collect subjects from PSOT(p_id) where any object `o_key` is in `object_set`.
+///
+/// Returns a sorted `Vec<u64>` of qualifying subject IDs, or `None` if any
+/// leaflet has a non-IRI_REF `o_type_const`.
+pub fn collect_subjects_with_object_in_set(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_id: u32,
+    object_set: &FxHashSet<u64>,
+) -> Result<Option<Vec<u64>>> {
+    let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id);
+    let projection = projection_sid_okey();
+    let mut out: Vec<u64> = Vec::new();
+
+    for leaf_entry in leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+
+        let dir = handle.dir();
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+            if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                return Ok(None);
+            }
+
+            let batch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Psot)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            let mut i = 0usize;
+            while i < batch.row_count {
+                let b_id = batch.s_id.get(i);
+                let mut ok = false;
+                while i < batch.row_count && batch.s_id.get(i) == b_id {
+                    let c_id = batch.o_key.get(i);
+                    if object_set.contains(&c_id) {
+                        ok = true;
+                    }
+                    i += 1;
+                }
+                if ok {
+                    out.push(b_id);
+                }
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+/// Sum row counts from POST(p_id) for object groups whose `o_key` is in
+/// `allowed_objects_sorted` (must be pre-sorted ascending).
+///
+/// Uses a merge-scan between sorted POST groups and the sorted allowed list.
+/// Returns `None` if any leaflet has non-IRI_REF `o_type_const`.
+pub fn sum_post_object_counts_filtered(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    p_id: u32,
+    allowed_objects_sorted: &[u64],
+) -> Result<Option<u64>> {
+    let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Post, p_id);
+    let projection = projection_okey_only();
+
+    let mut allowed_idx: usize = 0;
+    let mut total: u64 = 0;
+
+    for leaf_entry in leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+        let dir = handle.dir();
+
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 || entry.p_const != Some(p_id) {
+                continue;
+            }
+            if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
+                return Ok(None);
+            }
+
+            let batch: ColumnBatch = handle
+                .load_columns(leaflet_idx, &projection, RunSortOrder::Post)
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+
+            let mut i = 0usize;
+            while i < batch.row_count {
+                let b_id = batch.o_key.get(i);
+                let mut count: u64 = 0;
+                while i < batch.row_count && batch.o_key.get(i) == b_id {
+                    count += 1;
+                    i += 1;
+                }
+
+                while allowed_idx < allowed_objects_sorted.len()
+                    && allowed_objects_sorted[allowed_idx] < b_id
+                {
+                    allowed_idx += 1;
+                }
+                if allowed_idx < allowed_objects_sorted.len()
+                    && allowed_objects_sorted[allowed_idx] == b_id
+                {
+                    total = total.saturating_add(count);
+                }
+            }
+        }
+    }
+
+    Ok(Some(total))
+}
+
+// ---------------------------------------------------------------------------
 // 8. BinaryCursor construction
 // ---------------------------------------------------------------------------
 

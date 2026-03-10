@@ -13,7 +13,7 @@ use crate::{
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;
-use fluree_db_core::{ContentStore, DictNovelty, DEFAULT_GRAPH_ID, TXN_META_GRAPH_ID};
+use fluree_db_core::{ContentStore, DictNovelty, IndexType, DEFAULT_GRAPH_ID, TXN_META_GRAPH_ID};
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 
@@ -261,13 +261,24 @@ where
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = GraphDb::from_historical(&historical);
 
-        // Attach a dict_novelty derived from the historical Db's watermarks.
-        // This avoids relying on potentially-stale cached handle state and is
-        // sufficient for binary overlay translation when an overlay is present.
-        view.dict_novelty = Some(Arc::new(DictNovelty::with_watermarks(
+        // Attach and populate dict_novelty derived from the historical Db's watermarks.
+        //
+        // Historical views can have an overlay (novelty) even when the binary index
+        // is behind the view's `t`. We must populate DictNovelty from the overlay
+        // flakes so binary overlay translation can assign subject/string IDs for
+        // novelty-only entities (e.g., newly inserted subjects after the last index).
+        let mut dict_novelty = DictNovelty::with_watermarks(
             view.snapshot.subject_watermarks.clone(),
             view.snapshot.string_watermark,
-        )));
+        );
+        if let Some(novelty) = view.novelty.as_ref() {
+            let flakes: Vec<&fluree_db_core::Flake> = novelty
+                .iter_index(IndexType::Spot)
+                .map(|id| novelty.get_flake(id))
+                .collect();
+            dict_novelty.populate_from_flakes_iter(flakes);
+        }
+        view.dict_novelty = Some(Arc::new(dict_novelty));
 
         // Load the binary index store (for index-backed historical queries only).
         //

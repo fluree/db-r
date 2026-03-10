@@ -115,6 +115,7 @@ where
 
         // Fetch leaf bytes.
         let leaf_bytes = fetch_leaf(&existing.leaf_cid)?;
+        let existing_header = decode_leaf_header_v3(&leaf_bytes)?;
 
         // Fetch sidecar bytes (if the leaf has one).
         let sidecar_bytes = match &existing.sidecar_cid {
@@ -123,6 +124,13 @@ where
         };
 
         // Update the leaf.
+        //
+        // Incremental updates are intended to preserve branch structure for CID stability.
+        // Avoid splitting a touched leaf into multiple new leaves by ensuring the
+        // effective target is at least large enough for the existing rows plus this novelty slice.
+        let effective_leaf_target_rows = (existing_header.total_rows as usize)
+            .saturating_add(nov_slice.len())
+            .saturating_add(1);
         let update_input = LeafUpdateInput {
             leaf_bytes: &leaf_bytes,
             novelty: nov_slice,
@@ -131,7 +139,7 @@ where
             g_id,
             zstd_level: config.zstd_level,
             leaflet_target_rows: config.leaflet_target_rows,
-            leaf_target_rows: config.leaf_target_rows,
+            leaf_target_rows: config.leaf_target_rows.max(effective_leaf_target_rows),
             sidecar_bytes: sidecar_bytes.as_deref(),
         };
 

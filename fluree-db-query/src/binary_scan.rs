@@ -79,22 +79,29 @@ pub fn schema_from_pattern_with_emit(
     let mut p_pos = None;
     let mut o_pos = None;
 
+    let mut find_or_push = |v: VarId| -> usize {
+        if let Some(idx) = schema.iter().position(|x| *x == v) {
+            idx
+        } else {
+            let idx = schema.len();
+            schema.push(v);
+            idx
+        }
+    };
+
     if emit.s {
         if let Ref::Var(v) = &pattern.s {
-            s_pos = Some(schema.len());
-            schema.push(*v);
+            s_pos = Some(find_or_push(*v));
         }
     }
     if emit.p {
         if let Ref::Var(v) = &pattern.p {
-            p_pos = Some(schema.len());
-            schema.push(*v);
+            p_pos = Some(find_or_push(*v));
         }
     }
     if emit.o {
         if let Term::Var(v) = &pattern.o {
-            o_pos = Some(schema.len());
-            schema.push(*v);
+            o_pos = Some(find_or_push(*v));
         }
     }
 
@@ -406,6 +413,19 @@ impl BinaryScanOperator {
                 match &flake.o {
                     FlakeValue::Ref(o) if *o == flake.p => {}
                     _ => continue,
+                }
+            }
+
+            // Datatype / language constraint checks (range fallback path).
+            if let Some(dtc) = &self.pattern.dtc {
+                if !dt_compatible(dtc.datatype(), &flake.dt) {
+                    continue;
+                }
+                if let Some(tag) = dtc.lang_tag() {
+                    let flake_lang = flake.m.as_ref().and_then(|m| m.lang.as_ref());
+                    if flake_lang.map(|s| s.as_str()) != Some(tag.as_ref()) {
+                        continue;
+                    }
                 }
             }
 
@@ -783,7 +803,12 @@ impl BinaryScanOperator {
         // for decoding (no novelty overlay with ephemeral IDs).
         //
         // Note: ExecutionContext always carries an overlay provider; `NoOverlay` has epoch=0.
-        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0);
+        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0)
+            // If a repeated variable forces two components into the same output slot,
+            // late-materialization must produce comparable binding representations.
+            // In particular, `?x ?x ?o` would otherwise compare EncodedSid vs EncodedPid.
+            && !self.check_s_eq_p
+            && !self.check_p_eq_o;
 
         let encode_object =
             |o_type: u16, o_key: u64, p_id: u32, t: i64, o_i: u32| -> Option<Binding> {
@@ -1396,7 +1421,11 @@ impl Operator for BinaryScanOperator {
             .collect();
 
         let produced = if self.range_iter.is_some() {
-            self.flakes_to_bindings(&mut columns, ctx, batch_size)?
+            let n = self.flakes_to_bindings(&mut columns, ctx, batch_size)?;
+            for _ in 0..n {
+                ctx.tracker.consume_fuel_one()?;
+            }
+            n
         } else {
             let mut produced = 0usize;
             while produced < batch_size {

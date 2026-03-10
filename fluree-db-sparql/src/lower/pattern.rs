@@ -35,9 +35,25 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             SparqlGraphPattern::Optional { pattern, .. } => {
                 let inner = self.lower_graph_pattern(pattern)?;
-                // SPARQL OPTIONAL is a single left-join with the *join* of the inner patterns.
-                // Splitting the inner patterns into multiple OPTIONAL groups is not semantics-preserving.
-                Ok(vec![Pattern::Optional(inner)])
+                // Fluree semantics (Clojure parity): when an OPTIONAL block contains only
+                // triple patterns, allow "partial binding" by treating each triple as its
+                // own OPTIONAL clause.
+                //
+                // Example:
+                // OPTIONAL { ?s :p1 ?o1 . ?s :p2 ?o2 . }
+                // becomes:
+                // OPTIONAL { ?s :p1 ?o1 . } OPTIONAL { ?s :p2 ?o2 . }
+                //
+                // If the OPTIONAL contains non-triple patterns (FILTER/BIND/UNION/etc.),
+                // keep it as a single left join over the full inner group.
+                if inner.len() > 1 && inner.iter().all(|p| matches!(p, Pattern::Triple(_))) {
+                    Ok(inner
+                        .into_iter()
+                        .map(|p| Pattern::Optional(vec![p]))
+                        .collect())
+                } else {
+                    Ok(vec![Pattern::Optional(inner)])
+                }
             }
 
             SparqlGraphPattern::Union { left, right, .. } => {
