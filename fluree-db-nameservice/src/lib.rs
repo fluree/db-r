@@ -835,7 +835,7 @@ impl ConfigPayload {
 ///
 /// The watermark `v` is a monotonically increasing counter that changes
 /// on every status update. Status always has a payload (never unborn).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,
@@ -862,7 +862,7 @@ impl StatusValue {
 ///
 /// The watermark `v` is a monotonically increasing counter. Config can be
 /// "unborn" (v=0, payload=None) if no config has been set yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,

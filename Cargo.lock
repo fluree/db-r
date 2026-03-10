@@ -2632,7 +2632,6 @@ dependencies = [
  "async-trait",
  "fluree-db-core",
  "fluree-vocab",
- "libc",
  "parking_lot",
  "rand 0.8.5",
  "serde",
