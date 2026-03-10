@@ -17,118 +17,44 @@
 //! - increments the distinct counter once per object group that has any subject in the set
 //! - never decodes subject/object values
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, fast_path_store,
-    leaf_entries_for_predicate, normalize_pred_sid, projection_sid_okey,
-    PrecomputedSingleBatchOperator,
+    leaf_entries_for_predicate, normalize_pred_sid, projection_sid_okey, FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 
-pub struct PredicateExistsJoinCountDistinctObjectOperator {
+pub fn exists_join_count_distinct_object_operator(
     count_predicate: Ref,
     exists_predicate: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateExistsJoinCountDistinctObjectOperator {
-    pub fn new(
-        count_predicate: Ref,
-        exists_predicate: Ref,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            count_predicate,
-            exists_predicate,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateExistsJoinCountDistinctObjectOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             match count_distinct_object_with_exists_subject_post(
                 store,
                 ctx.binary_g_id,
-                &self.count_predicate,
-                &self.exists_predicate,
+                &count_predicate,
+                &exists_predicate,
             )? {
-                Some(count) => {
-                    self.state = OperatorState::Open;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                        build_count_batch(self.out_var, count as i64)?,
-                    )));
-                    return Ok(());
-                }
-                None => {
-                    // Unsupported at runtime — fall through to planned pipeline.
-                }
+                Some(count) => Ok(Some(build_count_batch(out_var, count as i64)?)),
+                None => Ok(None),
             }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "EXISTS-join COUNT(DISTINCT) fast-path unavailable and no fallback provided"
-                    .to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        "EXISTS-join COUNT(DISTINCT ?o)",
+    )
 }
 
 /// COUNT DISTINCT objects for a bound predicate by scanning POST, restricted by a subject set.

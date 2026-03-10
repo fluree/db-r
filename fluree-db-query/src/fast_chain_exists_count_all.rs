@@ -23,107 +23,43 @@
 //!
 //! It avoids materializing join rows and never decodes to IRIs/strings.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, fast_path_store,
-    leaf_entries_for_predicate, normalize_pred_sid, projection_sid_okey, PostObjectGroupCountIter,
-    PrecomputedSingleBatchOperator,
+    leaf_entries_for_predicate, normalize_pred_sid, projection_sid_okey, FastPathOperator,
+    PostObjectGroupCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashSet;
 
-pub struct PredicateChainExistsJoinCountAllOperator {
+pub fn predicate_chain_exists_join_count_all_operator(
     p1: Ref,
     p2: Ref,
     p3: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateChainExistsJoinCountAllOperator {
-    pub fn new(p1: Ref, p2: Ref, p3: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            p1,
-            p2,
-            p3,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateChainExistsJoinCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            if let Some(count) =
-                count_chain_exists_join(store, ctx.binary_g_id, &self.p1, &self.p2, &self.p3)?
-            {
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, count as i64)?,
-                )));
-                return Ok(());
-            }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "chain+exists COUNT(*) fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let Some(count) = count_chain_exists_join(store, ctx.binary_g_id, &p1, &p2, &p3)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(build_count_batch(out_var, count as i64)?))
+        },
+        fallback,
+        "chain+exists COUNT(*)",
+    )
 }
 
 /// Streaming iterator over PSOT leaflets for a predicate that yields

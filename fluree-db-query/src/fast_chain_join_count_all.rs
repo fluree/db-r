@@ -24,18 +24,14 @@
 //! restrict the `p2` scan to only those `c` that appear in `p3` by merge-filtering
 //! in POST order (p,o,s).
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    projection_okey_only, projection_sid_okey, PrecomputedSingleBatchOperator,
-    PsotSubjectCountIter,
+    projection_okey_only, projection_sid_okey, FastPathOperator, PsotSubjectCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
 use fluree_db_binary_index::BinaryIndexStore;
@@ -43,26 +39,44 @@ use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 
-pub struct PredicateChainJoinCountAllOperator {
+pub fn chain_join_count_all_operator(
     p1: Ref,
     p2: Ref,
     p3: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let p1_sid = normalize_pred_sid(store, &p1)?;
+            let p2_sid = normalize_pred_sid(store, &p2)?;
+            let p3_sid = normalize_pred_sid(store, &p3)?;
+            let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {
+                return Ok(Some(build_count_batch(out_var, 0)?));
+            };
+            let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
+                return Ok(Some(build_count_batch(out_var, 0)?));
+            };
+            let Some(p3_id) = store.sid_to_p_id(&p3_sid) else {
+                return Ok(Some(build_count_batch(out_var, 0)?));
+            };
 
-impl PredicateChainJoinCountAllOperator {
-    pub fn new(p1: Ref, p2: Ref, p3: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            p1,
-            p2,
-            p3,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
+            match count_chain_join_all(store, ctx.binary_g_id, p1_id, p2_id, p3_id)? {
+                FastChainJoinCount::Supported(n) => {
+                    let n_i64 = i64::try_from(n)
+                        .map_err(|_| QueryError::execution("COUNT(*) exceeds i64 in chain join"))?;
+                    Ok(Some(build_count_batch(out_var, n_i64)?))
+                }
+                FastChainJoinCount::Unsupported => Ok(None),
+            }
+        },
+        fallback,
+        "chain join COUNT(*)",
+    )
 }
 
 enum FastChainJoinCount {
@@ -321,92 +335,4 @@ fn count_chain_join_all(
     }
 
     Ok(FastChainJoinCount::Supported(total))
-}
-
-#[async_trait]
-impl Operator for PredicateChainJoinCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            let p1_sid = normalize_pred_sid(store, &self.p1)?;
-            let p2_sid = normalize_pred_sid(store, &self.p2)?;
-            let p3_sid = normalize_pred_sid(store, &self.p3)?;
-            let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {
-                let batch = build_count_batch(self.out_var, 0)?;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                self.state = OperatorState::Open;
-                return Ok(());
-            };
-            let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
-                let batch = build_count_batch(self.out_var, 0)?;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                self.state = OperatorState::Open;
-                return Ok(());
-            };
-            let Some(p3_id) = store.sid_to_p_id(&p3_sid) else {
-                let batch = build_count_batch(self.out_var, 0)?;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                self.state = OperatorState::Open;
-                return Ok(());
-            };
-
-            match count_chain_join_all(store, ctx.binary_g_id, p1_id, p2_id, p3_id)? {
-                FastChainJoinCount::Supported(n) => {
-                    let n_i64 = i64::try_from(n)
-                        .map_err(|_| QueryError::execution("COUNT(*) exceeds i64 in chain join"))?;
-                    let batch = build_count_batch(self.out_var, n_i64)?;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                    self.state = OperatorState::Open;
-                    return Ok(());
-                }
-                FastChainJoinCount::Unsupported => {
-                    // Fall through to planned pipeline.
-                }
-            }
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "chain join COUNT(*) fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
 }

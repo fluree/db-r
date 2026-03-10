@@ -9,15 +9,13 @@
 //! This reduces work from O(rows) dictionary operations to O(leaflets) key decoding.
 
 use crate::binding::{Batch, Binding};
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    fast_path_store, leaf_entries_for_predicate, normalize_pred_sid, PrecomputedSingleBatchOperator,
+    fast_path_store, leaf_entries_for_predicate, normalize_pred_sid, FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
 use fluree_db_binary_index::BinaryIndexStore;
@@ -33,108 +31,41 @@ pub enum MinMaxMode {
     Max,
 }
 
-/// Fused operator that outputs a single-row batch containing the MIN/MAX result.
-pub struct PredicateMinMaxStringOperator {
+/// Create a fused operator that outputs a single-row batch containing the MIN/MAX result.
+pub fn predicate_min_max_string_operator(
     predicate: Ref,
-    out_var: VarId,
     mode: MinMaxMode,
-    state: OperatorState,
-    /// When fast-path is not available at runtime, fall back to this operator tree.
+    out_var: VarId,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateMinMaxStringOperator {
-    pub fn new(
-        predicate: Ref,
-        mode: MinMaxMode,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            predicate,
-            out_var,
-            mode,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateMinMaxStringOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            let pred_sid = normalize_pred_sid(store, &self.predicate)?;
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let pred_sid = normalize_pred_sid(store, &predicate)?;
             let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
                 // Predicate absent -> empty input -> aggregate result is unbound.
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    Batch::single_row(
-                        Arc::from(vec![self.out_var].into_boxed_slice()),
-                        vec![Binding::Unbound],
-                    )
-                    .map_err(|e| QueryError::execution(format!("min/max batch build: {e}")))?,
-                )));
-                return Ok(());
+                let batch = Batch::single_row(
+                    Arc::from(vec![out_var].into_boxed_slice()),
+                    vec![Binding::Unbound],
+                )
+                .map_err(|e| QueryError::execution(format!("min/max batch build: {e}")))?;
+                return Ok(Some(batch));
             };
 
-            if let Some(b) = minmax_string_dict_post(store, ctx.binary_g_id, p_id, self.mode)? {
-                let batch =
-                    Batch::single_row(Arc::from(vec![self.out_var].into_boxed_slice()), vec![b])
-                        .map_err(|e| QueryError::execution(format!("min/max batch build: {e}")))?;
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                return Ok(());
+            if let Some(b) = minmax_string_dict_post(store, ctx.binary_g_id, p_id, mode)? {
+                let batch = Batch::single_row(Arc::from(vec![out_var].into_boxed_slice()), vec![b])
+                    .map_err(|e| QueryError::execution(format!("min/max batch build: {e}")))?;
+                return Ok(Some(batch));
             }
             // Unsupported at runtime (mixed non-string objects) — fall through to planned pipeline.
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "MIN/MAX string fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(None)
+        },
+        fallback,
+        "MIN/MAX string",
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -25,109 +25,42 @@
 //! - MINUS block contains 1+ triple patterns, all `?s <pi> ?oi` (same subject var),
 //!   bound predicates, var objects, no dt/lang constraints.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
-use crate::error::{QueryError, Result};
+use crate::error::Result;
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_sorted, count_rows_for_predicate_psot,
     count_rows_psot_for_subjects_sorted, fast_path_store, intersect_many_sorted,
-    normalize_pred_sid, PrecomputedSingleBatchOperator,
+    normalize_pred_sid, FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::GraphId;
 
-pub struct PredicateMinusJoinCountAllOperator {
+pub fn minus_join_count_all_operator(
     outer_predicate: Ref,
     minus_predicates: Vec<Ref>,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateMinusJoinCountAllOperator {
-    pub fn new(
-        outer_predicate: Ref,
-        minus_predicates: Vec<Ref>,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            outer_predicate,
-            minus_predicates,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateMinusJoinCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_minus_outer_rows_psot(
                 store,
                 ctx.binary_g_id,
-                &self.outer_predicate,
-                &self.minus_predicates,
+                &outer_predicate,
+                &minus_predicates,
             )?;
-            self.state = OperatorState::Open;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
-            )));
-            return Ok(());
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "MINUS COUNT(*) fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            let n_i64 = i64::try_from(count).unwrap_or(i64::MAX);
+            Ok(Some(build_count_batch(out_var, n_i64)?))
+        },
+        fallback,
+        "MINUS COUNT(*)",
+    )
 }
 
 fn count_minus_outer_rows_psot(

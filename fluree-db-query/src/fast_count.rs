@@ -1,23 +1,20 @@
 //! Consolidated fast-path COUNT operators.
 //!
 //! This module groups the `fast_count_*` family into one place to reduce sprawl.
-//! All operators here emit a single-row count batch via `PrecomputedSingleBatchOperator`
+//! All operators here emit a single-row count batch via `FastPathOperator`
 //! when `fast_path_store(ctx)` is available, otherwise they fall back to a planned
 //! operator tree for correctness.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, count_rows_for_predicate_psot, fast_path_store, leaf_entries_for_predicate,
     normalize_pred_sid, projection_okey_only, projection_otype_okey, projection_otype_only,
-    projection_sid_only, PrecomputedSingleBatchOperator,
+    projection_sid_only, FastPathOperator,
 };
 use crate::ir::{Expression, Function};
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{
     cmp_v2_for_order, read_ordered_key_v2, RunRecordV2,
@@ -33,93 +30,27 @@ use fluree_vocab::namespaces;
 // ---------------------------------------------------------------------------
 
 /// Fast-path: `COUNT(*)` / `COUNT(?x)` for a single triple `?s <p> ?o`.
-pub struct PredicateCountRowsOperator {
+pub fn count_rows_operator(
     predicate: Ref,
     out_var: VarId,
-    state: OperatorState,
-    /// When fast-path is not available at runtime, fall back to this operator tree.
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateCountRowsOperator {
-    pub fn new(predicate: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            predicate,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateCountRowsOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            let pred_sid = normalize_pred_sid(store, &self.predicate)?;
-            let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
-                // Predicate not present in the persisted dict — empty result.
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, 0)?,
-                )));
-                return Ok(());
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
             };
-
+            let pred_sid = normalize_pred_sid(store, &predicate)?;
+            let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
+                return Ok(Some(build_count_batch(out_var, 0)?));
+            };
             let count = count_rows_for_predicate_psot(store, ctx.binary_g_id, p_id)?;
-            self.state = OperatorState::Open;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                build_count_batch(self.out_var, count as i64)?,
-            )));
-            return Ok(());
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "COUNT rows fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count as i64)?))
+        },
+        fallback,
+        "COUNT rows",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -127,93 +58,25 @@ impl Operator for PredicateCountRowsOperator {
 // ---------------------------------------------------------------------------
 
 /// Fast-path fused scan + COUNT(DISTINCT ?o) for a single predicate.
-pub struct PredicateCountDistinctObjectOperator {
+pub fn count_distinct_object_operator(
     predicate: Ref,
     out_var: VarId,
-    state: OperatorState,
-    done: bool,
-    /// When fast-path is not available at runtime, fall back to this operator tree.
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateCountDistinctObjectOperator {
-    pub fn new(predicate: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            predicate,
-            out_var,
-            state: OperatorState::Created,
-            done: false,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateCountDistinctObjectOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            match count_distinct_object_post(store, ctx.binary_g_id, &predicate)? {
+                Some(count) => Ok(Some(build_count_batch(out_var, count as i64)?)),
+                None => Ok(None), // Unsupported at runtime — fall through to planned pipeline.
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            match count_distinct_object_post(store, ctx.binary_g_id, &self.predicate)? {
-                Some(count) => {
-                    self.state = OperatorState::Open;
-                    self.done = false;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                        build_count_batch(self.out_var, count as i64)?,
-                    )));
-                    return Ok(());
-                }
-                None => {
-                    // Unsupported at runtime — fall through to planned pipeline.
-                }
-            }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "COUNT(DISTINCT) fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.done = true;
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        "COUNT(DISTINCT)",
+    )
 }
 
 /// COUNT DISTINCT objects for a bound predicate by scanning POST.
@@ -281,81 +144,21 @@ fn count_distinct_object_post(
 // ---------------------------------------------------------------------------
 
 /// Fast-path: count total triples across all patterns.
-pub struct CountTriplesOperator {
-    out_var: VarId,
-    state: OperatorState,
-    fallback: Option<BoxedOperator>,
-}
-
-impl CountTriplesOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountTriplesOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+pub fn count_triples_operator(out_var: VarId, fallback: Option<BoxedOperator>) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_triples_from_branch_manifest(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count)
                 .map_err(|_| QueryError::execution("COUNT exceeds i64 in triples fast-path"))?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "triples COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "triples COUNT",
+    )
 }
 
 fn count_triples_from_branch_manifest(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
@@ -376,82 +179,25 @@ fn count_triples_from_branch_manifest(store: &BinaryIndexStore, g_id: GraphId) -
 }
 
 /// Fast-path: count distinct subjects across all triples.
-pub struct CountDistinctSubjectsOperator {
+pub fn count_distinct_subjects_operator(
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl CountDistinctSubjectsOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountDistinctSubjectsOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_distinct_subjects_spot(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-subject fast-path")
             })?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "distinct subject COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "distinct subject COUNT",
+    )
 }
 
 fn count_distinct_subjects_spot(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
@@ -495,82 +241,25 @@ fn count_distinct_subjects_spot(store: &BinaryIndexStore, g_id: GraphId) -> Resu
 }
 
 /// Fast-path: count distinct predicates across all triples.
-pub struct CountDistinctPredicatesOperator {
+pub fn count_distinct_predicates_operator(
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl CountDistinctPredicatesOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountDistinctPredicatesOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_distinct_predicates_psot(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-predicate fast-path")
             })?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "distinct predicate COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "distinct predicate COUNT",
+    )
 }
 
 fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
@@ -610,82 +299,25 @@ fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Re
 }
 
 /// Fast-path: count distinct objects across all triples.
-pub struct CountDistinctObjectsOperator {
+pub fn count_distinct_objects_operator(
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl CountDistinctObjectsOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountDistinctObjectsOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_distinct_objects_opst(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-object fast-path")
             })?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "distinct object COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "distinct object COUNT",
+    )
 }
 
 fn count_distinct_objects_opst(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
@@ -733,81 +365,24 @@ fn count_distinct_objects_opst(store: &BinaryIndexStore, g_id: GraphId) -> Resul
 // ---------------------------------------------------------------------------
 
 /// Fast-path: count triples with literal objects.
-pub struct CountLiteralObjectsOperator {
+pub fn count_literal_objects_operator(
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl CountLiteralObjectsOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountLiteralObjectsOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_literal_rows_psot(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count)
                 .map_err(|_| QueryError::execution("COUNT exceeds i64 in literal fast-path"))?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "literal COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "literal COUNT",
+    )
 }
 
 fn is_literal_otype(ot_u16: u16) -> bool {
@@ -854,81 +429,24 @@ fn count_literal_rows_psot(store: &BinaryIndexStore, g_id: GraphId) -> Result<u6
 }
 
 /// Fast-path: count triples with blank-node subjects.
-pub struct CountBlankNodeSubjectsOperator {
+pub fn count_blank_node_subjects_operator(
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl CountBlankNodeSubjectsOperator {
-    pub fn new(out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for CountBlankNodeSubjectsOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_blank_subject_rows_spot(store, ctx.binary_g_id)?;
             let count_i64 = i64::try_from(count)
                 .map_err(|_| QueryError::execution("COUNT exceeds i64 in blank-node fast-path"))?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "blank-node COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "blank-node COUNT",
+    )
 }
 
 fn blank_subject_range() -> (u64, u64) {
@@ -1021,85 +539,43 @@ fn count_blank_subject_rows_spot(store: &BinaryIndexStore, g_id: GraphId) -> Res
 /// Falls back when:
 /// - the predicate's object type is not homogeneous (o_type_const missing or mixed)
 /// - the homogeneous o_type is not string-dict-backed
-pub struct PredicateRegexPrefixCountOperator {
+// Kept for: regex-prefix COUNT fast-path detection in operator_tree.rs.
+// Use when: detect_regex_anchored_prefix is wired into operator tree detection.
+#[expect(dead_code)]
+pub(crate) fn regex_prefix_count_operator(
     predicate: Ref,
     prefix: String,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateRegexPrefixCountOperator {
-    pub fn new(
-        predicate: Ref,
-        prefix: String,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            predicate,
-            prefix,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateRegexPrefixCountOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            let pred_sid = normalize_pred_sid(store, &self.predicate)?;
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let pred_sid = normalize_pred_sid(store, &predicate)?;
             let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, 0)?,
-                )));
-                self.state = OperatorState::Open;
-                return Ok(());
+                return Ok(Some(build_count_batch(out_var, 0)?));
             };
 
             // Determine (small) set of string-backed o_types observed for this predicate in POST order.
             let Some(o_types) = string_otypes_for_predicate_post(store, ctx.binary_g_id, p_id)?
             else {
-                // Can't guarantee correctness with this fast path.
-                // Fall back to the planned pipeline (filter eval).
-                if let Some(fb) = self.fallback.as_mut() {
-                    fb.open(ctx).await?;
-                    self.state = OperatorState::Open;
-                    return Ok(());
-                }
-                return Err(QueryError::Internal(
-                    "regex-prefix COUNT fast-path unavailable and no fallback provided".into(),
-                ));
+                return Ok(None); // Can't guarantee correctness — fall through to planned pipeline.
             };
 
             let ids = store
-                .find_strings_by_prefix(&self.prefix)
+                .find_strings_by_prefix(&prefix)
                 .map_err(|e| QueryError::Internal(format!("string prefix scan: {e}")))?;
             tracing::debug!(
                 predicate_p_id = p_id,
-                prefix = %self.prefix,
+                prefix = %prefix,
                 string_ids = ids.len(),
                 "regex-prefix fast-path: enumerated string ids"
             );
             if ids.is_empty() {
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, 0)?,
-                )));
-                self.state = OperatorState::Open;
-                return Ok(());
+                return Ok(Some(build_count_batch(out_var, 0)?));
             }
 
             tracing::debug!(
@@ -1122,53 +598,18 @@ impl Operator for PredicateRegexPrefixCountOperator {
 
             tracing::debug!(
                 predicate_p_id = p_id,
-                prefix = %self.prefix,
+                prefix = %prefix,
                 total,
                 "regex-prefix fast-path: computed total rows"
             );
             let total_i64 = i64::try_from(total).map_err(|_| {
                 QueryError::execution("COUNT exceeds i64 in regex-prefix fast-path")
             })?;
-            let batch = build_count_batch(self.out_var, total_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "regex-prefix COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, total_i64)?))
+        },
+        fallback,
+        "regex-prefix COUNT",
+    )
 }
 
 fn string_otypes_for_predicate_post(

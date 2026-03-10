@@ -7,7 +7,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::operator::{Operator, OperatorState};
+use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -995,4 +995,132 @@ pub fn fast_path_store<'a>(ctx: &'a ExecutionContext<'_>) -> Option<&'a Arc<Bina
         return None;
     }
     Some(store)
+}
+
+// ---------------------------------------------------------------------------
+// 11. Generic fast-path operator
+// ---------------------------------------------------------------------------
+
+/// Generic fast-path operator that eliminates per-operator boilerplate.
+///
+/// Each fast-path file provides a constructor function that captures domain-specific
+/// data into a closure. `FastPathOperator` handles all lifecycle plumbing:
+/// state transitions, fallback delegation, and single-batch yielding.
+///
+/// The `compute` closure is called once during `open()`:
+/// - `Ok(Some(batch))` → fast path succeeded; that batch is yielded then exhausted
+/// - `Ok(None)` → fall through to the fallback operator tree
+/// - `Err(_)` → propagated as-is
+// Boxed closure that computes the fast-path result during `open()`.
+type FastPathCompute =
+    Box<dyn FnOnce(&ExecutionContext<'_>) -> Result<Option<Batch>> + Send + Sync>;
+
+pub struct FastPathOperator {
+    schema: FastPathSchema,
+    state: OperatorState,
+    fallback: Option<BoxedOperator>,
+    compute: Option<FastPathCompute>,
+    label: &'static str,
+}
+
+enum FastPathSchema {
+    Single(VarId),
+    Multi(Arc<[VarId]>),
+}
+
+impl FastPathOperator {
+    /// Create a fast-path operator with a single output variable.
+    pub fn new(
+        out_var: VarId,
+        compute: impl FnOnce(&ExecutionContext<'_>) -> Result<Option<Batch>> + Send + Sync + 'static,
+        fallback: Option<BoxedOperator>,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            schema: FastPathSchema::Single(out_var),
+            state: OperatorState::Created,
+            fallback,
+            compute: Some(Box::new(compute)),
+            label,
+        }
+    }
+
+    /// Create a fast-path operator with a multi-variable output schema.
+    pub fn with_schema(
+        schema: Arc<[VarId]>,
+        compute: impl FnOnce(&ExecutionContext<'_>) -> Result<Option<Batch>> + Send + Sync + 'static,
+        fallback: Option<BoxedOperator>,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            schema: FastPathSchema::Multi(schema),
+            state: OperatorState::Created,
+            fallback,
+            compute: Some(Box::new(compute)),
+            label,
+        }
+    }
+}
+
+#[async_trait]
+impl Operator for FastPathOperator {
+    fn schema(&self) -> &[VarId] {
+        match &self.schema {
+            FastPathSchema::Single(v) => std::slice::from_ref(v),
+            FastPathSchema::Multi(v) => v,
+        }
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        if !self.state.can_open() {
+            if self.state.is_closed() {
+                return Err(QueryError::OperatorClosed);
+            }
+            return Err(QueryError::OperatorAlreadyOpened);
+        }
+
+        if let Some(compute) = self.compute.take() {
+            if let Some(batch) = compute(ctx)? {
+                self.state = OperatorState::Open;
+                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
+                return Ok(());
+            }
+        }
+
+        let Some(fallback) = &mut self.fallback else {
+            return Err(QueryError::Internal(format!(
+                "{} fast-path unavailable and no fallback provided",
+                self.label
+            )));
+        };
+        fallback.open(ctx).await?;
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+        if !self.state.can_next() {
+            if self.state == OperatorState::Created {
+                return Err(QueryError::OperatorNotOpened);
+            }
+            return Ok(None);
+        }
+
+        let Some(fallback) = &mut self.fallback else {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        };
+        let b = fallback.next_batch(ctx).await?;
+        if b.is_none() {
+            self.state = OperatorState::Exhausted;
+        }
+        Ok(b)
+    }
+
+    fn close(&mut self) {
+        if let Some(fb) = &mut self.fallback {
+            fb.close();
+        }
+        self.state = OperatorState::Closed;
+    }
 }

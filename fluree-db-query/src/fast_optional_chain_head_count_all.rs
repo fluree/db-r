@@ -18,128 +18,65 @@
 //!
 //! This avoids materializing join rows and avoids per-row OPTIONAL execution.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    projection_sid_okey, projection_sid_otype_okey, PostObjectGroupCountIter,
-    PrecomputedSingleBatchOperator, PsotSubjectCountIter,
+    projection_sid_okey, projection_sid_otype_okey, FastPathOperator, PostObjectGroupCountIter,
+    PsotSubjectCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch};
 use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 
-pub struct PredicateOptionalChainHeadCountAllOperator {
+pub fn predicate_optional_chain_head_count_all(
     p1: Ref,
     p2: Ref,
     p3: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateOptionalChainHeadCountAllOperator {
-    pub fn new(p1: Ref, p2: Ref, p3: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            p1,
-            p2,
-            p3,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateOptionalChainHeadCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            if let Some(count) =
-                count_optional_chain_head(store, ctx.binary_g_id, &self.p1, &self.p2, &self.p3)?
-            {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                tracing::debug!(
+                    "optional chain-head COUNT(*) fast-path disabled by execution context, falling back (history_mode={}, from_t={:?}, has_policy={}, overlay_epoch={:?})",
+                    ctx.history_mode,
+                    ctx.from_t,
+                    ctx.policy_enforcer.is_some(),
+                    ctx.overlay.map(|o| o.epoch())
+                );
+                return Ok(None);
+            };
+            if let Some(count) = count_optional_chain_head(store, ctx.binary_g_id, &p1, &p2, &p3)? {
                 tracing::debug!(
                     "using optional chain-head COUNT(*) fast-path (p1={:?}, p2={:?}, p3={:?})",
-                    self.p1,
-                    self.p2,
-                    self.p3
+                    p1,
+                    p2,
+                    p3
                 );
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
-                )));
-                return Ok(());
+                Ok(Some(build_count_batch(
+                    out_var,
+                    i64::try_from(count).unwrap_or(i64::MAX),
+                )?))
+            } else {
+                tracing::debug!(
+                    "optional chain-head COUNT(*) fast-path not applicable, falling back (p1={:?}, p2={:?}, p3={:?})",
+                    p1,
+                    p2,
+                    p3
+                );
+                Ok(None)
             }
-            tracing::debug!(
-                "optional chain-head COUNT(*) fast-path not applicable, falling back (p1={:?}, p2={:?}, p3={:?})",
-                self.p1,
-                self.p2,
-                self.p3
-            );
-        } else {
-            tracing::debug!(
-                "optional chain-head COUNT(*) fast-path disabled by execution context, falling back (history_mode={}, from_t={:?}, has_policy={}, overlay_epoch={:?})",
-                ctx.history_mode,
-                ctx.from_t,
-                ctx.policy_enforcer.is_some(),
-                ctx.overlay.map(|o| o.epoch())
-            );
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "optional chain-head COUNT(*) fast-path unavailable and no fallback provided"
-                    .to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        "optional chain-head COUNT(*)",
+    )
 }
 
 /// Yield `(b, sum_n3)` groups from PSOT(p2), where `sum_n3 = Σ_{c in p2(b)} n3(c)`.

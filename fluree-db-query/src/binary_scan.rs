@@ -1326,14 +1326,13 @@ impl Operator for BinaryScanOperator {
         // Get branch manifest (clone into Arc for cursor ownership).
         let store_arc = Arc::clone(self.store.as_ref().expect("store set above"));
         let store_ref = store_arc.as_ref();
-        let branch_ref = store_ref
-            .branch_for_order(self.g_id, order)
-            .ok_or_else(|| {
-                QueryError::Internal(format!(
-                    "no V3 branch for g_id={}, order={:?}",
-                    self.g_id, order
-                ))
-            })?;
+        let Some(branch_ref) = store_ref.branch_for_order(self.g_id, order) else {
+            // The index root may omit graphs (or specific sort orders) that have
+            // zero indexed rows. Queries over such graphs should return empty
+            // results (or overlay-only results when novelty is present), not
+            // fail with an internal error.
+            return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        };
         let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
             Arc::new(branch_ref.clone());
 

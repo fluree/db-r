@@ -9,37 +9,38 @@ use crate::binary_scan::EmitMask;
 use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
-use crate::fast_chain_exists_count_all::PredicateChainExistsJoinCountAllOperator;
-use crate::fast_chain_join_count_all::PredicateChainJoinCountAllOperator;
-use crate::fast_chain_minus_count_all::PredicateChainMinusCountAllOperator;
+use crate::fast_chain_exists_count_all::predicate_chain_exists_join_count_all_operator;
+use crate::fast_chain_join_count_all::chain_join_count_all_operator;
+use crate::fast_chain_minus_count_all::chain_minus_count_all_operator;
 use crate::fast_count::{
-    CountBlankNodeSubjectsOperator, CountDistinctObjectsOperator, CountDistinctPredicatesOperator,
-    CountDistinctSubjectsOperator, CountLiteralObjectsOperator, CountTriplesOperator,
-    PredicateCountDistinctObjectOperator, PredicateCountRowsOperator,
+    count_blank_node_subjects_operator, count_distinct_object_operator,
+    count_distinct_objects_operator, count_distinct_predicates_operator,
+    count_distinct_subjects_operator, count_literal_objects_operator, count_rows_operator,
+    count_triples_operator,
 };
-use crate::fast_exists_join_count_all::PredicateExistsJoinCountAllOperator;
-use crate::fast_exists_join_count_distinct_object::PredicateExistsJoinCountDistinctObjectOperator;
-use crate::fast_exists_star_join_count_all::PredicateExistsStarJoinCountAllOperator;
+use crate::fast_exists_join_count_all::exists_join_count_all_operator;
+use crate::fast_exists_join_count_distinct_object::exists_join_count_distinct_object_operator;
+use crate::fast_exists_star_join_count_all::exists_star_join_count_all_operator;
 use crate::fast_fused_scan_sum::{
-    DateComponentFn, NumericUnaryFn, PredicateFusedScanSumI64Operator, ScalarI64Fn,
+    fused_scan_sum_i64_operator, DateComponentFn, NumericUnaryFn, ScalarI64Fn,
 };
 use crate::fast_group_count_firsts::{
     GroupByObjectStarTopKOperator, PredicateGroupCountFirstsOperator,
     PredicateObjectCountFirstsOperator,
 };
-use crate::fast_min_max_string::{MinMaxMode, PredicateMinMaxStringOperator};
-use crate::fast_minus_join_count_all::PredicateMinusJoinCountAllOperator;
-use crate::fast_multicolumn_join_count_all::PredicateMultiColumnJoinCountAllOperator;
-use crate::fast_object_chain_exists_count_all::PredicateObjectChainExistsJoinCountAllOperator;
-use crate::fast_object_chain_minus_count_all::PredicateObjectChainMinusCountAllOperator;
-use crate::fast_optional_chain_head_count_all::PredicateOptionalChainHeadCountAllOperator;
-use crate::fast_optional_chain_tail_count_all::PredicateChainOptionalTailCountAllOperator;
-use crate::fast_optional_join_count_all::PredicateOptionalJoinCountAllOperator;
-use crate::fast_property_minus_count_all::PredicatePropertyMinusCountAllOperator;
-use crate::fast_property_path_plus_count_all::PropertyPathPlusFixedSubjectCountAllOperator;
-use crate::fast_star_exists_count_all::PredicateStarExistsJoinCountAllOperator;
-use crate::fast_sum_strlen_group_concat::PredicateSumStrlenGroupConcatOperator;
-use crate::fast_transitive_path_plus_count_all::TransitivePathPlusCountAllOperator;
+use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
+use crate::fast_minus_join_count_all::minus_join_count_all_operator;
+use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
+use crate::fast_object_chain_exists_count_all::predicate_object_chain_exists_join_count_all_operator;
+use crate::fast_object_chain_minus_count_all::object_chain_minus_count_all_operator;
+use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
+use crate::fast_optional_chain_tail_count_all::predicate_chain_optional_tail_count_all;
+use crate::fast_optional_join_count_all::predicate_optional_join_count_all;
+use crate::fast_property_minus_count_all::property_minus_count_all_operator;
+use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
+use crate::fast_star_exists_count_all::star_exists_join_count_all_operator;
+use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
+use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
 use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
 use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
@@ -2710,7 +2711,7 @@ fn build_operator_tree_inner(
             // Build fallback operator tree without this fast path to preserve correctness in
             // pre-index / history / policy contexts.
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateFusedScanSumI64Operator::new(
+            return Ok(Box::new(fused_scan_sum_i64_operator(
                 pred,
                 scalar,
                 out_var,
@@ -2724,7 +2725,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((pred, out_var)) = detect_predicate_count_distinct_object(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateCountDistinctObjectOperator::new(
+            return Ok(Box::new(count_distinct_object_operator(
                 pred,
                 out_var,
                 Some(fallback),
@@ -2737,7 +2738,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((pred, mode, out_var)) = detect_predicate_minmax_string(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateMinMaxStringOperator::new(
+            return Ok(Box::new(predicate_min_max_string_operator(
                 pred,
                 mode,
                 out_var,
@@ -2783,11 +2784,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((pred, out_var)) = detect_predicate_count_rows(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateCountRowsOperator::new(
-                pred,
-                out_var,
-                Some(fallback),
-            )));
+            return Ok(Box::new(count_rows_operator(pred, out_var, Some(fallback))));
         }
     }
 
@@ -2797,7 +2794,7 @@ fn build_operator_tree_inner(
             detect_exists_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateExistsJoinCountAllOperator::new(
+            return Ok(Box::new(exists_join_count_all_operator(
                 outer_pred,
                 exists_pred,
                 out_var,
@@ -2810,7 +2807,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((p1, p2, p3, out_var)) = detect_chain_exists_join_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateChainExistsJoinCountAllOperator::new(
+            return Ok(Box::new(predicate_chain_exists_join_count_all_operator(
                 p1,
                 p2,
                 p3,
@@ -2827,7 +2824,7 @@ fn build_operator_tree_inner(
             detect_minus_outer_single_triple_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateMinusJoinCountAllOperator::new(
+            return Ok(Box::new(minus_join_count_all_operator(
                 outer_pred,
                 minus_preds,
                 out_var,
@@ -2842,7 +2839,7 @@ fn build_operator_tree_inner(
             detect_property_minus_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicatePropertyMinusCountAllOperator::new(
+            return Ok(Box::new(property_minus_count_all_operator(
                 outer_preds,
                 minus_pred,
                 out_var,
@@ -2855,7 +2852,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((p1, p2, p3, out_var)) = detect_chain_minus_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateChainMinusCountAllOperator::new(
+            return Ok(Box::new(chain_minus_count_all_operator(
                 p1,
                 p2,
                 p3,
@@ -2871,7 +2868,7 @@ fn build_operator_tree_inner(
             detect_object_chain_minus_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateObjectChainMinusCountAllOperator::new(
+            return Ok(Box::new(object_chain_minus_count_all_operator(
                 p_outer,
                 p2,
                 p3,
@@ -2885,7 +2882,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((p1, p2, p3, out_var)) = detect_chain_join_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateChainJoinCountAllOperator::new(
+            return Ok(Box::new(chain_join_count_all_operator(
                 p1,
                 p2,
                 p3,
@@ -2899,7 +2896,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((p1, p2, out_var)) = detect_multicolumn_join_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateMultiColumnJoinCountAllOperator::new(
+            return Ok(Box::new(multicolumn_join_count_all_operator(
                 p1,
                 p2,
                 out_var,
@@ -2915,7 +2912,7 @@ fn build_operator_tree_inner(
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(
-                PredicateObjectChainExistsJoinCountAllOperator::new(
+                predicate_object_chain_exists_join_count_all_operator(
                     p_outer,
                     p2,
                     p3,
@@ -2931,7 +2928,7 @@ fn build_operator_tree_inner(
         if let Some((preds, p_exists, out_var)) = detect_star_exists_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateStarExistsJoinCountAllOperator::new(
+            return Ok(Box::new(star_exists_join_count_all_operator(
                 preds,
                 p_exists,
                 out_var,
@@ -2946,7 +2943,7 @@ fn build_operator_tree_inner(
             detect_exists_star_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateExistsStarJoinCountAllOperator::new(
+            return Ok(Box::new(exists_star_join_count_all_operator(
                 outer_pred,
                 exists_preds,
                 out_var,
@@ -2961,14 +2958,12 @@ fn build_operator_tree_inner(
             detect_exists_join_count_distinct_object(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(
-                PredicateExistsJoinCountDistinctObjectOperator::new(
-                    count_pred,
-                    exists_pred,
-                    out_var,
-                    Some(fallback),
-                ),
-            ));
+            return Ok(Box::new(exists_join_count_distinct_object_operator(
+                count_pred,
+                exists_pred,
+                out_var,
+                Some(fallback),
+            )));
         }
     }
 
@@ -2977,7 +2972,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_blank_node_subjects(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountBlankNodeSubjectsOperator::new(
+            return Ok(Box::new(count_blank_node_subjects_operator(
                 out_var,
                 Some(fallback),
             )));
@@ -2989,7 +2984,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_literal_objects(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountLiteralObjectsOperator::new(
+            return Ok(Box::new(count_literal_objects_operator(
                 out_var,
                 Some(fallback),
             )));
@@ -3001,7 +2996,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_distinct_subjects(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountDistinctSubjectsOperator::new(
+            return Ok(Box::new(count_distinct_subjects_operator(
                 out_var,
                 Some(fallback),
             )));
@@ -3013,7 +3008,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_distinct_predicates(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountDistinctPredicatesOperator::new(
+            return Ok(Box::new(count_distinct_predicates_operator(
                 out_var,
                 Some(fallback),
             )));
@@ -3025,7 +3020,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_triples(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountTriplesOperator::new(out_var, Some(fallback))));
+            return Ok(Box::new(count_triples_operator(out_var, Some(fallback))));
         }
     }
 
@@ -3037,7 +3032,7 @@ fn build_operator_tree_inner(
             detect_optional_single_triple_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateOptionalJoinCountAllOperator::new(
+            return Ok(Box::new(predicate_optional_join_count_all(
                 pred_required,
                 pred_optional,
                 out_var,
@@ -3053,7 +3048,7 @@ fn build_operator_tree_inner(
             detect_chain_optional_tail_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateChainOptionalTailCountAllOperator::new(
+            return Ok(Box::new(predicate_chain_optional_tail_count_all(
                 p1,
                 p2,
                 p3,
@@ -3070,7 +3065,7 @@ fn build_operator_tree_inner(
             detect_optional_chain_head_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateOptionalChainHeadCountAllOperator::new(
+            return Ok(Box::new(predicate_optional_chain_head_count_all(
                 p1,
                 p2,
                 p3,
@@ -3087,7 +3082,7 @@ fn build_operator_tree_inner(
             detect_property_path_plus_fixed_subject_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PropertyPathPlusFixedSubjectCountAllOperator::new(
+            return Ok(Box::new(property_path_plus_count_all_operator(
                 pred_sid,
                 subject,
                 out_var,
@@ -3117,7 +3112,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some((p1, p2, out_var)) = detect_transitive_path_plus_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(TransitivePathPlusCountAllOperator::new(
+            return Ok(Box::new(transitive_path_plus_count_all_operator(
                 p1,
                 p2,
                 out_var,
@@ -3131,7 +3126,7 @@ fn build_operator_tree_inner(
     if enable_fused_fast_paths {
         if let Some(out_var) = detect_count_distinct_objects(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(CountDistinctObjectsOperator::new(
+            return Ok(Box::new(count_distinct_objects_operator(
                 out_var,
                 Some(fallback),
             )));
@@ -3193,7 +3188,7 @@ fn build_operator_tree_inner(
         if let Some((pred, sep, out_var)) = detect_sum_strlen_group_concat_subquery(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(PredicateSumStrlenGroupConcatOperator::new(
+            return Ok(Box::new(sum_strlen_group_concat_operator(
                 pred,
                 sep,
                 out_var,

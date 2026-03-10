@@ -20,114 +20,44 @@
 //!
 //! This avoids materializing the join rows and avoids decoding values.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    projection_sid_okey, PostObjectGroupCountIter, PrecomputedSingleBatchOperator,
-    PsotSubjectCountIter,
+    projection_sid_okey, FastPathOperator, PostObjectGroupCountIter, PsotSubjectCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch};
 use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 
-pub struct PredicateChainOptionalTailCountAllOperator {
+pub fn predicate_chain_optional_tail_count_all(
     p1: Ref,
     p2: Ref,
     p3_opt: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateChainOptionalTailCountAllOperator {
-    pub fn new(
-        p1: Ref,
-        p2: Ref,
-        p3_opt: Ref,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            p1,
-            p2,
-            p3_opt,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateChainOptionalTailCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            match count_chain_optional_tail(store, ctx.binary_g_id, &p1, &p2, &p3_opt)? {
+                Some(count) => Ok(Some(build_count_batch(
+                    out_var,
+                    i64::try_from(count).unwrap_or(i64::MAX),
+                )?)),
+                None => Ok(None),
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            if let Some(count) =
-                count_chain_optional_tail(store, ctx.binary_g_id, &self.p1, &self.p2, &self.p3_opt)?
-            {
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
-                )));
-                return Ok(());
-            }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "chain+optional COUNT(*) fast-path unavailable and no fallback provided"
-                    .to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        "chain+optional COUNT(*)",
+    )
 }
 
 /// Yield `(b, sum_m)` groups from PSOT(p2), where `sum_m = Σ_{c in p2(b)} m(c)`.

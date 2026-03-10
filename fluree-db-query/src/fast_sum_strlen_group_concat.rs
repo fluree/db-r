@@ -23,15 +23,13 @@
 //! lengths directly from the string dictionary.
 
 use crate::binding::{Batch, Binding};
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    fast_path_store, leaf_entries_for_predicate, normalize_pred_sid, PrecomputedSingleBatchOperator,
+    fast_path_store, leaf_entries_for_predicate, normalize_pred_sid, FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::{BinaryIndexStore, ColumnProjection, ColumnSet};
@@ -39,45 +37,39 @@ use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::{FlakeValue, GraphId, Sid};
 use std::sync::Arc;
 
-pub struct PredicateSumStrlenGroupConcatOperator {
+/// Create a fused operator for SUM(STRLEN(GROUP_CONCAT(...))) over a single predicate.
+pub fn sum_strlen_group_concat_operator(
     predicate: Ref,
     separator: Arc<str>,
     out_var: VarId,
-    state: OperatorState,
-    done: bool,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateSumStrlenGroupConcatOperator {
-    pub fn new(
-        predicate: Ref,
-        separator: Arc<str>,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            predicate,
-            separator,
-            out_var,
-            state: OperatorState::Created,
-            done: false,
-            fallback,
-        }
-    }
-
-    fn schema_arc(&self) -> Arc<[VarId]> {
-        Arc::from(vec![self.out_var].into_boxed_slice())
-    }
-
-    fn build_output_batch(&self, sum: Option<i64>) -> Result<Batch> {
-        let schema = self.schema_arc();
-        let col = vec![match sum {
-            Some(v) => Binding::lit(FlakeValue::Long(v), Sid::xsd_integer()),
-            None => Binding::Unbound,
-        }];
-        Batch::new(schema, vec![col])
-            .map_err(|e| QueryError::execution(format!("sum strlen group_concat batch build: {e}")))
-    }
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let outcome =
+                sum_strlen_group_concat_psot(store, ctx.binary_g_id, &predicate, &separator)?;
+            match outcome {
+                FastSumStrlenGroupConcat::Supported(sum) => {
+                    let schema = Arc::from(vec![out_var].into_boxed_slice());
+                    let col = vec![match sum {
+                        Some(v) => Binding::lit(FlakeValue::Long(v), Sid::xsd_integer()),
+                        None => Binding::Unbound,
+                    }];
+                    let batch = Batch::new(schema, vec![col]).map_err(|e| {
+                        QueryError::execution(format!("sum strlen group_concat batch build: {e}"))
+                    })?;
+                    Ok(Some(batch))
+                }
+                FastSumStrlenGroupConcat::Unsupported => Ok(None),
+            }
+        },
+        fallback,
+        "SUM(STRLEN(GROUP_CONCAT))",
+    )
 }
 
 fn utf8_codepoint_count(bytes: &[u8]) -> usize {
@@ -197,79 +189,4 @@ fn sum_strlen_group_concat_psot(
     Ok(FastSumStrlenGroupConcat::Supported(
         have_any.then_some(total_sum),
     ))
-}
-
-#[async_trait]
-impl Operator for PredicateSumStrlenGroupConcatOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-        self.state = OperatorState::Open;
-        self.done = false;
-
-        // Fast path is only valid when the binary index store is authoritative
-        // (no history/from_t/policy/overlay, and `to_t == max_t`).
-        if let Some(store) = fast_path_store(ctx) {
-            let outcome = sum_strlen_group_concat_psot(
-                store,
-                ctx.binary_g_id,
-                &self.predicate,
-                &self.separator,
-            )?;
-            match outcome {
-                FastSumStrlenGroupConcat::Supported(sum) => {
-                    // Supported (including empty input) — replace fallback with a precomputed operator.
-                    let batch = self.build_output_batch(sum)?;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                    return Ok(());
-                }
-                FastSumStrlenGroupConcat::Unsupported => {
-                    // Fall through to planned pipeline below.
-                }
-            }
-        }
-
-        // Generic fallback: open the planned pipeline.
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "SUM(STRLEN(GROUP_CONCAT)) fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fallback) = self.fallback.as_mut() {
-            fallback.close();
-        }
-        self.state = OperatorState::Closed;
-    }
 }

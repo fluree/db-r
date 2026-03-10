@@ -23,114 +23,45 @@
 //! Correctness constraints (planner must enforce):
 //! - All relevant objects are IRIs (`o_type_const == IRI_REF`) so join keys are stored in `o_key`.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, count_rows_for_predicate_psot,
     fast_path_store, leaf_entries_for_predicate, normalize_pred_sid, projection_okey_only,
-    projection_sid_okey, PrecomputedSingleBatchOperator,
+    projection_sid_okey, FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::{BinaryIndexStore, ColumnBatch};
 use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashSet;
 
-pub struct PredicateObjectChainMinusCountAllOperator {
+pub fn object_chain_minus_count_all_operator(
     p_outer: Ref,
     p2: Ref,
     p3: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateObjectChainMinusCountAllOperator {
-    pub fn new(
-        p_outer: Ref,
-        p2: Ref,
-        p3: Ref,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            p_outer,
-            p2,
-            p3,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateObjectChainMinusCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            match count_object_chain_minus(store, ctx.binary_g_id, &p_outer, &p2, &p3)? {
+                Some(count) => {
+                    let n_i64 = i64::try_from(count).unwrap_or(i64::MAX);
+                    Ok(Some(build_count_batch(out_var, n_i64)?))
+                }
+                None => Ok(None),
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            if let Some(count) =
-                count_object_chain_minus(store, ctx.binary_g_id, &self.p_outer, &self.p2, &self.p3)?
-            {
-                self.state = OperatorState::Open;
-                self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                    build_count_batch(self.out_var, i64::try_from(count).unwrap_or(i64::MAX))?,
-                )));
-                return Ok(());
-            }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "object-chain MINUS COUNT(*) fast-path unavailable and no fallback provided"
-                    .to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        "object-chain MINUS COUNT(*)",
+    )
 }
 
 fn collect_subjects_with_object_in_set_psot_sorted(

@@ -13,109 +13,41 @@
 //! We compute this by streaming per-subject row counts from PSOT for both predicates
 //! and merge-joining on `s_id` (metadata-friendly, no value decoding).
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, normalize_pred_sid, PrecomputedSingleBatchOperator,
-    PsotSubjectCountIter,
+    build_count_batch, fast_path_store, normalize_pred_sid, FastPathOperator, PsotSubjectCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_core::GraphId;
 
-pub struct PredicateOptionalJoinCountAllOperator {
+pub fn predicate_optional_join_count_all(
     pred_required: Ref,
     pred_optional: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateOptionalJoinCountAllOperator {
-    pub fn new(
-        pred_required: Ref,
-        pred_optional: Ref,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            pred_required,
-            pred_optional,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateOptionalJoinCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
             let count = count_optional_join_count_all_psot(
                 store,
                 ctx.binary_g_id,
-                &self.pred_required,
-                &self.pred_optional,
+                &pred_required,
+                &pred_optional,
             )?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(*) exceeds i64 in OPTIONAL join fast-path")
             })?;
-            let batch = build_count_batch(self.out_var, count_i64)?;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-            self.state = OperatorState::Open;
-            return Ok(());
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            return Err(QueryError::Internal(
-                "OPTIONAL join COUNT fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = self.fallback.as_mut() else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = self.fallback.as_mut() {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "OPTIONAL join COUNT(*)",
+    )
 }
 
 fn count_optional_join_count_all_psot(

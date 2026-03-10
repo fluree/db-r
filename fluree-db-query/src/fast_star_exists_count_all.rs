@@ -31,104 +31,35 @@
 //!
 //! Avoids per-row EXISTS evaluation, join-row materialization, and value decoding.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_sorted, fast_path_store, normalize_pred_sid,
-    PrecomputedSingleBatchOperator, PsotSubjectCountIter,
+    FastPathOperator, PsotSubjectCountIter,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::GraphId;
 
-pub struct PredicateStarExistsJoinCountAllOperator {
+pub fn star_exists_join_count_all_operator(
     preds: Vec<Ref>,
     p_exists: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateStarExistsJoinCountAllOperator {
-    pub fn new(
-        preds: Vec<Ref>,
-        p_exists: Ref,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            preds,
-            p_exists,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateStarExistsJoinCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
-            }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            let count =
-                count_star_exists_join(store, ctx.binary_g_id, &self.preds, &self.p_exists)?;
-            self.state = OperatorState::Open;
-            self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                build_count_batch(self.out_var, count as i64)?,
-            )));
-            return Ok(());
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "star+exists COUNT(*) fast-path unavailable and no fallback provided".to_string(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            let count = count_star_exists_join(store, ctx.binary_g_id, &preds, &p_exists)?;
+            Ok(Some(build_count_batch(out_var, count as i64)?))
+        },
+        fallback,
+        "star+exists COUNT(*)",
+    )
 }
 
 fn count_star_exists_join(

@@ -11,114 +11,53 @@
 //!   - if there are multiple `x` values: `|⋃ reach_plus(x_i)|` via a multi-source BFS
 //! - summing per-subject reachable endpoint counts.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, build_iri_adjacency_from_cursor, build_psot_cursor_for_predicate,
     cursor_projection_sid_otype_okey, normalize_pred_sid, reach_count_plus, reach_count_plus_multi,
-    PrecomputedSingleBatchOperator,
+    FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use fluree_db_core::o_type::OType;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-pub struct TransitivePathPlusCountAllOperator {
+/// Create a fused operator for COUNT(*) over a 2-step path with transitive `+`.
+pub fn transitive_path_plus_count_all_operator(
     p1: Ref,
     p2: Ref,
     out_var: VarId,
-    state: OperatorState,
     fallback: Option<BoxedOperator>,
-}
-
-impl TransitivePathPlusCountAllOperator {
-    pub fn new(p1: Ref, p2: Ref, out_var: VarId, fallback: Option<BoxedOperator>) -> Self {
-        Self {
-            p1,
-            p2,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for TransitivePathPlusCountAllOperator {
-    fn schema(&self) -> &[VarId] {
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            // Only safe in the same execution mode as other binary-index fast paths.
+            let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
+            if !allow_fast {
+                return Ok(None);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        // Only safe in the same execution mode as other binary-index fast paths.
-        let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
-        if allow_fast {
-            if let Some(store) = ctx.binary_store.as_ref() {
-                if let Some(count) =
-                    count_p1_then_p2_plus(store, ctx, ctx.binary_g_id, &self.p1, &self.p2)?
-                {
-                    let count_i64 = i64::try_from(count).map_err(|_| {
-                        QueryError::execution("COUNT(*) exceeds i64 in transitive-path+ fast-path")
-                    })?;
-                    let batch = build_count_batch(self.out_var, count_i64)?;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(batch)));
-                    self.state = OperatorState::Open;
-                    return Ok(());
-                }
-            }
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(
-                "transitive path+ COUNT(*) fast-path unavailable and no fallback provided".into(),
-            ));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+            let Some(store) = ctx.binary_store.as_ref() else {
+                return Ok(None);
+            };
+            let Some(count) = count_p1_then_p2_plus(store, ctx, ctx.binary_g_id, &p1, &p2)? else {
+                return Ok(None);
+            };
+            let count_i64 = i64::try_from(count).map_err(|_| {
+                QueryError::execution("COUNT(*) exceeds i64 in transitive-path+ fast-path")
+            })?;
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "transitive-path+ COUNT(*)",
+    )
 }
 
 fn count_p1_then_p2_plus(
     store: &Arc<fluree_db_binary_index::BinaryIndexStore>,
-    ctx: &ExecutionContext<'_>,
+    ctx: &crate::context::ExecutionContext<'_>,
     g_id: fluree_db_core::GraphId,
     p1: &Ref,
     p2: &Ref,

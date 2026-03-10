@@ -13,17 +13,14 @@
 //! directly from encoded `(o_type/o_kind, o_key)` without materializing per-row
 //! bindings.
 
-use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    PrecomputedSingleBatchOperator,
+    FastPathOperator,
 };
-use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use async_trait::async_trait;
 use chrono::Datelike;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
@@ -41,16 +38,6 @@ pub enum DateComponentFn {
     Day,
 }
 
-impl DateComponentFn {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Year => "YEAR",
-            Self::Month => "MONTH",
-            Self::Day => "DAY",
-        }
-    }
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NumericUnaryFn {
     Abs,
@@ -66,16 +53,6 @@ pub enum ScalarI64Fn {
 }
 
 impl ScalarI64Fn {
-    fn name(self) -> &'static str {
-        match self {
-            Self::DateComponent(c) => c.name(),
-            Self::NumericUnary(NumericUnaryFn::Abs) => "ABS",
-            Self::NumericUnary(NumericUnaryFn::Ceil) => "CEIL",
-            Self::NumericUnary(NumericUnaryFn::Floor) => "FLOOR",
-            Self::NumericUnary(NumericUnaryFn::Round) => "ROUND",
-        }
-    }
-
     fn constant_for_otype(self, o_type: u16) -> Option<i64> {
         match self {
             Self::DateComponent(component) => constant_component_for_otype(o_type, component),
@@ -101,100 +78,40 @@ impl ScalarI64Fn {
     }
 }
 
-/// Fused operator that outputs a single-row batch with the SUM result.
-pub struct PredicateFusedScanSumI64Operator {
+/// Create a fused operator that outputs a single-row batch with the SUM result.
+pub fn fused_scan_sum_i64_operator(
     predicate: Ref,
     scalar: ScalarI64Fn,
     out_var: VarId,
-    state: OperatorState,
-    /// When fast-path is not available at runtime, fall back to this operator tree.
     fallback: Option<BoxedOperator>,
-}
-
-impl PredicateFusedScanSumI64Operator {
-    pub fn new(
-        predicate: Ref,
-        scalar: ScalarI64Fn,
-        out_var: VarId,
-        fallback: Option<BoxedOperator>,
-    ) -> Self {
-        Self {
-            predicate,
-            scalar,
-            out_var,
-            state: OperatorState::Created,
-            fallback,
-        }
-    }
-}
-
-#[async_trait]
-impl Operator for PredicateFusedScanSumI64Operator {
-    fn schema(&self) -> &[VarId] {
-        // Note: when a fallback exists, its schema is identical by construction.
-        std::slice::from_ref(&self.out_var)
-    }
-
-    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+) -> FastPathOperator {
+    let label = match scalar {
+        ScalarI64Fn::DateComponent(c) => match c {
+            DateComponentFn::Year => "SUM(YEAR)",
+            DateComponentFn::Month => "SUM(MONTH)",
+            DateComponentFn::Day => "SUM(DAY)",
+        },
+        ScalarI64Fn::NumericUnary(n) => match n {
+            NumericUnaryFn::Abs => "SUM(ABS)",
+            NumericUnaryFn::Ceil => "SUM(CEIL)",
+            NumericUnaryFn::Floor => "SUM(FLOOR)",
+            NumericUnaryFn::Round => "SUM(ROUND)",
+        },
+    };
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            match sum_scalar_i64(store, ctx.binary_g_id, &predicate, scalar)? {
+                Some(sum) => Ok(Some(build_count_batch(out_var, sum)?)),
+                None => Ok(None),
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
-
-        if let Some(store) = fast_path_store(ctx) {
-            match sum_scalar_i64(store, ctx.binary_g_id, &self.predicate, self.scalar)? {
-                Some(sum) => {
-                    self.state = OperatorState::Open;
-                    self.fallback = Some(Box::new(PrecomputedSingleBatchOperator::new(
-                        build_count_batch(self.out_var, sum)?,
-                    )));
-                    return Ok(());
-                }
-                None => {
-                    // Unsupported at runtime — fall through to planned pipeline.
-                }
-            }
-        }
-
-        // Fallback: delegate to the planned operator tree.
-        let Some(fallback) = &mut self.fallback else {
-            return Err(QueryError::Internal(format!(
-                "{} fast-path unavailable and no fallback provided",
-                self.scalar.name()
-            )));
-        };
-        fallback.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
-    }
-
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        if !self.state.can_next() {
-            if self.state == OperatorState::Created {
-                return Err(QueryError::OperatorNotOpened);
-            }
-            return Ok(None);
-        }
-
-        let Some(fallback) = &mut self.fallback else {
-            self.state = OperatorState::Exhausted;
-            return Ok(None);
-        };
-        let b = fallback.next_batch(ctx).await?;
-        if b.is_none() {
-            self.state = OperatorState::Exhausted;
-        }
-        Ok(b)
-    }
-
-    fn close(&mut self) {
-        if let Some(fb) = &mut self.fallback {
-            fb.close();
-        }
-        self.state = OperatorState::Closed;
-    }
+        },
+        fallback,
+        label,
+    )
 }
 
 fn sum_scalar_i64(

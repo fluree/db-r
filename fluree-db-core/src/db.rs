@@ -339,7 +339,9 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
     if bytes.len() < 24 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "FIR6: truncated root (< 24 bytes)",
+            // Keep legacy substring "too short" for tests and callers that
+            // match error text, while preserving FIR6 decode context.
+            "FIR6: too short (truncated root < 24 bytes)",
         ));
     }
     if &bytes[0..4] != b"FIR6" {
