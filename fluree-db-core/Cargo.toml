@@ -10,7 +10,7 @@ description = "Runtime-agnostic core library for Fluree DB queries"
 # Default to runtime-agnostic behavior.
 # Enable `native` for filesystem-backed implementations that depend on tokio.
 default = []
-native = ["tokio", "moka", "dashmap"]
+native = ["tokio", "moka", "dashmap", "fs2"]
 
 [dependencies]
 fluree-vocab = { path = "../fluree-vocab" }
@@ -28,6 +28,7 @@ hex = { workspace = true }
 cid = { workspace = true }
 multihash = { workspace = true }
 tokio = { workspace = true, features = ["fs"], optional = true }
+fs2 = { version = "0.4", optional = true }
 xxhash-rust = { workspace = true }
 moka = { workspace = true, optional = true }
 dashmap = { workspace = true, optional = true }

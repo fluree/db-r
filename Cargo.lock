@@ -2469,6 +2469,7 @@ dependencies = [
  "cid",
  "dashmap",
  "fluree-vocab",
+ "fs2",
  "futures",
  "hashbrown 0.16.1",
  "hex",
