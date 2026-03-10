@@ -761,6 +761,35 @@ impl ContentAddressedWrite for MemoryStorage {
     }
 }
 
+#[async_trait]
+impl StorageCas for MemoryStorage {
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        let mut data = self.data.write().expect("RwLock poisoned");
+        if data.contains_key(address) {
+            Ok(false)
+        } else {
+            data.insert(address.to_string(), bytes.to_vec());
+            Ok(true)
+        }
+    }
+
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send,
+    {
+        let mut data = self.data.write().expect("RwLock poisoned");
+        let current = data.get(address).map(|v| v.as_slice());
+        match f(current)? {
+            CasAction::Write(new_bytes) => {
+                data.insert(address.to_string(), new_bytes);
+                Ok(CasOutcome::Written)
+            }
+            CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
+        }
+    }
+}
+
 // ============================================================================
 // FileStorage Implementation (native only)
 // ============================================================================
@@ -1084,6 +1113,116 @@ impl ContentAddressedWrite for FileStorage {
             content_hash: content_hash_hex.to_string(),
             size_bytes: bytes.len(),
         })
+    }
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[async_trait]
+impl StorageCas for FileStorage {
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        let path = self
+            .resolve_path(address)
+            .map_err(|e| StorageExtError::io(e.to_string()))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| StorageExtError::io(format!("mkdir {}: {}", parent.display(), e)))?;
+        }
+
+        // O_CREAT | O_EXCL: atomic create-if-not-exists
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(bytes)
+                    .map_err(|e| StorageExtError::io(format!("write {}: {}", path.display(), e)))?;
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(StorageExtError::io(format!(
+                "open {}: {}",
+                path.display(),
+                e
+            ))),
+        }
+    }
+
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send,
+    {
+        let path = self
+            .resolve_path(address)
+            .map_err(|e| StorageExtError::io(e.to_string()))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| StorageExtError::io(format!("mkdir {}: {}", parent.display(), e)))?;
+        }
+
+        // Open or create the file for read+write, then lock exclusively.
+        // All I/O is synchronous under the lock — this is intentional:
+        // the operations are local disk I/O (fast), and holding a file lock
+        // across an await point would risk deadlock.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| StorageExtError::io(format!("open {}: {}", path.display(), e)))?;
+
+        use fs2::FileExt;
+        file.lock_exclusive()
+            .map_err(|e| StorageExtError::io(format!("lock {}: {}", path.display(), e)))?;
+
+        // Read current contents (empty file = absent)
+        let current = {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            (&file)
+                .read_to_end(&mut buf)
+                .map_err(|e| StorageExtError::io(format!("read {}: {}", path.display(), e)))?;
+            if buf.is_empty() {
+                None
+            } else {
+                Some(buf)
+            }
+        };
+
+        match f(current.as_deref())? {
+            CasAction::Write(new_bytes) => {
+                // Write to a temporary file, then atomically rename into place.
+                // This avoids partial writes on crash/power loss.
+                let tmp_path = path.with_extension("tmp");
+                {
+                    use std::io::Write;
+                    let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| {
+                        StorageExtError::io(format!("create {}: {}", tmp_path.display(), e))
+                    })?;
+                    tmp.write_all(&new_bytes).map_err(|e| {
+                        StorageExtError::io(format!("write {}: {}", tmp_path.display(), e))
+                    })?;
+                }
+                std::fs::rename(&tmp_path, &path).map_err(|e| {
+                    StorageExtError::io(format!(
+                        "rename {} -> {}: {}",
+                        tmp_path.display(),
+                        path.display(),
+                        e
+                    ))
+                })?;
+                Ok(CasOutcome::Written)
+            }
+            CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
+        }
+        // Lock released on file drop
     }
 }
 
