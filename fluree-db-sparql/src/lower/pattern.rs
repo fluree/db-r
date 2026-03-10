@@ -26,6 +26,24 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             SparqlGraphPattern::Bgp { patterns, .. } => self.lower_bgp_with_rdf_star(patterns),
 
             SparqlGraphPattern::Group { patterns, .. } => {
+                // Safety check: a Group containing another Group implies
+                // explicitly nested `{ }` blocks from the source query.
+                // If the parser ever wraps single patterns in synthetic
+                // Group nodes (breaking the invariant below), this assertion
+                // catches it in debug/test builds before silent mis-scoping.
+                debug_assert!(
+                    patterns.iter().filter(|p| matches!(p, SparqlGraphPattern::Group { .. })).all(|p| {
+                        // A nested Group must contain ≥ 2 children — the parser
+                        // returns a single child directly (without Group wrapping)
+                        // when parse_group_graph_pattern encounters only one pattern.
+                        matches!(p, SparqlGraphPattern::Group { patterns: inner, .. } if inner.len() >= 2)
+                    }),
+                    "Nested Group node with a single child detected — \
+                     the parser should return single patterns directly, not \
+                     wrapped in a Group.  This would cause incorrect scope \
+                     boundary lowering.  See parse_group_graph_pattern()."
+                );
+
                 let mut result = Vec::new();
                 for p in patterns {
                     if matches!(p, SparqlGraphPattern::Group { .. }) {
@@ -334,6 +352,9 @@ fn collect_bound_variables(patterns: &[Pattern]) -> Vec<VarId> {
                 }
                 Pattern::Graph { patterns, .. } => {
                     collect(patterns, seen, out);
+                }
+                Pattern::Service(sp) => {
+                    collect(&sp.patterns, seen, out);
                 }
                 Pattern::PropertyPath(pp) => {
                     for v in pp.variables() {

@@ -2094,3 +2094,67 @@ async fn jsonld_values_with_undef() {
         "JSON-LD parity: VALUES with null (UNDEF) should match exactly one row: {rows:?}"
     );
 }
+
+/// Parity for W3C values07: OPTIONAL produces Poisoned, VALUES fills in the gap.
+///
+/// Scenario: OPTIONAL fails for some rows (producing Poisoned bindings),
+/// then VALUES treats Poisoned as a wildcard (same as UNDEF) and fills in
+/// the concrete value from the VALUES row. This is the W3C-correct behavior:
+/// a failed OPTIONAL leaves the variable unbound, and VALUES can supply a value.
+#[tokio::test]
+async fn jsonld_values_optional_poisoned_filled_by_values() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "parity/values-poisoned:main");
+    let ctx = context_ex_schema();
+
+    // ex:s1 has both ex:p and ex:q; ex:s2 has only ex:p (no ex:q)
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id": "ex:s1", "ex:p": 1, "ex:q": "found"},
+            {"@id": "ex:s2", "ex:p": 2}
+        ]
+    });
+    let ledger = fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger;
+
+    // Query: get ?s and ?p, optionally get ?q.
+    // For ex:s2, OPTIONAL fails → ?q is Poisoned (semantically unbound).
+    // VALUES supplies ?q="found" with UNDEF for ?s.
+    // Poisoned is treated as wildcard → VALUES fills in "found" for both rows.
+    let query = json!({
+        "@context": ctx,
+        "select": ["?s", "?q"],
+        "where": [
+            {"@id": "?s", "ex:p": "?p"},
+            ["optional", {"@id": "?s", "ex:q": "?q"}]
+        ],
+        "values": [["?s", "?q"], [[null, "found"]]]
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .expect("query");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
+    let rows = json_rows.as_array().expect("array");
+
+    // Both rows match: ex:s1 has ?q="found" (OPTIONAL succeeded, compatible with VALUES),
+    // and ex:s2 has Poisoned ?q (OPTIONAL failed) which VALUES fills in with "found".
+    assert_eq!(
+        rows.len(),
+        2,
+        "JSON-LD parity: Poisoned from failed OPTIONAL should be filled by VALUES: {rows:?}"
+    );
+    // Verify both rows have ?q="found" (VALUES fills in the Poisoned slot)
+    for row in rows {
+        let arr = row.as_array().expect("row array");
+        assert_eq!(
+            arr[1].as_str().unwrap(),
+            "found",
+            "VALUES should fill ?q with 'found' for all rows: {arr:?}"
+        );
+    }
+}

@@ -598,6 +598,13 @@ impl NestedLoopJoinOperator {
         // still produce a concrete value for it (because the bind substitution left
         // it as a variable in the scan pattern).  In that case, we take the right-side
         // value instead of propagating the unbound marker.
+        //
+        // Perf note: the `right_schema` scan is O(right_schema.len()) which is at most
+        // 3 for a single triple pattern (s, p, o).  The `is_unbound_or_poisoned()` check
+        // is two enum-discriminant comparisons and almost always false for normal queries,
+        // so the branch predictor handles it efficiently.  Pre-computing a right-col map
+        // is not feasible here because the right schema varies per left row (depends on
+        // which bindings were substituted at scan time).
         (0..self.left_schema.len())
             .map(|col| {
                 let left_val = left_batch.get_by_col(left_row, col);

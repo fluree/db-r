@@ -32,6 +32,9 @@ pub struct ValuesOperator {
     state: OperatorState,
     /// Mapping: for each value_var, its position in child schema (None if new var)
     overlap_positions: Vec<Option<usize>>,
+    /// Reverse mapping: child column index → index into `overlap_positions` / `value_rows`.
+    /// Pre-computed at construction for O(1) lookup in `merge_rows`.
+    child_col_to_val_idx: std::collections::HashMap<usize, usize>,
 }
 
 impl ValuesOperator {
@@ -67,12 +70,21 @@ impl ValuesOperator {
 
         let schema = Arc::from(output_vars.into_boxed_slice());
 
+        // Pre-compute reverse map: child column → value_rows index.
+        // Used in `merge_rows` to fill unbound overlap vars in O(1).
+        let child_col_to_val_idx: std::collections::HashMap<usize, usize> = overlap_positions
+            .iter()
+            .enumerate()
+            .filter_map(|(val_idx, pos)| pos.map(|col| (col, val_idx)))
+            .collect();
+
         Self {
             child,
             value_rows,
             schema,
             state: OperatorState::Created,
             overlap_positions,
+            child_col_to_val_idx,
         }
     }
 
@@ -120,15 +132,10 @@ impl ValuesOperator {
         let mut output = Vec::with_capacity(self.schema.len());
 
         // Copy child columns, filling unbound overlap vars from VALUES row.
+        // The `child_col_to_val_idx` map gives O(1) lookup for overlap vars.
         for (col, binding) in input_row.iter().enumerate() {
             if binding.is_unbound_or_poisoned() {
-                // Check if this column is an overlap var with a concrete VALUES value.
-                if let Some((val_idx, _)) = self
-                    .overlap_positions
-                    .iter()
-                    .enumerate()
-                    .find(|(_, pos)| **pos == Some(col))
-                {
+                if let Some(&val_idx) = self.child_col_to_val_idx.get(&col) {
                     let values_val = &value_row[val_idx];
                     if !values_val.is_unbound_or_poisoned() {
                         output.push(values_val.clone());
