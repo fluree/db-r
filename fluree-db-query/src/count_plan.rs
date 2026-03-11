@@ -159,23 +159,11 @@ pub(crate) enum KeySetNode {
 pub(crate) enum TailWeight {
     /// Pure inner join chain — no tail modifier.
     None,
-
-    // Kept for: Phase C (chain + OPTIONAL tail) — multiply weights by max(1, count).
-    // Use when: chain modifier support is re-enabled with correct tail-variable-keyed weights.
-    #[expect(dead_code)]
-    /// OPTIONAL on tail: `weights[s] = max(1, count_pN(s))`
+    /// OPTIONAL on tail: multiply per-object weights by `max(1, count_tail(vN))`.
     Optional { tail_pred: Ref },
-
-    // Kept for: Phase C (chain + MINUS tail) — exclude tail subjects from weights.
-    // Use when: chain modifier support is re-enabled with correct tail-variable-keyed weights.
-    #[expect(dead_code)]
-    /// MINUS on tail: exclude subjects in `tail_pred` from the chain output.
+    /// MINUS on tail: exclude objects of pN that appear in `subjects(tail_pred)`.
     Minus { tail_pred: Ref },
-
-    // Kept for: Phase C (chain + EXISTS tail) — restrict weights to tail subjects.
-    // Use when: chain modifier support is re-enabled with correct tail-variable-keyed weights.
-    #[expect(dead_code)]
-    /// EXISTS on tail: restrict to subjects in `tail_pred`.
+    /// EXISTS on tail: keep only objects of pN that appear in `subjects(tail_pred)`.
     Exists { tail_pred: Ref },
 }
 
@@ -751,21 +739,60 @@ fn build_chain_plan(
     vars: Vec<VarId>,
     classified: &ClassifiedPatterns,
 ) -> Option<CountPlanRoot> {
-    // Chain + modifier semantics require weights keyed by the tail variable
-    // (the object of the last predicate), but the current chain fold algorithm
-    // builds initial weights from PSOT of the last predicate, keyed by its
-    // *subjects*. This mismatch would miscount shapes like:
-    //   ?a p1 ?b . ?b p2 ?c . OPTIONAL { ?c p3 ?d }
-    // where the modifier targets ?c (vars[2]), not ?b (vars[1]).
-    //
-    // Until Phase C implements correct tail-variable-keyed weights, bail on
-    // chains with any modifiers so they fall through to existing specialized
-    // fast paths (fast_optional_count_all, fast_minus_count_all, etc.).
     debug_assert!(vars.len() == predicates.len() + 1);
-    if classified.has_any_modifiers() {
+    let tail_var = *vars.last()?;
+
+    // Determine the tail weight from a single modifier block on the tail variable.
+    // Only one modifier type is supported per chain; mixed modifiers bail.
+    let tail_weight = if !classified.has_any_modifiers() {
+        TailWeight::None
+    } else if classified.minus_blocks.len() == 1
+        && classified.optional_blocks.is_empty()
+        && classified.exists_blocks.is_empty()
+    {
+        let minus = &classified.minus_blocks[0];
+        if minus.triples.len() == 1 && minus.triples[0].subject_var == tail_var {
+            TailWeight::Minus {
+                tail_pred: minus.triples[0].pred.clone(),
+            }
+        } else {
+            return None;
+        }
+    } else if classified.optional_blocks.len() == 1
+        && classified.minus_blocks.is_empty()
+        && classified.exists_blocks.is_empty()
+    {
+        let opt = &classified.optional_blocks[0];
+        if opt.triples.len() == 1 && opt.triples[0].subject_var == tail_var {
+            TailWeight::Optional {
+                tail_pred: opt.triples[0].pred.clone(),
+            }
+        } else {
+            return None;
+        }
+    } else if classified.exists_blocks.len() == 1
+        && classified.minus_blocks.is_empty()
+        && classified.optional_blocks.is_empty()
+    {
+        let exists = &classified.exists_blocks[0];
+        if exists.triples.len() == 1 && exists.triples[0].subject_var == tail_var {
+            if exists.negated {
+                // NOT EXISTS on tail = anti-join = MINUS semantics at tail.
+                TailWeight::Minus {
+                    tail_pred: exists.triples[0].pred.clone(),
+                }
+            } else {
+                TailWeight::Exists {
+                    tail_pred: exists.triples[0].pred.clone(),
+                }
+            }
+        } else {
+            return None;
+        }
+    } else {
+        // Multiple or complex modifiers on chains — not supported.
         return None;
-    }
-    let tail_weight = TailWeight::None;
+    };
 
     Some(CountPlanRoot::Chain(ChainFold {
         predicates,
@@ -1267,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_with_modifier_rejected() {
+    fn test_chain_with_optional_tail() {
         let mut vars = VarRegistry::new();
         let a = vars.get_or_insert("?a");
         let b = vars.get_or_insert("?b");
@@ -1280,7 +1307,6 @@ mod tests {
         let p3 = make_sid(3, "p3");
 
         // ?a p1 ?b . ?b p2 ?c . OPTIONAL { ?c p3 ?d }
-        // Should be rejected (chain + modifier not yet supported).
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
                 Ref::Var(a),
@@ -1300,9 +1326,197 @@ mod tests {
         ];
 
         let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect chain + OPTIONAL tail");
+
+        match &plan.unwrap().root {
+            CountPlanRoot::Chain(fold) => {
+                assert_eq!(fold.predicates.len(), 2);
+                assert!(matches!(fold.tail_weight, TailWeight::Optional { .. }));
+            }
+            other => panic!("Expected Chain with Optional tail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chain_with_minus_tail() {
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        // ?a p1 ?b . ?b p2 ?c . MINUS { ?c p3 ?d }
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            )),
+            Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
+                Ref::Var(c),
+                p3.clone(),
+                Term::Var(d),
+            ))]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect chain + MINUS tail");
+
+        match &plan.unwrap().root {
+            CountPlanRoot::Chain(fold) => {
+                assert_eq!(fold.predicates.len(), 2);
+                assert!(matches!(fold.tail_weight, TailWeight::Minus { .. }));
+            }
+            other => panic!("Expected Chain with Minus tail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chain_with_exists_tail() {
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        // ?a p1 ?b . ?b p2 ?c . FILTER EXISTS { ?c p3 ?d }
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            )),
+            Pattern::Filter(Expression::Exists {
+                patterns: vec![Pattern::Triple(TriplePattern::new(
+                    Ref::Var(c),
+                    p3.clone(),
+                    Term::Var(d),
+                ))],
+                negated: false,
+            }),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect chain + EXISTS tail");
+
+        match &plan.unwrap().root {
+            CountPlanRoot::Chain(fold) => {
+                assert_eq!(fold.predicates.len(), 2);
+                assert!(matches!(fold.tail_weight, TailWeight::Exists { .. }));
+            }
+            other => panic!("Expected Chain with Exists tail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chain_with_not_exists_tail() {
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        // ?a p1 ?b . ?b p2 ?c . FILTER NOT EXISTS { ?c p3 ?d }
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            )),
+            Pattern::Filter(Expression::Exists {
+                patterns: vec![Pattern::Triple(TriplePattern::new(
+                    Ref::Var(c),
+                    p3.clone(),
+                    Term::Var(d),
+                ))],
+                negated: true,
+            }),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect chain + NOT EXISTS tail");
+
+        match &plan.unwrap().root {
+            CountPlanRoot::Chain(fold) => {
+                assert_eq!(fold.predicates.len(), 2);
+                // NOT EXISTS becomes MINUS semantics at the tail.
+                assert!(matches!(fold.tail_weight, TailWeight::Minus { .. }));
+            }
+            other => panic!("Expected Chain with Minus tail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chain_modifier_on_non_tail_rejected() {
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        // ?a p1 ?b . ?b p2 ?c . MINUS { ?b p3 ?d }
+        // MINUS targets ?b (not the tail ?c) — should be rejected.
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            )),
+            Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p3.clone(),
+                Term::Var(d),
+            ))]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
         assert!(
             try_build_count_plan(&query, &options).is_none(),
-            "Chain + modifier should be rejected (falls through to existing fast paths)"
+            "Chain + modifier on non-tail var should be rejected"
         );
     }
 

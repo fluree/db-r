@@ -15,8 +15,9 @@ use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, collect_subjects_for_predicate_sorted,
     collect_subjects_with_object_in_set, count_rows_for_predicate_psot, fast_path_store,
-    intersect_many_sorted, normalize_pred_sid, FastPathOperator, PostObjectGroupCountIter,
-    PsotSubjectCountIter, PsotSubjectWeightedSumIter,
+    intersect_many_sorted, normalize_pred_sid, FastPathOperator, ObjectFilterMode,
+    PostObjectGroupCountIter, PsotObjectFilterCountIter, PsotSubjectCountIter,
+    PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
 use fluree_db_binary_index::BinaryIndexStore;
@@ -595,6 +596,22 @@ fn execute_keyset_as_hash_set(
 // Chain evaluation
 // ---------------------------------------------------------------------------
 
+/// Execute a chain fold: right-to-left accumulation over a linear chain.
+///
+/// For a chain `?v0 <p1> ?v1 . ?v1 <p2> ?v2 . ... ?v_{N-1} <pN> ?vN`:
+///
+/// **Step 1** — Build initial weights keyed by `v_{N-1}` (subjects of pN).
+///   - `TailWeight::None`: `weights[v_{N-1}] = count_pN(v_{N-1})`
+///   - `TailWeight::Optional { tail_pred }`: For each `v_{N-1}`, compute
+///     `Σ_{vN in pN(v_{N-1})} max(1, count_tail(vN))` via `PsotSubjectWeightedSumIter`.
+///   - `TailWeight::Minus { tail_pred }`: Count only pN objects NOT in `subjects(tail_pred)`
+///     via `PsotObjectFilterCountIter`.
+///   - `TailWeight::Exists { tail_pred }`: Count only pN objects IN `subjects(tail_pred)`
+///     via `PsotObjectFilterCountIter`.
+///
+/// **Step 2** — Fold right-to-left through `p_{N-1}` … `p2` via `PsotSubjectWeightedSumIter`.
+///
+/// **Step 3** — Final merge: `POST(p1)` objects × weights.
 fn execute_chain(
     chain: &ChainFold,
     store: &Arc<BinaryIndexStore>,
@@ -618,57 +635,111 @@ fn execute_chain(
         p_ids.push(p_id);
     }
 
-    // Step 1: Build initial weights from the rightmost predicate.
+    // Step 1: Build initial weights keyed by v_{N-1} (subjects of pN).
+    // The tail modifier changes HOW pN is processed — the modifier targets vN
+    // (the object of pN), not v_{N-1} (the subject of pN).
     let mut weights: FxHashMap<u64, u64> = FxHashMap::default();
-    {
-        let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
-        while let Some((s, count)) = iter.next_group()? {
-            if count > 0 {
-                weights.insert(s, count);
+
+    match &chain.tail_weight {
+        TailWeight::None => {
+            // Plain count: weights[v_{N-1}] = count_pN(v_{N-1}).
+            let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+            while let Some((s, count)) = iter.next_group()? {
+                if count > 0 {
+                    weights.insert(s, count);
+                }
             }
         }
-    }
-
-    // Apply tail weight modifier.
-    match &chain.tail_weight {
-        TailWeight::None => {}
         TailWeight::Optional { tail_pred } => {
-            let sid = normalize_pred_sid(store, tail_pred)?;
-            if let Some(p_id) = store.sid_to_p_id(&sid) {
-                let mut tail_counts: FxHashMap<u64, u64> = FxHashMap::default();
-                let mut iter = PsotSubjectCountIter::new(store, g_id, p_id)?;
-                while let Some((s, count)) = iter.next_group()? {
-                    if count > 0 {
-                        tail_counts.insert(s, count);
+            // OPTIONAL on vN: weights[v_{N-1}] = Σ_{vN in pN(v_{N-1})} max(1, count_tail(vN)).
+            // Build multiplier map: mult[vN] = max(1, count_tail(vN)).
+            let tail_sid = normalize_pred_sid(store, tail_pred)?;
+            if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                let mut mult_map: FxHashMap<u64, u64> = FxHashMap::default();
+                let mut iter = PsotSubjectCountIter::new(store, g_id, tail_p_id)?;
+                while let Some((c, count)) = iter.next_group()? {
+                    mult_map.insert(c, count.max(1));
+                }
+                // Use PsotSubjectWeightedSumIter on pN with default_weight=1
+                // (OPTIONAL: objects of pN not in mult_map get multiplier 1).
+                let Some(mut ws_iter) =
+                    PsotSubjectWeightedSumIter::new(store, g_id, p_ids[n - 1], &mult_map, 1)?
+                else {
+                    return Ok(None);
+                };
+                while let Some((s, sum)) = ws_iter.next_group()? {
+                    if sum > 0 {
+                        weights.insert(s, sum);
                     }
                 }
-                // Multiply each weight by max(1, tail_count).
-                // Also add weight entries for subjects not in weights but in tail_counts
-                // (OPTIONAL semantics: if the chain tail has no match, weight = 1).
-                for (s, w) in weights.iter_mut() {
-                    let tc = tail_counts.get(s).copied().unwrap_or(0);
-                    let factor = if tc == 0 { 1 } else { tc };
-                    *w = w.saturating_mul(factor);
+            } else {
+                // Tail predicate missing → OPTIONAL multiplier is 1 for all objects →
+                // equivalent to plain count of pN subjects.
+                let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+                while let Some((s, count)) = iter.next_group()? {
+                    if count > 0 {
+                        weights.insert(s, count);
+                    }
                 }
             }
-            // If tail predicate doesn't exist, all weights stay as-is (OPTIONAL: factor = 1).
         }
         TailWeight::Minus { tail_pred } => {
-            let sid = normalize_pred_sid(store, tail_pred)?;
-            if let Some(p_id) = store.sid_to_p_id(&sid) {
-                let excluded = collect_subjects_for_predicate_set(store, g_id, p_id)?;
-                weights.retain(|k, _| !excluded.contains(k));
+            // MINUS on vN: exclude objects of pN that are in subjects(tail_pred).
+            // weights[v_{N-1}] = count of pN objects NOT in excluded set.
+            let tail_sid = normalize_pred_sid(store, tail_pred)?;
+            if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                let excluded = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+                let Some(mut iter) = PsotObjectFilterCountIter::new(
+                    store,
+                    g_id,
+                    p_ids[n - 1],
+                    &excluded,
+                    ObjectFilterMode::NotInSet,
+                )?
+                else {
+                    return Ok(None);
+                };
+                while let Some((s, count)) = iter.next_group()? {
+                    if count > 0 {
+                        weights.insert(s, count);
+                    }
+                }
+            } else {
+                // Tail predicate missing → nothing to exclude → plain count.
+                let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+                while let Some((s, count)) = iter.next_group()? {
+                    if count > 0 {
+                        weights.insert(s, count);
+                    }
+                }
             }
-            // If tail predicate doesn't exist, nothing to exclude.
         }
         TailWeight::Exists { tail_pred } => {
-            let sid = normalize_pred_sid(store, tail_pred)?;
-            if let Some(p_id) = store.sid_to_p_id(&sid) {
-                let included = collect_subjects_for_predicate_set(store, g_id, p_id)?;
-                weights.retain(|k, _| included.contains(k));
-            } else {
-                // EXISTS with missing predicate → no matches → 0.
+            // EXISTS on vN: only count objects of pN that are in subjects(tail_pred).
+            // weights[v_{N-1}] = count of pN objects IN included set.
+            let tail_sid = normalize_pred_sid(store, tail_pred)?;
+            let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) else {
+                // EXISTS with missing predicate → no objects qualify → 0.
                 return Ok(Some(0));
+            };
+            let included = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+            if included.is_empty() {
+                return Ok(Some(0));
+            }
+            let Some(mut iter) = PsotObjectFilterCountIter::new(
+                store,
+                g_id,
+                p_ids[n - 1],
+                &included,
+                ObjectFilterMode::InSet,
+            )?
+            else {
+                return Ok(None);
+            };
+            while let Some((s, count)) = iter.next_group()? {
+                if count > 0 {
+                    weights.insert(s, count);
+                }
             }
         }
     }

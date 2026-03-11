@@ -731,6 +731,9 @@ pub struct PsotSubjectWeightedSumIter<'a> {
     cur_b: Option<u64>,
     cur_sum: u64,
     mixed: bool,
+    /// True when the current batch is a pure non-IRI_REF leaflet —
+    /// every row gets `default_weight` without looking up `o_key` in `weights`.
+    all_default: bool,
 }
 
 impl<'a> PsotSubjectWeightedSumIter<'a> {
@@ -756,6 +759,7 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
             cur_b: None,
             cur_sum: 0,
             mixed: false,
+            all_default: false,
         }))
     }
 
@@ -793,9 +797,15 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                     continue;
                 }
                 let mixed = entry.o_type_const.is_none();
-                if !mixed && entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
-                    return Ok(None);
+                let iri_only =
+                    entry.o_type_const == Some(OType::IRI_REF.as_u16());
+                let non_iri_only = !mixed && !iri_only;
+
+                if non_iri_only && self.default_weight == 0 {
+                    // Every row would get weight 0 — skip without terminating.
+                    continue;
                 }
+
                 let batch = handle
                     .load_columns(
                         idx,
@@ -810,6 +820,7 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                 self.row = 0;
                 self.batch = Some(batch);
                 self.mixed = mixed;
+                self.all_default = non_iri_only;
                 return Ok(Some(()));
             }
 
@@ -836,10 +847,14 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
             }
 
             let b = batch.s_id.get(self.row);
-            let c = batch.o_key.get(self.row);
-            let w = if self.mixed && batch.o_type.get(self.row) != OType::IRI_REF.as_u16() {
-                0
+            let w = if self.all_default {
+                // Pure non-IRI_REF leaflet — o_key can't be a subject ID.
+                self.default_weight
+            } else if self.mixed && batch.o_type.get(self.row) != OType::IRI_REF.as_u16() {
+                // Non-IRI_REF row in mixed leaflet — o_key can't be a subject ID.
+                self.default_weight
             } else {
+                let c = batch.o_key.get(self.row);
                 self.weights.get(&c).copied().unwrap_or(self.default_weight)
             };
 
@@ -894,6 +909,12 @@ pub struct PsotObjectFilterCountIter<'a> {
     row: usize,
     handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
     batch: Option<ColumnBatch>,
+    /// True when the current batch is a pure non-IRI_REF leaflet in `NotInSet` mode —
+    /// all rows count without checking the reference set.
+    all_count: bool,
+    /// True when the current batch is a mixed leaflet (o_type_const is None) —
+    /// each row must be checked for IRI_REF type before set membership lookup.
+    mixed: bool,
 }
 
 impl<'a> PsotObjectFilterCountIter<'a> {
@@ -915,11 +936,14 @@ impl<'a> PsotObjectFilterCountIter<'a> {
             row: 0,
             handle: None,
             batch: None,
+            all_count: false,
+            mixed: false,
         }))
     }
 
     fn load_next_batch(&mut self) -> Result<Option<()>> {
-        let projection = projection_sid_okey();
+        let proj_sid_okey = projection_sid_okey();
+        let proj_sid_otype_okey = projection_sid_otype_okey();
         loop {
             if self.handle.is_none() {
                 if self.leaf_pos >= self.leaf_entries.len() {
@@ -950,14 +974,38 @@ impl<'a> PsotObjectFilterCountIter<'a> {
                 if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
                     continue;
                 }
-                if entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
-                    return Ok(None);
+
+                let iri_only = entry.o_type_const == Some(OType::IRI_REF.as_u16());
+                let mixed = entry.o_type_const.is_none();
+                let non_iri_only = !iri_only && !mixed;
+
+                if non_iri_only {
+                    // Non-IRI_REF objects can never be in the reference set (which
+                    // contains subject IDs). InSet → no rows match, skip leaflet.
+                    // NotInSet → all rows match, count every row per subject.
+                    if matches!(self.mode, ObjectFilterMode::InSet) {
+                        continue;
+                    }
+                    // NotInSet: load s_id + o_key, mark all_count so next_group
+                    // counts every row without checking the reference set.
+                    let batch = handle
+                        .load_columns(idx, &proj_sid_okey, RunSortOrder::Psot)
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                    self.row = 0;
+                    self.batch = Some(batch);
+                    self.all_count = true;
+                    self.mixed = false;
+                    return Ok(Some(()));
                 }
+
+                let projection = if mixed { &proj_sid_otype_okey } else { &proj_sid_okey };
                 let batch = handle
-                    .load_columns(idx, &projection, RunSortOrder::Psot)
+                    .load_columns(idx, projection, RunSortOrder::Psot)
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
                 self.row = 0;
                 self.batch = Some(batch);
+                self.all_count = false;
+                self.mixed = mixed;
                 return Ok(Some(()));
             }
 
@@ -979,11 +1027,31 @@ impl<'a> PsotObjectFilterCountIter<'a> {
             let b_id = batch.s_id.get(self.row);
             let mut count: u64 = 0;
             while self.row < batch.row_count && batch.s_id.get(self.row) == b_id {
-                let c_id = batch.o_key.get(self.row);
-                let in_set = self.reference_set.contains(&c_id);
-                let counts = match self.mode {
-                    ObjectFilterMode::InSet => in_set,
-                    ObjectFilterMode::NotInSet => !in_set,
+                let counts = if self.all_count {
+                    // Pure non-IRI_REF leaflet + NotInSet: all rows count.
+                    true
+                } else if self.mixed {
+                    // Mixed leaflet: check o_type per row.
+                    let is_iri = batch.o_type.get(self.row) == OType::IRI_REF.as_u16();
+                    if is_iri {
+                        let c_id = batch.o_key.get(self.row);
+                        let in_set = self.reference_set.contains(&c_id);
+                        match self.mode {
+                            ObjectFilterMode::InSet => in_set,
+                            ObjectFilterMode::NotInSet => !in_set,
+                        }
+                    } else {
+                        // Non-IRI_REF: can't be in the IRI reference set.
+                        matches!(self.mode, ObjectFilterMode::NotInSet)
+                    }
+                } else {
+                    // Pure IRI_REF leaflet: check set membership.
+                    let c_id = batch.o_key.get(self.row);
+                    let in_set = self.reference_set.contains(&c_id);
+                    match self.mode {
+                        ObjectFilterMode::InSet => in_set,
+                        ObjectFilterMode::NotInSet => !in_set,
+                    }
                 };
                 if counts {
                     count += 1;
