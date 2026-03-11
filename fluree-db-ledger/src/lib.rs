@@ -418,10 +418,19 @@ impl LedgerState {
         new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
-        let new_dict_novelty = DictNovelty::with_watermarks(
+        let mut new_dict_novelty = DictNovelty::with_watermarks(
             new_snapshot.subject_watermarks.clone(),
             new_snapshot.string_watermark,
         );
+        // Re-populate dict_novelty with any remaining novelty flakes (t > index_t)
+        // so overlay translation can resolve newly-introduced subject/string IDs.
+        if !new_novelty.is_empty() {
+            new_dict_novelty.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
 
         // Update state
         self.snapshot = new_snapshot;
@@ -475,10 +484,19 @@ impl LedgerState {
         new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
-        let new_dict_novelty = DictNovelty::with_watermarks(
+        let mut new_dict_novelty = DictNovelty::with_watermarks(
             new_snapshot.subject_watermarks.clone(),
             new_snapshot.string_watermark,
         );
+        // Re-populate dict_novelty with any remaining novelty flakes (t > index_t)
+        // so overlay translation can resolve newly-introduced subject/string IDs.
+        if !new_novelty.is_empty() {
+            new_dict_novelty.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
 
         // Update state
         self.snapshot = new_snapshot;

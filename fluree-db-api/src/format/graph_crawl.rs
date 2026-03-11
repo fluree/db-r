@@ -854,7 +854,14 @@ impl<'a> GraphCrawlFormatter<'a> {
             }
             FlakeValue::Boolean(b) => json!(b),
             FlakeValue::Vector(v) => json!(v),
-            FlakeValue::Json(_) => unreachable!("@json handled above"),
+            // JSON values should usually be handled by the `@json` branch above,
+            // but we can still encounter `FlakeValue::Json` here (e.g., custom
+            // datatypes or typed-json formatting paths). Never panic in a server
+            // formatter: fall back to parsing the JSON payload, or emit the raw
+            // string if it isn't valid JSON.
+            FlakeValue::Json(s) => {
+                serde_json::from_str::<JsonValue>(s).unwrap_or_else(|_| json!(s))
+            }
             FlakeValue::Null => return Ok(JsonValue::Null),
             FlakeValue::Ref(sid) => return Ok(json!({ "@id": self.compactor.compact_sid(sid)? })),
             FlakeValue::BigInt(n) => json!(n.to_string()),
