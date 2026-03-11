@@ -92,8 +92,11 @@ impl OTypeRegistry {
             ObjKind::DAY_TIME_DUR => OType::XSD_DAY_TIME_DURATION,
             ObjKind::GEO_POINT => OType::GEO_POINT,
 
-            // Blank node detection deferred (design decision 7 in plan).
-            // All REF_ID mapped to IRI_REF initially.
+            // Blank nodes are currently represented as REF_ID SIDs whose namespace code is
+            // `namespaces::BLANK_NODE`. We intentionally map all REF_ID to `OType::IRI_REF`
+            // here; code that needs to distinguish IRI vs. blank node should inspect the
+            // `SubjectId::ns_code()` of the referenced `sid64` (or the `_:` prefix at the
+            // term layer).
             ObjKind::REF_ID => OType::IRI_REF,
 
             // dt-dependent mappings.

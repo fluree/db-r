@@ -1026,19 +1026,37 @@ pub fn build_where_operators_seeded_with_needed(
                     consumed_indices,
                 };
 
+                // Reorder triples within the block to start from range-bounded object scans.
+                //
+                // `reorder_patterns(...)` runs before bounds extraction, so it cannot
+                // account for FILTER-derived object bounds (e.g. `?year <= 1940`).
+                // When such bounds exist, starting from the bounded triple can reduce
+                // the join domain by orders of magnitude and prevent ORDER BY from
+                // buffering a huge intermediate.
+                let mut triples_for_exec: Vec<TriplePattern> = block.triples.clone();
+                if !pushdown.object_bounds.is_empty() {
+                    triples_for_exec.sort_by_key(|tp| {
+                        // Prefer triples whose object var has bounds.
+                        let has_bounds =
+                            tp.o.as_var()
+                                .is_some_and(|v| pushdown.object_bounds.contains_key(&v));
+                        (!has_bounds) as u8
+                    });
+                }
+
                 // Ensure a concrete seed when only BIND/FILTER remain (no triples, no upstream).
                 if block.triples.is_empty() && operator.is_none() {
                     operator = Some(Box::new(EmptyOperator::new()));
                 }
 
                 let can_property_join = operator.is_none()
-                    && block.triples.len() >= 2
-                    && is_property_join(&block.triples);
+                    && triples_for_exec.len() >= 2
+                    && is_property_join(&triples_for_exec);
 
                 if can_property_join {
                     operator = build_property_join_block(
                         operator,
-                        &block.triples,
+                        &triples_for_exec,
                         block.values,
                         pending_binds,
                         pending_filters,
@@ -1051,7 +1069,7 @@ pub fn build_where_operators_seeded_with_needed(
                 } else {
                     operator = build_sequential_join_block(
                         operator,
-                        &block.triples,
+                        &triples_for_exec,
                         block.values,
                         pending_binds,
                         pending_filters,

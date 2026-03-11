@@ -39,8 +39,17 @@ pub enum PatternType {
 const HIGHLY_SELECTIVE: f64 = 1.0;
 /// Medium selectivity - fallback for bound-subject patterns
 const MODERATELY_SELECTIVE: f64 = 10.0;
-/// Fallback for bound-object and property-scan patterns
-const DEFAULT_SELECTIVITY: f64 = 1000.0;
+/// Fallback for bound-object patterns (`?s <p> <o>`).
+///
+/// With no statistics, we still treat a bound object as more selective than a
+/// pure property scan (`?s <p> ?o`) because it can use a predicate+object index
+/// access path.
+const DEFAULT_BOUND_OBJECT_SELECTIVITY: f64 = 1_000.0;
+/// Fallback for property-scan patterns (`?s <p> ?o`).
+///
+/// With no statistics, assume these are relatively large so we avoid placing
+/// them before bound-object constraints.
+const DEFAULT_PROPERTY_SCAN_SELECTIVITY: f64 = 1_000_000.0;
 /// Full scan - all variables unbound
 const FULL_SCAN: f64 = 1e12;
 
@@ -138,7 +147,7 @@ pub(crate) fn estimate_triple_row_count(
                     }
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_BOUND_OBJECT_SELECTIVITY
         }
 
         PatternType::BoundSubject => {
@@ -166,7 +175,7 @@ pub(crate) fn estimate_triple_row_count(
                     return (prop.count as f64).min(BOUND_OBJECT_FALLBACK_CAP);
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_BOUND_OBJECT_SELECTIVITY
         }
 
         PatternType::PropertyScan => {
@@ -175,7 +184,7 @@ pub(crate) fn estimate_triple_row_count(
                     return prop.count as f64;
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_PROPERTY_SCAN_SELECTIVITY
         }
 
         PatternType::FullScan => FULL_SCAN,
@@ -734,11 +743,11 @@ pub fn estimate_pattern(
         },
 
         Pattern::PropertyPath(_) => PatternEstimate::Source {
-            row_count: DEFAULT_SELECTIVITY,
+            row_count: DEFAULT_PROPERTY_SCAN_SELECTIVITY,
         },
 
         Pattern::R2rml(_) => PatternEstimate::Source {
-            row_count: DEFAULT_SELECTIVITY,
+            row_count: DEFAULT_PROPERTY_SCAN_SELECTIVITY,
         },
 
         Pattern::Service(_) => PatternEstimate::Source {
@@ -788,7 +797,7 @@ pub fn estimate_branch_cardinality(patterns: &[Pattern], stats: Option<&StatsVie
     }
 
     if triples.is_empty() {
-        return (DEFAULT_SELECTIVITY) * non_triple_estimate;
+        return (DEFAULT_PROPERTY_SCAN_SELECTIVITY) * non_triple_estimate;
     }
 
     // Sort triples by standalone row count for initial ordering (most selective first)

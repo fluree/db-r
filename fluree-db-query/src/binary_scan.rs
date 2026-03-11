@@ -16,6 +16,7 @@ use fluree_db_binary_index::{
     ColumnProjection, OverlayOp,
 };
 use fluree_db_core::o_type::OType;
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
@@ -35,6 +36,7 @@ use crate::var_registry::VarId;
 // ============================================================================
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_core::ids::DatatypeDictId;
 use fluree_db_core::value_id::ObjKind;
 
@@ -1343,7 +1345,7 @@ impl Operator for BinaryScanOperator {
         // Extract bound terms and build filter.
         let (s_sid, p_sid, o_val) = self.extract_bound_terms();
         self.bound_o = o_val;
-        let filter = self
+        let mut filter = self
             .build_filter(&s_sid, &p_sid)
             .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         if std::env::var_os("FLUREE_DEBUG_SCAN").is_some() {
@@ -1355,6 +1357,59 @@ impl Operator for BinaryScanOperator {
                 filter.s_id,
                 filter.p_id
             );
+        }
+
+        // Bound-object fast path: if the triple pattern has a constant object, encode it into
+        // (o_type, o_key) so the cursor can seek directly to the relevant leaf range.
+        //
+        // This is safe for graph pattern matching (RDF term equality is type-aware), and avoids
+        // pathological full-predicate scans like `?paper <publishedIn> "SIGIR"`.
+        //
+        // For overlay/novelty queries, we keep this conservative: if the value isn't present in
+        // the persisted dictionaries, fall back to overlay-only to avoid a wide base scan.
+        if let Some(bound_o) = self.bound_o.as_ref() {
+            let dtc = self.pattern.dtc.as_ref();
+            let lang = dtc.and_then(|d| d.lang_tag());
+            let dt_sid = dtc.map(|d| d.datatype());
+            let dict_novelty = ctx.dict_novelty.as_ref();
+            let store_ref = store.as_ref();
+
+            let encoded = match (dt_sid, lang) {
+                (Some(dt_sid), lang) => {
+                    value_to_otype_okey(bound_o, dt_sid, lang, store_ref, dict_novelty)
+                }
+                (None, None) => {
+                    // Without a datatype constraint, we can only safely encode non-string
+                    // values. String values are ambiguous — could be xsd:string or
+                    // rdf:langString — so skip them to avoid type mismatch.
+                    match bound_o {
+                        FlakeValue::String(_) => Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "string without dtc: type ambiguous (could be langString)",
+                        )),
+                        _ => value_to_otype_okey_simple(bound_o, store_ref)
+                            .map_err(|e| std::io::Error::other(e.to_string())),
+                    }
+                }
+                (None, Some(_lang)) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "lang tag requires datatype constraint",
+                )),
+            };
+
+            match encoded {
+                Ok((ot, key)) => {
+                    filter.o_type = Some(ot.as_u16());
+                    filter.o_key = Some(key);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Novelty may contain the value, but base index can't; avoid wide base scan.
+                    return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+                }
+                Err(_) => {
+                    // If encoding fails, keep correctness by leaving the filter un-narrowed.
+                }
+            }
         }
 
         // If a subject/predicate is bound but not present in the binary dictionaries
@@ -1386,9 +1441,106 @@ impl Operator for BinaryScanOperator {
         let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
             Arc::new(branch_ref.clone());
 
-        // Create cursor: full scan with filter.
-        let mut cursor =
-            BinaryCursor::scan_all(Arc::clone(&store_arc), order, branch, filter, projection);
+        // If this scan has range bounds on the object variable and we're scanning in POST order,
+        // narrow the cursor's leaf range by object-key range.
+        //
+        // IMPORTANT: SPARQL numeric comparisons are cross-type (integer bounds match double
+        // values), and ObjKey encodings differ between types. For correctness, we only apply
+        // range narrowing for temporal types where cross-type comparison does not apply.
+        let mut range_min_okey: Option<u64> = None;
+        let mut range_max_okey: Option<u64> = None;
+        let mut range_o_type: Option<u16> = None;
+        if order == RunSortOrder::Post && filter.p_id.is_some() && self.bound_o.is_none() {
+            if let Some(bounds) = self.object_bounds.as_ref() {
+                let supports_range = |ot: OType| -> bool {
+                    matches!(
+                        ot,
+                        OType::XSD_DATE
+                            | OType::XSD_DATE_TIME
+                            | OType::XSD_TIME
+                            | OType::XSD_G_YEAR
+                            | OType::XSD_G_YEAR_MONTH
+                            | OType::XSD_G_MONTH
+                            | OType::XSD_G_DAY
+                            | OType::XSD_G_MONTH_DAY
+                    )
+                };
+
+                let encode = |v: &FlakeValue| -> Option<(u16, u64)> {
+                    let (ot, key) = value_to_otype_okey_simple(v, store_ref).ok()?;
+                    supports_range(ot).then_some((ot.as_u16(), key))
+                };
+
+                let mut ot: Option<u16> = None;
+                if let Some((v, _inclusive)) = bounds.lower.as_ref() {
+                    if let Some((o_type, key)) = encode(v) {
+                        ot = Some(o_type);
+                        range_min_okey = Some(key);
+                    }
+                }
+                if let Some((v, _inclusive)) = bounds.upper.as_ref() {
+                    if let Some((o_type, key)) = encode(v) {
+                        if ot.is_some() && ot != Some(o_type) {
+                            // Mixed type bounds; don't attempt range narrowing.
+                            ot = None;
+                            range_min_okey = None;
+                            range_max_okey = None;
+                        } else {
+                            ot = Some(o_type);
+                            range_max_okey = Some(key);
+                        }
+                    }
+                }
+
+                if let Some(o_type) = ot {
+                    range_o_type = Some(o_type);
+                    // Also set the filter o_type so directory-level pre-skip can eliminate non-matching leaflets.
+                    filter.o_type = Some(o_type);
+                }
+            }
+        }
+
+        // Create cursor. If any of (s_id, p_id, o_type, o_key) are bound OR we have a
+        // temporal object-key range (POST + bounds), construct a narrow min/max key range
+        // so we can seek into the branch manifest rather than scanning all leaves.
+        let use_range = filter.s_id.is_some()
+            || filter.p_id.is_some()
+            || filter.o_type.is_some()
+            || filter.o_key.is_some()
+            || range_min_okey.is_some()
+            || range_max_okey.is_some();
+
+        let mut cursor = if use_range {
+            let min_key = RunRecordV2 {
+                s_id: SubjectId(filter.s_id.unwrap_or(0)),
+                o_key: filter.o_key.or(range_min_okey).unwrap_or(0),
+                p_id: filter.p_id.unwrap_or(0),
+                t: 0,
+                o_i: 0,
+                o_type: filter.o_type.or(range_o_type).unwrap_or(0),
+                g_id: self.g_id,
+            };
+            let max_key = RunRecordV2 {
+                s_id: SubjectId(filter.s_id.unwrap_or(u64::MAX)),
+                o_key: filter.o_key.or(range_max_okey).unwrap_or(u64::MAX),
+                p_id: filter.p_id.unwrap_or(u32::MAX),
+                t: u32::MAX,
+                o_i: u32::MAX,
+                o_type: filter.o_type.or(range_o_type).unwrap_or(u16::MAX),
+                g_id: self.g_id,
+            };
+            BinaryCursor::new(
+                Arc::clone(&store_arc),
+                order,
+                branch,
+                &min_key,
+                &max_key,
+                filter,
+                projection,
+            )
+        } else {
+            BinaryCursor::scan_all(Arc::clone(&store_arc), order, branch, filter, projection)
+        };
 
         // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
         if ctx.overlay.is_some() {

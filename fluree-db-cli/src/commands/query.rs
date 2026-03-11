@@ -101,6 +101,7 @@ pub async fn run(
     direct: bool,
 ) -> CliResult<()> {
     const BENCH_ROWS: usize = 5;
+    const DEFAULT_TABLE_PREVIEW_ROWS: usize = 200;
     let limit = if bench { Some(BENCH_ROWS) } else { None };
     let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
@@ -276,9 +277,31 @@ pub async fn run(
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
-            let output = output::format_result(&result, output_format, query_format, limit)?;
+            // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
+            // For table output, show a preview unless the result set is small (or --bench is used).
+            let effective_limit = if !bench
+                && output_format == OutputFormatKind::Table
+                && query_format == detect::QueryFormat::Sparql
+                && limit.is_none()
+            {
+                let total = result
+                    .pointer("/results/bindings")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if total > DEFAULT_TABLE_PREVIEW_ROWS {
+                    Some(DEFAULT_TABLE_PREVIEW_ROWS)
+                } else {
+                    None
+                }
+            } else {
+                limit
+            };
+
+            let output =
+                output::format_result(&result, output_format, query_format, effective_limit)?;
             println!("{}", output.text);
-            print_footer(output.total_rows, limit, elapsed);
+            print_footer(output.total_rows, effective_limit, elapsed);
         }
         LedgerMode::Local { fluree, alias } => {
             // Load a single view (optionally time-traveled) and execute against it.
@@ -377,23 +400,50 @@ pub async fn run(
                     _ => output_format,
                 };
 
-                // Fast path: SPARQL default table output (avoid materializing full SPARQL JSON).
-                if query_format == detect::QueryFormat::Sparql
-                    && display_format == OutputFormatKind::Table
+                // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
+                // For table output, show a preview unless the result set is small.
+                let effective_limit = if display_format == OutputFormatKind::Table
+                    && query_format == detect::QueryFormat::Sparql
                     && limit.is_none()
                 {
+                    let total = result.row_count();
+                    if total > DEFAULT_TABLE_PREVIEW_ROWS {
+                        Some(DEFAULT_TABLE_PREVIEW_ROWS)
+                    } else {
+                        None
+                    }
+                } else {
+                    limit
+                };
+
+                // Fast path: SPARQL table output (avoid materializing full SPARQL JSON).
+                if query_format == detect::QueryFormat::Sparql
+                    && display_format == OutputFormatKind::Table
+                {
                     let render_timer = Instant::now();
-                    if let Some(output) =
-                        output::format_sparql_table_from_result(&result, &view.snapshot, None)?
-                    {
+                    if let Some(output) = output::format_sparql_table_from_result(
+                        &result,
+                        &view.snapshot,
+                        effective_limit,
+                    )? {
                         let render_elapsed = render_timer.elapsed();
                         println!("{}", output.text);
-                        eprintln!(
-                            "({} rows, query: {}, render: {})",
-                            format_count(output.total_rows),
-                            format_duration(elapsed),
-                            format_duration(render_elapsed),
-                        );
+                        if let Some(n) = effective_limit {
+                            eprintln!(
+                                "(first {} of {} rows, query: {}, render: {})",
+                                format_count(n),
+                                format_count(output.total_rows),
+                                format_duration(elapsed),
+                                format_duration(render_elapsed),
+                            );
+                        } else {
+                            eprintln!(
+                                "({} rows, query: {}, render: {})",
+                                format_count(output.total_rows),
+                                format_duration(elapsed),
+                                format_duration(render_elapsed),
+                            );
+                        }
                         return Ok(());
                     }
                 }
@@ -417,8 +467,12 @@ pub async fn run(
                         }
                     }
                 };
-                let output =
-                    output::format_result(&formatted_json, display_format, query_format, limit)?;
+                let output = output::format_result(
+                    &formatted_json,
+                    display_format,
+                    query_format,
+                    effective_limit,
+                )?;
                 let render_elapsed = render_timer.elapsed();
                 println!("{}", output.text);
                 eprintln!(
