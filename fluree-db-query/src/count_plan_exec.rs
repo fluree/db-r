@@ -26,7 +26,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 /// Create a `FastPathOperator` that executes a `CountPlan`.
-pub(crate) fn count_plan_operator(plan: CountPlan, fallback: Option<BoxedOperator>) -> BoxedOperator {
+pub(crate) fn count_plan_operator(
+    plan: CountPlan,
+    fallback: Option<BoxedOperator>,
+) -> BoxedOperator {
     let out_var = plan.out_var;
     Box::new(FastPathOperator::new(
         out_var,
@@ -38,9 +41,8 @@ pub(crate) fn count_plan_operator(plan: CountPlan, fallback: Option<BoxedOperato
 
             match execute_plan(&plan.root, store, g_id)? {
                 Some(count) => {
-                    let count_i64 = i64::try_from(count).map_err(|_| {
-                        QueryError::execution("COUNT(*) exceeds i64 in count plan")
-                    })?;
+                    let count_i64 = i64::try_from(count)
+                        .map_err(|_| QueryError::execution("COUNT(*) exceeds i64 in count plan"))?;
                     Ok(Some(build_count_batch(out_var, count_i64)?))
                 }
                 None => Ok(None), // Fall through to general pipeline.
@@ -109,7 +111,10 @@ fn execute_scalar(
             Ok(total)
         }
 
-        ScalarNode::PostObjectFilteredSum { pred, object_filter } => {
+        ScalarNode::PostObjectFilteredSum {
+            pred,
+            object_filter,
+        } => {
             let sid = normalize_pred_sid(store, pred)?;
             let Some(p_id) = store.sid_to_p_id(&sid) else {
                 return Ok(Some(0));
@@ -337,11 +342,7 @@ fn sum_star_join(
             break;
         }
 
-        let max_s = curr
-            .iter()
-            .filter_map(|c| c.map(|(s, _)| s))
-            .max()
-            .unwrap();
+        let max_s = curr.iter().filter_map(|c| c.map(|(s, _)| s)).max().unwrap();
 
         if curr.iter().all(|c| c.map(|(s, _)| s) == Some(max_s)) {
             let skip = is_excluded(max_s, exclude_sorted, &mut excl_idx)
@@ -372,7 +373,7 @@ fn sum_star_join(
 /// Fully streaming merge-join with OPTIONAL semantics.
 ///
 /// Interleaves optional group cursor advancement with the required N-way merge,
-/// matching the algorithm in `PropertyJoinCountAllOperator::count_psot_iters`.
+/// matching the star-join + OPTIONAL multiplicity algorithm.
 /// No HashMap materialization for required or optional streams.
 ///
 /// Formula: `Σ_s req_product(s) × Π_g max(1, Π_i opt_gi(s))`
@@ -791,8 +792,7 @@ fn execute_chain(
 
     // Step 2: Fold right-to-left through intermediate predicates (indices n-2 down to 1).
     for i in (1..n - 1).rev() {
-        let Some(mut iter) =
-            PsotSubjectWeightedSumIter::new(store, g_id, p_ids[i], &weights, 0)?
+        let Some(mut iter) = PsotSubjectWeightedSumIter::new(store, g_id, p_ids[i], &weights, 0)?
         else {
             return Ok(None);
         };

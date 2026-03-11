@@ -252,9 +252,7 @@ pub(crate) fn try_build_count_plan(
             }
         }
         Topology::Star { triples } => build_star_plan(triples, &classified)?,
-        Topology::Chain { predicates, vars } => {
-            build_chain_plan(predicates, vars, &classified)?
-        }
+        Topology::Chain { predicates, vars } => build_chain_plan(predicates, vars, &classified)?,
     };
 
     Some(CountPlan { root, out_var })
@@ -637,9 +635,7 @@ fn build_single_triple_with_modifiers(
     // Check if all MINUS/EXISTS blocks target the object var (object-chain pattern).
     // If so, use POST-based object counting instead of subject-domain streaming.
     if !classified.minus_blocks.is_empty() || !classified.exists_blocks.is_empty() {
-        if let Some(plan) =
-            try_build_object_chain_plan(&pred, object_var, classified)
-        {
+        if let Some(plan) = try_build_object_chain_plan(&pred, object_var, classified) {
             return Some(plan);
         }
     }
@@ -653,9 +649,7 @@ fn build_single_triple_with_modifiers(
         }
     }
 
-    let required_stream = StreamNode::SubjectCountScan {
-        pred: pred.clone(),
-    };
+    let required_stream = StreamNode::SubjectCountScan { pred: pred.clone() };
 
     // Apply OPTIONAL groups if any.
     let stream = if classified.optional_blocks.is_empty() {
@@ -1047,16 +1041,8 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o1),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p2.clone(),
-                Term::Var(o2),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o1))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p2.clone(), Term::Var(o2))),
         ];
 
         let (query, options) = make_query(patterns, count);
@@ -1111,16 +1097,8 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
         ];
 
         let (query, options) = make_query(patterns, count);
@@ -1148,11 +1126,7 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o1),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o1))),
             Pattern::Optional(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(s),
                 p2.clone(),
@@ -1191,11 +1165,7 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o1),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o1))),
             Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(s),
                 p2.clone(),
@@ -1230,16 +1200,8 @@ mod tests {
 
         // ?s p1 ?o1 . ?s p2 ?o2 . FILTER EXISTS { ?s p3 ?o3 }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o1),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p2.clone(),
-                Term::Var(o2),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o1))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p2.clone(), Term::Var(o2))),
             Pattern::Filter(Expression::Exists {
                 patterns: vec![Pattern::Triple(TriplePattern::new(
                     Ref::Var(s),
@@ -1258,10 +1220,15 @@ mod tests {
             CountPlanRoot::Scalar(ScalarNode::Sum {
                 source: StreamNode::SemiJoin { source, filter },
             }) => {
-                assert!(matches!(source.as_ref(), StreamNode::StarJoin { children } if children.len() == 2));
+                assert!(
+                    matches!(source.as_ref(), StreamNode::StarJoin { children } if children.len() == 2)
+                );
                 assert!(matches!(filter, KeySetNode::SubjectSet { .. }));
             }
-            other => panic!("Expected Sum(SemiJoin(StarJoin, SubjectSet)), got {:?}", other),
+            other => panic!(
+                "Expected Sum(SemiJoin(StarJoin, SubjectSet)), got {:?}",
+                other
+            ),
         }
     }
 
@@ -1278,11 +1245,7 @@ mod tests {
 
         // ?s p1 ?o . FILTER NOT EXISTS { ?s p2 ?o2 }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o))),
             Pattern::Filter(Expression::Exists {
                 patterns: vec![Pattern::Triple(TriplePattern::new(
                     Ref::Var(s),
@@ -1301,7 +1264,10 @@ mod tests {
             CountPlanRoot::Scalar(ScalarNode::Sum {
                 source: StreamNode::AntiJoin { source, excluded },
             }) => {
-                assert!(matches!(source.as_ref(), StreamNode::SubjectCountScan { .. }));
+                assert!(matches!(
+                    source.as_ref(),
+                    StreamNode::SubjectCountScan { .. }
+                ));
                 assert!(matches!(excluded, KeySetNode::SubjectSet { .. }));
             }
             other => panic!("Expected Sum(AntiJoin(Scan, SubjectSet)), got {:?}", other),
@@ -1323,23 +1289,11 @@ mod tests {
 
         // ?s p1 ?o . FILTER EXISTS { ?s p2 ?o2 . ?s p3 ?o3 }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o))),
             Pattern::Filter(Expression::Exists {
                 patterns: vec![
-                    Pattern::Triple(TriplePattern::new(
-                        Ref::Var(s),
-                        p2.clone(),
-                        Term::Var(o2),
-                    )),
-                    Pattern::Triple(TriplePattern::new(
-                        Ref::Var(s),
-                        p3.clone(),
-                        Term::Var(o3),
-                    )),
+                    Pattern::Triple(TriplePattern::new(Ref::Var(s), p2.clone(), Term::Var(o2))),
+                    Pattern::Triple(TriplePattern::new(Ref::Var(s), p3.clone(), Term::Var(o3))),
                 ],
                 negated: false,
             }),
@@ -1353,8 +1307,13 @@ mod tests {
             CountPlanRoot::Scalar(ScalarNode::Sum {
                 source: StreamNode::SemiJoin { source, filter },
             }) => {
-                assert!(matches!(source.as_ref(), StreamNode::SubjectCountScan { .. }));
-                assert!(matches!(filter, KeySetNode::IntersectSorted { children } if children.len() == 2));
+                assert!(matches!(
+                    source.as_ref(),
+                    StreamNode::SubjectCountScan { .. }
+                ));
+                assert!(
+                    matches!(filter, KeySetNode::IntersectSorted { children } if children.len() == 2)
+                );
             }
             other => panic!(
                 "Expected Sum(SemiJoin(Scan, IntersectSorted)), got {:?}",
@@ -1378,11 +1337,7 @@ mod tests {
 
         // ?s p1 ?o1 . OPTIONAL { ?s p2 ?o2 } . MINUS { ?s p3 ?o3 }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o1),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o1))),
             Pattern::Optional(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(s),
                 p2.clone(),
@@ -1429,16 +1384,8 @@ mod tests {
 
         // ?a p1 ?b . ?b p2 ?c . OPTIONAL { ?c p3 ?d }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
             Pattern::Optional(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(c),
                 p3.clone(),
@@ -1474,16 +1421,8 @@ mod tests {
 
         // ?a p1 ?b . ?b p2 ?c . MINUS { ?c p3 ?d }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
             Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(c),
                 p3.clone(),
@@ -1519,16 +1458,8 @@ mod tests {
 
         // ?a p1 ?b . ?b p2 ?c . FILTER EXISTS { ?c p3 ?d }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
             Pattern::Filter(Expression::Exists {
                 patterns: vec![Pattern::Triple(TriplePattern::new(
                     Ref::Var(c),
@@ -1567,16 +1498,8 @@ mod tests {
 
         // ?a p1 ?b . ?b p2 ?c . FILTER NOT EXISTS { ?c p3 ?d }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
             Pattern::Filter(Expression::Exists {
                 patterns: vec![Pattern::Triple(TriplePattern::new(
                     Ref::Var(c),
@@ -1617,16 +1540,8 @@ mod tests {
         // ?a p1 ?b . ?b p2 ?c . MINUS { ?b p3 ?d }
         // MINUS targets ?b (not the tail ?c) — should be rejected.
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(b),
-                p2.clone(),
-                Term::Var(c),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
+            Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
             Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(b),
                 p3.clone(),
@@ -1656,22 +1571,10 @@ mod tests {
 
         // ?s p1 ?o . MINUS { ?s p2 ?o2 . ?s p3 ?o3 }
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                p1.clone(),
-                Term::Var(o),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p1.clone(), Term::Var(o))),
             Pattern::Minus(vec![
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(s),
-                    p2.clone(),
-                    Term::Var(o2),
-                )),
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(s),
-                    p3.clone(),
-                    Term::Var(o3),
-                )),
+                Pattern::Triple(TriplePattern::new(Ref::Var(s), p2.clone(), Term::Var(o2))),
+                Pattern::Triple(TriplePattern::new(Ref::Var(s), p3.clone(), Term::Var(o3))),
             ]),
         ];
 
@@ -1683,9 +1586,14 @@ mod tests {
             CountPlanRoot::Scalar(ScalarNode::Sum {
                 source: StreamNode::AntiJoin { source, excluded },
             }) => {
-                assert!(matches!(source.as_ref(), StreamNode::SubjectCountScan { .. }));
+                assert!(matches!(
+                    source.as_ref(),
+                    StreamNode::SubjectCountScan { .. }
+                ));
                 // Multi-predicate MINUS → IntersectSorted of SubjectsSorted
-                assert!(matches!(excluded, KeySetNode::IntersectSorted { children } if children.len() == 2));
+                assert!(
+                    matches!(excluded, KeySetNode::IntersectSorted { children } if children.len() == 2)
+                );
             }
             other => panic!(
                 "Expected Sum(AntiJoin(Scan, IntersectSorted)), got {:?}",
@@ -1720,11 +1628,7 @@ mod tests {
 
         let pred = make_sid(1, "p1");
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(s),
-                pred.clone(),
-                Term::Var(o),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), pred.clone(), Term::Var(o))),
             Pattern::Bind {
                 var: o,
                 expr: crate::ir::Expression::Const(crate::ir::FilterValue::Long(42)),
@@ -1752,11 +1656,7 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::Exists(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(b),
                 p2.clone(),
@@ -1792,11 +1692,7 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(b),
                 p2.clone(),
@@ -1834,22 +1730,10 @@ mod tests {
         let p3 = make_sid(3, "p3");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::Exists(vec![
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(b),
-                    p2.clone(),
-                    Term::Var(c),
-                )),
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(c),
-                    p3.clone(),
-                    Term::Var(d),
-                )),
+                Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
+                Pattern::Triple(TriplePattern::new(Ref::Var(c), p3.clone(), Term::Var(d))),
             ]),
         ];
 
@@ -1858,11 +1742,7 @@ mod tests {
         assert!(plan.is_some(), "Should detect 2-hop object-chain EXISTS");
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::PostObjectFilteredSum {
-                object_filter:
-                    KeySetNode::SubjectsWithObjectIn {
-                        object_set,
-                        ..
-                    },
+                object_filter: KeySetNode::SubjectsWithObjectIn { object_set, .. },
                 ..
             }) => {
                 assert!(matches!(object_set.as_ref(), KeySetNode::SubjectSet { .. }));
@@ -1889,22 +1769,10 @@ mod tests {
         let p3 = make_sid(3, "p3");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::Minus(vec![
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(b),
-                    p2.clone(),
-                    Term::Var(c),
-                )),
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(c),
-                    p3.clone(),
-                    Term::Var(d),
-                )),
+                Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
+                Pattern::Triple(TriplePattern::new(Ref::Var(c), p3.clone(), Term::Var(d))),
             ]),
         ];
 
@@ -1913,10 +1781,7 @@ mod tests {
         assert!(plan.is_some(), "Should detect 2-hop object-chain MINUS");
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
-            other => panic!(
-                "Expected TotalMinusPostObjectFilteredSum, got {:?}",
-                other
-            ),
+            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {:?}", other),
         }
     }
 
@@ -1933,11 +1798,7 @@ mod tests {
         let p2 = make_sid(2, "p2");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::NotExists(vec![Pattern::Triple(TriplePattern::new(
                 Ref::Var(b),
                 p2.clone(),
@@ -1950,10 +1811,7 @@ mod tests {
         assert!(plan.is_some(), "Should detect object-chain NOT EXISTS");
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
-            other => panic!(
-                "Expected TotalMinusPostObjectFilteredSum, got {:?}",
-                other
-            ),
+            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {:?}", other),
         }
     }
 
@@ -1972,22 +1830,10 @@ mod tests {
         let p3 = make_sid(3, "p3");
 
         let patterns = vec![
-            Pattern::Triple(TriplePattern::new(
-                Ref::Var(a),
-                p1.clone(),
-                Term::Var(b),
-            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(a), p1.clone(), Term::Var(b))),
             Pattern::Exists(vec![
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(b),
-                    p2.clone(),
-                    Term::Var(c),
-                )),
-                Pattern::Triple(TriplePattern::new(
-                    Ref::Var(b),
-                    p3.clone(),
-                    Term::Var(d),
-                )),
+                Pattern::Triple(TriplePattern::new(Ref::Var(b), p2.clone(), Term::Var(c))),
+                Pattern::Triple(TriplePattern::new(Ref::Var(b), p3.clone(), Term::Var(d))),
             ]),
         ];
 

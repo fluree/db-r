@@ -797,8 +797,7 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                     continue;
                 }
                 let mixed = entry.o_type_const.is_none();
-                let iri_only =
-                    entry.o_type_const == Some(OType::IRI_REF.as_u16());
+                let iri_only = entry.o_type_const == Some(OType::IRI_REF.as_u16());
                 let non_iri_only = !mixed && !iri_only;
 
                 if non_iri_only && self.default_weight == 0 {
@@ -998,7 +997,11 @@ impl<'a> PsotObjectFilterCountIter<'a> {
                     return Ok(Some(()));
                 }
 
-                let projection = if mixed { &proj_sid_otype_okey } else { &proj_sid_okey };
+                let projection = if mixed {
+                    &proj_sid_otype_okey
+                } else {
+                    &proj_sid_okey
+                };
                 let batch = handle
                     .load_columns(idx, projection, RunSortOrder::Psot)
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
