@@ -2280,6 +2280,16 @@ fn build_operator_tree_inner(
         }
     }
 
+    // Count-only plan: generic join-aware count planner that replaces many bespoke
+    // detect_*/fast_* pairs below. Fires after trivial metadata-only counts but before
+    // the per-shape cascade.
+    if enable_fused_fast_paths {
+        if let Some(plan) = crate::count_plan::try_build_count_plan(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(crate::count_plan_exec::count_plan_operator(plan, Some(fallback)));
+        }
+    }
+
     // Fast-path: `COUNT(*)` with correlated EXISTS constraints.
     //
     // These cover the sparqloscope `exists-*` DBLP benchmark family and avoid scanning

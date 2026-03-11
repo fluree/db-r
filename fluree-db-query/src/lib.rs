@@ -19,6 +19,8 @@ pub mod bind;
 pub mod binding;
 pub mod bm25;
 pub mod context;
+pub mod count_plan;
+pub mod count_plan_exec;
 pub mod count_rows;
 pub mod datalog_rules;
 pub mod dataset;
