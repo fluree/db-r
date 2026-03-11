@@ -196,20 +196,24 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     &ledger.novelty,
                     &ledger.snapshot.namespace_codes,
                     graph_iri.as_deref(),
+                    store,
                 );
             }
 
             if options.realtime_property_details {
-                merge_graph_class_ref_edges_from_novelty(
-                    &ledger.snapshot,
-                    ledger.novelty.as_ref(),
-                    ledger.t(),
-                    g_id,
-                    graph_entry,
-                    &ledger.snapshot.namespace_codes,
-                    graph_iri.as_deref(),
-                )
-                .await?;
+                if let Some(store) = binary_store.as_deref() {
+                    merge_graph_class_ref_edges_from_novelty(
+                        &ledger.snapshot,
+                        ledger.novelty.as_ref(),
+                        ledger.t(),
+                        g_id,
+                        graph_entry,
+                        &ledger.snapshot.namespace_codes,
+                        graph_iri.as_deref(),
+                        store,
+                    )
+                    .await?;
+                }
             }
         }
     }
@@ -475,15 +479,32 @@ fn flake_in_graph(
     flake: &Flake,
     graph_iri: Option<&str>,
     namespace_codes: &HashMap<u16, String>,
+    store: &BinaryIndexStore,
 ) -> bool {
     match (graph_iri, &flake.g) {
         // Default graph: flakes with no graph annotation
         (None, None) => true,
-        (None, Some(_)) => false,
+        // Some callers may explicitly annotate the default graph. Treat `urn:default`
+        // as equivalent to the implicit default (g: None).
+        (None, Some(g_sid)) => {
+            let ns_prefix_owned = store.namespace_prefix(g_sid.namespace_code).ok();
+            let ns_prefix = ns_prefix_owned
+                .as_deref()
+                .or_else(|| namespace_codes.get(&g_sid.namespace_code).map(|s| s.as_str()));
+            let Some(ns_prefix) = ns_prefix else {
+                return false;
+            };
+            let flake_graph_iri = format!("{}{}", ns_prefix, g_sid.name);
+            flake_graph_iri == "urn:default"
+        }
         // Named graph: flakes must match the graph IRI
         (Some(_), None) => false,
         (Some(expected), Some(g_sid)) => {
-            let Some(ns_prefix) = namespace_codes.get(&g_sid.namespace_code) else {
+            let ns_prefix_owned = store.namespace_prefix(g_sid.namespace_code).ok();
+            let ns_prefix = ns_prefix_owned
+                .as_deref()
+                .or_else(|| namespace_codes.get(&g_sid.namespace_code).map(|s| s.as_str()));
+            let Some(ns_prefix) = ns_prefix else {
                 return false;
             };
             let flake_graph_iri = format!("{}{}", ns_prefix, g_sid.name);
@@ -529,7 +550,7 @@ fn merge_graph_property_novelty(
         }
 
         // Graph filter: only include flakes belonging to the requested graph.
-        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
             continue;
         }
 
@@ -540,7 +561,15 @@ fn merge_graph_property_novelty(
         size_delta = size_delta.saturating_add(delta.saturating_mul(est_i64));
 
         // Map predicate SID to p_id via namespace prefix + store lookup.
-        let Some(ns_prefix) = namespace_codes.get(&flake.p.namespace_code) else {
+        //
+        // NOTE: namespace codes in novelty may be in either snapshot-space or
+        // store-space (e.g., after index rebuild / namespace remap). Prefer the
+        // store's namespace table, with snapshot fallback.
+        let ns_prefix_owned = store.namespace_prefix(flake.p.namespace_code).ok();
+        let ns_prefix = ns_prefix_owned
+            .as_deref()
+            .or_else(|| namespace_codes.get(&flake.p.namespace_code).map(|s| s.as_str()));
+        let Some(ns_prefix) = ns_prefix else {
             continue;
         };
         let full_iri = format!("{}{}", ns_prefix, flake.p.name);
@@ -654,6 +683,7 @@ fn merge_graph_class_counts_from_novelty(
     novelty: &Novelty,
     namespace_codes: &HashMap<u16, String>,
     graph_iri: Option<&str>,
+    store: &BinaryIndexStore,
 ) {
     if novelty.is_empty() {
         return;
@@ -674,7 +704,7 @@ fn merge_graph_class_counts_from_novelty(
         if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
             continue;
         }
-        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
             continue;
         }
         if !is_rdf_type(&flake.p) {
@@ -710,6 +740,7 @@ fn merge_graph_class_counts_from_novelty(
 /// attributed using the *current* (novelty-aware) rdf:type of both the
 /// subject and the referenced object.
 ///
+#[allow(clippy::too_many_arguments)]
 async fn merge_graph_class_ref_edges_from_novelty(
     snapshot: &LedgerSnapshot,
     novelty: &Novelty,
@@ -718,6 +749,7 @@ async fn merge_graph_class_ref_edges_from_novelty(
     graph_entry: &mut GraphStatsEntry,
     namespace_codes: &HashMap<u16, String>,
     graph_iri: Option<&str>,
+    store: &BinaryIndexStore,
 ) -> Result<()> {
     if novelty.is_empty() {
         return Ok(());
@@ -731,7 +763,7 @@ async fn merge_graph_class_ref_edges_from_novelty(
         let flake = novelty.get_flake(flake_id);
 
         // Graph filter: only include flakes belonging to the requested graph.
-        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
             continue;
         }
 
