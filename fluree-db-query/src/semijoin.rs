@@ -267,9 +267,7 @@ impl Operator for SemijoinOperator {
                         let keep = if self.negated { !has_match } else { has_match };
                         if keep {
                             count = count.checked_add(1).ok_or_else(|| {
-                                QueryError::execution(
-                                    "COUNT(*) overflow in semijoin drain_count",
-                                )
+                                QueryError::execution("COUNT(*) overflow in semijoin drain_count")
                             })?;
                         }
                     }

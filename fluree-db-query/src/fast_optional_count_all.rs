@@ -44,12 +44,8 @@ pub fn predicate_optional_join_count_all(
             let Some(store) = fast_path_store(ctx) else {
                 return Ok(None);
             };
-            let count = count_optional_join(
-                store,
-                ctx.binary_g_id,
-                &pred_required,
-                &pred_optional,
-            )?;
+            let count =
+                count_optional_join(store, ctx.binary_g_id, &pred_required, &pred_optional)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(*) exceeds i64 in OPTIONAL join fast-path")
             })?;

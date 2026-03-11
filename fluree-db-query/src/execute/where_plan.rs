@@ -315,9 +315,10 @@ fn produced_variables(pattern: &Pattern) -> Vec<VarId> {
         Pattern::Triple(tp) => tp.variables(),
         Pattern::Bind { var, .. } => vec![*var],
         Pattern::Values { vars, .. } => vars.clone(),
-        Pattern::Optional(inner) | Pattern::Minus(inner) | Pattern::Exists(inner) | Pattern::NotExists(inner) => {
-            inner.iter().flat_map(produced_variables).collect()
-        }
+        Pattern::Optional(inner)
+        | Pattern::Minus(inner)
+        | Pattern::Exists(inner)
+        | Pattern::NotExists(inner) => inner.iter().flat_map(produced_variables).collect(),
         Pattern::Union(branches) => branches
             .iter()
             .flat_map(|branch| branch.iter().flat_map(produced_variables))
@@ -1157,10 +1158,8 @@ pub fn build_where_operators_seeded_with_needed(
                 // Collect only vars PRODUCED by inner patterns (Triple, Bind, Values, etc.).
                 // Vars only consumed (e.g., in FILTER expressions) require per-row seeding
                 // and cannot serve as semijoin keys.
-                let inner_produced_vars: std::collections::HashSet<VarId> = inner_patterns
-                    .iter()
-                    .flat_map(produced_variables)
-                    .collect();
+                let inner_produced_vars: std::collections::HashSet<VarId> =
+                    inner_patterns.iter().flat_map(produced_variables).collect();
 
                 // Key vars in child schema order (stable, matches column layout).
                 let key_vars: Vec<VarId> = child

@@ -189,7 +189,9 @@ pub fn count_distinct_subjects_operator(
             let Some(store) = fast_path_store(ctx) else {
                 return Ok(None);
             };
-            let count = count_distinct_subjects_spot(store, ctx.binary_g_id)?;
+            // SPOT key layout: s_id(8) + p_id(4) + o_type(2) + o_key(8) + o_i(4).
+            // Distinct subjects = lead bytes [0..8].
+            let count = count_distinct_lead_groups(store, ctx.binary_g_id, RunSortOrder::Spot, 8)?;
             let count_i64 = i64::try_from(count).map_err(|_| {
                 QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-subject fast-path")
             })?;
@@ -198,46 +200,6 @@ pub fn count_distinct_subjects_operator(
         fallback,
         "distinct subject COUNT",
     )
-}
-
-fn count_distinct_subjects_spot(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
-    let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Spot) else {
-        return Ok(0);
-    };
-
-    // SPOT key layout: s_id(8) + p_id(4) + o_type(2) + o_key(8) + o_i(4) = 26 bytes.
-    // The "lead" key for distinct subjects is s_id, which is bytes [0..8].
-    const LEAD_START: usize = 0;
-    const LEAD_LEN: usize = 8;
-
-    let mut prev_lead_last: Option<[u8; LEAD_LEN]> = None;
-    let mut total: u64 = 0;
-
-    for leaf_entry in &branch.leaves {
-        let handle = store
-            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
-            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
-        let dir = handle.dir();
-
-        for entry in &dir.entries {
-            if entry.row_count == 0 || entry.lead_group_count == 0 {
-                continue;
-            }
-
-            let mut lead_first = [0u8; LEAD_LEN];
-            lead_first.copy_from_slice(&entry.first_key[LEAD_START..LEAD_START + LEAD_LEN]);
-            let mut lead_last = [0u8; LEAD_LEN];
-            lead_last.copy_from_slice(&entry.last_key[LEAD_START..LEAD_START + LEAD_LEN]);
-
-            total += u64::from(entry.lead_group_count);
-            if prev_lead_last == Some(lead_first) {
-                total = total.saturating_sub(1);
-            }
-            prev_lead_last = Some(lead_last);
-        }
-    }
-
-    Ok(total)
 }
 
 /// Fast-path: count distinct predicates across all triples.
@@ -262,6 +224,79 @@ pub fn count_distinct_predicates_operator(
     )
 }
 
+/// Fast-path: count distinct objects across all triples.
+pub fn count_distinct_objects_operator(
+    out_var: VarId,
+    fallback: Option<BoxedOperator>,
+) -> FastPathOperator {
+    FastPathOperator::new(
+        out_var,
+        move |ctx| {
+            let Some(store) = fast_path_store(ctx) else {
+                return Ok(None);
+            };
+            // OPST key layout: o_type(2) + o_key(8) + o_i(4) + p_id(4) + s_id(8).
+            // Distinct objects = lead bytes [0..10].
+            let count = count_distinct_lead_groups(store, ctx.binary_g_id, RunSortOrder::Opst, 10)?;
+            let count_i64 = i64::try_from(count).map_err(|_| {
+                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-object fast-path")
+            })?;
+            Ok(Some(build_count_batch(out_var, count_i64)?))
+        },
+        fallback,
+        "distinct object COUNT",
+    )
+}
+
+/// Count distinct lead groups across all leaflets in a given sort order.
+///
+/// Uses `lead_group_count` from leaflet directory entries, deduplicating groups
+/// that span leaflet boundaries by comparing lead key prefixes.
+///
+/// `lead_len` is the number of leading key bytes that define the grouping:
+/// - SPOT distinct subjects: 8 bytes (s_id)
+/// - OPST distinct objects: 10 bytes (o_type + o_key)
+fn count_distinct_lead_groups(
+    store: &BinaryIndexStore,
+    g_id: GraphId,
+    order: RunSortOrder,
+    lead_len: usize,
+) -> Result<u64> {
+    let Some(branch) = store.branch_for_order(g_id, order) else {
+        return Ok(0);
+    };
+
+    let mut prev_lead_last: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+
+    for leaf_entry in &branch.leaves {
+        let handle = store
+            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
+            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
+        let dir = handle.dir();
+
+        for entry in &dir.entries {
+            if entry.row_count == 0 || entry.lead_group_count == 0 {
+                continue;
+            }
+
+            let lead_first = &entry.first_key[..lead_len];
+            let lead_last = &entry.last_key[..lead_len];
+
+            total += u64::from(entry.lead_group_count);
+            if !prev_lead_last.is_empty() && prev_lead_last == lead_first {
+                total = total.saturating_sub(1);
+            }
+            prev_lead_last.clear();
+            prev_lead_last.extend_from_slice(lead_last);
+        }
+    }
+
+    Ok(total)
+}
+
+/// Distinct predicates uses p_const metadata rather than lead_group_count,
+/// since PSOT leaflets are predicate-homogeneous.
 fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(0);
@@ -281,9 +316,7 @@ fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Re
                 continue;
             }
 
-            // Leaflets in PSOT are predicate-homogeneous.
             let p_id = entry.p_const.unwrap_or_else(|| {
-                // PSOT ordered key starts with p_id (big-endian).
                 let bytes: [u8; 4] = entry.first_key[0..4].try_into().unwrap();
                 u32::from_be_bytes(bytes)
             });
@@ -292,68 +325,6 @@ fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Re
                 total += 1;
                 prev_p = Some(p_id);
             }
-        }
-    }
-
-    Ok(total)
-}
-
-/// Fast-path: count distinct objects across all triples.
-pub fn count_distinct_objects_operator(
-    out_var: VarId,
-    fallback: Option<BoxedOperator>,
-) -> FastPathOperator {
-    FastPathOperator::new(
-        out_var,
-        move |ctx| {
-            let Some(store) = fast_path_store(ctx) else {
-                return Ok(None);
-            };
-            let count = count_distinct_objects_opst(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-object fast-path")
-            })?;
-            Ok(Some(build_count_batch(out_var, count_i64)?))
-        },
-        fallback,
-        "distinct object COUNT",
-    )
-}
-
-fn count_distinct_objects_opst(store: &BinaryIndexStore, g_id: GraphId) -> Result<u64> {
-    let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Opst) else {
-        return Ok(0);
-    };
-
-    // OPST key layout: o_type(2) + o_key(8) + o_i(4) + p_id(4) + s_id(8) = 26 bytes.
-    // The "lead" key for distinct objects is (o_type, o_key), which is bytes [0..10].
-    const LEAD_START: usize = 0;
-    const LEAD_LEN: usize = 10;
-
-    let mut prev_lead_last: Option<[u8; LEAD_LEN]> = None;
-    let mut total: u64 = 0;
-
-    for leaf_entry in &branch.leaves {
-        let handle = store
-            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
-            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
-        let dir = handle.dir();
-
-        for entry in &dir.entries {
-            if entry.row_count == 0 || entry.lead_group_count == 0 {
-                continue;
-            }
-
-            let mut lead_first = [0u8; LEAD_LEN];
-            lead_first.copy_from_slice(&entry.first_key[LEAD_START..LEAD_START + LEAD_LEN]);
-            let mut lead_last = [0u8; LEAD_LEN];
-            lead_last.copy_from_slice(&entry.last_key[LEAD_START..LEAD_START + LEAD_LEN]);
-
-            total += u64::from(entry.lead_group_count);
-            if prev_lead_last == Some(lead_first) {
-                total = total.saturating_sub(1);
-            }
-            prev_lead_last = Some(lead_last);
         }
     }
 

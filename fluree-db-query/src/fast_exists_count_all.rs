@@ -72,7 +72,12 @@ fn count_exists_join_rows_psot(
     };
 
     let subjects_sorted = collect_subjects_for_predicate_sorted(store, g_id, p_exists)?;
-    crate::fast_path_common::count_rows_psot_for_subjects_sorted(store, g_id, p_outer, &subjects_sorted)
+    crate::fast_path_common::count_rows_psot_for_subjects_sorted(
+        store,
+        g_id,
+        p_outer,
+        &subjects_sorted,
+    )
 }
 
 /// COUNT(*) for a 2-hop join chain with EXISTS(single-triple) on the tail.
@@ -386,8 +391,11 @@ fn count_exists_star_join(
         return Ok(Some(0));
     }
 
-    let count =
-        crate::fast_path_common::count_rows_psot_for_subjects_sorted(store, g_id, p_outer_id, &subjects_sorted)?;
+    let count = crate::fast_path_common::count_rows_psot_for_subjects_sorted(
+        store,
+        g_id,
+        p_outer_id,
+        &subjects_sorted,
+    )?;
     Ok(Some(count))
 }
-

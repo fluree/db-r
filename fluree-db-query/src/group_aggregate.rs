@@ -701,8 +701,7 @@ impl Operator for GroupAggregateOperator {
                 let count_i64 = i64::try_from(count).map_err(|_| {
                     QueryError::execution("COUNT(*) exceeds i64::MAX in drain_count")
                 })?;
-                let count_binding =
-                    Binding::lit(FlakeValue::Long(count_i64), Sid::xsd_integer());
+                let count_binding = Binding::lit(FlakeValue::Long(count_i64), Sid::xsd_integer());
                 let out_var = self.agg_specs[0].output_var;
                 let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
                 let batch = Batch::new(schema, vec![vec![count_binding]])?;

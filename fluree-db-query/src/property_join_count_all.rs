@@ -29,6 +29,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::{fast_path_store, normalize_pred_sid, PsotSubjectCountIter};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use async_trait::async_trait;
@@ -193,6 +194,132 @@ impl PropertyJoinCountAllOperator {
         }
 
         Ok(Some(cursor))
+    }
+
+    /// Compute the star-join COUNT(*) using PSOT subject-count iterators directly.
+    ///
+    /// This avoids BinaryCursor setup/overlay plumbing and is only valid under the
+    /// same conditions as other metadata-level fast paths (`fast_path_store` gating).
+    fn count_psot_iters(
+        store: &BinaryIndexStore,
+        g_id: fluree_db_core::GraphId,
+        required: &[TriplePattern],
+        optional_groups: &[Vec<TriplePattern>],
+    ) -> Result<u128> {
+        // Required predicate IDs.
+        let mut req_iters: Vec<PsotSubjectCountIter<'_>> = Vec::with_capacity(required.len());
+        for tp in required {
+            let sid = normalize_pred_sid(store, &tp.p)?;
+            let Some(pid) = store.sid_to_p_id(&sid) else {
+                // Missing required predicate => empty join.
+                return Ok(0);
+            };
+            req_iters.push(PsotSubjectCountIter::new(store, g_id, pid)?);
+        }
+
+        // Optional groups: each group is a same-subject star; multiplier is max(1, Π counts).
+        struct OptGroup<'a> {
+            always_one: bool,
+            iters: Vec<PsotSubjectCountIter<'a>>,
+            cur: Vec<Option<(u64, u64)>>,
+        }
+
+        let mut opt_groups: Vec<OptGroup<'_>> = Vec::with_capacity(optional_groups.len());
+        for grp in optional_groups {
+            let mut always_one = false;
+            let mut iters: Vec<PsotSubjectCountIter<'_>> = Vec::with_capacity(grp.len());
+            for tp in grp {
+                let sid = normalize_pred_sid(store, &tp.p)?;
+                let Some(pid) = store.sid_to_p_id(&sid) else {
+                    // Absent optional predicate => group never matches => multiplier 1.
+                    always_one = true;
+                    iters.clear();
+                    break;
+                };
+                iters.push(PsotSubjectCountIter::new(store, g_id, pid)?);
+            }
+            let mut cur: Vec<Option<(u64, u64)>> = Vec::with_capacity(iters.len());
+            for it in &mut iters {
+                cur.push(it.next_group()?);
+            }
+            opt_groups.push(OptGroup {
+                always_one,
+                iters,
+                cur,
+            });
+        }
+
+        // Prime required cursors.
+        let mut req_cur: Vec<Option<(u64, u64)>> = Vec::with_capacity(req_iters.len());
+        for it in &mut req_iters {
+            req_cur.push(it.next_group()?);
+        }
+
+        let mut total: u128 = 0;
+        loop {
+            if req_cur.iter().any(|c| c.is_none()) {
+                break;
+            }
+
+            let max_s = req_cur
+                .iter()
+                .filter_map(|c| c.map(|(s, _)| s))
+                .max()
+                .unwrap();
+            if req_cur.iter().all(|c| c.map(|(s, _)| s) == Some(max_s)) {
+                // Required product at this subject.
+                let mut product: u128 = req_cur.iter().map(|c| c.unwrap().1 as u128).product();
+
+                // Multiply OPTIONAL group factors for this subject.
+                for g in &mut opt_groups {
+                    if g.always_one {
+                        continue;
+                    }
+                    let mut g_prod: u128 = 1;
+                    for i in 0..g.iters.len() {
+                        while let Some((sid2, _)) = g.cur[i] {
+                            if sid2 < max_s {
+                                g.cur[i] = g.iters[i].next_group()?;
+                                continue;
+                            }
+                            break;
+                        }
+                        let c = match g.cur[i] {
+                            Some((sid2, c)) if sid2 == max_s => {
+                                g.cur[i] = g.iters[i].next_group()?;
+                                c
+                            }
+                            _ => 0u64,
+                        };
+                        if c == 0 {
+                            g_prod = 0;
+                            break;
+                        }
+                        g_prod = g_prod.saturating_mul(c as u128);
+                    }
+                    let mult = if g_prod == 0 { 1u128 } else { g_prod };
+                    product = product.saturating_mul(mult);
+                }
+
+                total = total.saturating_add(product);
+
+                // Advance required iterators.
+                for (i, it) in req_iters.iter_mut().enumerate() {
+                    req_cur[i] = it.next_group()?;
+                }
+            } else {
+                // Advance smaller required subjects up to the current max.
+                for (i, it) in req_iters.iter_mut().enumerate() {
+                    if let Some((s_id, _)) = req_cur[i] {
+                        if s_id < max_s {
+                            req_cur[i] = it.next_group()?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(total)
     }
 
     fn open_v6(
@@ -452,6 +579,22 @@ impl Operator for PropertyJoinCountAllOperator {
 
         if !allow_fast {
             return self.open_fallback(ctx).await;
+        }
+
+        // Prefer metadata-level PSOT iterator fast path when allowed.
+        // This is substantially faster than BinaryCursor-based counting for large star joins.
+        if let Some(store) = fast_path_store(ctx) {
+            let total = Self::count_psot_iters(
+                store.as_ref(),
+                ctx.binary_g_id,
+                &self.patterns,
+                &self.optional_groups,
+            )?;
+            self.result = Some(total.min(i64::MAX as u128) as i64);
+            self.emitted = false;
+            self.state = OperatorState::Open;
+            self.fallback = None;
+            return Ok(());
         }
 
         // Try V6 fast-path first.

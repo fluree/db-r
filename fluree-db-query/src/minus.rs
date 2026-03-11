@@ -429,9 +429,7 @@ impl Operator for MinusOperator {
                         for row_idx in 0..batch.len() {
                             if !self.input_row_eliminated(&batch, row_idx) {
                                 count = count.checked_add(1).ok_or_else(|| {
-                                    QueryError::execution(
-                                        "COUNT(*) overflow in MINUS drain_count",
-                                    )
+                                    QueryError::execution("COUNT(*) overflow in MINUS drain_count")
                                 })?;
                             }
                         }

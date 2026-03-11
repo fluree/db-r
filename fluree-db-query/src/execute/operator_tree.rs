@@ -10,10 +10,6 @@ use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::fast_chain_join_count_all::linear_chain_count_all_operator;
-use crate::fast_minus_count_all::{
-    chain_minus_count_all_operator, minus_join_count_all_operator,
-    object_chain_minus_count_all_operator, property_minus_count_all_operator,
-};
 use crate::fast_count::{
     count_blank_node_subjects_operator, count_distinct_object_operator,
     count_distinct_objects_operator, count_distinct_predicates_operator,
@@ -34,6 +30,10 @@ use crate::fast_group_count_firsts::{
     PredicateObjectCountFirstsOperator,
 };
 use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
+use crate::fast_minus_count_all::{
+    chain_minus_count_all_operator, minus_join_count_all_operator,
+    object_chain_minus_count_all_operator, property_minus_count_all_operator,
+};
 use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
 use crate::fast_optional_count_all::{
     predicate_chain_optional_tail_count_all, predicate_optional_chain_head_count_all,
@@ -56,7 +56,7 @@ use crate::parse::{ParsedQuery, QueryOutput};
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
-use crate::triple::{Ref, Term};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use crate::BinaryScanOperator;
 use crate::PropertyJoinCountAllOperator;
@@ -66,6 +66,71 @@ use std::sync::Arc;
 use super::dependency::compute_variable_deps;
 use super::where_plan::build_where_operators_with_needed;
 use super::where_plan::collect_var_stats;
+
+// ---------------------------------------------------------------------------
+// Shared detection helpers
+// ---------------------------------------------------------------------------
+
+/// Extract a bound predicate (IRI or SID) from a triple pattern's predicate position.
+/// Returns `None` if the predicate is a variable or other non-bound form.
+fn extract_bound_predicate(p: &Ref) -> Option<Ref> {
+    match p {
+        Ref::Sid(_) | Ref::Iri(_) => Some(p.clone()),
+        _ => None,
+    }
+}
+
+/// Validate a triple pattern as `?s <bound_pred> ?o` with no datatype constraint.
+/// Returns `(subject_var, bound_predicate, object_var)`.
+fn validate_simple_triple(tp: &TriplePattern) -> Option<(VarId, Ref, VarId)> {
+    let Ref::Var(sv) = &tp.s else { return None };
+    let pred = extract_bound_predicate(&tp.p)?;
+    let Term::Var(ov) = &tp.o else { return None };
+    if tp.dtc.is_some() {
+        return None;
+    }
+    Some((*sv, pred, *ov))
+}
+
+/// Resolve an EXISTS block from either `Pattern::Filter(Expression::Exists { .. })`
+/// or `Pattern::Exists(inner_patterns)` representation.
+///
+/// Returns `(inner_patterns, negated)` or `None` if neither representation is present.
+fn resolve_exists_block<'a>(
+    exists_expr: Option<&'a crate::ir::Expression>,
+    exists_patterns: Option<&'a [Pattern]>,
+) -> Option<(&'a [Pattern], bool)> {
+    if let Some(expr) = exists_expr {
+        let crate::ir::Expression::Exists { patterns, negated } = expr else {
+            return None;
+        };
+        Some((patterns.as_slice(), *negated))
+    } else if let Some(pats) = exists_patterns {
+        Some((pats, false))
+    } else {
+        None
+    }
+}
+
+/// Find a 2-hop chain pattern `?a <p1> ?b . ?b <p2> ?c` in two triples (trying both orderings).
+///
+/// Returns `(a_var, pred1, b_var, pred2, c_var)` or `None` if neither ordering forms a chain.
+/// Both triples must be simple (var subject, bound pred, var object, no dtc).
+fn find_two_hop_chain(
+    t1: &TriplePattern,
+    t2: &TriplePattern,
+) -> Option<(VarId, Ref, VarId, Ref, VarId)> {
+    let try_order =
+        |x: &TriplePattern, y: &TriplePattern| -> Option<(VarId, Ref, VarId, Ref, VarId)> {
+            let (a, p1, b1) = validate_simple_triple(x)?;
+            let (b2, p2, c) = validate_simple_triple(y)?;
+            if b1 != b2 {
+                return None;
+            }
+            Some((a, p1, b1, p2, c))
+        };
+    try_order(t1, t2).or_else(|| try_order(t2, t1))
+}
 
 /// Validate that a query has a single `COUNT(*)` aggregate with standard constraints.
 ///
@@ -250,22 +315,10 @@ fn detect_predicate_group_by_object_count_topk(
     let Pattern::Triple(tp) = &query.patterns[0] else {
         return None;
     };
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
-    if tp.dtc.is_some() {
-        return None;
-    }
-    let Ref::Var(s_var) = &tp.s else {
-        return None;
-    };
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
+    let (s_var, pred, o_var) = validate_simple_triple(tp)?;
 
     // GROUP BY ?object
-    if options.group_by.len() != 1 || options.group_by[0] != *o_var {
+    if options.group_by.len() != 1 || options.group_by[0] != o_var {
         return None;
     }
     // Exactly one COUNT aggregate on ?subject (or COUNT(*) which is equivalent here).
@@ -280,7 +333,7 @@ fn detect_predicate_group_by_object_count_topk(
     if !is_count {
         return None;
     }
-    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(s_var) {
         return None;
     }
     if options.having.is_some() || !options.post_binds.is_empty() {
@@ -295,7 +348,7 @@ fn detect_predicate_group_by_object_count_topk(
     if ob.var != agg.output_var || ob.direction != crate::sort::SortDirection::Descending {
         return None;
     }
-    Some((pred, *s_var, *o_var, agg.output_var, limit))
+    Some((pred, s_var, o_var, agg.output_var, limit))
 }
 
 /// Detect `GROUP BY ?o` top-k where WHERE is a same-subject star join:
@@ -346,45 +399,30 @@ fn detect_group_by_object_star_topk(
 
     // All patterns must be triples with the same subject var.
     let mut subj_var: Option<VarId> = None;
-    let mut group_tp: Option<&crate::triple::TriplePattern> = None;
+    let mut group_tp: Option<&TriplePattern> = None;
     let mut filter_preds: Vec<Ref> = Vec::new();
     for p in &query.patterns {
         let Pattern::Triple(tp) = p else {
             return None;
         };
-        if !tp.p_bound() || tp.dtc.is_some() {
-            return None;
-        }
-        let Ref::Var(sv) = &tp.s else {
-            return None;
-        };
+        let (sv, pred, ov) = validate_simple_triple(tp)?;
         if subj_var.is_none() {
-            subj_var = Some(*sv);
-        } else if subj_var != Some(*sv) {
+            subj_var = Some(sv);
+        } else if subj_var != Some(sv) {
             return None;
         }
-        let Term::Var(ov) = &tp.o else {
-            return None;
-        };
-        if *ov == group_var {
+        if ov == group_var {
             if group_tp.is_some() {
                 return None;
             }
             group_tp = Some(tp);
         } else {
-            // Filter triple (existence constraint).
-            match &tp.p {
-                Ref::Sid(_) | Ref::Iri(_) => filter_preds.push(tp.p.clone()),
-                _ => return None,
-            }
+            filter_preds.push(pred);
         }
     }
     let subj_var = subj_var?;
     let group_tp = group_tp?;
-    let group_pred = match &group_tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => group_tp.p.clone(),
-        _ => return None,
-    };
+    let group_pred = extract_bound_predicate(&group_tp.p)?;
     if filter_preds.is_empty() {
         return None;
     }
@@ -608,11 +646,8 @@ fn detect_predicate_object_count(
     let Ref::Var(s_var) = &tp.s else {
         return None;
     };
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
-    if matches!(&tp.o, crate::triple::Term::Var(_)) {
+    let pred = extract_bound_predicate(&tp.p)?;
+    if matches!(&tp.o, Term::Var(_)) {
         return None;
     }
     if tp.dtc.is_some() {
@@ -635,32 +670,17 @@ fn detect_predicate_count_rows(
 ) -> Option<(Ref, VarId)> {
     let (input_var, out_var) = detect_count_aggregate(query, options)?;
 
-    // WHERE must be a single triple.
     if query.patterns.len() != 1 {
         return None;
     }
     let Pattern::Triple(tp) = &query.patterns[0] else {
         return None;
     };
-
-    // Must be ?s <p> ?o, no explicit dt/lang constraint.
-    let Ref::Var(s_var) = &tp.s else {
-        return None;
-    };
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
-    if tp.dtc.is_some() {
-        return None;
-    }
+    let (s_var, pred, o_var) = validate_simple_triple(tp)?;
 
     // COUNT(?var) must reference ?s or ?o (both always bound in a single triple).
     if let Some(v) = input_var {
-        if v != *s_var && v != *o_var {
+        if v != s_var && v != o_var {
             return None;
         }
     }
@@ -680,24 +700,10 @@ fn detect_predicate_count_distinct_object(
     let Pattern::Triple(tp) = &query.patterns[0] else {
         return None;
     };
-
-    // Must be ?s <p> ?o (predicate bound, object var).
-    let Ref::Var(_s_var) = &tp.s else {
-        return None;
-    };
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
-    if tp.dtc.is_some() {
-        return None;
-    }
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
 
     // COUNT(DISTINCT ?o) must reference the object var.
-    if in_var != *o_var {
+    if in_var != o_var {
         return None;
     }
 
@@ -735,21 +741,7 @@ fn detect_predicate_minmax_string(
     let Pattern::Triple(tp) = &query.patterns[0] else {
         return None;
     };
-
-    // Must be ?s <p> ?o (predicate bound, object var), no explicit dt/lang constraint.
-    let Ref::Var(_s_var) = &tp.s else {
-        return None;
-    };
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
-    if tp.dtc.is_some() {
-        return None;
-    }
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
 
     // Aggregate must be MIN(?o) or MAX(?o) (not distinct).
     let agg = &options.aggregates[0];
@@ -761,7 +753,7 @@ fn detect_predicate_minmax_string(
         AggregateFn::Max => MinMaxMode::Max,
         _ => return None,
     };
-    if agg.input_var? != *o_var {
+    if agg.input_var? != o_var {
         return None;
     }
 
@@ -830,34 +822,23 @@ fn detect_count_rows_with_encoded_filters(
         return None;
     }
 
-    let Ref::Var(s_var) = &tp.s else {
-        return None;
-    };
-    if !matches!(&tp.p, Ref::Sid(_) | Ref::Iri(_)) {
-        return None;
-    }
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
-    if tp.dtc.is_some() {
-        return None;
-    }
+    let (s_var, _pred, o_var) = validate_simple_triple(tp)?;
 
     // COUNT(?s) or COUNT(*) only.
-    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(*s_var) {
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(s_var) {
         return None;
     }
 
     // All FILTERs must be compilable as encoded prefilters.
     let is_s =
-        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == *s_var);
+        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == s_var);
     let is_o =
-        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == *o_var);
+        |e: &crate::ir::Expression| matches!(e, crate::ir::Expression::Var(v) if *v == o_var);
     let is_lang_call = |e: &crate::ir::Expression| match e {
         crate::ir::Expression::Call { func, args } => {
             *func == crate::ir::Function::Lang
                 && args.len() == 1
-                && matches!(&args[0], crate::ir::Expression::Var(v) if *v == *o_var)
+                && matches!(&args[0], crate::ir::Expression::Var(v) if *v == o_var)
         }
         _ => false,
     };
@@ -1015,30 +996,19 @@ fn detect_property_join_count_all(
         match p {
             Pattern::Triple(tp) => {
                 any_required = true;
-
-                // Subject must be a variable, shared across all patterns.
-                let Ref::Var(s) = &tp.s else { return None };
+                let (s, pred, o) = validate_simple_triple(tp)?;
                 match subject_var {
-                    None => subject_var = Some(*s),
-                    Some(existing) if existing != *s => return None,
+                    None => subject_var = Some(s),
+                    Some(existing) if existing != s => return None,
                     Some(_) => {}
                 }
-
-                let pred = match &tp.p {
-                    Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-                    _ => return None,
-                };
-                let Term::Var(o) = &tp.o else { return None };
-                if tp.dtc.is_some() {
+                if !seen_obj.insert(o) {
                     return None;
                 }
-                if !seen_obj.insert(*o) {
+                if subject_var == Some(o) {
                     return None;
                 }
-                if subject_var == Some(*o) {
-                    return None;
-                }
-                required.push((pred, *o));
+                required.push((pred, o));
             }
             Pattern::Optional(inner) => {
                 if inner.is_empty() {
@@ -1051,32 +1021,22 @@ fn detect_property_join_count_all(
                     let Pattern::Triple(tp) = pat else {
                         return None;
                     };
-
-                    let Ref::Var(s) = &tp.s else { return None };
+                    let (s, pred, o) = validate_simple_triple(tp)?;
                     match subject_var {
-                        None => subject_var = Some(*s),
-                        Some(existing) if existing != *s => return None,
+                        None => subject_var = Some(s),
+                        Some(existing) if existing != s => return None,
                         Some(_) => {}
                     }
-
-                    let pred = match &tp.p {
-                        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-                        _ => return None,
-                    };
-                    let Term::Var(o) = &tp.o else { return None };
-                    if tp.dtc.is_some() {
+                    if !group_seen.insert(o) {
                         return None;
                     }
-                    if !group_seen.insert(*o) {
+                    if !seen_obj.insert(o) {
                         return None;
                     }
-                    if !seen_obj.insert(*o) {
+                    if subject_var == Some(o) {
                         return None;
                     }
-                    if subject_var == Some(*o) {
-                        return None;
-                    }
-                    group.push((pred, *o));
+                    group.push((pred, o));
                 }
                 optional_groups.push(group);
             }
@@ -1139,10 +1099,7 @@ fn detect_fused_scan_sum_i64(
     };
 
     // Triple must be ?s <p> ?o with bound predicate and var object.
-    let pred = match &tp.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-        _ => return None,
-    };
+    let pred = extract_bound_predicate(&tp.p)?;
     let Term::Var(o_var) = &tp.o else {
         return None;
     };
@@ -1194,43 +1151,24 @@ fn detect_exists_join_count_distinct_object(
         return None;
     };
 
-    let Ref::Var(sv_a) = &a.s else {
-        return None;
-    };
-    let Ref::Var(sv_b) = &b.s else {
-        return None;
-    };
+    let (sv_a, pred_a, ov_a) = validate_simple_triple(a)?;
+    let (sv_b, pred_b, _ov_b) = validate_simple_triple(b)?;
     if sv_a != sv_b {
         return None;
     }
-    if a.dtc.is_some() || b.dtc.is_some() {
-        return None;
-    }
-
-    let pred_a = match &a.p {
-        Ref::Sid(_) | Ref::Iri(_) => a.p.clone(),
-        _ => return None,
-    };
-    let pred_b = match &b.p {
-        Ref::Sid(_) | Ref::Iri(_) => b.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(ov_a) = &a.o else {
-        return None;
-    };
-    let Term::Var(_ov_b) = &b.o else {
-        return None;
-    };
 
     // One of the object vars must be the COUNT DISTINCT input.
-    if *ov_a == in_var {
+    if ov_a == in_var {
         Some((pred_a, pred_b, out_var))
     } else {
         None
     }
 }
 
-fn detect_exists_join_count_all(query: &ParsedQuery, options: &QueryOptions) -> Option<(Ref, Ref, VarId)> {
+fn detect_exists_join_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Ref, VarId)> {
     let out_var = detect_count_all_aggregate(query, options)?;
 
     // WHERE must be: Triple + FILTER(EXISTS{single triple}) in either order.
@@ -1265,57 +1203,19 @@ fn detect_exists_join_count_all(query: &ParsedQuery, options: &QueryOptions) -> 
         }
     }
     let outer = outer?;
+    let (sv_outer, outer_pred, _ov1) = validate_simple_triple(outer)?;
 
-    let Ref::Var(sv_outer) = &outer.s else {
-        return None;
-    };
-    let outer_pred = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-    let Term::Var(_ov1) = &outer.o else {
-        return None;
-    };
-
-    // EXISTS can be represented either as:
-    // - FILTER(EXISTS { ... }) lowered to Pattern::Filter(Expression::Exists { ... })
-    // - FILTER EXISTS { ... } lowered to Pattern::Exists(inner_patterns)
-    let (patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_patterns {
-        (pats, false)
-    } else {
-        return None;
-    };
-
+    let (patterns, negated) = resolve_exists_block(exists_expr, exists_patterns)?;
     if negated || patterns.len() != 1 {
         return None;
     }
     let Pattern::Triple(tp2) = &patterns[0] else {
         return None;
     };
-    let Ref::Var(sv2) = &tp2.s else {
-        return None;
-    };
-    if *sv2 != *sv_outer {
+    let (sv2, exists_pred, _ov2) = validate_simple_triple(tp2)?;
+    if sv2 != sv_outer {
         return None;
     }
-    if tp2.dtc.is_some() {
-        return None;
-    }
-    let Term::Var(_ov2) = &tp2.o else {
-        return None;
-    };
-    let exists_pred = match &tp2.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp2.p.clone(),
-        _ => return None,
-    };
 
     Some((outer_pred, exists_pred, out_var))
 }
@@ -1346,76 +1246,22 @@ fn detect_chain_exists_join_count_all(
         return None;
     }
 
-    // Resolve EXISTS patterns.
-    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
+    let (exists_patterns, negated) = resolve_exists_block(exists_expr, exists_inner)?;
     if negated || exists_patterns.len() != 1 {
         return None;
     }
     let Pattern::Triple(tp3) = &exists_patterns[0] else {
         return None;
     };
+    let (c_var, pred3, _d_var) = validate_simple_triple(tp3)?;
 
-    // Must be ?c <p3> ?d
-    let Ref::Var(c_var) = &tp3.s else {
-        return None;
-    };
-    let Term::Var(_d_var) = &tp3.o else {
-        return None;
-    };
-    if tp3.dtc.is_some() {
+    // Find chain: (?a p1 ?b) and (?b p2 ?c) where ?c links to EXISTS subject.
+    let (_a, pred1, _b, pred2, c2) = find_two_hop_chain(triples[0], triples[1])?;
+    if c2 != c_var {
         return None;
     }
-    let pred3 = match &tp3.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp3.p.clone(),
-        _ => return None,
-    };
 
-    // Find chain: (?a p1 ?b) and (?b p2 ?c)
-    let (t1, t2) = (triples[0], triples[1]);
-    let candidates = [(t1, t2), (t2, t1)];
-    for (first, second) in candidates {
-        let Ref::Var(_a) = &first.s else {
-            continue;
-        };
-        let Term::Var(b1) = &first.o else {
-            continue;
-        };
-        let Ref::Var(b2) = &second.s else {
-            continue;
-        };
-        if *b2 != *b1 {
-            continue;
-        }
-        let Term::Var(c2) = &second.o else {
-            continue;
-        };
-        if *c2 != *c_var {
-            continue;
-        }
-        if first.dtc.is_some() || second.dtc.is_some() {
-            continue;
-        }
-        let pred1 = match &first.p {
-            Ref::Sid(_) | Ref::Iri(_) => first.p.clone(),
-            _ => continue,
-        };
-        let pred2 = match &second.p {
-            Ref::Sid(_) | Ref::Iri(_) => second.p.clone(),
-            _ => continue,
-        };
-        return Some((pred1, pred2, pred3, out_var));
-    }
-
-    None
+    Some((pred1, pred2, pred3, out_var))
 }
 
 fn detect_star_exists_join_count_all(
@@ -1444,62 +1290,22 @@ fn detect_star_exists_join_count_all(
         return None;
     }
 
-    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
+    let (exists_patterns, negated) = resolve_exists_block(exists_expr, exists_inner)?;
     if negated || exists_patterns.len() != 1 {
         return None;
     }
     let Pattern::Triple(ex) = &exists_patterns[0] else {
         return None;
     };
-
-    let Ref::Var(sv_ex) = &ex.s else {
-        return None;
-    };
-    let Term::Var(_ov3) = &ex.o else {
-        return None;
-    };
-    if ex.dtc.is_some() {
-        return None;
-    }
-    let p_exists = match &ex.p {
-        Ref::Sid(_) | Ref::Iri(_) => ex.p.clone(),
-        _ => return None,
-    };
+    let (sv_ex, p_exists, _ov3) = validate_simple_triple(ex)?;
 
     // Triples must be ?s p ?o with same ?s and variable object.
-    let mut subject_var: Option<VarId> = None;
     let mut preds: Vec<Ref> = Vec::with_capacity(triples.len());
     for t in &triples {
-        let Ref::Var(sv) = &t.s else {
-            return None;
-        };
-        match subject_var {
-            None => subject_var = Some(*sv),
-            Some(existing) if existing != *sv => return None,
-            Some(_) => {}
-        }
-        if *sv != *sv_ex {
+        let (sv, p, _o) = validate_simple_triple(t)?;
+        if sv != sv_ex {
             return None;
         }
-        if t.dtc.is_some() {
-            return None;
-        }
-        let Term::Var(_o) = &t.o else {
-            return None;
-        };
-        let p = match &t.p {
-            Ref::Sid(_) | Ref::Iri(_) => t.p.clone(),
-            _ => return None,
-        };
         preds.push(p);
     }
 
@@ -1529,28 +1335,9 @@ fn detect_object_chain_exists_join_count_all(
         }
     }
     let outer = outer?;
+    let (_sv_outer, pred_outer, b_var) = validate_simple_triple(outer)?;
 
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(b_var) = &outer.o else {
-        return None;
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-
-    let (patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
+    let (patterns, negated) = resolve_exists_block(exists_expr, exists_inner)?;
     if negated || patterns.len() != 2 {
         return None;
     }
@@ -1560,43 +1347,13 @@ fn detect_object_chain_exists_join_count_all(
         _ => return None,
     };
 
-    // Match chain: ?b p2 ?c . ?c p3 ?d
-    let candidates = [(t1, t2), (t2, t1)];
-    for (first, second) in candidates {
-        let Ref::Var(b1) = &first.s else {
-            continue;
-        };
-        if *b1 != *b_var {
-            continue;
-        }
-        let Term::Var(c1) = &first.o else {
-            continue;
-        };
-        let Ref::Var(c2) = &second.s else {
-            continue;
-        };
-        if *c2 != *c1 {
-            continue;
-        }
-        let Term::Var(_d) = &second.o else {
-            continue;
-        };
-        if first.dtc.is_some() || second.dtc.is_some() {
-            continue;
-        }
-        let pred2 = match &first.p {
-            Ref::Sid(_) | Ref::Iri(_) => first.p.clone(),
-            _ => continue,
-        };
-        let pred3 = match &second.p {
-            Ref::Sid(_) | Ref::Iri(_) => second.p.clone(),
-            _ => continue,
-        };
-
-        return Some((pred_outer, pred2, pred3, out_var));
+    // Match chain: ?b p2 ?c . ?c p3 ?d starting at ?b from outer.
+    let (b1, pred2, _c, pred3, _d) = find_two_hop_chain(t1, t2)?;
+    if b1 != b_var {
+        return None;
     }
 
-    None
+    Some((pred_outer, pred2, pred3, out_var))
 }
 
 fn detect_exists_star_join_count_all(
@@ -1622,31 +1379,9 @@ fn detect_exists_star_join_count_all(
         }
     }
     let outer = outer?;
+    let (sv_outer, pred_outer, _ov) = validate_simple_triple(outer)?;
 
-    let Ref::Var(sv_outer) = &outer.s else {
-        return None;
-    };
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-    let Term::Var(_ov) = &outer.o else {
-        return None;
-    };
-
-    let (patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
+    let (patterns, negated) = resolve_exists_block(exists_expr, exists_inner)?;
     if negated || patterns.len() < 2 {
         return None;
     }
@@ -1656,22 +1391,10 @@ fn detect_exists_star_join_count_all(
         let Pattern::Triple(tp) = pat else {
             return None;
         };
-        let Ref::Var(sv) = &tp.s else {
-            return None;
-        };
-        if *sv != *sv_outer {
+        let (sv, pred, _o) = validate_simple_triple(tp)?;
+        if sv != sv_outer {
             return None;
         }
-        if tp.dtc.is_some() {
-            return None;
-        }
-        let Term::Var(_o) = &tp.o else {
-            return None;
-        };
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-            _ => return None,
-        };
         exists_preds.push(pred);
     }
 
@@ -1705,35 +1428,14 @@ fn detect_linear_chain_count_all(
     }
 
     // All predicates must be bound (IRI/SID), all s/o must be variables, no DTC.
-    for tp in &triples {
-        let Ref::Var(_) = &tp.s else { return None };
-        let Term::Var(_) = &tp.o else { return None };
-        if tp.dtc.is_some() {
-            return None;
-        }
-        match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => {}
-            _ => return None,
-        }
-    }
-
     let n = triples.len();
-
-    // Build subject/object var arrays.
-    let subject_vars: Vec<VarId> = triples
-        .iter()
-        .map(|tp| match &tp.s {
-            Ref::Var(v) => *v,
-            _ => unreachable!(),
-        })
-        .collect();
-    let object_vars: Vec<VarId> = triples
-        .iter()
-        .map(|tp| match &tp.o {
-            Term::Var(v) => *v,
-            _ => unreachable!(),
-        })
-        .collect();
+    let mut subject_vars: Vec<VarId> = Vec::with_capacity(n);
+    let mut object_vars: Vec<VarId> = Vec::with_capacity(n);
+    for tp in &triples {
+        let (sv, _pred, ov) = validate_simple_triple(tp)?;
+        subject_vars.push(sv);
+        object_vars.push(ov);
+    }
 
     // Find the chain head: the triple whose subject var doesn't appear as any object var.
     let mut head_idx = None;
@@ -1801,30 +1503,17 @@ fn detect_multicolumn_join_count_all(
     };
 
     // Must be ?s p1 ?o . ?s p2 ?o (same subject var, same object var).
-    let Ref::Var(s1) = &t1.s else { return None };
-    let Ref::Var(s2) = &t2.s else { return None };
+    let (s1, p1, o1) = validate_simple_triple(t1)?;
+    let (s2, p2, o2) = validate_simple_triple(t2)?;
     if s1 != s2 {
         return None;
     }
-    let Term::Var(o1) = &t1.o else { return None };
-    let Term::Var(o2) = &t2.o else { return None };
     if o1 != o2 {
         return None;
     }
-    if *o1 == *s1 {
+    if o1 == s1 {
         return None;
     }
-    if t1.dtc.is_some() || t2.dtc.is_some() {
-        return None;
-    }
-    let p1 = match &t1.p {
-        Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-        _ => return None,
-    };
-    let p2 = match &t2.p {
-        Ref::Sid(_) | Ref::Iri(_) => t2.p.clone(),
-        _ => return None,
-    };
 
     Some((p1, p2, out_var))
 }
@@ -2040,28 +1729,9 @@ fn detect_optional_single_triple_join_count_all(
     let req = required?;
     let opt = opt_inner?;
 
-    // Required must be: ?s <p1> ?o1 (no dt/lang constraints).
-    let Ref::Var(s1) = &req.s else { return None };
-    let pred_req = match &req.p {
-        Ref::Sid(_) | Ref::Iri(_) => req.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(_o1) = &req.o else { return None };
-    if req.dtc.is_some() {
-        return None;
-    }
-
-    // Optional triple must be: ?s <p2> ?o2 with same ?s.
-    let Ref::Var(s2) = &opt.s else { return None };
-    if *s2 != *s1 {
-        return None;
-    }
-    let pred_opt = match &opt.p {
-        Ref::Sid(_) | Ref::Iri(_) => opt.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(_o2) = &opt.o else { return None };
-    if opt.dtc.is_some() {
+    let (s1, pred_req, _o1) = validate_simple_triple(req)?;
+    let (s2, pred_opt, _o2) = validate_simple_triple(opt)?;
+    if s2 != s1 {
         return None;
     }
 
@@ -2105,45 +1775,11 @@ fn detect_chain_optional_tail_join_count_all(
 
     // Identify the 2-hop chain: ?a p1 ?b . ?b p2 ?c
     let (t1, t2) = (required_triples[0], required_triples[1]);
-    let chain = |x: &crate::triple::TriplePattern, y: &crate::triple::TriplePattern| {
-        let Ref::Var(_a) = &x.s else { return None };
-        let pred1 = match &x.p {
-            Ref::Sid(_) | Ref::Iri(_) => x.p.clone(),
-            _ => return None,
-        };
-        let Term::Var(b1) = &x.o else { return None };
-        if x.dtc.is_some() {
-            return None;
-        }
-
-        let Ref::Var(b2) = &y.s else { return None };
-        if *b2 != *b1 {
-            return None;
-        }
-        let pred2 = match &y.p {
-            Ref::Sid(_) | Ref::Iri(_) => y.p.clone(),
-            _ => return None,
-        };
-        let Term::Var(c1) = &y.o else { return None };
-        if y.dtc.is_some() {
-            return None;
-        }
-        Some((pred1, pred2, *c1))
-    };
-
-    let (pred1, pred2, c_var) = chain(t1, t2).or_else(|| chain(t2, t1))?;
+    let (_a, pred1, _b, pred2, c_var) = find_two_hop_chain(t1, t2)?;
 
     // OPTIONAL tail must be: ?c p3 ?d
-    let Ref::Var(c2) = &opt.s else { return None };
-    if *c2 != c_var {
-        return None;
-    }
-    let pred3 = match &opt.p {
-        Ref::Sid(_) | Ref::Iri(_) => opt.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(_d) = &opt.o else { return None };
-    if opt.dtc.is_some() {
+    let (c2, pred3, _d) = validate_simple_triple(opt)?;
+    if c2 != c_var {
         return None;
     }
 
@@ -2181,48 +1817,13 @@ fn detect_optional_chain_head_join_count_all(
     };
 
     // Required: ?a <p1> ?b
-    let Ref::Var(_a) = &req.s else { return None };
-    let p1 = match &req.p {
-        Ref::Sid(_) | Ref::Iri(_) => req.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(b_var) = &req.o else {
-        return None;
-    };
-    if req.dtc.is_some() {
-        return None;
-    }
+    let (_a, p1, b_var) = validate_simple_triple(req)?;
 
     // Optional must be a 2-hop chain starting at ?b: ?b <p2> ?c . ?c <p3> ?d (either order).
-    let chain = |x: &crate::triple::TriplePattern, y: &crate::triple::TriplePattern| {
-        let Ref::Var(b1) = &x.s else { return None };
-        if *b1 != *b_var {
-            return None;
-        }
-        let p2 = match &x.p {
-            Ref::Sid(_) | Ref::Iri(_) => x.p.clone(),
-            _ => return None,
-        };
-        let Term::Var(c1) = &x.o else { return None };
-        if x.dtc.is_some() {
-            return None;
-        }
-
-        let Ref::Var(c2) = &y.s else { return None };
-        if *c2 != *c1 {
-            return None;
-        }
-        let p3 = match &y.p {
-            Ref::Sid(_) | Ref::Iri(_) => y.p.clone(),
-            _ => return None,
-        };
-        let Term::Var(_d) = &y.o else { return None };
-        if y.dtc.is_some() {
-            return None;
-        }
-        Some((p2, p3))
-    };
-    let (p2, p3) = chain(t1, t2).or_else(|| chain(t2, t1))?;
+    let (b1, p2, _c, p3, _d) = find_two_hop_chain(t1, t2)?;
+    if b1 != b_var {
+        return None;
+    }
 
     tracing::debug!(
         "detected optional chain-head COUNT(*) fast-path (p1={:?}, p2={:?}, p3={:?})",
@@ -2249,25 +1850,13 @@ fn detect_transitive_path_plus_count_all(
     };
 
     // ?s <p1> ?x
-    let Ref::Var(_s) = &t1.s else {
-        return None;
-    };
-    let p1 = match &t1.p {
-        Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(x1) = &t1.o else {
-        return None;
-    };
-    if t1.dtc.is_some() {
-        return None;
-    }
+    let (_s, p1, x1) = validate_simple_triple(t1)?;
 
     // ?x <p2>+ ?o
     let Ref::Var(x2) = &pp.subject else {
         return None;
     };
-    if *x2 != *x1 {
+    if *x2 != x1 {
         return None;
     }
     if pp.modifier != PathModifier::OneOrMore {
@@ -2340,29 +1929,17 @@ fn detect_union_star_count_all(
         let Pattern::Triple(tp) = &b[0] else {
             return None;
         };
-        let Ref::Var(s) = &tp.s else {
-            return None;
-        };
+        let (s, pred, o) = validate_simple_triple(tp)?;
         match subj {
-            None => subj = Some(*s),
-            Some(x) if x != *s => return None,
+            None => subj = Some(s),
+            Some(x) if x != s => return None,
             _ => {}
         }
-        let Term::Var(o) = &tp.o else {
-            return None;
-        };
         match obj {
-            None => obj = Some(*o),
-            Some(x) if x != *o => return None,
+            None => obj = Some(o),
+            Some(x) if x != o => return None,
             _ => {}
         }
-        if tp.dtc.is_some() {
-            return None;
-        }
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-            _ => return None,
-        };
         union_preds.push(pred);
     }
     let subj = subj?;
@@ -2392,25 +1969,13 @@ fn detect_union_star_count_all(
             }
             Pattern::Triple(tp) => {
                 // Extra required same-subject star predicate(s): ?s <p> ?o2
-                let Ref::Var(s) = &tp.s else {
-                    return None;
-                };
-                if *s != subj {
+                let (s, pred, o2) = validate_simple_triple(tp)?;
+                if s != subj {
                     return None;
                 }
-                let Term::Var(o2) = &tp.o else {
-                    return None;
-                };
-                if *o2 == subj || *o2 == obj {
+                if o2 == subj || o2 == obj {
                     return None;
                 }
-                if tp.dtc.is_some() {
-                    return None;
-                }
-                let pred = match &tp.p {
-                    Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-                    _ => return None,
-                };
                 extra_preds.push(pred);
             }
             _ => return None,
@@ -2459,21 +2024,7 @@ fn detect_minus_outer_single_triple_count_all(
     }
     let outer = outer?;
     let minus_inner = minus_inner?;
-
-    // Outer: ?s <p> ?o (bound predicate, var object).
-    let Ref::Var(sv_outer) = &outer.s else {
-        return None;
-    };
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(_) = &outer.o else {
-        return None;
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
+    let (sv_outer, pred_outer, _ov) = validate_simple_triple(outer)?;
 
     // MINUS: 1+ triples, all share same subject var as outer.
     if minus_inner.is_empty() {
@@ -2484,22 +2035,10 @@ fn detect_minus_outer_single_triple_count_all(
         let Pattern::Triple(tp) = p else {
             return None;
         };
-        let Ref::Var(sv) = &tp.s else {
-            return None;
-        };
+        let (sv, pred, _o) = validate_simple_triple(tp)?;
         if sv != sv_outer {
             return None;
         }
-        let Term::Var(_) = &tp.o else {
-            return None;
-        };
-        if tp.dtc.is_some() {
-            return None;
-        }
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-            _ => return None,
-        };
         preds.push(pred);
     }
 
@@ -2534,51 +2073,21 @@ fn detect_property_minus_count_all(
     let Pattern::Triple(tp_minus) = &minus_inner[0] else {
         return None;
     };
-    let Ref::Var(sv_minus) = &tp_minus.s else {
-        return None;
-    };
-    let Term::Var(_) = &tp_minus.o else {
-        return None;
-    };
-    if tp_minus.dtc.is_some() {
-        return None;
-    }
-    let pred_minus = match &tp_minus.p {
-        Ref::Sid(_) | Ref::Iri(_) => tp_minus.p.clone(),
-        _ => return None,
-    };
+    let (sv_minus, pred_minus, _o_minus) = validate_simple_triple(tp_minus)?;
 
     // Outer must be a same-subject star join of 2+ triples, predicates bound, object vars distinct.
     if triples.len() < 2 {
         return None;
     }
-    let mut subject_var: Option<VarId> = None;
     let mut preds: Vec<Ref> = Vec::with_capacity(triples.len());
     let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
 
     for tp in triples {
-        let Ref::Var(sv) = &tp.s else {
-            return None;
-        };
-        match subject_var {
-            None => subject_var = Some(*sv),
-            Some(existing) if existing != *sv => return None,
-            Some(_) => {}
-        }
-        if *sv != *sv_minus {
+        let (sv, pred, o) = validate_simple_triple(tp)?;
+        if sv != sv_minus {
             return None;
         }
-        if tp.dtc.is_some() {
-            return None;
-        }
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-            _ => return None,
-        };
-        let Term::Var(o) = &tp.o else {
-            return None;
-        };
-        if !seen_obj.insert(*o) {
+        if !seen_obj.insert(o) {
             return None;
         }
         preds.push(pred);
@@ -2616,49 +2125,15 @@ fn detect_chain_minus_count_all(
     let Pattern::Triple(tp_minus) = &minus_inner[0] else {
         return None;
     };
+    let (c_minus, p3, _d) = validate_simple_triple(tp_minus)?;
 
-    // Find chain (?a p1 ?b) and (?b p2 ?c) in either order.
-    for t1 in &triples {
-        for t2 in &triples {
-            if std::ptr::eq(*t1, *t2) {
-                continue;
-            }
-            let Ref::Var(_a) = &t1.s else { continue };
-            let Term::Var(b1) = &t1.o else { continue };
-            let Ref::Var(b2) = &t2.s else { continue };
-            if *b2 != *b1 {
-                continue;
-            }
-            let Term::Var(c1) = &t2.o else { continue };
-
-            // MINUS: ?c p3 ?d where ?c is the chain tail var.
-            let Ref::Var(c2) = &tp_minus.s else { continue };
-            if *c2 != *c1 {
-                continue;
-            }
-            let Term::Var(_d) = &tp_minus.o else { continue };
-
-            if t1.dtc.is_some() || t2.dtc.is_some() || tp_minus.dtc.is_some() {
-                continue;
-            }
-            let p1 = match &t1.p {
-                Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-                _ => continue,
-            };
-            let p2 = match &t2.p {
-                Ref::Sid(_) | Ref::Iri(_) => t2.p.clone(),
-                _ => continue,
-            };
-            let p3 = match &tp_minus.p {
-                Ref::Sid(_) | Ref::Iri(_) => tp_minus.p.clone(),
-                _ => continue,
-            };
-
-            return Some((p1, p2, p3, out_var));
-        }
+    // Find chain (?a p1 ?b) and (?b p2 ?c) where ?c matches MINUS subject.
+    let (_a, p1, _b, p2, c_var) = find_two_hop_chain(triples[0], triples[1])?;
+    if c_var != c_minus {
+        return None;
     }
 
-    None
+    Some((p1, p2, p3, out_var))
 }
 
 fn detect_object_chain_minus_count_all(
@@ -2693,40 +2168,13 @@ fn detect_object_chain_minus_count_all(
     };
 
     // Outer: ?a p_outer ?b
-    let Ref::Var(_a) = &outer.s else { return None };
-    let Term::Var(b_var) = &outer.o else {
-        return None;
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
+    let (_a, pred_outer, b_var) = validate_simple_triple(outer)?;
 
-    // MINUS chain: ?b p2 ?c . ?c p3 ?d
-    let Ref::Var(b2) = &t1.s else { return None };
-    if *b2 != *b_var {
+    // MINUS chain: ?b p2 ?c . ?c p3 ?d (must start at ?b from outer)
+    let (b1, pred2, _c, pred3, _d) = find_two_hop_chain(t1, t2)?;
+    if b1 != b_var {
         return None;
     }
-    let Term::Var(c1) = &t1.o else { return None };
-    let Ref::Var(c2) = &t2.s else { return None };
-    if *c2 != *c1 {
-        return None;
-    }
-    let Term::Var(_d) = &t2.o else { return None };
-    if t1.dtc.is_some() || t2.dtc.is_some() {
-        return None;
-    }
-    let pred2 = match &t1.p {
-        Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-        _ => return None,
-    };
-    let pred3 = match &t2.p {
-        Ref::Sid(_) | Ref::Iri(_) => t2.p.clone(),
-        _ => return None,
-    };
 
     Some((pred_outer, pred2, pred3, out_var))
 }
@@ -2837,7 +2285,8 @@ fn build_operator_tree_inner(
     // These cover the sparqloscope `exists-*` DBLP benchmark family and avoid scanning
     // the full outer solution stream just to count rows.
     if enable_fused_fast_paths {
-        if let Some((outer_pred, exists_pred, out_var)) = detect_exists_join_count_all(query, options)
+        if let Some((outer_pred, exists_pred, out_var)) =
+            detect_exists_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(exists_join_count_all_operator(
@@ -2857,7 +2306,8 @@ fn build_operator_tree_inner(
                 Some(fallback),
             )));
         }
-        if let Some((preds, p_exists, out_var)) = detect_star_exists_join_count_all(query, options) {
+        if let Some((preds, p_exists, out_var)) = detect_star_exists_join_count_all(query, options)
+        {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(star_exists_join_count_all_operator(
                 preds,
