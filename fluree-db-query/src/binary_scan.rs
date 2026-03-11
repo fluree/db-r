@@ -172,6 +172,11 @@ struct RangeFlake {
 enum EncodedPreFilter {
     /// `FILTER(LANG(?o) = "<tag>")` for the object var `?o` in this scan.
     LangEqualsOType { required_otype: u16 },
+    /// `FILTER(ISBLANK(?o))` for the object var `?o` in this scan.
+    ///
+    /// Blank nodes are currently encoded as `OType::IRI_REF` with a `sid64` whose
+    /// `SubjectId.ns_code == namespaces::BLANK_NODE` (not as `OType::BLANK_NODE`).
+    ObjectIsBlankNode,
     /// `FILTER(?s = ?o)` where `?o` is a REF (IRI or bnode) and equals the subject id.
     SubjectEqObjectRef,
     /// `FILTER(?s != ?o)` under two-valued logic: false only when both sides are comparable+equal.
@@ -183,6 +188,13 @@ impl EncodedPreFilter {
     fn eval_row(&self, s_id: u64, o_type: u16, o_key: u64) -> bool {
         match self {
             EncodedPreFilter::LangEqualsOType { required_otype } => o_type == *required_otype,
+            EncodedPreFilter::ObjectIsBlankNode => {
+                if o_type != fluree_db_core::o_type::OType::IRI_REF.as_u16() {
+                    return false;
+                }
+                fluree_db_core::subject_id::SubjectId::from_u64(o_key).ns_code()
+                    == fluree_vocab::namespaces::BLANK_NODE
+            }
             EncodedPreFilter::SubjectEqObjectRef => {
                 let is_ref = o_type == fluree_db_core::o_type::OType::IRI_REF.as_u16()
                     || o_type == fluree_db_core::o_type::OType::BLANK_NODE.as_u16();
@@ -224,6 +236,19 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
             pruned.push(op.clone());
             continue;
         };
+        if args.len() == 1 {
+            // FILTER(ISBLANK(?o))
+            if *func == Function::IsBlank {
+                if let (Some(ov), Expression::Var(v)) = (obj_var, &args[0]) {
+                    if *v == ov {
+                        out.push(EncodedPreFilter::ObjectIsBlankNode);
+                        continue;
+                    }
+                }
+            }
+            pruned.push(op.clone());
+            continue;
+        }
         if args.len() != 2 {
             pruned.push(op.clone());
             continue;

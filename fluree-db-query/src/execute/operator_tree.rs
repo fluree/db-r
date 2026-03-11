@@ -864,6 +864,13 @@ fn detect_count_rows_with_encoded_filters(
     };
     for expr in &filters {
         match expr {
+            crate::ir::Expression::Call { func, args }
+                if *func == crate::ir::Function::IsBlank
+                    && args.len() == 1
+                    && matches!(&args[0], crate::ir::Expression::Var(v) if *v == o_var) =>
+            {
+                continue;
+            }
             crate::ir::Expression::Call { func, args } if args.len() == 2 => {
                 if matches!(func, crate::ir::Function::Eq | crate::ir::Function::Ne)
                     && ((is_s(&args[0]) && is_o(&args[1])) || (is_o(&args[0]) && is_s(&args[1])))

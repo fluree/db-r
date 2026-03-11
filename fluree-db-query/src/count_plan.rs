@@ -65,9 +65,8 @@ pub(crate) enum ScalarNode {
     /// Reduce a stream to its total: `Σ_k count(k)`.
     Sum { source: StreamNode },
 
-    // Kept for: Phase B (star + MINUS) — direct scalar reduction without building
-    // an intermediate AntiJoin stream node. Use when a single MINUS block targets
-    // the same subject var and we can fuse exclusion into the scalar sum.
+    // Kept for: potential optimization — fuse exclusion into the scalar sum traversal
+    // instead of building a separate AntiJoin stream node.
     #[expect(dead_code)]
     /// Reduce a stream with exclusion: `Σ_{k ∉ excluded} count(k)`.
     /// `source` and `excluded` must share the same key domain.
@@ -76,13 +75,30 @@ pub(crate) enum ScalarNode {
         excluded: KeySetNode,
     },
 
-    // Kept for: Phase B (star + EXISTS) — direct scalar reduction with inclusion filter.
+    // Kept for: potential optimization — fuse inclusion into the scalar sum traversal
+    // instead of building a separate SemiJoin stream node.
     #[expect(dead_code)]
     /// Reduce a stream with inclusion: `Σ_{k ∈ filter} count(k)`.
     /// `source` and `filter` must share the same key domain.
     SumFiltered {
         source: StreamNode,
         filter: KeySetNode,
+    },
+
+    /// Count rows from POST(pred) grouped by object, summing only objects in the filter set.
+    /// Maps to: `sum_post_object_counts_filtered`
+    /// Used for: EXISTS on outer triple's object variable.
+    PostObjectFilteredSum {
+        pred: Ref,
+        object_filter: KeySetNode,
+    },
+
+    /// `TotalRowCount(pred) - PostObjectFilteredSum(pred, excluded_objects)`.
+    /// Maps to: `count_rows_for_predicate_psot - sum_post_object_counts_filtered`
+    /// Used for: MINUS on outer triple's object variable.
+    TotalMinusPostObjectFilteredSum {
+        pred: Ref,
+        excluded_objects: KeySetNode,
     },
 }
 
@@ -136,10 +152,6 @@ pub(crate) enum KeySetNode {
     /// Key domain: Subject
     SubjectsSorted { pred: Ref },
 
-    // Kept for: Phase D (object-chain MINUS/EXISTS patterns).
-    // Use when the modifier block targets an object variable of the outer pattern,
-    // requiring a domain bridge from ObjectIri → Subject.
-    #[expect(dead_code)]
     /// Subjects with an object in a given set (for object-chain patterns).
     /// Maps to: `collect_subjects_with_object_in_set`
     /// Key domain: Subject (output), input set is ObjectIri
@@ -445,18 +457,12 @@ fn classify_optional_block(
 
 fn classify_minus_block(inner: &[Pattern]) -> Option<MinusBlock> {
     let mut triples = Vec::with_capacity(inner.len());
-    let mut subject_var: Option<VarId> = None;
 
     for pat in inner {
         let Pattern::Triple(tp) = pat else {
             return None;
         };
         let (s, pred, o) = validate_simple_triple(tp)?;
-        match subject_var {
-            None => subject_var = Some(s),
-            Some(existing) if existing != s => return None,
-            Some(_) => {}
-        }
         triples.push(BasicTriple {
             subject_var: s,
             pred,
@@ -469,18 +475,12 @@ fn classify_minus_block(inner: &[Pattern]) -> Option<MinusBlock> {
 
 fn classify_exists_block(inner: &[Pattern], negated: bool) -> Option<ExistsBlock> {
     let mut triples = Vec::with_capacity(inner.len());
-    let mut subject_var: Option<VarId> = None;
 
     for pat in inner {
         let Pattern::Triple(tp) = pat else {
             return None;
         };
         let (s, pred, o) = validate_simple_triple(tp)?;
-        match subject_var {
-            None => subject_var = Some(s),
-            Some(existing) if existing != s => return None,
-            Some(_) => {}
-        }
         triples.push(BasicTriple {
             subject_var: s,
             pred,
@@ -632,8 +632,19 @@ fn build_single_triple_with_modifiers(
     classified: &ClassifiedPatterns,
 ) -> Option<CountPlanRoot> {
     let subject_var = classified.required_triples[0].subject_var;
+    let object_var = classified.required_triples[0].object_var;
 
-    // Verify OPTIONAL blocks share the same subject var.
+    // Check if all MINUS/EXISTS blocks target the object var (object-chain pattern).
+    // If so, use POST-based object counting instead of subject-domain streaming.
+    if !classified.minus_blocks.is_empty() || !classified.exists_blocks.is_empty() {
+        if let Some(plan) =
+            try_build_object_chain_plan(&pred, object_var, classified)
+        {
+            return Some(plan);
+        }
+    }
+
+    // Subject-domain path: verify OPTIONAL blocks share the same subject var.
     for opt in &classified.optional_blocks {
         for t in &opt.triples {
             if t.subject_var != subject_var || t.object_var == subject_var {
@@ -670,6 +681,62 @@ fn build_single_triple_with_modifiers(
     };
 
     apply_modifiers_to_stream(stream, subject_var, classified)
+}
+
+/// Try to build an object-chain plan: single outer triple with MINUS/EXISTS
+/// targeting the outer triple's object variable.
+///
+/// Shapes:
+/// - `?a <p> ?b . EXISTS { ?b <p2> ?c }` → PostObjectFilteredSum
+/// - `?a <p> ?b . MINUS { ?b <p2> ?c }` → TotalMinusPostObjectFilteredSum
+/// - `?a <p> ?b . EXISTS { ?b <p2> ?c . ?c <p3> ?d }` → PostObjectFilteredSum with chain keyset
+/// - `?a <p> ?b . MINUS { ?b <p2> ?c . ?c <p3> ?d }` → TotalMinusPostObjectFilteredSum
+///
+/// Returns `None` if the pattern doesn't match or has unsupported combinations
+/// (e.g., OPTIONAL on object, mixed subject/object modifiers).
+fn try_build_object_chain_plan(
+    outer_pred: &Ref,
+    outer_object_var: VarId,
+    classified: &ClassifiedPatterns,
+) -> Option<CountPlanRoot> {
+    // No OPTIONAL support on object-chain patterns.
+    if !classified.optional_blocks.is_empty() {
+        return None;
+    }
+
+    // Only one modifier block total for now (single EXISTS or single MINUS).
+    let total_blocks = classified.minus_blocks.len() + classified.exists_blocks.len();
+    if total_blocks != 1 {
+        return None;
+    }
+
+    if classified.exists_blocks.len() == 1 {
+        let exists = &classified.exists_blocks[0];
+        let keyset = build_keyset_for_object_chain_block(&exists.triples, outer_object_var)?;
+        if exists.negated {
+            // NOT EXISTS → MINUS semantics: total - filtered
+            Some(CountPlanRoot::Scalar(
+                ScalarNode::TotalMinusPostObjectFilteredSum {
+                    pred: outer_pred.clone(),
+                    excluded_objects: keyset,
+                },
+            ))
+        } else {
+            Some(CountPlanRoot::Scalar(ScalarNode::PostObjectFilteredSum {
+                pred: outer_pred.clone(),
+                object_filter: keyset,
+            }))
+        }
+    } else {
+        let minus = &classified.minus_blocks[0];
+        let keyset = build_keyset_for_object_chain_block(&minus.triples, outer_object_var)?;
+        Some(CountPlanRoot::Scalar(
+            ScalarNode::TotalMinusPostObjectFilteredSum {
+                pred: outer_pred.clone(),
+                excluded_objects: keyset,
+            },
+        ))
+    }
 }
 
 /// Build a plan for a star join topology (all triples share the same subject var).
@@ -839,11 +906,12 @@ fn apply_modifiers_to_stream(
     Some(CountPlanRoot::Scalar(ScalarNode::Sum { source: stream }))
 }
 
-/// Build a `KeySetNode` for a modifier block's triples.
+/// Build a `KeySetNode` for a modifier block's triples, targeting the outer subject var.
 ///
 /// For a single-triple block on the same subject var: `SubjectSet`.
 /// For multi-triple block on the same subject var: `IntersectSorted` of `SubjectsSorted`.
-/// For blocks on a different variable (e.g., object-chain): bail for now.
+/// For blocks on a different variable (e.g., object-chain): bail (use
+/// `build_keyset_for_object_chain_block` instead).
 fn build_keyset_for_block(triples: &[BasicTriple], outer_subject: VarId) -> Option<KeySetNode> {
     if triples.is_empty() {
         return None;
@@ -852,7 +920,8 @@ fn build_keyset_for_block(triples: &[BasicTriple], outer_subject: VarId) -> Opti
     // Check what variable the modifier block targets.
     let modifier_subject = triples[0].subject_var;
     if !triples.iter().all(|t| t.subject_var == modifier_subject) {
-        // Mixed subjects in modifier block — not supported.
+        // Not all same subject — might be a chain inside the modifier block.
+        // Only handled via `build_keyset_for_object_chain_block`.
         return None;
     }
 
@@ -872,14 +941,66 @@ fn build_keyset_for_block(triples: &[BasicTriple], outer_subject: VarId) -> Opti
             Some(KeySetNode::IntersectSorted { children })
         }
     } else {
-        // Object-chain pattern: modifier subject is the object var of some outer triple.
-        // Check if modifier_subject is an object var of an outer required triple.
-        // This means the MINUS/EXISTS targets the object of an outer triple, creating
-        // an object-chain pattern like: ?s <p1> ?b . MINUS { ?b <p2> ?c }
-        //
-        // For now, bail — Phase D.
         None
     }
+}
+
+/// Build a `KeySetNode` for a modifier block that targets the object variable of
+/// the outer triple (object-chain pattern).
+///
+/// The modifier block's "head" variable must be `outer_object_var`. Supported shapes:
+/// - Single triple: `?b <p2> ?c` → `SubjectsSorted { pred: p2 }`
+/// - Star (same subject): `?b <p2> ?c . ?b <p3> ?d` → `IntersectSorted`
+/// - Chain: `?b <p2> ?c . ?c <p3> ?d` → `SubjectsWithObjectIn { p2, SubjectSet(p3) }`
+fn build_keyset_for_object_chain_block(
+    triples: &[BasicTriple],
+    outer_object_var: VarId,
+) -> Option<KeySetNode> {
+    if triples.is_empty() {
+        return None;
+    }
+
+    // Check if all triples share the same subject and it's the outer object var.
+    let first_subject = triples[0].subject_var;
+    let all_same_subject = triples.iter().all(|t| t.subject_var == first_subject);
+
+    if all_same_subject && first_subject == outer_object_var {
+        // Star/single on the object var — same as subject-domain keyset.
+        if triples.len() == 1 {
+            return Some(KeySetNode::SubjectsSorted {
+                pred: triples[0].pred.clone(),
+            });
+        }
+        let children = triples
+            .iter()
+            .map(|t| KeySetNode::SubjectsSorted {
+                pred: t.pred.clone(),
+            })
+            .collect();
+        return Some(KeySetNode::IntersectSorted { children });
+    }
+
+    // Try chain: triples form a linear path starting from outer_object_var.
+    if let Some((preds, vars)) = detect_chain(triples) {
+        if vars[0] != outer_object_var {
+            return None;
+        }
+        // Chain `?b <p2> ?c . ?c <p3> ?d . ...`
+        // Build inside-out: SubjectSet(last_pred), then SubjectsWithObjectIn for each
+        // intermediate hop, right-to-left.
+        let mut keyset = KeySetNode::SubjectSet {
+            pred: preds.last()?.clone(),
+        };
+        for p in preds.iter().rev().skip(1) {
+            keyset = KeySetNode::SubjectsWithObjectIn {
+                pred: p.clone(),
+                object_set: Box::new(keyset),
+            };
+        }
+        return Some(keyset);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1612,5 +1733,278 @@ mod tests {
 
         let (query, options) = make_query(patterns, count);
         assert!(try_build_count_plan(&query, &options).is_none());
+    }
+
+    // =======================================================================
+    // Phase D: Object-chain patterns
+    // =======================================================================
+
+    #[test]
+    fn test_object_chain_exists_single() {
+        // ?a <p1> ?b . EXISTS { ?b <p2> ?c }
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Exists(vec![Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            ))]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect object-chain EXISTS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::PostObjectFilteredSum {
+                object_filter: KeySetNode::SubjectsSorted { .. },
+                ..
+            }) => {}
+            other => panic!(
+                "Expected PostObjectFilteredSum with SubjectsSorted, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_object_chain_minus_single() {
+        // ?a <p1> ?b . MINUS { ?b <p2> ?c }
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Minus(vec![Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            ))]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect object-chain MINUS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum {
+                excluded_objects: KeySetNode::SubjectsSorted { .. },
+                ..
+            }) => {}
+            other => panic!(
+                "Expected TotalMinusPostObjectFilteredSum with SubjectsSorted, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_object_chain_exists_2hop() {
+        // ?a <p1> ?b . EXISTS { ?b <p2> ?c . ?c <p3> ?d }
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Exists(vec![
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(b),
+                    p2.clone(),
+                    Term::Var(c),
+                )),
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(c),
+                    p3.clone(),
+                    Term::Var(d),
+                )),
+            ]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect 2-hop object-chain EXISTS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::PostObjectFilteredSum {
+                object_filter:
+                    KeySetNode::SubjectsWithObjectIn {
+                        object_set,
+                        ..
+                    },
+                ..
+            }) => {
+                assert!(matches!(object_set.as_ref(), KeySetNode::SubjectSet { .. }));
+            }
+            other => panic!(
+                "Expected PostObjectFilteredSum with SubjectsWithObjectIn, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_object_chain_minus_2hop() {
+        // ?a <p1> ?b . MINUS { ?b <p2> ?c . ?c <p3> ?d }
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Minus(vec![
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(b),
+                    p2.clone(),
+                    Term::Var(c),
+                )),
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(c),
+                    p3.clone(),
+                    Term::Var(d),
+                )),
+            ]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect 2-hop object-chain MINUS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
+            other => panic!(
+                "Expected TotalMinusPostObjectFilteredSum, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_object_chain_not_exists() {
+        // ?a <p1> ?b . NOT EXISTS { ?b <p2> ?c } → same as MINUS
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::NotExists(vec![Pattern::Triple(TriplePattern::new(
+                Ref::Var(b),
+                p2.clone(),
+                Term::Var(c),
+            ))]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect object-chain NOT EXISTS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
+            other => panic!(
+                "Expected TotalMinusPostObjectFilteredSum, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_object_chain_star_modifier() {
+        // ?a <p1> ?b . EXISTS { ?b <p2> ?c . ?b <p3> ?d } — star on object
+        let mut vars = VarRegistry::new();
+        let a = vars.get_or_insert("?a");
+        let b = vars.get_or_insert("?b");
+        let c = vars.get_or_insert("?c");
+        let d = vars.get_or_insert("?d");
+        let count = vars.get_or_insert("?count");
+
+        let p1 = make_sid(1, "p1");
+        let p2 = make_sid(2, "p2");
+        let p3 = make_sid(3, "p3");
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(a),
+                p1.clone(),
+                Term::Var(b),
+            )),
+            Pattern::Exists(vec![
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(b),
+                    p2.clone(),
+                    Term::Var(c),
+                )),
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(b),
+                    p3.clone(),
+                    Term::Var(d),
+                )),
+            ]),
+        ];
+
+        let (query, options) = make_query(patterns, count);
+        let plan = try_build_count_plan(&query, &options);
+        assert!(plan.is_some(), "Should detect star-on-object EXISTS");
+        match &plan.unwrap().root {
+            CountPlanRoot::Scalar(ScalarNode::PostObjectFilteredSum {
+                object_filter: KeySetNode::IntersectSorted { children },
+                ..
+            }) => {
+                assert_eq!(children.len(), 2);
+            }
+            other => panic!(
+                "Expected PostObjectFilteredSum with IntersectSorted, got {:?}",
+                other
+            ),
+        }
     }
 }

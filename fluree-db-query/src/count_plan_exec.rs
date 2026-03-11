@@ -15,8 +15,8 @@ use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, collect_subjects_for_predicate_sorted,
     collect_subjects_with_object_in_set, count_rows_for_predicate_psot, fast_path_store,
-    intersect_many_sorted, normalize_pred_sid, FastPathOperator, ObjectFilterMode,
-    PostObjectGroupCountIter, PsotObjectFilterCountIter, PsotSubjectCountIter,
+    intersect_many_sorted, normalize_pred_sid, sum_post_object_counts_filtered, FastPathOperator,
+    ObjectFilterMode, PostObjectGroupCountIter, PsotObjectFilterCountIter, PsotSubjectCountIter,
     PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
@@ -107,6 +107,47 @@ fn execute_scalar(
             };
             let total = sum_stream(source, store, g_id, None, Some(&filter_sorted))?;
             Ok(total)
+        }
+
+        ScalarNode::PostObjectFilteredSum { pred, object_filter } => {
+            let sid = normalize_pred_sid(store, pred)?;
+            let Some(p_id) = store.sid_to_p_id(&sid) else {
+                return Ok(Some(0));
+            };
+            let filter_sorted = execute_keyset_as_sorted(object_filter, store, g_id)?;
+            let filter_sorted = match filter_sorted {
+                Some(s) => s,
+                None => return Ok(None),
+            };
+            if filter_sorted.is_empty() {
+                return Ok(Some(0));
+            }
+            sum_post_object_counts_filtered(store, g_id, p_id, &filter_sorted)
+        }
+
+        ScalarNode::TotalMinusPostObjectFilteredSum {
+            pred,
+            excluded_objects,
+        } => {
+            let sid = normalize_pred_sid(store, pred)?;
+            let Some(p_id) = store.sid_to_p_id(&sid) else {
+                return Ok(Some(0));
+            };
+            let total = count_rows_for_predicate_psot(store, g_id, p_id)?;
+            let excluded_sorted = execute_keyset_as_sorted(excluded_objects, store, g_id)?;
+            let excluded_sorted = match excluded_sorted {
+                Some(s) => s,
+                None => return Ok(None),
+            };
+            if excluded_sorted.is_empty() {
+                return Ok(Some(total));
+            }
+            let Some(in_set) =
+                sum_post_object_counts_filtered(store, g_id, p_id, &excluded_sorted)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(total.saturating_sub(in_set)))
         }
     }
 }
