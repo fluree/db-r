@@ -25,6 +25,7 @@ use crate::planner::{is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
+use crate::semijoin::SemijoinOperator;
 use crate::subquery::SubqueryOperator;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::union::UnionOperator;
@@ -303,6 +304,42 @@ fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> 
         .as_ref()
         .map(|op| op.schema().iter().copied().collect())
         .unwrap_or_default()
+}
+
+/// Collect variables that a pattern **produces** (binds), excluding variables that
+/// are only consumed (e.g., referenced in FILTER expressions but not bound by any
+/// triple/bind/values pattern). Used to determine which correlation vars can serve
+/// as semijoin keys for EXISTS.
+fn produced_variables(pattern: &Pattern) -> Vec<VarId> {
+    match pattern {
+        Pattern::Triple(tp) => tp.variables(),
+        Pattern::Bind { var, .. } => vec![*var],
+        Pattern::Values { vars, .. } => vars.clone(),
+        Pattern::Optional(inner) | Pattern::Minus(inner) | Pattern::Exists(inner) | Pattern::NotExists(inner) => {
+            inner.iter().flat_map(produced_variables).collect()
+        }
+        Pattern::Union(branches) => branches
+            .iter()
+            .flat_map(|branch| branch.iter().flat_map(produced_variables))
+            .collect(),
+        Pattern::PropertyPath(pp) => pp.variables(),
+        Pattern::Subquery(sq) => sq.variables(),
+        Pattern::IndexSearch(isp) => isp.variables(),
+        Pattern::VectorSearch(vsp) => vsp.variables(),
+        Pattern::R2rml(r2rml) => r2rml.variables(),
+        Pattern::GeoSearch(gsp) => gsp.variables(),
+        Pattern::S2Search(s2p) => s2p.variables(),
+        Pattern::Graph { name, patterns } => {
+            let mut vars: Vec<VarId> = patterns.iter().flat_map(produced_variables).collect();
+            if let crate::ir::GraphName::Var(v) = name {
+                vars.push(*v);
+            }
+            vars
+        }
+        Pattern::Service(sp) => sp.variables(),
+        // FILTER only consumes variables, never produces them.
+        Pattern::Filter(_) => vec![],
+    }
 }
 
 /// Apply VALUES patterns on top of an existing operator.
@@ -1111,16 +1148,60 @@ pub fn build_where_operators_seeded_with_needed(
                 i += 1;
             }
 
-            // EXISTS and NOT EXISTS share the same operator, differing only by a boolean flag
+            // EXISTS / NOT EXISTS: use SemijoinOperator when correlated (shared vars
+            // between outer and inner), ExistsOperator when uncorrelated.
             Pattern::Exists(inner_patterns) | Pattern::NotExists(inner_patterns) => {
                 let child = require_child(operator, "EXISTS pattern")?;
                 let negated = matches!(&patterns[i], Pattern::NotExists(_));
-                operator = Some(Box::new(ExistsOperator::new(
-                    child,
-                    inner_patterns.clone(),
-                    negated,
-                    stats.clone(),
-                )));
+
+                // Collect only vars PRODUCED by inner patterns (Triple, Bind, Values, etc.).
+                // Vars only consumed (e.g., in FILTER expressions) require per-row seeding
+                // and cannot serve as semijoin keys.
+                let inner_produced_vars: std::collections::HashSet<VarId> = inner_patterns
+                    .iter()
+                    .flat_map(produced_variables)
+                    .collect();
+
+                // Key vars in child schema order (stable, matches column layout).
+                let key_vars: Vec<VarId> = child
+                    .schema()
+                    .iter()
+                    .copied()
+                    .filter(|v| inner_produced_vars.contains(v))
+                    .collect();
+
+                // Check if inner patterns reference outer vars that they don't produce
+                // (e.g., FILTER(?p = ?q) where ?p is outer-only). If so, the inner
+                // patterns can't be executed standalone — fall back to ExistsOperator.
+                let inner_all_vars: std::collections::HashSet<VarId> =
+                    inner_patterns.iter().flat_map(|p| p.variables()).collect();
+                let outer_schema: std::collections::HashSet<VarId> =
+                    child.schema().iter().copied().collect();
+                let outer_only_consumed: bool = inner_all_vars
+                    .iter()
+                    .any(|v| outer_schema.contains(v) && !inner_produced_vars.contains(v));
+
+                if key_vars.is_empty() || outer_only_consumed {
+                    // Uncorrelated, or inner depends on outer-only vars (e.g., FILTER
+                    // referencing outer vars): use ExistsOperator for correct per-row
+                    // seeding of all outer bindings.
+                    operator = Some(Box::new(ExistsOperator::new(
+                        child,
+                        inner_patterns.clone(),
+                        negated,
+                        stats.clone(),
+                    )));
+                } else {
+                    // Correlated via produced vars only: SemijoinOperator builds inner
+                    // set once, probes per row.
+                    operator = Some(Box::new(SemijoinOperator::new(
+                        child,
+                        inner_patterns.clone(),
+                        key_vars,
+                        negated,
+                        stats.clone(),
+                    )));
+                }
                 i += 1;
             }
 

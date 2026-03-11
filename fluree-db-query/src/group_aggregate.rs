@@ -38,7 +38,7 @@
 use crate::aggregate::AggregateFn;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 // Note: JoinKey and Materializer would be used for multi-ledger/dataset mode
 // but for now we use GroupKeyOwned for single-ledger simplicity
 use crate::operator::{
@@ -362,10 +362,11 @@ impl AggState {
     }
 }
 
-/// Owned group key for HashMap storage
-/// Uses the same semantics as JoinKey but owns its data
+/// Owned group key for HashMap storage.
+/// Uses the same semantics as JoinKey but owns its data.
+/// Also used by SemijoinOperator for EXISTS hash probing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum GroupKeyOwned {
+pub(crate) enum GroupKeyOwned {
     /// Single-ledger: raw s_id
     Sid(u64),
     /// Single-ledger: raw p_id
@@ -388,11 +389,11 @@ enum GroupKeyOwned {
     Absent,
 }
 
-/// Hashable key for materialized literals
+/// Hashable key for materialized literals.
 /// Includes datatype and language for correct GROUP BY / COUNT(DISTINCT) semantics.
 /// Without these, "1"^^xsd:string and "1"^^xsd:integer would incorrectly merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MaterializedLitKey {
+pub(crate) struct MaterializedLitKey {
     discriminant: u8,
     // For strings/json: the string value
     string_val: Option<Arc<str>>,
@@ -419,8 +420,9 @@ impl Hash for MaterializedLitKey {
     }
 }
 
-/// Convert a binding to an owned group key
-fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
+/// Convert a binding to an owned group key.
+/// Also used by SemijoinOperator for EXISTS hash probing.
+pub(crate) fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
     match binding {
         Binding::EncodedSid { s_id } => GroupKeyOwned::Sid(*s_id),
         Binding::EncodedPid { p_id } => GroupKeyOwned::Pid(*p_id),
@@ -509,9 +511,10 @@ fn flake_value_to_key(val: &FlakeValue, dt: &Sid, lang: Option<&Arc<str>>) -> Ma
     }
 }
 
-/// Composite group key (multiple columns)
+/// Composite group key (multiple columns).
+/// Also used by SemijoinOperator for multi-var EXISTS hash probing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CompositeGroupKey(Vec<GroupKeyOwned>);
+pub(crate) struct CompositeGroupKey(pub(crate) Vec<GroupKeyOwned>);
 
 /// Per-group state: the key bindings and aggregate states
 struct GroupState {
@@ -684,6 +687,28 @@ impl Operator for GroupAggregateOperator {
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
+        }
+
+        // COUNT(*) pushdown: if the child supports drain_count and we're
+        // doing a simple ungrouped COUNT(*), skip row-by-row accumulation.
+        if self.emit_iter.is_none()
+            && self.group_key_indices.is_empty()
+            && self.agg_specs.len() == 1
+            && matches!(self.agg_specs[0].function, AggregateFn::CountAll)
+            && !self.agg_specs[0].distinct
+        {
+            if let Some(count) = self.child.drain_count(ctx).await? {
+                let count_i64 = i64::try_from(count).map_err(|_| {
+                    QueryError::execution("COUNT(*) exceeds i64::MAX in drain_count")
+                })?;
+                let count_binding =
+                    Binding::lit(FlakeValue::Long(count_i64), Sid::xsd_integer());
+                let out_var = self.agg_specs[0].output_var;
+                let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
+                let batch = Batch::new(schema, vec![vec![count_binding]])?;
+                self.state = OperatorState::Exhausted;
+                return Ok(Some(batch));
+            }
         }
 
         // If we haven't consumed all input yet, do so now (streaming aggregation)

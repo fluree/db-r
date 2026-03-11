@@ -9,7 +9,6 @@ use crate::binary_scan::EmitMask;
 use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
-use crate::fast_chain_exists_count_all::predicate_chain_exists_join_count_all_operator;
 use crate::fast_chain_join_count_all::linear_chain_count_all_operator;
 use crate::fast_chain_minus_count_all::chain_minus_count_all_operator;
 use crate::fast_count::{
@@ -18,9 +17,12 @@ use crate::fast_count::{
     count_distinct_subjects_operator, count_literal_objects_operator, count_rows_operator,
     count_triples_operator,
 };
-use crate::fast_exists_join_count_all::exists_join_count_all_operator;
+use crate::fast_exists_count_all::{
+    chain_exists_join_count_all_operator, exists_join_count_all_operator,
+    exists_star_join_count_all_operator, object_chain_exists_join_count_all_operator,
+    star_exists_join_count_all_operator,
+};
 use crate::fast_exists_join_count_distinct_object::exists_join_count_distinct_object_operator;
-use crate::fast_exists_star_join_count_all::exists_star_join_count_all_operator;
 use crate::fast_fused_scan_sum::{
     fused_scan_sum_i64_operator, DateComponentFn, NumericUnaryFn, ScalarI64Fn,
 };
@@ -31,14 +33,12 @@ use crate::fast_group_count_firsts::{
 use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
 use crate::fast_minus_join_count_all::minus_join_count_all_operator;
 use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
-use crate::fast_object_chain_exists_count_all::predicate_object_chain_exists_join_count_all_operator;
 use crate::fast_object_chain_minus_count_all::object_chain_minus_count_all_operator;
 use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
 use crate::fast_optional_chain_tail_count_all::predicate_chain_optional_tail_count_all;
 use crate::fast_optional_join_count_all::predicate_optional_join_count_all;
 use crate::fast_property_minus_count_all::property_minus_count_all_operator;
 use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
-use crate::fast_star_exists_count_all::star_exists_join_count_all_operator;
 use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
 use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
 use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
@@ -1176,13 +1176,63 @@ fn detect_fused_scan_sum_i64(
     Some((pred, scalar, agg.output_var))
 }
 
-fn detect_exists_join_count_all(
+fn detect_exists_join_count_distinct_object(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, VarId)> {
+    let (in_var, out_var) = detect_count_distinct_aggregate(query, options)?;
+
+    // WHERE must be exactly two triples: ?s <p1> ?o1 . ?s <p2> ?o2 .
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let Pattern::Triple(a) = &query.patterns[0] else {
+        return None;
+    };
+    let Pattern::Triple(b) = &query.patterns[1] else {
+        return None;
+    };
+
+    let Ref::Var(sv_a) = &a.s else {
+        return None;
+    };
+    let Ref::Var(sv_b) = &b.s else {
+        return None;
+    };
+    if sv_a != sv_b {
+        return None;
+    }
+    if a.dtc.is_some() || b.dtc.is_some() {
+        return None;
+    }
+
+    let pred_a = match &a.p {
+        Ref::Sid(_) | Ref::Iri(_) => a.p.clone(),
+        _ => return None,
+    };
+    let pred_b = match &b.p {
+        Ref::Sid(_) | Ref::Iri(_) => b.p.clone(),
+        _ => return None,
+    };
+    let Term::Var(ov_a) = &a.o else {
+        return None;
+    };
+    let Term::Var(_ov_b) = &b.o else {
+        return None;
+    };
+
+    // One of the object vars must be the COUNT DISTINCT input.
+    if *ov_a == in_var {
+        Some((pred_a, pred_b, out_var))
+    } else {
+        None
+    }
+}
+
+fn detect_exists_join_count_all(query: &ParsedQuery, options: &QueryOptions) -> Option<(Ref, Ref, VarId)> {
     let out_var = detect_count_all_aggregate(query, options)?;
 
-    // WHERE must be: Triple + EXISTS{ single Triple } in either order.
+    // WHERE must be: Triple + FILTER(EXISTS{single triple}) in either order.
     if query.patterns.len() != 2 {
         return None;
     }
@@ -1269,66 +1319,13 @@ fn detect_exists_join_count_all(
     Some((outer_pred, exists_pred, out_var))
 }
 
-fn detect_exists_join_count_distinct_object(
-    query: &ParsedQuery,
-    options: &QueryOptions,
-) -> Option<(Ref, Ref, VarId)> {
-    let (in_var, out_var) = detect_count_distinct_aggregate(query, options)?;
-
-    // WHERE must be exactly two triples: ?s <p1> ?o1 . ?s <p2> ?o2 .
-    if query.patterns.len() != 2 {
-        return None;
-    }
-    let Pattern::Triple(a) = &query.patterns[0] else {
-        return None;
-    };
-    let Pattern::Triple(b) = &query.patterns[1] else {
-        return None;
-    };
-
-    let Ref::Var(sv_a) = &a.s else {
-        return None;
-    };
-    let Ref::Var(sv_b) = &b.s else {
-        return None;
-    };
-    if sv_a != sv_b {
-        return None;
-    }
-    if a.dtc.is_some() || b.dtc.is_some() {
-        return None;
-    }
-
-    let pred_a = match &a.p {
-        Ref::Sid(_) | Ref::Iri(_) => a.p.clone(),
-        _ => return None,
-    };
-    let pred_b = match &b.p {
-        Ref::Sid(_) | Ref::Iri(_) => b.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(ov_a) = &a.o else {
-        return None;
-    };
-    let Term::Var(_ov_b) = &b.o else {
-        return None;
-    };
-
-    // One of the object vars must be the COUNT DISTINCT input.
-    if *ov_a == in_var {
-        Some((pred_a, pred_b, out_var))
-    } else {
-        None
-    }
-}
-
 fn detect_chain_exists_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
 ) -> Option<(Ref, Ref, Ref, VarId)> {
     let out_var = detect_count_all_aggregate(query, options)?;
 
-    // WHERE must be: Triple, Triple, EXISTS(single triple), any order.
+    // WHERE must be: 2 outer triples + EXISTS(single triple), any order.
     if query.patterns.len() != 3 {
         return None;
     }
@@ -1418,6 +1415,266 @@ fn detect_chain_exists_join_count_all(
     }
 
     None
+}
+
+fn detect_star_exists_join_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Vec<Ref>, Ref, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+
+    // WHERE must be: 2+ outer triples sharing same subject var + EXISTS(single triple) on same subject.
+    if query.patterns.len() < 3 {
+        return None;
+    }
+
+    let mut triples: Vec<&crate::triple::TriplePattern> = Vec::new();
+    let mut exists_inner: Option<&[Pattern]> = None;
+    let mut exists_expr: Option<&crate::ir::Expression> = None;
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => triples.push(tp),
+            Pattern::Exists(inner) => exists_inner = Some(inner),
+            Pattern::Filter(expr) => exists_expr = Some(expr),
+            _ => return None,
+        }
+    }
+    if triples.len() < 2 {
+        return None;
+    }
+
+    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
+        let crate::ir::Expression::Exists { patterns, negated } = expr else {
+            return None;
+        };
+        (patterns.as_slice(), *negated)
+    } else if let Some(pats) = exists_inner {
+        (pats, false)
+    } else {
+        return None;
+    };
+    if negated || exists_patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(ex) = &exists_patterns[0] else {
+        return None;
+    };
+
+    let Ref::Var(sv_ex) = &ex.s else {
+        return None;
+    };
+    let Term::Var(_ov3) = &ex.o else {
+        return None;
+    };
+    if ex.dtc.is_some() {
+        return None;
+    }
+    let p_exists = match &ex.p {
+        Ref::Sid(_) | Ref::Iri(_) => ex.p.clone(),
+        _ => return None,
+    };
+
+    // Triples must be ?s p ?o with same ?s and variable object.
+    let mut subject_var: Option<VarId> = None;
+    let mut preds: Vec<Ref> = Vec::with_capacity(triples.len());
+    for t in &triples {
+        let Ref::Var(sv) = &t.s else {
+            return None;
+        };
+        match subject_var {
+            None => subject_var = Some(*sv),
+            Some(existing) if existing != *sv => return None,
+            Some(_) => {}
+        }
+        if *sv != *sv_ex {
+            return None;
+        }
+        if t.dtc.is_some() {
+            return None;
+        }
+        let Term::Var(_o) = &t.o else {
+            return None;
+        };
+        let p = match &t.p {
+            Ref::Sid(_) | Ref::Iri(_) => t.p.clone(),
+            _ => return None,
+        };
+        preds.push(p);
+    }
+
+    Some((preds, p_exists, out_var))
+}
+
+fn detect_object_chain_exists_join_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Ref, Ref, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+
+    // WHERE must be: outer Triple + EXISTS block with 2 triples forming a chain, any order.
+    if query.patterns.len() != 2 {
+        return None;
+    }
+
+    let mut outer: Option<&crate::triple::TriplePattern> = None;
+    let mut exists_inner: Option<&[Pattern]> = None;
+    let mut exists_expr: Option<&crate::ir::Expression> = None;
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => outer = Some(tp),
+            Pattern::Exists(inner) => exists_inner = Some(inner),
+            Pattern::Filter(expr) => exists_expr = Some(expr),
+            _ => return None,
+        }
+    }
+    let outer = outer?;
+
+    let pred_outer = match &outer.p {
+        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
+        _ => return None,
+    };
+    let Term::Var(b_var) = &outer.o else {
+        return None;
+    };
+    if outer.dtc.is_some() {
+        return None;
+    }
+
+    let (patterns, negated) = if let Some(expr) = exists_expr {
+        let crate::ir::Expression::Exists { patterns, negated } = expr else {
+            return None;
+        };
+        (patterns.as_slice(), *negated)
+    } else if let Some(pats) = exists_inner {
+        (pats, false)
+    } else {
+        return None;
+    };
+    if negated || patterns.len() != 2 {
+        return None;
+    }
+
+    let (t1, t2) = match (&patterns[0], &patterns[1]) {
+        (Pattern::Triple(a), Pattern::Triple(b)) => (a, b),
+        _ => return None,
+    };
+
+    // Match chain: ?b p2 ?c . ?c p3 ?d
+    let candidates = [(t1, t2), (t2, t1)];
+    for (first, second) in candidates {
+        let Ref::Var(b1) = &first.s else {
+            continue;
+        };
+        if *b1 != *b_var {
+            continue;
+        }
+        let Term::Var(c1) = &first.o else {
+            continue;
+        };
+        let Ref::Var(c2) = &second.s else {
+            continue;
+        };
+        if *c2 != *c1 {
+            continue;
+        }
+        let Term::Var(_d) = &second.o else {
+            continue;
+        };
+        if first.dtc.is_some() || second.dtc.is_some() {
+            continue;
+        }
+        let pred2 = match &first.p {
+            Ref::Sid(_) | Ref::Iri(_) => first.p.clone(),
+            _ => continue,
+        };
+        let pred3 = match &second.p {
+            Ref::Sid(_) | Ref::Iri(_) => second.p.clone(),
+            _ => continue,
+        };
+
+        return Some((pred_outer, pred2, pred3, out_var));
+    }
+
+    None
+}
+
+fn detect_exists_star_join_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Vec<Ref>, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+
+    // WHERE must be: outer Triple + EXISTS block with 2+ triples, all sharing the same subject var.
+    if query.patterns.len() != 2 {
+        return None;
+    }
+
+    let mut outer: Option<&crate::triple::TriplePattern> = None;
+    let mut exists_inner: Option<&[Pattern]> = None;
+    let mut exists_expr: Option<&crate::ir::Expression> = None;
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => outer = Some(tp),
+            Pattern::Exists(inner) => exists_inner = Some(inner),
+            Pattern::Filter(expr) => exists_expr = Some(expr),
+            _ => return None,
+        }
+    }
+    let outer = outer?;
+
+    let Ref::Var(sv_outer) = &outer.s else {
+        return None;
+    };
+    let pred_outer = match &outer.p {
+        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
+        _ => return None,
+    };
+    if outer.dtc.is_some() {
+        return None;
+    }
+    let Term::Var(_ov) = &outer.o else {
+        return None;
+    };
+
+    let (patterns, negated) = if let Some(expr) = exists_expr {
+        let crate::ir::Expression::Exists { patterns, negated } = expr else {
+            return None;
+        };
+        (patterns.as_slice(), *negated)
+    } else if let Some(pats) = exists_inner {
+        (pats, false)
+    } else {
+        return None;
+    };
+    if negated || patterns.len() < 2 {
+        return None;
+    }
+
+    let mut exists_preds: Vec<Ref> = Vec::with_capacity(patterns.len());
+    for pat in patterns {
+        let Pattern::Triple(tp) = pat else {
+            return None;
+        };
+        let Ref::Var(sv) = &tp.s else {
+            return None;
+        };
+        if *sv != *sv_outer {
+            return None;
+        }
+        if tp.dtc.is_some() {
+            return None;
+        }
+        let Term::Var(_o) = &tp.o else {
+            return None;
+        };
+        let pred = match &tp.p {
+            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
+            _ => return None,
+        };
+        exists_preds.push(pred);
+    }
+
+    Some((pred_outer, exists_preds, out_var))
 }
 
 /// Detect a linear chain of N ≥ 2 bound-predicate triples for COUNT(*) pushdown.
@@ -1975,91 +2232,6 @@ fn detect_optional_chain_head_join_count_all(
     Some((p1, p2, p3, out_var))
 }
 
-fn detect_object_chain_exists_join_count_all(
-    query: &ParsedQuery,
-    options: &QueryOptions,
-) -> Option<(Ref, Ref, Ref, VarId)> {
-    let out_var = detect_count_all_aggregate(query, options)?;
-
-    // WHERE must be: outer Triple + EXISTS{ two triples chain }, any order (but only one EXISTS).
-    if query.patterns.len() != 2 {
-        return None;
-    }
-
-    let mut outer: Option<&crate::triple::TriplePattern> = None;
-    let mut exists_inner: Option<&[Pattern]> = None;
-    let mut exists_expr: Option<&crate::ir::Expression> = None;
-
-    for p in &query.patterns {
-        match p {
-            Pattern::Triple(tp) => outer = Some(tp),
-            Pattern::Exists(inner) => exists_inner = Some(inner),
-            Pattern::Filter(expr) => exists_expr = Some(expr),
-            _ => return None,
-        }
-    }
-    let outer = outer?;
-
-    // Outer must be ?a <p_outer> ?b
-    let Ref::Var(_a) = &outer.s else { return None };
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(b_var) = &outer.o else {
-        return None;
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-
-    // Resolve EXISTS patterns (either Pattern::Exists or Expression::Exists).
-    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
-    if negated || exists_patterns.len() != 2 {
-        return None;
-    }
-    let Pattern::Triple(t1) = &exists_patterns[0] else {
-        return None;
-    };
-    let Pattern::Triple(t2) = &exists_patterns[1] else {
-        return None;
-    };
-
-    // Must match chain: ?b p2 ?c . ?c p3 ?d
-    let Ref::Var(b2) = &t1.s else { return None };
-    if *b2 != *b_var {
-        return None;
-    }
-    let Term::Var(c1) = &t1.o else { return None };
-    let Ref::Var(c2) = &t2.s else { return None };
-    if *c2 != *c1 {
-        return None;
-    }
-    let Term::Var(_d) = &t2.o else { return None };
-    if t1.dtc.is_some() || t2.dtc.is_some() {
-        return None;
-    }
-    let pred2 = match &t1.p {
-        Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-        _ => return None,
-    };
-    let pred3 = match &t2.p {
-        Ref::Sid(_) | Ref::Iri(_) => t2.p.clone(),
-        _ => return None,
-    };
-
-    Some((pred_outer, pred2, pred3, out_var))
-}
-
 fn detect_transitive_path_plus_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
@@ -2263,171 +2435,6 @@ pub fn build_operator_tree(
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator> {
     build_operator_tree_inner(query, options, stats, true)
-}
-
-fn detect_star_exists_join_count_all(
-    query: &ParsedQuery,
-    options: &QueryOptions,
-) -> Option<(Vec<Ref>, Ref, VarId)> {
-    let out_var = detect_count_all_aggregate(query, options)?;
-
-    // WHERE must be: 2+ Triple patterns with same subject var + EXISTS(single triple) on same subject.
-    if query.patterns.len() < 3 {
-        return None;
-    }
-
-    let mut triples: Vec<&crate::triple::TriplePattern> = Vec::new();
-    let mut exists_inner: Option<&[Pattern]> = None;
-    let mut exists_expr: Option<&crate::ir::Expression> = None;
-    for p in &query.patterns {
-        match p {
-            Pattern::Triple(tp) => triples.push(tp),
-            Pattern::Exists(inner) => exists_inner = Some(inner),
-            Pattern::Filter(expr) => exists_expr = Some(expr),
-            _ => return None,
-        }
-    }
-    if triples.len() < 2 {
-        return None;
-    }
-
-    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
-    if negated || exists_patterns.len() != 1 {
-        return None;
-    }
-    let Pattern::Triple(ex) = &exists_patterns[0] else {
-        return None;
-    };
-
-    let Ref::Var(sv_ex) = &ex.s else {
-        return None;
-    };
-    let Term::Var(_ov3) = &ex.o else {
-        return None;
-    };
-    if ex.dtc.is_some() {
-        return None;
-    }
-    let p3 = match &ex.p {
-        Ref::Sid(_) | Ref::Iri(_) => ex.p.clone(),
-        _ => return None,
-    };
-
-    // Triples must be ?s p ?o with same ?s and variable object.
-    let mut subject_var: Option<VarId> = None;
-    let mut preds: Vec<Ref> = Vec::with_capacity(triples.len());
-    for t in &triples {
-        let Ref::Var(sv) = &t.s else { return None };
-        match subject_var {
-            None => subject_var = Some(*sv),
-            Some(existing) if existing != *sv => return None,
-            Some(_) => {}
-        }
-        if *sv != *sv_ex {
-            return None;
-        }
-        if t.dtc.is_some() {
-            return None;
-        }
-        let Term::Var(_o) = &t.o else { return None };
-        let p = match &t.p {
-            Ref::Sid(_) | Ref::Iri(_) => t.p.clone(),
-            _ => return None,
-        };
-        preds.push(p);
-    }
-
-    Some((preds, p3, out_var))
-}
-
-fn detect_exists_star_join_count_all(
-    query: &ParsedQuery,
-    options: &QueryOptions,
-) -> Option<(Ref, Vec<Ref>, VarId)> {
-    let out_var = detect_count_all_aggregate(query, options)?;
-
-    // WHERE must be: outer Triple + EXISTS block with 2+ triples, all sharing the same subject var.
-    if query.patterns.len() != 2 {
-        return None;
-    }
-
-    let mut outer: Option<&crate::triple::TriplePattern> = None;
-    let mut exists_inner: Option<&[Pattern]> = None;
-    let mut exists_expr: Option<&crate::ir::Expression> = None;
-    for p in &query.patterns {
-        match p {
-            Pattern::Triple(tp) => outer = Some(tp),
-            Pattern::Exists(inner) => exists_inner = Some(inner),
-            Pattern::Filter(expr) => exists_expr = Some(expr),
-            _ => return None,
-        }
-    }
-    let outer = outer?;
-
-    // Outer must be ?s <p_outer> ?o
-    let Ref::Var(sv_outer) = &outer.s else {
-        return None;
-    };
-    let pred_outer = match &outer.p {
-        Ref::Sid(_) | Ref::Iri(_) => outer.p.clone(),
-        _ => return None,
-    };
-    let Term::Var(_ov) = &outer.o else {
-        return None;
-    };
-    if outer.dtc.is_some() {
-        return None;
-    }
-
-    // Resolve EXISTS patterns.
-    let (exists_patterns, negated) = if let Some(expr) = exists_expr {
-        let crate::ir::Expression::Exists { patterns, negated } = expr else {
-            return None;
-        };
-        (patterns.as_slice(), *negated)
-    } else if let Some(pats) = exists_inner {
-        (pats, false)
-    } else {
-        return None;
-    };
-    if negated || exists_patterns.len() < 2 {
-        return None;
-    }
-
-    let mut preds: Vec<Ref> = Vec::new();
-    for p in exists_patterns {
-        let Pattern::Triple(tp) = p else {
-            return None;
-        };
-        let Ref::Var(sv) = &tp.s else {
-            return None;
-        };
-        if sv != sv_outer {
-            return None;
-        }
-        let Term::Var(_) = &tp.o else {
-            return None;
-        };
-        if tp.dtc.is_some() {
-            return None;
-        }
-        let pred = match &tp.p {
-            Ref::Sid(_) | Ref::Iri(_) => tp.p.clone(),
-            _ => return None,
-        };
-        preds.push(pred);
-    }
-
-    Some((pred_outer, preds, out_var))
 }
 
 fn detect_minus_outer_single_triple_count_all(
@@ -2824,10 +2831,12 @@ fn build_operator_tree_inner(
         }
     }
 
-    // Fast-path: `COUNT(*)` with a simple correlated `FILTER EXISTS` on the same subject var.
+    // Fast-path: `COUNT(*)` with correlated EXISTS constraints.
+    //
+    // These cover the sparqloscope `exists-*` DBLP benchmark family and avoid scanning
+    // the full outer solution stream just to count rows.
     if enable_fused_fast_paths {
-        if let Some((outer_pred, exists_pred, out_var)) =
-            detect_exists_join_count_all(query, options)
+        if let Some((outer_pred, exists_pred, out_var)) = detect_exists_join_count_all(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
             return Ok(Box::new(exists_join_count_all_operator(
@@ -2837,16 +2846,44 @@ fn build_operator_tree_inner(
                 Some(fallback),
             )));
         }
-    }
-
-    // Fast-path: `COUNT(*)` with a 2-hop chain and an EXISTS constraint on the tail.
-    if enable_fused_fast_paths {
         if let Some((p1, p2, p3, out_var)) = detect_chain_exists_join_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(predicate_chain_exists_join_count_all_operator(
+            return Ok(Box::new(chain_exists_join_count_all_operator(
                 p1,
                 p2,
                 p3,
+                out_var,
+                Some(fallback),
+            )));
+        }
+        if let Some((preds, p_exists, out_var)) = detect_star_exists_join_count_all(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(star_exists_join_count_all_operator(
+                preds,
+                p_exists,
+                out_var,
+                Some(fallback),
+            )));
+        }
+        if let Some((p_outer, p2, p3, out_var)) =
+            detect_object_chain_exists_join_count_all(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(object_chain_exists_join_count_all_operator(
+                p_outer,
+                p2,
+                p3,
+                out_var,
+                Some(fallback),
+            )));
+        }
+        if let Some((p_outer, exists_preds, out_var)) =
+            detect_exists_star_join_count_all(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(exists_star_join_count_all_operator(
+                p_outer,
+                exists_preds,
                 out_var,
                 Some(fallback),
             )));
@@ -2933,53 +2970,6 @@ fn build_operator_tree_inner(
             return Ok(Box::new(multicolumn_join_count_all_operator(
                 p1,
                 p2,
-                out_var,
-                Some(fallback),
-            )));
-        }
-    }
-
-    // Fast-path: `COUNT(*)` where outer object must satisfy a 2-hop EXISTS chain.
-    if enable_fused_fast_paths {
-        if let Some((p_outer, p2, p3, out_var)) =
-            detect_object_chain_exists_join_count_all(query, options)
-        {
-            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(
-                predicate_object_chain_exists_join_count_all_operator(
-                    p_outer,
-                    p2,
-                    p3,
-                    out_var,
-                    Some(fallback),
-                ),
-            ));
-        }
-    }
-
-    // Fast-path: `COUNT(*)` with a 2-predicate star join and an EXISTS constraint on the subject.
-    if enable_fused_fast_paths {
-        if let Some((preds, p_exists, out_var)) = detect_star_exists_join_count_all(query, options)
-        {
-            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(star_exists_join_count_all_operator(
-                preds,
-                p_exists,
-                out_var,
-                Some(fallback),
-            )));
-        }
-    }
-
-    // Fast-path: `COUNT(*)` with an outer triple filtered by an EXISTS-star block.
-    if enable_fused_fast_paths {
-        if let Some((outer_pred, exists_preds, out_var)) =
-            detect_exists_star_join_count_all(query, options)
-        {
-            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(exists_star_join_count_all_operator(
-                outer_pred,
-                exists_preds,
                 out_var,
                 Some(fallback),
             )));
