@@ -62,8 +62,12 @@ pub enum GraphSelector {
 /// heavier/real-time details when needed.
 #[derive(Debug, Clone, Default)]
 pub struct LedgerInfoOptions {
-    /// When true, augment property "details" with novelty deltas so the result
-    /// is real-time (novelty-aware) rather than "as of last index".
+    /// When true, include heavier novelty-aware details (e.g., class ref-edge
+    /// adjustments) that require additional lookups.
+    ///
+    /// Note: Graph-scoped flake/property/class **counts** are always merged with
+    /// novelty so `ledger-info` reflects the latest commit `t`. HLL-derived NDV
+    /// estimates remain "as of last index" by design.
     pub realtime_property_details: bool,
 
     /// When true, include `datatypes` under `stats.properties[*]`.
@@ -167,25 +171,35 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     // Get current stats (always returns IndexStats)
     let mut stats = ledger.current_stats();
 
-    // Optional: real-time novelty merge into the graph entry for the requested g_id.
-    if options.realtime_property_details {
-        if let Some(graphs) = stats.graphs.as_mut() {
-            if let Some(graph_entry) = graphs.iter_mut().find(|g| g.g_id == g_id) {
-                // Resolve graph IRI for filtering novelty flakes to this graph.
-                let graph_iri: Option<String> = binary_store
-                    .as_deref()
-                    .and_then(|s| s.graph_iri_for_id(g_id).map(|s| s.to_string()));
+    // Novelty merge: keep graph-scoped stats current to latest commit `t`.
+    //
+    // We always apply cheap count deltas (flakes + per-predicate counts + class counts).
+    // Heavier class ref-edge adjustments remain gated by `realtime_property_details`.
+    if let Some(graphs) = stats.graphs.as_mut() {
+        if let Some(graph_entry) = graphs.iter_mut().find(|g| g.g_id == g_id) {
+            // Resolve graph IRI for filtering novelty flakes to this graph.
+            let graph_iri: Option<String> = binary_store
+                .as_deref()
+                .and_then(|s| s.graph_iri_for_id(g_id).map(|s| s.to_string()));
 
-                if let Some(store) = binary_store.as_deref() {
-                    merge_graph_property_novelty(
-                        graph_entry,
-                        &ledger.novelty,
-                        store,
-                        &ledger.snapshot.namespace_codes,
-                        graph_iri.as_deref(),
-                        options.include_property_datatypes,
-                    );
-                }
+            if let Some(store) = binary_store.as_deref() {
+                merge_graph_property_novelty(
+                    graph_entry,
+                    &ledger.novelty,
+                    store,
+                    &ledger.snapshot.namespace_codes,
+                    graph_iri.as_deref(),
+                    options.include_property_datatypes,
+                );
+                merge_graph_class_counts_from_novelty(
+                    graph_entry,
+                    &ledger.novelty,
+                    &ledger.snapshot.namespace_codes,
+                    graph_iri.as_deref(),
+                );
+            }
+
+            if options.realtime_property_details {
                 merge_graph_class_ref_edges_from_novelty(
                     &ledger.snapshot,
                     ledger.novelty.as_ref(),
@@ -498,14 +512,14 @@ fn merge_graph_property_novelty(
     graph_iri: Option<&str>,
     merge_datatypes: bool,
 ) {
-    if novelty.is_empty() || graph_entry.properties.is_empty() {
+    if novelty.is_empty() {
         return;
     }
 
-    // Property p_id -> (count_delta, datatype_tag -> dt_delta)
-    let mut deltas: HashMap<u32, (i64, HashMap<u8, i64>)> = HashMap::new();
+    // Property p_id -> (count_delta, datatype_tag -> dt_delta, max_t)
+    let mut deltas: HashMap<u32, (i64, HashMap<u8, i64>, i64)> = HashMap::new();
     let mut flakes_delta: i64 = 0;
-    let mut size_delta: u64 = 0;
+    let mut size_delta: i64 = 0;
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
 
@@ -521,7 +535,9 @@ fn merge_graph_property_novelty(
 
         let delta = if flake.op { 1i64 } else { -1i64 };
         flakes_delta += delta;
-        size_delta += flake.size_estimate_bytes();
+        let est = flake.size_estimate_bytes();
+        let est_i64 = i64::try_from(est).unwrap_or(i64::MAX);
+        size_delta = size_delta.saturating_add(delta.saturating_mul(est_i64));
 
         // Map predicate SID to p_id via namespace prefix + store lookup.
         let Some(ns_prefix) = namespace_codes.get(&flake.p.namespace_code) else {
@@ -532,8 +548,11 @@ fn merge_graph_property_novelty(
             continue;
         };
 
-        let entry = deltas.entry(p_id).or_insert_with(|| (0, HashMap::new()));
+        let entry = deltas
+            .entry(p_id)
+            .or_insert_with(|| (0, HashMap::new(), i64::MIN));
         entry.0 += delta;
+        entry.2 = entry.2.max(flake.t);
 
         if merge_datatypes {
             let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
@@ -545,7 +564,11 @@ fn merge_graph_property_novelty(
 
     // Update graph-level flake count and size (graph-scoped, not total novelty).
     graph_entry.flakes = (graph_entry.flakes as i64 + flakes_delta).max(0) as u64;
-    graph_entry.size += size_delta;
+    if size_delta >= 0 {
+        graph_entry.size = graph_entry.size.saturating_add(size_delta as u64);
+    } else {
+        graph_entry.size = graph_entry.size.saturating_sub((-size_delta) as u64);
+    }
 
     if deltas.is_empty() {
         return;
@@ -557,36 +580,128 @@ fn merge_graph_property_novelty(
         by_pid.insert(entry.p_id, idx);
     }
 
-    for (p_id, (count_delta, dt_map)) in deltas {
-        let Some(&idx) = by_pid.get(&p_id) else {
-            continue;
-        };
-        let entry = &mut graph_entry.properties[idx];
+    let mut added_any = false;
+    for (p_id, (count_delta, dt_map, max_t)) in deltas {
+        if let Some(&idx) = by_pid.get(&p_id) {
+            let entry = &mut graph_entry.properties[idx];
 
-        // Adjust property count.
-        entry.count = (entry.count as i64 + count_delta).max(0) as u64;
+            // Adjust property count.
+            entry.count = (entry.count as i64 + count_delta).max(0) as u64;
 
-        // Adjust datatype breakdown if requested.
-        if merge_datatypes && !dt_map.is_empty() {
-            let mut merged: HashMap<u8, i64> = entry
-                .datatypes
-                .iter()
-                .map(|(tag, count)| (*tag, *count as i64))
-                .collect();
-            for (tag, delta) in dt_map {
-                *merged.entry(tag).or_insert(0) += delta;
+            // Any novelty touch updates last_modified_t.
+            if max_t != i64::MIN {
+                entry.last_modified_t = entry.last_modified_t.max(max_t);
             }
 
-            let mut out: Vec<(u8, u64)> = merged
-                .into_iter()
-                .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
-                .collect();
-            out.sort_by(|a, b| a.0.cmp(&b.0));
-            entry.datatypes = out;
+            // Adjust datatype breakdown if requested.
+            if merge_datatypes && !dt_map.is_empty() {
+                let mut merged: HashMap<u8, i64> = entry
+                    .datatypes
+                    .iter()
+                    .map(|(tag, count)| (*tag, *count as i64))
+                    .collect();
+                for (tag, delta) in dt_map {
+                    *merged.entry(tag).or_insert(0) += delta;
+                }
+
+                let mut out: Vec<(u8, u64)> = merged
+                    .into_iter()
+                    .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
+                    .collect();
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                entry.datatypes = out;
+            }
+        } else {
+            // Predicate introduced after the last index: add a new entry (NDV stays 0).
+            let new_count = count_delta.max(0) as u64;
+            if new_count == 0 {
+                continue;
+            }
+            let datatypes = if merge_datatypes && !dt_map.is_empty() {
+                let mut out: Vec<(u8, u64)> = dt_map
+                    .into_iter()
+                    .filter_map(|(tag, delta)| (delta > 0).then_some((tag, delta as u64)))
+                    .collect();
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                out
+            } else {
+                Vec::new()
+            };
+            graph_entry.properties.push(GraphPropertyStatEntry {
+                p_id,
+                count: new_count,
+                ndv_values: 0,
+                ndv_subjects: 0,
+                last_modified_t: if max_t == i64::MIN { 0 } else { max_t },
+                datatypes,
+            });
+            added_any = true;
         }
+    }
+
+    if added_any {
+        graph_entry.properties.sort_by_key(|e| e.p_id);
     }
 }
 
+/// Merge novelty deltas into a graph entry's class instance counts (rdf:type).
+///
+/// Only considers novelty flakes belonging to the specified graph, and preserves
+/// all existing class->property detail (types/langs/ref-classes). NDV estimates
+/// remain index-derived elsewhere.
+fn merge_graph_class_counts_from_novelty(
+    graph_entry: &mut GraphStatsEntry,
+    novelty: &Novelty,
+    namespace_codes: &HashMap<u16, String>,
+    graph_iri: Option<&str>,
+) {
+    if novelty.is_empty() {
+        return;
+    }
+    let Some(classes) = graph_entry.classes.as_mut() else {
+        return;
+    };
+
+    let mut by_sid: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
+    for (i, c) in classes.iter().enumerate() {
+        by_sid.insert(c.class_sid.clone(), i);
+    }
+
+    let mut added_any = false;
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        // Skip commit-metadata namespace flakes (not user data).
+        if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
+            continue;
+        }
+        if !flake_in_graph(flake, graph_iri, namespace_codes) {
+            continue;
+        }
+        if !is_rdf_type(&flake.p) {
+            continue;
+        }
+        let FlakeValue::Ref(class_sid) = &flake.o else {
+            continue;
+        };
+        let delta = if flake.op { 1i64 } else { -1i64 };
+        if let Some(&idx) = by_sid.get(class_sid) {
+            let entry = &mut classes[idx];
+            entry.count = (entry.count as i64 + delta).max(0) as u64;
+        } else if delta > 0 {
+            classes.push(ClassStatEntry {
+                class_sid: class_sid.clone(),
+                count: delta as u64,
+                properties: Vec::new(),
+            });
+            by_sid.insert(class_sid.clone(), classes.len() - 1);
+            added_any = true;
+        }
+    }
+
+    if added_any {
+        classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+    }
+}
 /// Merge novelty ref-edge deltas into a graph entry's class stats.
 ///
 /// Only considers novelty flakes belonging to the specified graph

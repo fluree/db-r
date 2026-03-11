@@ -1383,8 +1383,7 @@ impl Operator for BinaryScanOperator {
                     // values. String values are ambiguous — could be xsd:string or
                     // rdf:langString — so skip them to avoid type mismatch.
                     match bound_o {
-                        FlakeValue::String(_) => Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        FlakeValue::String(_) => Err(std::io::Error::other(
                             "string without dtc: type ambiguous (could be langString)",
                         )),
                         _ => value_to_otype_okey_simple(bound_o, store_ref)
