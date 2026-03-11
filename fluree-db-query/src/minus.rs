@@ -12,7 +12,7 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::execute::build_where_operators_seeded;
 use crate::ir::Pattern;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
@@ -408,6 +408,41 @@ impl Operator for MinusOperator {
     fn estimated_rows(&self) -> Option<usize> {
         // Could be 0 to child rows, return child estimate as upper bound
         self.child.estimated_rows()
+    }
+
+    async fn drain_count(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<u64>> {
+        if self.state != OperatorState::Open {
+            return Ok(None);
+        }
+        let mut count: u64 = 0;
+        loop {
+            match self.child.next_batch(ctx).await? {
+                Some(batch) if !batch.is_empty() => {
+                    if self.shared_vars.is_empty()
+                        || (self.minus_hash.is_empty() && self.minus_wildcards.is_empty())
+                    {
+                        // No shared vars or empty MINUS: all rows survive.
+                        count = count.checked_add(batch.len() as u64).ok_or_else(|| {
+                            QueryError::execution("COUNT(*) overflow in MINUS drain_count")
+                        })?;
+                    } else {
+                        for row_idx in 0..batch.len() {
+                            if !self.input_row_eliminated(&batch, row_idx) {
+                                count = count.checked_add(1).ok_or_else(|| {
+                                    QueryError::execution(
+                                        "COUNT(*) overflow in MINUS drain_count",
+                                    )
+                                })?;
+                            }
+                        }
+                    }
+                }
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        self.state = OperatorState::Exhausted;
+        Ok(Some(count))
     }
 }
 

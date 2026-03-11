@@ -10,7 +10,10 @@ use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::fast_chain_join_count_all::linear_chain_count_all_operator;
-use crate::fast_chain_minus_count_all::chain_minus_count_all_operator;
+use crate::fast_minus_count_all::{
+    chain_minus_count_all_operator, minus_join_count_all_operator,
+    object_chain_minus_count_all_operator, property_minus_count_all_operator,
+};
 use crate::fast_count::{
     count_blank_node_subjects_operator, count_distinct_object_operator,
     count_distinct_objects_operator, count_distinct_predicates_operator,
@@ -31,13 +34,10 @@ use crate::fast_group_count_firsts::{
     PredicateObjectCountFirstsOperator,
 };
 use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
-use crate::fast_minus_join_count_all::minus_join_count_all_operator;
 use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
-use crate::fast_object_chain_minus_count_all::object_chain_minus_count_all_operator;
 use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
 use crate::fast_optional_chain_tail_count_all::predicate_chain_optional_tail_count_all;
 use crate::fast_optional_join_count_all::predicate_optional_join_count_all;
-use crate::fast_property_minus_count_all::property_minus_count_all_operator;
 use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
 use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
 use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
