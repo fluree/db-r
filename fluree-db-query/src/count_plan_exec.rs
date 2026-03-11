@@ -15,12 +15,12 @@ use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
     build_count_batch, collect_subjects_for_predicate_set, collect_subjects_for_predicate_sorted,
     collect_subjects_with_object_in_set, count_rows_for_predicate_psot, fast_path_store,
-    intersect_many_sorted, normalize_pred_sid, sum_post_object_counts_filtered, FastPathOperator,
-    ObjectFilterMode, PostObjectGroupCountIter, PsotObjectFilterCountIter, PsotSubjectCountIter,
-    PsotSubjectWeightedSumIter,
+    intersect_many_sorted, leaf_entries_for_predicate, normalize_pred_sid,
+    sum_post_object_counts_filtered, FastPathOperator, ObjectFilterMode, PostObjectGroupCountIter,
+    PsotObjectFilterCountIter, PsotSubjectCountIter, PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
-use fluree_db_binary_index::BinaryIndexStore;
+use fluree_db_binary_index::{BinaryIndexStore, RunSortOrder};
 use fluree_db_core::GraphId;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
@@ -677,147 +677,494 @@ fn execute_chain(
         p_ids.push(p_id);
     }
 
-    // Step 1: Build initial weights keyed by v_{N-1} (subjects of pN).
-    // The tail modifier changes HOW pN is processed — the modifier targets vN
-    // (the object of pN), not v_{N-1} (the subject of pN).
-    let mut weights: FxHashMap<u64, u64> = FxHashMap::default();
+    // Generic chain speed trick (this is what made the 2026-03-09 numbers good):
+    //
+    // Do NOT scan PSOT(p2) across all subjects. Instead:
+    // - Stream POST(p1) grouped by object b (these are the only b values that matter)
+    // - For each b, *seek* into PSOT(p2) to sum weights over its objects
+    //
+    // This is especially important when p2 is huge (e.g. rdf:type) but p1's object
+    // domain is much smaller.
 
-    match &chain.tail_weight {
-        TailWeight::None => {
-            // Plain count: weights[v_{N-1}] = count_pN(v_{N-1}).
-            let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
-            while let Some((s, count)) = iter.next_group()? {
-                if count > 0 {
-                    weights.insert(s, count);
+    enum P2WeightMode<'a> {
+        /// Each edge counts as 1 (used when the chain ends at p2 with no tail modifier).
+        CountEdges { non_iri_weight: u64 },
+        /// Weight is looked up by object key, with a default for missing/non-IRI objects.
+        LookupRef {
+            weights: &'a FxHashMap<u64, u64>,
+            default_weight: u64,
+            non_iri_weight: u64,
+        },
+        /// Owned version of [`LookupRef`] (used for 2-hop tail modifiers).
+        LookupOwned {
+            weights: FxHashMap<u64, u64>,
+            default_weight: u64,
+            non_iri_weight: u64,
+        },
+        /// Owned version of [`InSetRef`] (used for 2-hop tail modifiers).
+        InSetOwned {
+            set: FxHashSet<u64>,
+            non_iri_weight: u64,
+        },
+        /// Owned version of [`NotInSetRef`] (used for 2-hop tail modifiers).
+        NotInSetOwned {
+            set: FxHashSet<u64>,
+            non_iri_weight: u64,
+        },
+    }
+
+    impl<'a> P2WeightMode<'a> {
+        #[inline]
+        fn weight_row(&self, o_type: u16, o_key: u64) -> u64 {
+            let is_iri = o_type == fluree_db_core::o_type::OType::IRI_REF.as_u16();
+            match self {
+                P2WeightMode::CountEdges { non_iri_weight } => {
+                    if is_iri {
+                        1
+                    } else {
+                        *non_iri_weight
+                    }
+                }
+                P2WeightMode::LookupRef {
+                    weights,
+                    default_weight,
+                    non_iri_weight,
+                } => {
+                    if is_iri {
+                        weights.get(&o_key).copied().unwrap_or(*default_weight)
+                    } else {
+                        *non_iri_weight
+                    }
+                }
+                P2WeightMode::LookupOwned {
+                    weights,
+                    default_weight,
+                    non_iri_weight,
+                } => {
+                    if is_iri {
+                        weights.get(&o_key).copied().unwrap_or(*default_weight)
+                    } else {
+                        *non_iri_weight
+                    }
+                }
+                P2WeightMode::InSetOwned {
+                    set,
+                    non_iri_weight,
+                } => {
+                    if is_iri && set.contains(&o_key) {
+                        1
+                    } else {
+                        *non_iri_weight
+                    }
+                }
+                P2WeightMode::NotInSetOwned {
+                    set,
+                    non_iri_weight,
+                } => {
+                    if is_iri {
+                        (!set.contains(&o_key)) as u64
+                    } else {
+                        *non_iri_weight
+                    }
                 }
             }
         }
-        TailWeight::Optional { tail_pred } => {
-            // OPTIONAL on vN: weights[v_{N-1}] = Σ_{vN in pN(v_{N-1})} max(1, count_tail(vN)).
-            // Build multiplier map: mult[vN] = max(1, count_tail(vN)).
-            let tail_sid = normalize_pred_sid(store, tail_pred)?;
-            if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
-                let mut mult_map: FxHashMap<u64, u64> = FxHashMap::default();
-                let mut iter = PsotSubjectCountIter::new(store, g_id, tail_p_id)?;
-                while let Some((c, count)) = iter.next_group()? {
-                    mult_map.insert(c, count.max(1));
-                }
-                // Use PsotSubjectWeightedSumIter on pN with default_weight=1
-                // (OPTIONAL: objects of pN not in mult_map get multiplier 1).
-                let Some(mut ws_iter) =
-                    PsotSubjectWeightedSumIter::new(store, g_id, p_ids[n - 1], &mult_map, 1)?
-                else {
-                    return Ok(None);
-                };
-                while let Some((s, sum)) = ws_iter.next_group()? {
-                    if sum > 0 {
-                        weights.insert(s, sum);
+    }
+
+    struct PsotSeekSumCursor<'a, 'm> {
+        store: &'a BinaryIndexStore,
+        p_id: u32,
+        leaves: &'a [fluree_db_binary_index::format::branch::LeafEntry],
+        leaf_pos: usize,
+        leaflet_idx: usize,
+        row: usize,
+        handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
+        batch: Option<fluree_db_binary_index::ColumnBatch>,
+        mixed: bool,
+        /// True when the current leaflet is a pure non-IRI_REF leaflet —
+        /// every row gets the `non_iri_weight` without checking `o_key`.
+        all_non_iri: bool,
+        mode: P2WeightMode<'m>,
+    }
+
+    impl<'a, 'm> PsotSeekSumCursor<'a, 'm> {
+        fn new(
+            store: &'a BinaryIndexStore,
+            g_id: GraphId,
+            p_id: u32,
+            mode: P2WeightMode<'m>,
+        ) -> Self {
+            let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id);
+            Self {
+                store,
+                p_id,
+                leaves,
+                leaf_pos: 0,
+                leaflet_idx: 0,
+                row: 0,
+                handle: None,
+                batch: None,
+                mixed: false,
+                all_non_iri: false,
+                mode,
+            }
+        }
+
+        fn load_next_batch(&mut self, target_b: u64) -> Result<Option<()>> {
+            use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
+            loop {
+                if self.handle.is_none() {
+                    if self.leaf_pos >= self.leaves.len() {
+                        return Ok(None);
                     }
+                    let leaf_entry = &self.leaves[self.leaf_pos];
+                    self.leaf_pos += 1;
+                    self.leaflet_idx = 0;
+                    self.row = 0;
+                    self.batch = None;
+                    self.handle = Some(
+                        self.store
+                            .open_leaf_handle(
+                                &leaf_entry.leaf_cid,
+                                leaf_entry.sidecar_cid.as_ref(),
+                                false,
+                            )
+                            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
+                    );
                 }
-            } else {
-                // Tail predicate missing → OPTIONAL multiplier is 1 for all objects →
-                // equivalent to plain count of pN subjects.
+
+                let handle = self.handle.as_ref().unwrap();
+                let dir = handle.dir();
+
+                while self.leaflet_idx < dir.entries.len() {
+                    let entry = &dir.entries[self.leaflet_idx];
+                    let idx = self.leaflet_idx;
+                    self.leaflet_idx += 1;
+                    if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
+                        continue;
+                    }
+
+                    // Skip leaflets that cannot contain the target subject by inspecting last key.
+                    let last = read_ordered_key_v2(RunSortOrder::Psot, &entry.last_key);
+                    let last_b = last.s_id.as_u64();
+                    if last_b < target_b {
+                        continue;
+                    }
+
+                    let mixed = entry.o_type_const.is_none();
+                    let iri_only =
+                        entry.o_type_const == Some(fluree_db_core::o_type::OType::IRI_REF.as_u16());
+                    let non_iri_only = !mixed && !iri_only;
+
+                    // Choose projection based on whether we need per-row o_type.
+                    // - mixed: need o_type
+                    // - non-IRI homogeneous: we don't need o_type, but we also don't need o_key (kept simple)
+                    let projection = if mixed {
+                        crate::fast_path_common::projection_sid_otype_okey()
+                    } else {
+                        crate::fast_path_common::projection_sid_okey()
+                    };
+
+                    let batch = if let Some(cache) = self.store.leaflet_cache() {
+                        use fluree_db_binary_index::read::column_loader::load_columns_cached_via_handle;
+                        let idx_u8: u8 = idx.try_into().map_err(|_| {
+                            QueryError::Internal("leaflet idx exceeds u8".to_string())
+                        })?;
+                        load_columns_cached_via_handle(
+                            handle.as_ref(),
+                            idx,
+                            RunSortOrder::Psot,
+                            cache,
+                            handle.leaf_id(),
+                            idx_u8,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                    } else {
+                        handle
+                            .load_columns(idx, &projection, RunSortOrder::Psot)
+                            .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                    };
+
+                    self.row = 0;
+                    self.batch = Some(batch);
+                    self.mixed = mixed;
+                    self.all_non_iri = non_iri_only;
+                    return Ok(Some(()));
+                }
+
+                self.handle = None;
+            }
+        }
+
+        /// Return `Some(sum)` if `target_b` exists, otherwise `None`.
+        fn seek_sum_for_subject(&mut self, target_b: u64) -> Result<Option<u64>> {
+            let mut found = false;
+            let mut sum: u64 = 0;
+
+            loop {
+                if self.batch.is_none() && self.load_next_batch(target_b)?.is_none() {
+                    return Ok(found.then_some(sum));
+                }
+                let batch = self.batch.as_ref().unwrap();
+
+                if self.row >= batch.row_count {
+                    self.batch = None;
+                    continue;
+                }
+
+                if !found {
+                    // Advance to first row with s_id >= target_b.
+                    while self.row < batch.row_count && batch.s_id.get(self.row) < target_b {
+                        let cur = batch.s_id.get(self.row);
+                        while self.row < batch.row_count && batch.s_id.get(self.row) == cur {
+                            self.row += 1;
+                        }
+                    }
+                    if self.row >= batch.row_count {
+                        self.batch = None;
+                        continue;
+                    }
+                    let b = batch.s_id.get(self.row);
+                    if b > target_b {
+                        return Ok(None);
+                    }
+                    found = true;
+                } else if batch.s_id.get(self.row) > target_b {
+                    return Ok(Some(sum));
+                }
+
+                // We are at `target_b`.
+                while self.row < batch.row_count && batch.s_id.get(self.row) == target_b {
+                    let (o_type, o_key) = if self.all_non_iri {
+                        // Any non-IRI type will do; weight_row will take the non-iri branch.
+                        (fluree_db_core::o_type::OType::XSD_STRING.as_u16(), 0)
+                    } else if self.mixed {
+                        (batch.o_type.get(self.row), batch.o_key.get(self.row))
+                    } else {
+                        (
+                            fluree_db_core::o_type::OType::IRI_REF.as_u16(),
+                            batch.o_key.get(self.row),
+                        )
+                    };
+
+                    let w = self.mode.weight_row(o_type, o_key);
+                    if w > 0 {
+                        sum = sum.checked_add(w).ok_or_else(|| {
+                            QueryError::execution("COUNT(*) overflow in chain join")
+                        })?;
+                    }
+                    self.row += 1;
+                }
+
+                if self.row < batch.row_count {
+                    return Ok(Some(sum));
+                }
+
+                // Subject group may continue in the next leaflet/batch.
+                self.batch = None;
+            }
+        }
+    }
+
+    // 1) Build weights for v2 (object of p2), by folding the tail (p3..pN).
+    let mut v2_weights: FxHashMap<u64, u64> = FxHashMap::default();
+    if n == 2 {
+        // No tail fold needed: p2 is the last predicate, and we handle tail_weight directly.
+    } else {
+        // Step 1: initial weights keyed by v_{N-1} (subjects of pN), with tail modifier.
+        match &chain.tail_weight {
+            TailWeight::None => {
                 let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
                 while let Some((s, count)) = iter.next_group()? {
                     if count > 0 {
-                        weights.insert(s, count);
+                        v2_weights.insert(s, count);
                     }
                 }
             }
-        }
-        TailWeight::Minus { tail_pred } => {
-            // MINUS on vN: exclude objects of pN that are in subjects(tail_pred).
-            // weights[v_{N-1}] = count of pN objects NOT in excluded set.
-            let tail_sid = normalize_pred_sid(store, tail_pred)?;
-            if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
-                let excluded = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+            TailWeight::Optional { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                    let mut mult_map: FxHashMap<u64, u64> = FxHashMap::default();
+                    let mut iter = PsotSubjectCountIter::new(store, g_id, tail_p_id)?;
+                    while let Some((c, count)) = iter.next_group()? {
+                        mult_map.insert(c, count.max(1));
+                    }
+                    let Some(mut ws_iter) =
+                        PsotSubjectWeightedSumIter::new(store, g_id, p_ids[n - 1], &mult_map, 1)?
+                    else {
+                        return Ok(None);
+                    };
+                    while let Some((s, sum)) = ws_iter.next_group()? {
+                        if sum > 0 {
+                            v2_weights.insert(s, sum);
+                        }
+                    }
+                } else {
+                    let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+                    while let Some((s, count)) = iter.next_group()? {
+                        if count > 0 {
+                            v2_weights.insert(s, count);
+                        }
+                    }
+                }
+            }
+            TailWeight::Minus { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                    let excluded = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+                    let Some(mut iter) = PsotObjectFilterCountIter::new(
+                        store,
+                        g_id,
+                        p_ids[n - 1],
+                        &excluded,
+                        ObjectFilterMode::NotInSet,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    while let Some((s, count)) = iter.next_group()? {
+                        if count > 0 {
+                            v2_weights.insert(s, count);
+                        }
+                    }
+                } else {
+                    let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+                    while let Some((s, count)) = iter.next_group()? {
+                        if count > 0 {
+                            v2_weights.insert(s, count);
+                        }
+                    }
+                }
+            }
+            TailWeight::Exists { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) else {
+                    return Ok(Some(0));
+                };
+                let included = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+                if included.is_empty() {
+                    return Ok(Some(0));
+                }
                 let Some(mut iter) = PsotObjectFilterCountIter::new(
                     store,
                     g_id,
                     p_ids[n - 1],
-                    &excluded,
-                    ObjectFilterMode::NotInSet,
+                    &included,
+                    ObjectFilterMode::InSet,
                 )?
                 else {
                     return Ok(None);
                 };
                 while let Some((s, count)) = iter.next_group()? {
                     if count > 0 {
-                        weights.insert(s, count);
-                    }
-                }
-            } else {
-                // Tail predicate missing → nothing to exclude → plain count.
-                let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
-                while let Some((s, count)) = iter.next_group()? {
-                    if count > 0 {
-                        weights.insert(s, count);
+                        v2_weights.insert(s, count);
                     }
                 }
             }
         }
-        TailWeight::Exists { tail_pred } => {
-            // EXISTS on vN: only count objects of pN that are in subjects(tail_pred).
-            // weights[v_{N-1}] = count of pN objects IN included set.
-            let tail_sid = normalize_pred_sid(store, tail_pred)?;
-            let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) else {
-                // EXISTS with missing predicate → no objects qualify → 0.
-                return Ok(Some(0));
-            };
-            let included = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
-            if included.is_empty() {
-                return Ok(Some(0));
-            }
-            let Some(mut iter) = PsotObjectFilterCountIter::new(
-                store,
-                g_id,
-                p_ids[n - 1],
-                &included,
-                ObjectFilterMode::InSet,
-            )?
+
+        if v2_weights.is_empty() {
+            return Ok(Some(0));
+        }
+
+        // Fold right-to-left through predicates p_{N-1}..p3, producing weights keyed by v2.
+        // (Critically: we stop at i==2; p2 is handled via sparse seeks driven by POST(p1).)
+        for i in (2..n - 1).rev() {
+            let Some(mut iter) =
+                PsotSubjectWeightedSumIter::new(store, g_id, p_ids[i], &v2_weights, 0)?
             else {
                 return Ok(None);
             };
-            while let Some((s, count)) = iter.next_group()? {
-                if count > 0 {
-                    weights.insert(s, count);
+            let mut new_weights: FxHashMap<u64, u64> = FxHashMap::default();
+            while let Some((b, sum)) = iter.next_group()? {
+                if sum > 0 {
+                    new_weights.insert(b, sum);
                 }
             }
-        }
-    }
-
-    if weights.is_empty() {
-        return Ok(Some(0));
-    }
-
-    // Step 2: Fold right-to-left through intermediate predicates (indices n-2 down to 1).
-    for i in (1..n - 1).rev() {
-        let Some(mut iter) = PsotSubjectWeightedSumIter::new(store, g_id, p_ids[i], &weights, 0)?
-        else {
-            return Ok(None);
-        };
-        let mut new_weights: FxHashMap<u64, u64> = FxHashMap::default();
-        while let Some((b, sum)) = iter.next_group()? {
-            if sum > 0 {
-                new_weights.insert(b, sum);
+            if new_weights.is_empty() {
+                return Ok(Some(0));
             }
+            v2_weights = new_weights;
         }
-        if new_weights.is_empty() {
-            return Ok(Some(0));
-        }
-        weights = new_weights;
     }
 
-    // Step 3: Final merge — stream POST(p1) grouped by object, multiply by weights.
+    // 2) Stream POST(p1) grouped by object `b`, and for each `b` seek PSOT(p2) to compute w(b).
     let Some(mut it1) = PostObjectGroupCountIter::new(store, g_id, p_ids[0])? else {
         return Ok(None);
     };
 
+    // Configure how each p2 edge contributes to w(b).
+    let p2_mode: P2WeightMode<'_> = if n == 2 {
+        match &chain.tail_weight {
+            TailWeight::None => P2WeightMode::CountEdges { non_iri_weight: 1 },
+            TailWeight::Optional { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                    let mut mult_map: FxHashMap<u64, u64> = FxHashMap::default();
+                    let mut iter = PsotSubjectCountIter::new(store, g_id, tail_p_id)?;
+                    while let Some((c, count)) = iter.next_group()? {
+                        mult_map.insert(c, count.max(1));
+                    }
+                    P2WeightMode::LookupOwned {
+                        weights: mult_map,
+                        default_weight: 1,
+                        non_iri_weight: 1,
+                    }
+                } else {
+                    P2WeightMode::CountEdges { non_iri_weight: 1 }
+                }
+            }
+            TailWeight::Minus { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                if let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) {
+                    let excluded = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+                    P2WeightMode::NotInSetOwned {
+                        set: excluded,
+                        non_iri_weight: 1,
+                    }
+                } else {
+                    P2WeightMode::CountEdges { non_iri_weight: 1 }
+                }
+            }
+            TailWeight::Exists { tail_pred } => {
+                let tail_sid = normalize_pred_sid(store, tail_pred)?;
+                let Some(tail_p_id) = store.sid_to_p_id(&tail_sid) else {
+                    return Ok(Some(0));
+                };
+                let included = collect_subjects_for_predicate_set(store, g_id, tail_p_id)?;
+                if included.is_empty() {
+                    return Ok(Some(0));
+                }
+                P2WeightMode::InSetOwned {
+                    set: included,
+                    non_iri_weight: 0,
+                }
+            }
+        }
+    } else {
+        P2WeightMode::LookupRef {
+            weights: &v2_weights,
+            default_weight: 0,
+            non_iri_weight: 0,
+        }
+    };
+
+    let mut p2_cursor = PsotSeekSumCursor::new(store, g_id, p_ids[1], p2_mode);
+
     let mut total: u64 = 0;
     while let Some((b, n1)) = it1.next_group()? {
-        if let Some(&w) = weights.get(&b) {
-            total = total.saturating_add(n1.saturating_mul(w));
+        let Some(w) = p2_cursor.seek_sum_for_subject(b)? else {
+            continue;
+        };
+        if w == 0 {
+            continue;
         }
+        let add = n1
+            .checked_mul(w)
+            .ok_or_else(|| QueryError::execution("COUNT(*) overflow in chain join"))?;
+        total = total
+            .checked_add(add)
+            .ok_or_else(|| QueryError::execution("COUNT(*) overflow in chain join"))?;
     }
 
     Ok(Some(total))

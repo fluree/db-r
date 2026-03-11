@@ -244,9 +244,9 @@ fn binary_range_eq_v3(
 
     // Always attempt overlay translation — for_each_overlay_flake is a no-op
     // when the overlay is empty (NoOverlay returns immediately).
+    let mut ephemeral_preds = std::collections::HashMap::new();
+    let mut next_ep = store.predicate_count();
     {
-        let mut ephemeral_preds = std::collections::HashMap::new();
-        let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
 
         overlay.for_each_overlay_flake(
@@ -278,6 +278,14 @@ fn binary_range_eq_v3(
         }
     }
 
+    // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
+    // These predicates don't exist in the persisted index dictionary and need
+    // this map to be decoded back to IRIs when cursor rows are materialized.
+    let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
+        .into_iter()
+        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .collect();
+
     // Iterate and decode to Flakes.
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
@@ -295,10 +303,13 @@ fn binary_range_eq_v3(
 
             // Resolve subject.
             let s_sid = resolve_sid(s_id, store, dict_novelty)?;
-            // Resolve predicate.
+            // Resolve predicate: persisted dict first, then ephemeral overlay map.
             let p_sid = match store.resolve_predicate_iri(p_id) {
                 Some(iri) => store.encode_iri(iri),
-                None => continue, // ephemeral predicate from overlay — skip in flake output
+                None => match ephemeral_p_id_to_sid.get(&p_id) {
+                    Some(sid) => sid.clone(),
+                    None => continue, // truly unknown — shouldn't happen
+                },
             };
             // Decode object.
             //
@@ -764,6 +775,12 @@ fn binary_range_bounded_v3(
         },
     );
 
+    // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
+    let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
+        .into_iter()
+        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .collect();
+
     if s_id_set.is_empty() {
         // No matching subjects at all (persisted or overlay).
         return Ok(Vec::new());
@@ -860,9 +877,13 @@ fn binary_range_bounded_v3(
                 }
             }
 
+            // Resolve predicate: persisted dict first, then ephemeral overlay map.
             let p_sid = match store.resolve_predicate_iri(p_id) {
                 Some(iri) => store.encode_iri(iri),
-                None => continue,
+                None => match ephemeral_p_id_to_sid.get(&p_id) {
+                    Some(sid) => sid.clone(),
+                    None => continue, // truly unknown — shouldn't happen
+                },
             };
             let o_val = view.decode_value(o_type, o_key, p_id)?;
             let dt = store

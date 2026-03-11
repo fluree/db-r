@@ -15,6 +15,7 @@ use fluree_db_binary_index::format::branch::LeafEntry;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+use fluree_db_binary_index::read::column_loader::load_columns_cached_via_handle;
 use fluree_db_binary_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, ColumnBatch, ColumnProjection, ColumnSet,
 };
@@ -505,9 +506,24 @@ impl<'a> PsotSubjectCountIter<'a> {
                 if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
                     continue;
                 }
-                let batch = handle
-                    .load_columns(idx, &projection, RunSortOrder::Psot)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                let batch = if let Some(cache) = self.store.leaflet_cache() {
+                    let idx_u8: u8 = idx
+                        .try_into()
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                    load_columns_cached_via_handle(
+                        handle.as_ref(),
+                        idx,
+                        RunSortOrder::Psot,
+                        cache,
+                        handle.leaf_id(),
+                        idx_u8,
+                    )
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                } else {
+                    handle
+                        .load_columns(idx, &projection, RunSortOrder::Psot)
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                };
                 self.row = 0;
                 self.batch = Some(batch);
                 return Ok(Some(()));
@@ -636,13 +652,28 @@ impl<'a> PostObjectGroupCountIter<'a> {
                 if !mixed && entry.o_type_const != Some(OType::IRI_REF.as_u16()) {
                     return Ok(None);
                 }
-                let batch = handle
-                    .load_columns(
+                let batch = if let Some(cache) = self.store.leaflet_cache() {
+                    let idx_u8: u8 = idx
+                        .try_into()
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                    load_columns_cached_via_handle(
+                        handle.as_ref(),
                         idx,
-                        if mixed { &proj_otype_okey } else { &proj_okey },
                         RunSortOrder::Post,
+                        cache,
+                        handle.leaf_id(),
+                        idx_u8,
                     )
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                } else {
+                    handle
+                        .load_columns(
+                            idx,
+                            if mixed { &proj_otype_okey } else { &proj_okey },
+                            RunSortOrder::Post,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                };
                 self.row = 0;
                 self.batch = Some(batch);
                 self.mixed = mixed;
@@ -722,6 +753,11 @@ pub struct PsotSubjectWeightedSumIter<'a> {
     p_id: u32,
     weights: &'a FxHashMap<u64, u64>,
     default_weight: u64,
+    /// Optional allowlist of subject IDs to emit groups for.
+    /// When present, the iterator will **skip entire subject groups** that are
+    /// not in this sorted list, and will stop early once the list is exhausted.
+    allowed_subjects: Option<&'a [u64]>,
+    allowed_pos: usize,
     leaf_entries: &'a [LeafEntry],
     leaf_pos: usize,
     leaflet_idx: usize,
@@ -750,6 +786,39 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
             p_id,
             weights,
             default_weight,
+            allowed_subjects: None,
+            allowed_pos: 0,
+            leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
+            leaf_pos: 0,
+            leaflet_idx: 0,
+            row: 0,
+            handle: None,
+            batch: None,
+            cur_b: None,
+            cur_sum: 0,
+            mixed: false,
+            all_default: false,
+        }))
+    }
+
+    /// Create a new iterator that only emits groups for subjects in `allowed_subjects`.
+    ///
+    /// `allowed_subjects` must be sorted ascending and must not contain duplicates.
+    pub fn new_filtered_subjects(
+        store: &'a BinaryIndexStore,
+        g_id: GraphId,
+        p_id: u32,
+        weights: &'a FxHashMap<u64, u64>,
+        default_weight: u64,
+        allowed_subjects: &'a [u64],
+    ) -> Result<Option<Self>> {
+        Ok(Some(Self {
+            store,
+            p_id,
+            weights,
+            default_weight,
+            allowed_subjects: Some(allowed_subjects),
+            allowed_pos: 0,
             leaf_entries: leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id),
             leaf_pos: 0,
             leaflet_idx: 0,
@@ -805,17 +874,32 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                     continue;
                 }
 
-                let batch = handle
-                    .load_columns(
+                let batch = if let Some(cache) = self.store.leaflet_cache() {
+                    let idx_u8: u8 = idx
+                        .try_into()
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                    load_columns_cached_via_handle(
+                        handle.as_ref(),
                         idx,
-                        if mixed {
-                            &proj_sid_otype_okey
-                        } else {
-                            &proj_sid_okey
-                        },
                         RunSortOrder::Psot,
+                        cache,
+                        handle.leaf_id(),
+                        idx_u8,
                     )
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                } else {
+                    handle
+                        .load_columns(
+                            idx,
+                            if mixed {
+                                &proj_sid_otype_okey
+                            } else {
+                                &proj_sid_okey
+                            },
+                            RunSortOrder::Psot,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+                };
                 self.row = 0;
                 self.batch = Some(batch);
                 self.mixed = mixed;
@@ -830,10 +914,21 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
     /// Return the next `(subject_id, weighted_sum)` group with non-zero sum,
     /// or `None` when exhausted.
     pub fn next_group(&mut self) -> Result<Option<(u64, u64)>> {
+        if self.allowed_subjects.is_none() {
+            return self.next_group_unfiltered();
+        }
+        self.next_group_filtered()
+    }
+
+    fn next_group_unfiltered(&mut self) -> Result<Option<(u64, u64)>> {
         loop {
             if self.batch.is_none() && self.load_next_batch()?.is_none() {
                 if let Some(b) = self.cur_b.take() {
                     let n = std::mem::take(&mut self.cur_sum);
+                    // We are flushing the final allowed subject group at exhaustion.
+                    // Advancing keeps `allowed_pos` consistent even though we will
+                    // immediately return `None` on the next call.
+                    self.allowed_pos += 1;
                     return Ok(Some((b, n)));
                 }
                 return Ok(None);
@@ -846,6 +941,7 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
             }
 
             let b = batch.s_id.get(self.row);
+
             let w = if self.all_default {
                 // Pure non-IRI_REF leaflet — o_key can't be a subject ID.
                 self.default_weight
@@ -870,6 +966,84 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                 }
                 Some(_) => {}
             }
+
+            self.cur_sum += w;
+            self.row += 1;
+        }
+    }
+
+    fn next_group_filtered(&mut self) -> Result<Option<(u64, u64)>> {
+        let allowed = self
+            .allowed_subjects
+            .expect("checked: allowed_subjects is Some");
+        loop {
+            if self.allowed_pos >= allowed.len() {
+                // All requested subjects were processed — stop early.
+                if let Some(b) = self.cur_b.take() {
+                    let n = std::mem::take(&mut self.cur_sum);
+                    return Ok(Some((b, n)));
+                }
+                return Ok(None);
+            }
+
+            if self.batch.is_none() && self.load_next_batch()?.is_none() {
+                if let Some(b) = self.cur_b.take() {
+                    let n = std::mem::take(&mut self.cur_sum);
+                    return Ok(Some((b, n)));
+                }
+                return Ok(None);
+            }
+
+            let batch = self.batch.as_ref().unwrap();
+            if self.row >= batch.row_count {
+                self.batch = None;
+                continue;
+            }
+
+            let b = batch.s_id.get(self.row);
+
+            // If we are mid-group, do not skip.
+            if self.cur_b.is_none() {
+                while self.allowed_pos < allowed.len() && allowed[self.allowed_pos] < b {
+                    self.allowed_pos += 1;
+                }
+                if self.allowed_pos >= allowed.len() {
+                    return Ok(None);
+                }
+                let target = allowed[self.allowed_pos];
+                if b < target {
+                    // Skip this entire subject group quickly.
+                    let skip_b = b;
+                    while self.row < batch.row_count && batch.s_id.get(self.row) == skip_b {
+                        self.row += 1;
+                    }
+                    continue;
+                }
+                // b == target → allow group, but don't advance allowed_pos until the group ends.
+            }
+
+            // If we reached a new subject, emit the previous group (if any) before consuming this row.
+            if let Some(cur) = self.cur_b {
+                if cur != b {
+                    let out_b = self.cur_b.take().expect("checked: cur_b is Some");
+                    let out_n = std::mem::take(&mut self.cur_sum);
+                    // Completed one allowed subject group.
+                    self.allowed_pos += 1;
+                    return Ok(Some((out_b, out_n)));
+                }
+            } else {
+                self.cur_b = Some(b);
+                self.cur_sum = 0;
+            }
+
+            let w = if self.all_default
+                || (self.mixed && batch.o_type.get(self.row) != OType::IRI_REF.as_u16())
+            {
+                self.default_weight
+            } else {
+                let c = batch.o_key.get(self.row);
+                self.weights.get(&c).copied().unwrap_or(self.default_weight)
+            };
 
             self.cur_sum += w;
             self.row += 1;

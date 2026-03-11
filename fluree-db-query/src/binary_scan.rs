@@ -1392,13 +1392,25 @@ impl Operator for BinaryScanOperator {
 
         // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
         if ctx.overlay.is_some() {
-            let (mut ops, mut untranslated) = translate_overlay_flakes_with_untranslated(
-                ctx.overlay(),
-                store_ref,
-                ctx.dict_novelty.as_ref(),
-                ctx.to_t,
-                self.g_id,
-            );
+            let (mut ops, mut untranslated, ephemeral_preds) =
+                translate_overlay_flakes_with_untranslated(
+                    ctx.overlay(),
+                    store_ref,
+                    ctx.dict_novelty.as_ref(),
+                    ctx.to_t,
+                    self.g_id,
+                );
+
+            // Extend p_sids table with novelty-only predicates so that ephemeral
+            // p_ids from overlay ops can be decoded back to Sids during row binding.
+            for (iri, ep_id) in &ephemeral_preds {
+                let idx = *ep_id as usize;
+                if idx >= self.p_sids.len() {
+                    self.p_sids.resize(idx + 1, Sid::new(0, ""));
+                }
+                self.p_sids[idx] = store_ref.encode_iri(iri);
+            }
+
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, order);
                 let epoch = ctx.overlay().epoch();
@@ -1592,18 +1604,23 @@ pub fn translate_overlay_flakes(
     ops
 }
 
-/// Translate overlay flakes to V3 overlay ops, also returning flakes that cannot be translated.
+/// Translate overlay flakes to V3 overlay ops, also returning flakes that cannot be translated
+/// and the mapping of novelty-only predicate IRIs to ephemeral p_ids.
 ///
 /// Some FlakeValue variants (notably `FlakeValue::Vector`) are not representable in the V3
 /// overlay encoding. Those flakes are returned as fully materialized overlay-only rows so the
 /// query engine can still see them (after the indexed cursor is exhausted).
+///
+/// The `ephemeral_preds` map contains predicate IRI → ephemeral p_id for predicates that
+/// don't exist in the persisted index dictionary. Callers must use this to extend their
+/// p_id → Sid lookup tables so that novelty-only predicates can be resolved during decode.
 fn translate_overlay_flakes_with_untranslated(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     to_t: i64,
     g_id: GraphId,
-) -> (Vec<OverlayOp>, Vec<Flake>) {
+) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<String, u32>) {
     let mut ops = Vec::new();
     let mut untranslated = Vec::new();
     let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
@@ -1634,7 +1651,7 @@ fn translate_overlay_flakes_with_untranslated(
         },
     );
 
-    (ops, untranslated)
+    (ops, untranslated, ephemeral_preds)
 }
 
 /// Translate a single Flake to an OverlayOp.
