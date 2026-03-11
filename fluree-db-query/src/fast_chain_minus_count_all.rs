@@ -90,11 +90,14 @@ fn count_chain_minus(
 
     let mut it1 = PostObjectGroupCountIter::new(store, g_id, p1_id)?
         .ok_or_else(|| QueryError::Internal("chain+minus requires IRI_REF objects in p1".into()))?;
-    let mut it2 =
-        PsotObjectFilterCountIter::new(store, g_id, p2_id, &excluded_c, ObjectFilterMode::NotInSet)?
-            .ok_or_else(|| {
-                QueryError::Internal("chain+minus requires IRI_REF objects in p2".into())
-            })?;
+    let mut it2 = PsotObjectFilterCountIter::new(
+        store,
+        g_id,
+        p2_id,
+        &excluded_c,
+        ObjectFilterMode::NotInSet,
+    )?
+    .ok_or_else(|| QueryError::Internal("chain+minus requires IRI_REF objects in p2".into()))?;
 
     let mut a = it1.next_group()?;
     let mut b = it2.next_group()?;

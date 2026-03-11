@@ -10,7 +10,7 @@ use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::fast_chain_exists_count_all::predicate_chain_exists_join_count_all_operator;
-use crate::fast_chain_join_count_all::chain_join_count_all_operator;
+use crate::fast_chain_join_count_all::linear_chain_count_all_operator;
 use crate::fast_chain_minus_count_all::chain_minus_count_all_operator;
 use crate::fast_count::{
     count_blank_node_subjects_operator, count_distinct_object_operator,
@@ -1420,73 +1420,109 @@ fn detect_chain_exists_join_count_all(
     None
 }
 
-fn detect_chain_join_count_all(
+/// Detect a linear chain of N ≥ 2 bound-predicate triples for COUNT(*) pushdown.
+///
+/// Matches: `?v0 <p1> ?v1 . ?v1 <p2> ?v2 . ... ?v_{N-1} <pN> ?vN`
+/// where all predicates are bound (IRI/SID), all subjects/objects are variables,
+/// each triple's object variable equals the next triple's subject variable,
+/// and no triple has a datatype constraint.
+///
+/// Returns `(predicates_in_chain_order, count_output_var)`.
+fn detect_linear_chain_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, Ref, Ref, VarId)> {
+) -> Option<(Vec<Ref>, VarId)> {
     let out_var = detect_count_all_aggregate(query, options)?;
 
-    // WHERE must be exactly three triples (no FILTER/EXISTS/BIND/etc).
-    if query.patterns.len() != 3 {
+    // WHERE must be all triples, at least 2.
+    if query.patterns.len() < 2 {
         return None;
     }
-    let mut triples: Vec<&crate::triple::TriplePattern> = Vec::new();
+    let mut triples: Vec<&crate::triple::TriplePattern> = Vec::with_capacity(query.patterns.len());
     for p in &query.patterns {
         match p {
             Pattern::Triple(tp) => triples.push(tp),
             _ => return None,
         }
     }
-    if triples.len() != 3 {
-        return None;
-    }
 
-    // Find chain: (?a p1 ?b) and (?b p2 ?c) and (?c p3 ?d) in any order.
-    for t1 in &triples {
-        for t2 in &triples {
-            if std::ptr::eq(*t1, *t2) {
-                continue;
-            }
-            for t3 in &triples {
-                if std::ptr::eq(*t1, *t3) || std::ptr::eq(*t2, *t3) {
-                    continue;
-                }
-
-                let Ref::Var(_a) = &t1.s else { continue };
-                let Term::Var(b1) = &t1.o else { continue };
-                let Ref::Var(b2) = &t2.s else { continue };
-                if *b2 != *b1 {
-                    continue;
-                }
-                let Term::Var(c1) = &t2.o else { continue };
-                let Ref::Var(c2) = &t3.s else { continue };
-                if *c2 != *c1 {
-                    continue;
-                }
-                let Term::Var(_d) = &t3.o else { continue };
-
-                if t1.dtc.is_some() || t2.dtc.is_some() || t3.dtc.is_some() {
-                    continue;
-                }
-                let p1 = match &t1.p {
-                    Ref::Sid(_) | Ref::Iri(_) => t1.p.clone(),
-                    _ => continue,
-                };
-                let p2 = match &t2.p {
-                    Ref::Sid(_) | Ref::Iri(_) => t2.p.clone(),
-                    _ => continue,
-                };
-                let p3 = match &t3.p {
-                    Ref::Sid(_) | Ref::Iri(_) => t3.p.clone(),
-                    _ => continue,
-                };
-
-                return Some((p1, p2, p3, out_var));
-            }
+    // All predicates must be bound (IRI/SID), all s/o must be variables, no DTC.
+    for tp in &triples {
+        let Ref::Var(_) = &tp.s else { return None };
+        let Term::Var(_) = &tp.o else { return None };
+        if tp.dtc.is_some() {
+            return None;
+        }
+        match &tp.p {
+            Ref::Sid(_) | Ref::Iri(_) => {}
+            _ => return None,
         }
     }
 
-    None
+    let n = triples.len();
+
+    // Build subject/object var arrays.
+    let subject_vars: Vec<VarId> = triples
+        .iter()
+        .map(|tp| match &tp.s {
+            Ref::Var(v) => *v,
+            _ => unreachable!(),
+        })
+        .collect();
+    let object_vars: Vec<VarId> = triples
+        .iter()
+        .map(|tp| match &tp.o {
+            Term::Var(v) => *v,
+            _ => unreachable!(),
+        })
+        .collect();
+
+    // Find the chain head: the triple whose subject var doesn't appear as any object var.
+    let mut head_idx = None;
+    for (i, sv) in subject_vars.iter().enumerate() {
+        if !object_vars.contains(sv) {
+            if head_idx.is_some() {
+                return None; // Multiple heads → not a single chain.
+            }
+            head_idx = Some(i);
+        }
+    }
+    let mut cur = head_idx?;
+
+    // Follow the chain: current object var = next subject var.
+    let mut chain: Vec<usize> = Vec::with_capacity(n);
+    let mut used = vec![false; n];
+    for _ in 0..n {
+        chain.push(cur);
+        used[cur] = true;
+        let ov = object_vars[cur];
+        let next = subject_vars
+            .iter()
+            .enumerate()
+            .find(|(j, sv)| !used[*j] && **sv == ov);
+        match next {
+            Some((j, _)) => cur = j,
+            None => break,
+        }
+    }
+
+    if chain.len() != n {
+        return None; // Not all triples form a single chain.
+    }
+
+    // Ensure all variables are distinct (no self-joins or cycles).
+    let mut seen_vars = std::collections::HashSet::new();
+    for &idx in &chain {
+        if !seen_vars.insert(subject_vars[idx]) {
+            return None;
+        }
+    }
+    if !seen_vars.insert(object_vars[chain[n - 1]]) {
+        return None;
+    }
+
+    let predicates: Vec<Ref> = chain.iter().map(|&idx| triples[idx].p.clone()).collect();
+    Some((predicates, out_var))
 }
 
 fn detect_multicolumn_join_count_all(
@@ -2878,14 +2914,12 @@ fn build_operator_tree_inner(
         }
     }
 
-    // Fast-path: `COUNT(*)` for a 3-hop join chain (?a p1 ?b . ?b p2 ?c . ?c p3 ?d).
+    // Fast-path: `COUNT(*)` for an N-hop linear join chain (?a p1 ?b . ?b p2 ?c . ...).
     if enable_fused_fast_paths {
-        if let Some((p1, p2, p3, out_var)) = detect_chain_join_count_all(query, options) {
+        if let Some((predicates, out_var)) = detect_linear_chain_count_all(query, options) {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            return Ok(Box::new(chain_join_count_all_operator(
-                p1,
-                p2,
-                p3,
+            return Ok(Box::new(linear_chain_count_all_operator(
+                predicates,
                 out_var,
                 Some(fallback),
             )));

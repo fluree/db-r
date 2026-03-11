@@ -46,7 +46,34 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 //
                 // If the OPTIONAL contains non-triple patterns (FILTER/BIND/UNION/etc.),
                 // keep it as a single left join over the full inner group.
-                if inner.len() > 1 && inner.iter().all(|p| matches!(p, Pattern::Triple(_))) {
+                //
+                // IMPORTANT: do NOT split when the optional group contains an internal
+                // join dependency between triples (e.g., a property path sequence expands
+                // into `?s p ?__pp0 . ?__pp0 p ?o`). Splitting would lose the join and is
+                // not semantics-preserving even under Fluree's "partial binding" behavior.
+                let all_triples = inner.iter().all(|p| matches!(p, Pattern::Triple(_)));
+                let has_internal_chain_join = if all_triples && inner.len() > 1 {
+                    use fluree_db_query::triple::{Ref as QRef, Term as QTerm, TriplePattern};
+                    use fluree_db_query::var_registry::VarId;
+
+                    let mut subj_vars: Vec<VarId> = Vec::new();
+                    let mut obj_vars: Vec<VarId> = Vec::new();
+                    for p in &inner {
+                        let Pattern::Triple(tp) = p else { continue };
+                        let TriplePattern { s, o, .. } = tp;
+                        if let QRef::Var(v) = s {
+                            subj_vars.push(*v);
+                        }
+                        if let QTerm::Var(v) = o {
+                            obj_vars.push(*v);
+                        }
+                    }
+                    subj_vars.iter().any(|v| obj_vars.contains(v))
+                } else {
+                    false
+                };
+
+                if inner.len() > 1 && all_triples && !has_internal_chain_join {
                     Ok(inner
                         .into_iter()
                         .map(|p| Pattern::Optional(vec![p]))

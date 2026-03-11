@@ -1,4 +1,4 @@
-//! Fast-path: `COUNT(*)` for a 3-hop join chain of bound predicates.
+//! Fast-path: `COUNT(*)` for an N-hop linear join chain of bound predicates (N ≥ 2).
 //!
 //! Targets queries like:
 //!
@@ -6,43 +6,41 @@
 //! SELECT (COUNT(*) AS ?count) WHERE {
 //!   ?a <p1> ?b .
 //!   ?b <p2> ?c .
-//!   ?c <p3> ?d .
+//!   ?c <p3> ?d .        -- 3-hop example; handles 2-hop, 4-hop, etc.
 //! }
 //! ```
 //!
 //! The generic pipeline executes this via nested-loop joins and can end up
 //! materializing very large intermediate results.
 //!
-//! This operator computes the join cardinality without materializing join rows:
+//! This operator computes the join cardinality without materializing join rows
+//! via a right-to-left fold:
 //!
-//! Let:
-//! - `n3(c) = count_{p3}(c -> *)`
-//! - For each `b`, `w(b) = sum_{edges b->c in p2} n3(c)`
-//! - Final `COUNT(*) = sum_{edges a->b in p1} w(b)`
+//! 1. Rightmost predicate pN: `weights[x] = count_{pN}(x)` (subject outdegree)
+//! 2. Each intermediate p_i (i = N-1 down to 2): `weights[b] = Σ_{b->c in p_i} weights[c]`
+//! 3. Leftmost p1: `total = Σ_{b} count_{p1_objects=b} × weights[b]`
 //!
-//! For DBLP-like data, `p3` is much smaller than `p2` (`rdf:type`), so we also
-//! restrict the `p2` scan to only those `c` that appear in `p3` by merge-filtering
-//! in POST order (p,o,s).
+//! Step 2 uses `PsotSubjectWeightedSumIter` (default_weight=0 for inner join semantics).
+//! Step 3 uses `PostObjectGroupCountIter` merge-joined with the final weight map.
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
-    projection_okey_only, projection_sid_okey, FastPathOperator, PsotSubjectCountIter,
+    build_count_batch, fast_path_store, normalize_pred_sid, FastPathOperator,
+    PostObjectGroupCountIter, PsotSubjectCountIter, PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
-use fluree_db_binary_index::format::run_record::RunSortOrder;
-use fluree_db_binary_index::format::run_record_v2::read_ordered_key_v2;
 use fluree_db_binary_index::BinaryIndexStore;
-use fluree_db_core::o_type::OType;
 use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 
-pub fn chain_join_count_all_operator(
-    p1: Ref,
-    p2: Ref,
-    p3: Ref,
+/// Create a fast-path operator for `COUNT(*)` over a linear chain of N ≥ 2 predicates.
+///
+/// `predicates` must be in chain order: `[p1, p2, ..., pN]` matching
+/// `?v0 <p1> ?v1 . ?v1 <p2> ?v2 . ... ?v_{N-1} <pN> ?vN`.
+pub fn linear_chain_count_all_operator(
+    predicates: Vec<Ref>,
     out_var: VarId,
     fallback: Option<BoxedOperator>,
 ) -> FastPathOperator {
@@ -52,26 +50,25 @@ pub fn chain_join_count_all_operator(
             let Some(store) = fast_path_store(ctx) else {
                 return Ok(None);
             };
-            let p1_sid = normalize_pred_sid(store, &p1)?;
-            let p2_sid = normalize_pred_sid(store, &p2)?;
-            let p3_sid = normalize_pred_sid(store, &p3)?;
-            let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {
-                return Ok(Some(build_count_batch(out_var, 0)?));
-            };
-            let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
-                return Ok(Some(build_count_batch(out_var, 0)?));
-            };
-            let Some(p3_id) = store.sid_to_p_id(&p3_sid) else {
-                return Ok(Some(build_count_batch(out_var, 0)?));
-            };
 
-            match count_chain_join_all(store, ctx.binary_g_id, p1_id, p2_id, p3_id)? {
-                FastChainJoinCount::Supported(n) => {
+            // Resolve all predicate Refs to p_ids.
+            let mut p_ids: Vec<u32> = Vec::with_capacity(predicates.len());
+            for pred in &predicates {
+                let sid = normalize_pred_sid(store, pred)?;
+                let Some(p_id) = store.sid_to_p_id(&sid) else {
+                    // Any missing predicate in an inner join chain → 0 results.
+                    return Ok(Some(build_count_batch(out_var, 0)?));
+                };
+                p_ids.push(p_id);
+            }
+
+            match count_linear_chain(store, ctx.binary_g_id, &p_ids)? {
+                Some(n) => {
                     let n_i64 = i64::try_from(n)
                         .map_err(|_| QueryError::execution("COUNT(*) exceeds i64 in chain join"))?;
                     Ok(Some(build_count_batch(out_var, n_i64)?))
                 }
-                FastChainJoinCount::Unsupported => Ok(None),
+                None => Ok(None),
             }
         },
         fallback,
@@ -79,260 +76,63 @@ pub fn chain_join_count_all_operator(
     )
 }
 
-enum FastChainJoinCount {
-    Supported(u64),
-    Unsupported,
-}
-
-fn collect_c_counts_from_p3_psot(
-    store: &BinaryIndexStore,
-    g_id: GraphId,
-    p3_id: u32,
-) -> Result<Vec<(u64, u64)>> {
-    let mut iter = PsotSubjectCountIter::new(store, g_id, p3_id)?;
-    let mut out: Vec<(u64, u64)> = Vec::new();
-    while let Some((c, n)) = iter.next_group()? {
-        if n > 0 {
-            out.push((c, n));
-        }
-    }
-    Ok(out)
-}
-
-fn c_count_map(c_counts: &[(u64, u64)]) -> FxHashMap<u64, u64> {
-    let mut m: FxHashMap<u64, u64> = FxHashMap::default();
-    m.reserve(c_counts.len());
-    for (c, n) in c_counts {
-        m.insert(*c, *n);
-    }
-    m
-}
-
-/// Cursor over a predicate's PSOT rows that can advance to a requested subject id.
+/// Compute `COUNT(*)` for a linear chain `p_ids[0] -> p_ids[1] -> ... -> p_ids[N-1]`.
 ///
-/// Specialized for the `?b <p2> ?c` use case:
-/// - PSOT order groups by subject `b`
-/// - object `c` is expected to be IRI_REF (so `o_key` is a subject id)
-struct PsotSeekSumCursor<'a> {
-    store: &'a BinaryIndexStore,
-    p_id: u32,
-    leaves: &'a [fluree_db_binary_index::format::branch::LeafEntry],
-    leaf_pos: usize,
-    leaflet_idx: usize,
-    row: usize,
-    handle: Option<Box<dyn fluree_db_binary_index::read::leaf_access::LeafHandle>>,
-    batch: Option<fluree_db_binary_index::ColumnBatch>,
-    // Projection cached (SId + OKey).
-    projection: fluree_db_binary_index::ColumnProjection,
-    // Require homogeneous IRI_REF objects for fast path.
-    required_o_type: u16,
-}
-
-impl<'a> PsotSeekSumCursor<'a> {
-    fn new(store: &'a BinaryIndexStore, g_id: GraphId, p_id: u32) -> Self {
-        let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id);
-        Self {
-            store,
-            p_id,
-            leaves,
-            leaf_pos: 0,
-            leaflet_idx: 0,
-            row: 0,
-            handle: None,
-            batch: None,
-            projection: projection_sid_okey(),
-            required_o_type: OType::IRI_REF.as_u16(),
-        }
-    }
-
-    fn load_next_batch(&mut self, target_b: u64) -> Result<Option<()>> {
-        loop {
-            if self.handle.is_none() {
-                if self.leaf_pos >= self.leaves.len() {
-                    return Ok(None);
-                }
-                let leaf_entry = &self.leaves[self.leaf_pos];
-                self.leaf_pos += 1;
-                self.leaflet_idx = 0;
-                self.row = 0;
-                self.batch = None;
-                self.handle = Some(
-                    self.store
-                        .open_leaf_handle(
-                            &leaf_entry.leaf_cid,
-                            leaf_entry.sidecar_cid.as_ref(),
-                            false,
-                        )
-                        .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?,
-                );
-            }
-
-            let handle = self.handle.as_ref().unwrap();
-            let dir = handle.dir();
-
-            while self.leaflet_idx < dir.entries.len() {
-                let entry = &dir.entries[self.leaflet_idx];
-                let idx = self.leaflet_idx;
-                self.leaflet_idx += 1;
-                if entry.row_count == 0 || entry.p_const != Some(self.p_id) {
-                    continue;
-                }
-                // Skip leaflets that cannot contain the target subject by inspecting last key.
-                let last = read_ordered_key_v2(RunSortOrder::Psot, &entry.last_key);
-                let last_b = last.s_id.as_u64();
-                if last_b < target_b {
-                    continue;
-                }
-                // Require homogeneous IRI_REF objects.
-                if entry.o_type_const != Some(self.required_o_type) {
-                    return Err(QueryError::Internal(
-                        "chain-join fast path requires o_type_const=IRI_REF for PSOT leaflets"
-                            .into(),
-                    ));
-                }
-
-                let batch = handle
-                    .load_columns(idx, &self.projection, RunSortOrder::Psot)
-                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
-                self.row = 0;
-                self.batch = Some(batch);
-                return Ok(Some(()));
-            }
-
-            self.handle = None;
-        }
-    }
-
-    /// Return `Some(sum)` if `target_b` exists, otherwise `None`.
-    fn seek_sum_for_subject(
-        &mut self,
-        target_b: u64,
-        c_to_n3: &FxHashMap<u64, u64>,
-    ) -> Result<Option<u64>> {
-        let mut found = false;
-        let mut sum: u64 = 0;
-
-        loop {
-            if self.batch.is_none() && self.load_next_batch(target_b)?.is_none() {
-                return Ok(found.then_some(sum));
-            }
-            let batch = self.batch.as_ref().unwrap();
-
-            if self.row >= batch.row_count {
-                self.batch = None;
-                continue;
-            }
-
-            if !found {
-                // Advance to first row with s_id >= target_b.
-                while self.row < batch.row_count && batch.s_id.get(self.row) < target_b {
-                    let cur = batch.s_id.get(self.row);
-                    while self.row < batch.row_count && batch.s_id.get(self.row) == cur {
-                        self.row += 1;
-                    }
-                }
-                if self.row >= batch.row_count {
-                    self.batch = None;
-                    continue;
-                }
-                let b = batch.s_id.get(self.row);
-                if b > target_b {
-                    return Ok(None);
-                }
-                found = true;
-            } else if batch.s_id.get(self.row) > target_b {
-                return Ok(Some(sum));
-            }
-
-            // We are at `target_b` (or end-of-batch).
-            while self.row < batch.row_count && batch.s_id.get(self.row) == target_b {
-                let c = batch.o_key.get(self.row);
-                if let Some(n3) = c_to_n3.get(&c) {
-                    sum = sum
-                        .checked_add(*n3)
-                        .ok_or_else(|| QueryError::execution("COUNT(*) overflow in chain join"))?;
-                }
-                self.row += 1;
-            }
-
-            if self.row < batch.row_count {
-                // Next subject > target_b inside the same batch.
-                return Ok(Some(sum));
-            }
-
-            // Subject group may continue in the next leaflet/batch.
-            self.batch = None;
-        }
-    }
-}
-
-fn count_chain_join_all(
+/// Returns `None` if the fast path is not applicable (e.g., non-IRI join keys).
+fn count_linear_chain(
     store: &BinaryIndexStore,
     g_id: GraphId,
-    p1_id: u32,
-    p2_id: u32,
-    p3_id: u32,
-) -> Result<FastChainJoinCount> {
-    // Step 1: collect subjects `c` from p3 and their outdegree n3(c).
-    let c_counts = collect_c_counts_from_p3_psot(store, g_id, p3_id)?;
-    if c_counts.is_empty() {
-        return Ok(FastChainJoinCount::Supported(0));
-    }
+    p_ids: &[u32],
+) -> Result<Option<u64>> {
+    assert!(p_ids.len() >= 2, "chain must have at least 2 predicates");
 
-    // Build lookup map for n3(c).
-    let c_to_n3 = c_count_map(&c_counts);
+    let n = p_ids.len();
 
-    // Step 2+3 fused: stream p1 in POST grouped by object `b`, and for each `b` seek the
-    // corresponding group in p2 PSOT to compute `w(b) = Σ_{b->c} n3(c)`.
-    //
-    // This avoids building `w_by_b` for subjects that never appear as p1 objects.
-    let iri_ref = OType::IRI_REF.as_u16();
-    let mut p2_cursor = PsotSeekSumCursor::new(store, g_id, p2_id);
-
-    let leaves_p1 = leaf_entries_for_predicate(store, g_id, RunSortOrder::Post, p1_id);
-    let proj_p1 = projection_okey_only(); // POST: o_key = object (b)
-    let mut total: u64 = 0;
-
-    for leaf_entry in leaves_p1 {
-        let handle = store
-            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
-            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
-        let dir = handle.dir();
-        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
-            if entry.row_count == 0 || entry.p_const != Some(p1_id) {
-                continue;
-            }
-            if entry.o_type_const != Some(iri_ref) {
-                return Ok(FastChainJoinCount::Unsupported);
-            }
-            let batch = handle
-                .load_columns(leaflet_idx, &proj_p1, RunSortOrder::Post)
-                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
-
-            let mut row: usize = 0;
-            while row < batch.row_count {
-                let b = batch.o_key.get(row);
-                let mut n1: u64 = 0;
-                while row < batch.row_count && batch.o_key.get(row) == b {
-                    n1 += 1;
-                    row += 1;
-                }
-
-                let Some(w) = p2_cursor.seek_sum_for_subject(b, &c_to_n3)? else {
-                    continue;
-                };
-                if w == 0 {
-                    continue;
-                }
-                let add = n1
-                    .checked_mul(w)
-                    .ok_or_else(|| QueryError::execution("COUNT(*) overflow in chain join"))?;
-                total = total
-                    .checked_add(add)
-                    .ok_or_else(|| QueryError::execution("COUNT(*) overflow in chain join"))?;
+    // Step 1: Build initial weights from the rightmost predicate.
+    // weights[subject] = outdegree of subject in pN.
+    let mut weights: FxHashMap<u64, u64> = FxHashMap::default();
+    {
+        let mut iter = PsotSubjectCountIter::new(store, g_id, p_ids[n - 1])?;
+        while let Some((s, count)) = iter.next_group()? {
+            if count > 0 {
+                weights.insert(s, count);
             }
         }
     }
+    if weights.is_empty() {
+        return Ok(Some(0));
+    }
 
-    Ok(FastChainJoinCount::Supported(total))
+    // Step 2: Fold right-to-left through intermediate predicates (indices n-2 down to 1).
+    // For each p_i, compute new_weights[b] = Σ_{b->c in p_i} weights[c].
+    for i in (1..n - 1).rev() {
+        let Some(mut iter) = PsotSubjectWeightedSumIter::new(store, g_id, p_ids[i], &weights, 0)?
+        else {
+            return Ok(None);
+        };
+        let mut new_weights: FxHashMap<u64, u64> = FxHashMap::default();
+        while let Some((b, sum)) = iter.next_group()? {
+            if sum > 0 {
+                new_weights.insert(b, sum);
+            }
+        }
+        if new_weights.is_empty() {
+            return Ok(Some(0));
+        }
+        weights = new_weights;
+    }
+
+    // Step 3: Final merge — stream POST(p1) grouped by object, multiply by weights.
+    let Some(mut it1) = PostObjectGroupCountIter::new(store, g_id, p_ids[0])? else {
+        return Ok(None);
+    };
+
+    let mut total: u64 = 0;
+    while let Some((b, n1)) = it1.next_group()? {
+        if let Some(&w) = weights.get(&b) {
+            total = total.saturating_add(n1.saturating_mul(w));
+        }
+    }
+
+    Ok(Some(total))
 }

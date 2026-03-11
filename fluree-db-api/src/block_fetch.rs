@@ -28,12 +28,16 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::policy_builder;
-use fluree_db_binary_index::format::leaf::decode_leaf_header_v3;
+use fluree_db_binary_index::format::leaf::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3};
+use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+use fluree_db_binary_index::read::column_types::ColumnProjection;
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::storage::content_address;
-use fluree_db_core::{ContentId, LedgerSnapshot, NoOverlay, OverlayProvider, Storage, Tracker};
+use fluree_db_core::{
+    ContentId, LedgerSnapshot, NoOverlay, OType, OverlayProvider, Storage, Tracker,
+};
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -229,14 +233,105 @@ pub fn is_binary_leaf(bytes: &[u8]) -> bool {
 /// Returns the decoded flakes. Fails if the block is not a valid FLI3 leaf
 /// or if row-to-flake conversion fails (e.g., missing dictionary entries).
 pub fn decode_leaf_block(
-    _bytes: &[u8],
-    _gv: &BinaryGraphView,
+    bytes: &[u8],
+    gv: &BinaryGraphView,
+    snapshot: &LedgerSnapshot,
 ) -> Result<Vec<Flake>, BlockFetchError> {
-    // TODO(V3 migration): Implement FLI3 leaf decoding for the block fetch API.
-    // The V5 decode pipeline has been removed. The V3 columnar format
-    // uses a different layout (column blocks, o_type instead of o_kind/dt).
-    // Needs: V3 leaflet decoder → DecodedRowV3 → Flake conversion.
-    todo!("V3 migration: decode_leaf_block for FLI3 format")
+    let store = gv.store();
+    let header = decode_leaf_header_v3(bytes).map_err(BlockFetchError::LeafDecode)?;
+    let dir = decode_leaf_dir_v3_with_base(bytes, &header).map_err(BlockFetchError::LeafDecode)?;
+
+    let projection = ColumnProjection::all();
+    let mut flakes: Vec<Flake> = Vec::with_capacity(header.total_rows as usize);
+
+    for entry in &dir.entries {
+        if entry.row_count == 0 {
+            continue;
+        }
+        let batch = load_leaflet_columns(bytes, entry, dir.payload_base, &projection, header.order)
+            .map_err(BlockFetchError::LeafDecode)?;
+
+        for i in 0..batch.row_count {
+            let s_id = batch.s_id.get(i);
+            let p_id = batch.p_id.get_or(i, 0);
+            let o_type = batch.o_type.get_or(i, 0);
+            let o_key = batch.o_key.get(i);
+            let t_u32 = batch.t.get_or(i, 0);
+            let o_i = batch.o_i.get_or(i, u32::MAX);
+
+            // Subject: resolve to IRI then encode to Sid.
+            let s_iri = store
+                .resolve_subject_iri(s_id)
+                .map_err(BlockFetchError::LeafDecode)?;
+            let s = snapshot
+                .encode_iri(&s_iri)
+                .unwrap_or_else(|| fluree_db_core::Sid::new(0, s_iri));
+
+            // Predicate: resolve IRI then encode to Sid.
+            let p_iri = store.resolve_predicate_iri(p_id).ok_or_else(|| {
+                BlockFetchError::LeafDecode(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("predicate id {p_id} not found"),
+                ))
+            })?;
+            let p = snapshot
+                .encode_iri(p_iri)
+                .unwrap_or_else(|| fluree_db_core::Sid::new(0, p_iri));
+
+            // Object: graph-scoped decode (routes specialty kinds through arenas).
+            let mut o = gv
+                .decode_value(o_type, o_key, p_id)
+                .map_err(BlockFetchError::LeafDecode)?;
+            if let fluree_db_core::FlakeValue::Ref(sid) = &o {
+                let iri = store.sid_to_iri(sid);
+                o = fluree_db_core::FlakeValue::Ref(
+                    snapshot
+                        .encode_iri(&iri)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri)),
+                );
+            }
+
+            let dt = store.resolve_datatype_sid(o_type).map_or_else(
+                || fluree_db_core::Sid::new(0, ""),
+                |sid| {
+                    let iri = store.sid_to_iri(&sid);
+                    snapshot
+                        .encode_iri(&iri)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri))
+                },
+            );
+
+            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let meta = if lang.is_some() || o_i != u32::MAX {
+                Some(fluree_db_core::FlakeMeta {
+                    lang,
+                    i: if o_i != u32::MAX {
+                        Some(o_i as i32)
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+
+            // Basic sanity: o_type should always be valid.
+            let _ = OType::from_u16(o_type);
+
+            flakes.push(Flake {
+                g: None,
+                s,
+                p,
+                o,
+                dt,
+                t: t_u32 as i64,
+                op: true,
+                m: meta,
+            });
+        }
+    }
+
+    Ok(flakes)
 }
 
 // ============================================================================
@@ -371,7 +466,7 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
             // Block fetch decodes leaves for replication / policy filtering;
             // specialty kinds (BigInt, Vector) route through per-graph arenas.
             let gv = BinaryGraphView::new(Arc::clone(store), 0);
-            let flakes = decode_leaf_block(&bytes, &gv)?;
+            let flakes = decode_leaf_block(&bytes, &gv, lctx.snapshot)?;
 
             let (filtered, policy_applied) = apply_policy_filter(
                 lctx.snapshot,

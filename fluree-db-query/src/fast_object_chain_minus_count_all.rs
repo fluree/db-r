@@ -95,9 +95,7 @@ fn count_object_chain_minus(
         return Ok(Some(total));
     }
 
-    let Some(mut b_list) =
-        collect_subjects_with_object_in_set(store, g_id, p2_id, &c_set)?
-    else {
+    let Some(mut b_list) = collect_subjects_with_object_in_set(store, g_id, p2_id, &c_set)? else {
         return Ok(None);
     };
     if b_list.is_empty() {
@@ -106,8 +104,7 @@ fn count_object_chain_minus(
     b_list.sort_unstable();
     b_list.dedup();
 
-    let Some(in_set) = sum_post_object_counts_filtered(store, g_id, p_outer_id, &b_list)?
-    else {
+    let Some(in_set) = sum_post_object_counts_filtered(store, g_id, p_outer_id, &b_list)? else {
         return Ok(None);
     };
 

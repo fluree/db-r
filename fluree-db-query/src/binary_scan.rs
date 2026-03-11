@@ -423,7 +423,7 @@ impl BinaryScanOperator {
                 }
                 if let Some(tag) = dtc.lang_tag() {
                     let flake_lang = flake.m.as_ref().and_then(|m| m.lang.as_ref());
-                    if flake_lang.map(|s| s.as_str()) != Some(tag.as_ref()) {
+                    if flake_lang.map(|s| s.as_str()) != Some(tag) {
                         continue;
                     }
                 }
@@ -1367,7 +1367,7 @@ impl Operator for BinaryScanOperator {
 
         // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
         if ctx.overlay.is_some() {
-            let mut ops = translate_overlay_flakes(
+            let (mut ops, mut untranslated) = translate_overlay_flakes_with_untranslated(
                 ctx.overlay(),
                 store_ref,
                 ctx.dict_novelty.as_ref(),
@@ -1379,6 +1379,62 @@ impl Operator for BinaryScanOperator {
                 let epoch = ctx.overlay().epoch();
                 cursor.set_overlay_ops(ops);
                 cursor.set_epoch(epoch);
+            }
+
+            // Some overlay flakes cannot be represented in V3 overlay ops (e.g., @vector).
+            // Keep them as materialized flakes and stream them after the cursor completes.
+            if !untranslated.is_empty() {
+                let cmp = self.index.comparator();
+                untranslated.sort_by(cmp);
+                untranslated = remove_stale_overlay_flakes(untranslated);
+
+                // Apply equality match (subject/predicate/object) against pattern constants.
+                let s_sid = match &self.pattern.s {
+                    Ref::Sid(s) => Some(s.clone()),
+                    _ => None,
+                };
+                let p_sid = match &self.pattern.p {
+                    Ref::Sid(p) => Some(p.clone()),
+                    _ => None,
+                };
+
+                if s_sid.is_some() || p_sid.is_some() || self.bound_o.is_some() {
+                    untranslated.retain(|f| {
+                        if let Some(s) = s_sid.as_ref() {
+                            if &f.s != s {
+                                return false;
+                            }
+                        }
+                        if let Some(p) = p_sid.as_ref() {
+                            if &f.p != p {
+                                return false;
+                            }
+                        }
+                        if let Some(o) = self.bound_o.as_ref() {
+                            if &f.o != o {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                }
+
+                if let Some(bounds) = self.object_bounds.as_ref() {
+                    untranslated.retain(|f| bounds.matches(&f.o));
+                }
+
+                if !untranslated.is_empty() {
+                    self.range_iter = Some(
+                        untranslated
+                            .into_iter()
+                            .map(|flake| RangeFlake {
+                                flake,
+                                ledger_alias: None,
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter(),
+                    );
+                }
             }
         }
         cursor.set_to_t(ctx.to_t);
@@ -1420,36 +1476,40 @@ impl Operator for BinaryScanOperator {
             .map(|_| Vec::with_capacity(batch_size))
             .collect();
 
-        let produced = if self.range_iter.is_some() {
-            let n = self.flakes_to_bindings(&mut columns, ctx, batch_size)?;
+        let mut produced = 0usize;
+
+        // Prefer binary cursor (indexed data), then drain any overlay-only fallback flakes.
+        while produced < batch_size {
+            let Some(cursor) = &mut self.cursor else {
+                break;
+            };
+
+            match cursor.next_batch() {
+                Ok(Some(batch)) => {
+                    let n = self.batch_to_bindings(&batch, &mut columns, Some(ctx))?;
+                    for _ in 0..n {
+                        ctx.tracker.consume_fuel_one()?;
+                    }
+                    produced += n;
+                }
+                Ok(None) => {
+                    // Cursor exhausted — drop it so we can proceed to `range_iter`.
+                    self.cursor = None;
+                    break;
+                }
+                Err(e) => {
+                    return Err(QueryError::Internal(format!("V3 cursor: {}", e)));
+                }
+            }
+        }
+
+        if produced < batch_size && self.range_iter.is_some() {
+            let n = self.flakes_to_bindings(&mut columns, ctx, batch_size - produced)?;
             for _ in 0..n {
                 ctx.tracker.consume_fuel_one()?;
             }
-            n
-        } else {
-            let mut produced = 0usize;
-            while produced < batch_size {
-                let cursor = match &mut self.cursor {
-                    Some(c) => c,
-                    None => break,
-                };
-
-                match cursor.next_batch() {
-                    Ok(Some(batch)) => {
-                        let n = self.batch_to_bindings(&batch, &mut columns, Some(ctx))?;
-                        for _ in 0..n {
-                            ctx.tracker.consume_fuel_one()?;
-                        }
-                        produced += n;
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        return Err(QueryError::Internal(format!("V3 cursor: {}", e)));
-                    }
-                }
-            }
-            produced
-        };
+            produced += n;
+        }
 
         self.finalize_columns(columns, produced)
     }
@@ -1505,6 +1565,51 @@ pub fn translate_overlay_flakes(
     );
 
     ops
+}
+
+/// Translate overlay flakes to V3 overlay ops, also returning flakes that cannot be translated.
+///
+/// Some FlakeValue variants (notably `FlakeValue::Vector`) are not representable in the V3
+/// overlay encoding. Those flakes are returned as fully materialized overlay-only rows so the
+/// query engine can still see them (after the indexed cursor is exhausted).
+fn translate_overlay_flakes_with_untranslated(
+    overlay: &dyn OverlayProvider,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    to_t: i64,
+    g_id: GraphId,
+) -> (Vec<OverlayOp>, Vec<Flake>) {
+    let mut ops = Vec::new();
+    let mut untranslated = Vec::new();
+    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut next_ephemeral_p_id = store.predicate_count();
+
+    overlay.for_each_overlay_flake(
+        g_id,
+        fluree_db_core::IndexType::Spot,
+        None,
+        None,
+        true,
+        to_t,
+        &mut |flake| match translate_one_flake_v3_pub(
+            flake,
+            store,
+            dict_novelty,
+            &mut ephemeral_preds,
+            &mut next_ephemeral_p_id,
+        ) {
+            Ok(op) => ops.push(op),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::Unsupported {
+                    untranslated.push(flake.clone());
+                } else {
+                    tracing::warn!(error = %e, "failed to translate overlay flake to V3");
+                }
+            }
+        },
+    );
+
+    (ops, untranslated)
 }
 
 /// Translate a single Flake to an OverlayOp.

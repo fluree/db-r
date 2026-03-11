@@ -16,6 +16,7 @@ use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
 use fluree_db_core::{is_rdf_type, ClassPropertyUsage, ClassStatEntry, IndexStats};
 use fluree_db_core::{FlakeValue, GraphDbRef, IndexType, LedgerSnapshot, Sid};
+use fluree_db_core::{RangeMatch, RangeTest};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -27,6 +28,9 @@ use fluree_db_query::{
 use fluree_vocab::rdf::TYPE as RDF_TYPE_IRI;
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+const POLICY_GRAPHS: [fluree_db_core::GraphId; 1] = [0];
 
 async fn augment_class_property_stats_from_novelty(
     snapshot: &LedgerSnapshot,
@@ -278,16 +282,17 @@ async fn load_policies_by_identity(
         Term::Var(class_var),
     );
 
-    let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
-    let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
-
     // Collect class SIDs
     let mut class_sids: Vec<Sid> = Vec::new();
-    for batch in &batches {
-        for row in 0..batch.len() {
-            if let Some(binding) = batch.get(row, class_var) {
-                if let Some(sid) = binding.as_sid() {
-                    class_sids.push(sid.clone());
+    for g_id in POLICY_GRAPHS {
+        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        let batches = execute_pattern_with_overlay_at(db, &vars, pattern.clone(), None).await?;
+        for batch in &batches {
+            for row in 0..batch.len() {
+                if let Some(binding) = batch.get(row, class_var) {
+                    if let Some(sid) = binding.as_sid() {
+                        class_sids.push(sid.clone());
+                    }
                 }
             }
         }
@@ -317,7 +322,7 @@ async fn load_policies_by_class(
     // Resolve class IRIs to SIDs
     let mut class_sids = Vec::with_capacity(class_iris.len());
     for iri in class_iris {
-        class_sids.push(resolve_iri_to_sid(snapshot, iri)?);
+        class_sids.push(resolve_policy_class_iri_to_sid(snapshot, iri)?);
     }
 
     load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await
@@ -338,32 +343,29 @@ async fn load_policies_of_classes(
     to_t: i64,
     class_sids: &[Sid],
 ) -> Result<Vec<PolicyRestriction>> {
-    let rdf_type_sid = resolve_iri_to_sid(snapshot, RDF_TYPE_IRI)?;
-
-    let mut vars = VarRegistry::new();
-    let policy_var = vars.get_or_insert("?policy");
+    let rdf_type_sid = resolve_system_iri_to_sid(snapshot, RDF_TYPE_IRI, "rdf:type")?;
 
     // Collect all policy subjects
     let mut policy_sids: HashSet<Sid> = HashSet::new();
 
     for class_sid in class_sids {
-        // Query: ?policy a <class>
-        let pattern = TriplePattern::new(
-            Ref::Var(policy_var),
-            Ref::Sid(rdf_type_sid.clone()),
-            Term::Sid(class_sid.clone()),
-        );
+        for g_id in POLICY_GRAPHS {
+            let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+            let flakes = db
+                .range(
+                    // POST is the correct index for `rdf:type` lookups by object (class).
+                    IndexType::Post,
+                    RangeTest::Eq,
+                    RangeMatch::predicate_object(
+                        rdf_type_sid.clone(),
+                        FlakeValue::Ref(class_sid.clone()),
+                    ),
+                )
+                .await
+                .map_err(|e| ApiError::internal(format!("policy class lookup failed: {e}")))?;
 
-        let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
-        let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
-
-        for batch in &batches {
-            for row in 0..batch.len() {
-                if let Some(binding) = batch.get(row, policy_var) {
-                    if let Some(sid) = binding.as_sid() {
-                        policy_sids.insert(sid.clone());
-                    }
-                }
+            for flake in flakes {
+                policy_sids.insert(flake.s);
             }
         }
     }
@@ -396,7 +398,6 @@ async fn load_policy_restriction(
     // Collect properties using explicit predicate queries
     // (wildcard ?pred would be filtered by scan layer for fluree:ledger predicates)
     let mut allow: Option<bool> = None;
-    let mut action: Option<PolicyAction> = None;
     let mut on_property: HashSet<Sid> = HashSet::new();
     let mut on_subject: HashSet<Sid> = HashSet::new();
     let mut on_class: HashSet<Sid> = HashSet::new();
@@ -404,13 +405,14 @@ async fn load_policy_restriction(
     let mut message: Option<String> = None;
     let mut policy_query_json: Option<String> = None;
 
-    // Resolve predicate SIDs we need to query
-    let view_sid = resolve_iri_to_sid(snapshot, policy_iris::VIEW).ok();
-    let modify_sid = resolve_iri_to_sid(snapshot, policy_iris::MODIFY).ok();
+    // Resolve predicate SIDs we need to query (system IRIs must resolve strictly).
+    let view_sid = resolve_system_iri_to_sid(snapshot, policy_iris::VIEW, "f:view")?;
+    let modify_sid = resolve_system_iri_to_sid(snapshot, policy_iris::MODIFY, "f:modify")?;
 
     // Query each policy predicate explicitly
     // f:allow
-    if let Ok(allow_sid) = resolve_iri_to_sid(snapshot, policy_iris::ALLOW) {
+    {
+        let allow_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ALLOW, "f:allow")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &allow_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
@@ -425,29 +427,32 @@ async fn load_policy_restriction(
     }
 
     // f:action - collect all action values to determine View, Modify, or Both
-    if let Ok(action_sid) = resolve_iri_to_sid(snapshot, policy_iris::ACTION) {
+    let action: Option<PolicyAction> = {
+        let action_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ACTION, "f:action")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &action_sid).await?;
         let mut has_view = false;
         let mut has_modify = false;
         for binding in bindings {
             if let Some(action_ref) = binding.as_sid() {
-                if view_sid.as_ref() == Some(action_ref) {
+                if &view_sid == action_ref {
                     has_view = true;
-                } else if modify_sid.as_ref() == Some(action_ref) {
+                } else if &modify_sid == action_ref {
                     has_modify = true;
                 }
             }
         }
-        action = match (has_view, has_modify) {
+        match (has_view, has_modify) {
             (true, true) => Some(PolicyAction::Both),
             (true, false) => Some(PolicyAction::View),
             (false, true) => Some(PolicyAction::Modify),
             (false, false) => None,
-        };
-    }
+        }
+    };
 
     // f:onProperty (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_PROPERTY) {
+    {
+        let pred_sid =
+            resolve_system_iri_to_sid(snapshot, policy_iris::ON_PROPERTY, "f:onProperty")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
@@ -457,7 +462,8 @@ async fn load_policy_restriction(
     }
 
     // f:onSubject (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_SUBJECT) {
+    {
+        let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ON_SUBJECT, "f:onSubject")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
@@ -467,7 +473,8 @@ async fn load_policy_restriction(
     }
 
     // f:onClass (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::ON_CLASS) {
+    {
+        let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ON_CLASS, "f:onClass")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
@@ -477,7 +484,8 @@ async fn load_policy_restriction(
     }
 
     // f:required
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::REQUIRED) {
+    {
+        let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::REQUIRED, "f:required")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
@@ -492,7 +500,8 @@ async fn load_policy_restriction(
     }
 
     // f:exMessage
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::EX_MESSAGE) {
+    {
+        let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::EX_MESSAGE, "f:exMessage")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Binding::Lit {
@@ -507,7 +516,8 @@ async fn load_policy_restriction(
     }
 
     // f:query
-    if let Ok(pred_sid) = resolve_iri_to_sid(snapshot, policy_iris::QUERY) {
+    {
+        let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::QUERY, "f:query")?;
         let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             match binding {
@@ -616,23 +626,35 @@ async fn query_predicate(
     subject_sid: &Sid,
     predicate_sid: &Sid,
 ) -> Result<Vec<Binding>> {
-    let mut vars = VarRegistry::new();
-    let obj_var = vars.get_or_insert("?obj");
+    // Use range() to avoid late-materialized Encoded* bindings.
+    // Policy loading needs concrete SID/literal values for restriction indexing.
+    let mut results: Vec<Binding> = Vec::new();
+    for g_id in POLICY_GRAPHS {
+        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        let flakes = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject_predicate(subject_sid.clone(), predicate_sid.clone()),
+            )
+            .await
+            .map_err(|e| ApiError::internal(format!("policy predicate lookup failed: {e}")))?;
 
-    let pattern = TriplePattern::new(
-        Ref::Sid(subject_sid.clone()),
-        Ref::Sid(predicate_sid.clone()),
-        Term::Var(obj_var),
-    );
-
-    let db = GraphDbRef::new(snapshot, 0, overlay, to_t);
-    let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
-
-    let mut results = Vec::new();
-    for batch in &batches {
-        for row in 0..batch.len() {
-            if let Some(binding) = batch.get(row, obj_var) {
-                results.push(binding.clone());
+        for flake in flakes {
+            match flake.o {
+                FlakeValue::Ref(sid) => results.push(Binding::Sid(sid)),
+                val => results.push(Binding::Lit {
+                    val,
+                    dt: flake.dt,
+                    lang: flake
+                        .m
+                        .as_ref()
+                        .and_then(|m| m.lang.as_ref())
+                        .map(|s| Arc::<str>::from(s.as_str())),
+                    t: Some(flake.t),
+                    op: None,
+                    p_id: None,
+                }),
             }
         }
     }
@@ -909,6 +931,29 @@ fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
 fn resolve_identity_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
     snapshot.encode_iri_strict(iri).ok_or_else(|| {
         ApiError::query(format!("Failed to resolve IRI '{iri}' for identity policy"))
+    })
+}
+
+/// Resolve a policy class IRI **strictly**.
+///
+/// Server-level policy defaults (and query `opts.policy-class`) should not silently
+/// fall back to EMPTY namespace encoding, because that would make the class lookup
+/// a no-op and effectively disable policy enforcement.
+fn resolve_policy_class_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
+    snapshot
+        .encode_iri_strict(iri)
+        .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{iri}' for policy-class")))
+}
+
+/// Resolve a system vocabulary IRI **strictly**.
+///
+/// Used for policy vocabulary + RDF/RDFS terms where silent fallback encoding would
+/// disable enforcement (e.g., `f:onProperty` mismatch → no targeted policies apply).
+fn resolve_system_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str, label: &str) -> Result<Sid> {
+    snapshot.encode_iri_strict(iri).ok_or_else(|| {
+        ApiError::internal(format!(
+            "Failed to resolve required system IRI '{iri}' ({label})"
+        ))
     })
 }
 

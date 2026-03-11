@@ -139,8 +139,9 @@ fn binary_range_eq_v3(
             Some(id) => filter.s_id = Some(id),
             None => {
                 if dict_novelty.is_initialized() {
-                    if let Some(id) =
-                        dict_novelty.subjects.find_subject(s_sid.namespace_code, &s_sid.name)
+                    if let Some(id) = dict_novelty
+                        .subjects
+                        .find_subject(s_sid.namespace_code, &s_sid.name)
                     {
                         filter.s_id = Some(id);
                     } else {
@@ -153,7 +154,75 @@ fn binary_range_eq_v3(
         }
     }
     if let Some(p_sid) = &match_val.p {
-        filter.p_id = store.sid_to_p_id(p_sid);
+        match store.sid_to_p_id(p_sid) {
+            Some(id) => filter.p_id = Some(id),
+            None => {
+                // Unknown predicate in persisted dict: base scan cannot match.
+                // Overlay may still contain this predicate (novelty), so return overlay-only.
+                return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+            }
+        }
+    }
+    if let Some(o_val) = &match_val.o {
+        match o_val {
+            fluree_db_core::FlakeValue::Ref(sid) => {
+                // Resolve ref object to an s_id (persisted → DictNovelty).
+                let o_id = match store.sid_to_s_id(sid)? {
+                    Some(id) => id,
+                    None => {
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty
+                                .subjects
+                                .find_subject(sid.namespace_code, &sid.name)
+                            {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
+                    }
+                };
+                filter.o_type = Some(OType::IRI_REF.as_u16());
+                filter.o_key = Some(o_id);
+            }
+            fluree_db_core::FlakeValue::String(s) => {
+                // Resolve string dict id (persisted → DictNovelty).
+                let str_id = match store.find_string_id(s)? {
+                    Some(id) => id,
+                    None => {
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty.strings.find_string(s) {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
+                    }
+                };
+                filter.o_type = Some(OType::XSD_STRING.as_u16());
+                filter.o_key = Some(str_id as u64);
+            }
+            _ => {
+                // Best-effort: encode basic inline types for equality filtering.
+                if let Ok((ot, key)) = crate::binary_scan::value_to_otype_okey_simple(o_val, store)
+                {
+                    filter.o_type = Some(ot.as_u16());
+                    filter.o_key = Some(key);
+                }
+            }
+        }
     }
 
     // Get branch manifest.
@@ -240,6 +309,24 @@ fn binary_range_eq_v3(
                 let ot = OType::from_u16(o_type);
                 if ot.is_iri_ref() || ot.is_blank_node() {
                     fluree_db_core::FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?)
+                } else if matches!(ot.decode_kind(), fluree_db_core::DecodeKind::StringDict) {
+                    // Overlay can introduce novel string IDs that don't exist in the
+                    // persisted forward packs yet. Prefer persisted lookup, then novelty.
+                    let str_id = o_key as u32;
+                    match store.resolve_string_value(str_id) {
+                        Ok(s) => fluree_db_core::FlakeValue::String(s),
+                        Err(e) => {
+                            if dict_novelty.is_initialized() {
+                                if let Some(s) = dict_novelty.strings.resolve_string(str_id) {
+                                    fluree_db_core::FlakeValue::String(s.to_string())
+                                } else {
+                                    return Err(e);
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
                 } else {
                     view.decode_value(o_type, o_key, p_id)?
                 }
