@@ -650,6 +650,49 @@ mod tests {
         assert!(has_not_exists, "Expected NotExists pattern");
     }
 
+    #[test]
+    fn test_filter_not_exists_unknown_predicate_does_not_error() {
+        // Regression guard: unknown predicate IRIs must not fail lowering.
+        // They should encode to the EMPTY namespace and naturally produce no matches at runtime.
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:a ?o .
+               FILTER NOT EXISTS { ?s <http://unknown.example/ns/does-not-exist> ?x }
+             }",
+        )
+        .unwrap();
+
+        let mut saw_not_exists = false;
+        for p in &query.patterns {
+            if let Pattern::NotExists(inner) = p {
+                saw_not_exists = true;
+                assert!(
+                    inner.iter().any(|ip| matches!(ip, Pattern::Triple(_))),
+                    "Expected NOT EXISTS inner pattern to contain a triple"
+                );
+
+                for ip in inner {
+                    if let Pattern::Triple(tp) = ip {
+                        if let Ref::Sid(sid) = &tp.p {
+                            if sid.name.as_ref() == "http://unknown.example/ns/does-not-exist" {
+                                assert_eq!(
+                                    sid.namespace_code,
+                                    fluree_vocab::namespaces::EMPTY,
+                                    "Unknown IRI should encode to EMPTY namespace"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(saw_not_exists, "Expected NotExists pattern");
+        panic!("Expected NOT EXISTS predicate to encode as EMPTY-namespace Sid");
+    }
+
     // =========================================================================
     // New Function Tests
     // =========================================================================
