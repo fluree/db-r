@@ -140,6 +140,7 @@ impl<'a> ExecutionContext<'a> {
     /// via a single `TypeId` downcast so that `BinaryScanOperator` can use it.
     pub fn from_graph_db_ref(db: GraphDbRef<'a>, vars: &'a VarRegistry) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
+        let dict_novelty = Self::extract_dict_novelty(db.snapshot);
 
         Self {
             snapshot: db.snapshot,
@@ -161,7 +162,7 @@ impl<'a> ExecutionContext<'a> {
             strict_bind_errors: false,
             binary_store,
             binary_g_id: db.g_id,
-            dict_novelty: None,
+            dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
         }
@@ -177,6 +178,7 @@ impl<'a> ExecutionContext<'a> {
         from_t: Option<i64>,
     ) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
+        let dict_novelty = Self::extract_dict_novelty(db.snapshot);
 
         Self {
             snapshot: db.snapshot,
@@ -198,7 +200,7 @@ impl<'a> ExecutionContext<'a> {
             strict_bind_errors: false,
             binary_store,
             binary_g_id: db.g_id,
-            dict_novelty: None,
+            dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
         }
@@ -662,6 +664,19 @@ impl<'a> ExecutionContext<'a> {
             .as_ref()
             .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
             .map(|brp| Arc::clone(brp.store()))
+    }
+
+    /// Extract `DictNovelty` from a snapshot's `RangeProvider` via downcast.
+    ///
+    /// This is critical for decoding novelty-only subject/string IDs when executing via
+    /// `BinaryScanOperator`. Without it, decoding falls back to persisted forward packs and
+    /// fails for novelty IDs (e.g. "string id N not found in forward packs").
+    fn extract_dict_novelty(snapshot: &LedgerSnapshot) -> Option<Arc<DictNovelty>> {
+        snapshot
+            .range_provider
+            .as_ref()
+            .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+            .map(|brp| Arc::clone(brp.dict_novelty()))
     }
 
     /// Attach a binary columnar index store for fast local-file scans.

@@ -39,6 +39,11 @@ impl BinaryRangeProvider {
     pub fn store(&self) -> &Arc<BinaryIndexStore> {
         &self.store
     }
+
+    /// Access the `DictNovelty` used for overlay decoding.
+    pub fn dict_novelty(&self) -> &Arc<DictNovelty> {
+        &self.dict_novelty
+    }
 }
 
 impl RangeProvider for BinaryRangeProvider {

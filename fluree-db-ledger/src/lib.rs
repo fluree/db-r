@@ -797,6 +797,77 @@ mod tests {
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 1);
     }
 
+    #[test]
+    fn test_apply_loaded_db_repopulates_dict_novelty_for_remaining_overlay_strings() {
+        use fluree_db_core::IndexType;
+
+        // Scenario:
+        // - Index exists at t=1 with string watermark=1
+        // - Two commits happen: t=2 adds string "a" (becomes id=2), t=3 adds string "b" (id=3)
+        // - A newer index arrives at t=2 (string watermark=2) but commit t=3 remains in novelty
+        // - apply_loaded_db must reset watermarks AND repopulate DictNovelty from remaining novelty
+        //   so string id 3 is still resolvable (otherwise decode fails with "string id 3 not found").
+
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot.t = 1;
+        snapshot.string_watermark = 1;
+
+        let mut state = LedgerState::new(snapshot, Novelty::new(1));
+        let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
+
+        let s = Sid::new(0, "ex:s");
+        let p = Sid::new(0, "ex:p");
+        let dt = Sid::new(2, "string"); // xsd:string (default namespace codes)
+
+        let flakes_t2 = vec![Flake::new(
+            s.clone(),
+            p.clone(),
+            FlakeValue::String("a".to_string()),
+            dt.clone(),
+            2,
+            true,
+            None,
+        )];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t2);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t2, 2, &reverse_graph)
+            .unwrap();
+
+        let flakes_t3 = vec![Flake::new(
+            s,
+            p,
+            FlakeValue::String("b".to_string()),
+            dt,
+            3,
+            true,
+            None,
+        )];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t3);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t3, 3, &reverse_graph)
+            .unwrap();
+
+        // Sanity: both novelty strings exist before applying the new index.
+        assert_eq!(state.dict_novelty.strings.find_string("a"), Some(2));
+        assert_eq!(state.dict_novelty.strings.find_string("b"), Some(3));
+        assert_eq!(state.dict_novelty.strings.resolve_string(3), Some("b"));
+
+        // Apply a newer index snapshot at t=2 (string watermark=2), leaving commit t=3 in novelty.
+        let mut new_snapshot = LedgerSnapshot::genesis("test:main");
+        new_snapshot.t = 2;
+        new_snapshot.string_watermark = 2;
+        state.apply_loaded_db(new_snapshot, None).unwrap();
+
+        // Novelty at t<=2 cleared; t=3 remains active.
+        assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 1);
+
+        // Regression assertion:
+        // With watermark=2, the remaining novelty string must still resolve at id=3.
+        // Before the fix, apply_loaded_db reset dict_novelty and lost this mapping.
+        assert_eq!(state.dict_novelty.strings.watermark(), 2);
+        assert_eq!(state.dict_novelty.strings.resolve_string(3), Some("b"));
+    }
+
     #[tokio::test]
     async fn test_apply_index_address_mismatch() {
         let storage = MemoryStorage::new();
