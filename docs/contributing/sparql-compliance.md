@@ -522,7 +522,7 @@ Each test creates an in-memory Fluree ledger, loads RDF data, executes a SPARQL 
 
 **BIND** (10/10 — 100%):
 - Fixed lexer to tokenize `+`/`-` as separate operators per the SPARQL spec (`INTEGER` is unsigned; `INTEGER_POSITIVE`/`INTEGER_NEGATIVE` are grammar-level). This fixed `?o+10` being mis-tokenized as `Var, Integer(10)` instead of `Var, Plus, Integer(10)`.
-- `compute_variable_deps` now traces BIND expression inputs via fixpoint expansion so projection pushdown retains variables needed by BIND evaluation (e.g., `?o` for `BIND(?o+10 AS ?z)`).
+- BIND input variable liveness is handled by `precompute_suffix_vars` (cross-block) and `pending_binds.expr.variables()` (within-block) in the WHERE planner — no special handling needed in `compute_variable_deps`.
 - Explicitly nested `{ }` blocks inside WHERE are lowered as anonymous subqueries (`SubqueryPattern`) to preserve SPARQL scope boundaries (bind10).
 
 **VALUES / Bindings** (10/11 — 91%):
