@@ -10,7 +10,10 @@
 //! - Bind expressions (computed values)
 //! - Values blocks (inline data)
 
+use crate::parse::IriEncoder;
+use fluree_db_core::DatatypeConstraint;
 use fluree_graph_json_ld::ParsedContext;
+pub use fluree_vocab::UnresolvedDatatypeConstraint;
 use std::sync::Arc;
 
 /// Literal value from JSON (before resolution)
@@ -47,13 +50,11 @@ pub enum UnresolvedValue {
     Unbound,
     /// IRI value (e.g. {"@id": "..."} or {"@value":"...","@type":"@id"})
     Iri(Arc<str>),
-    /// Literal value with optional explicit datatype and language
+    /// Literal value with optional datatype or language-tag constraint
     Literal {
         value: LiteralValue,
-        /// Expanded datatype IRI (e.g. "http://www.w3.org/2001/XMLSchema#string")
-        dt_iri: Option<Arc<str>>,
-        /// Language tag (e.g. "en")
-        lang: Option<Arc<str>>,
+        /// Datatype IRI or language tag constraint
+        dtc: Option<UnresolvedDatatypeConstraint>,
     },
 }
 
@@ -116,39 +117,21 @@ impl UnresolvedTerm {
     }
 }
 
-/// Constraint on the datatype of an unresolved triple pattern's object literal.
+/// Encode an [`UnresolvedDatatypeConstraint`] to a [`DatatypeConstraint`] by
+/// resolving the IRI to a [`Sid`](fluree_db_core::Sid).
 ///
-/// Either an explicit datatype IRI or a language tag. Setting a language tag
-/// implies that the datatype is `rdf:langString` (per RDF 1.1).
-///
-/// Mirrors [`DatatypeConstraint`](crate::triple::DatatypeConstraint) but uses
-/// IRI strings instead of resolved Sids.
-#[derive(Clone, Debug, PartialEq)]
-pub enum UnresolvedDatatypeConstraint {
-    /// Datatype IRI (not yet resolved to Sid)
-    Explicit(Arc<str>),
-    /// Language tag (implies the datatype is `rdf:langString`)
-    LangTag(Arc<str>),
-}
-
-impl UnresolvedDatatypeConstraint {
-    /// The effective datatype IRI.
-    ///
-    /// Returns the explicit IRI for [`Explicit`](Self::Explicit), or the
-    /// canonical `rdf:langString` IRI for [`LangTag`](Self::LangTag).
-    pub fn datatype_iri(&self) -> &str {
-        match self {
-            UnresolvedDatatypeConstraint::Explicit(iri) => iri,
-            UnresolvedDatatypeConstraint::LangTag(_) => fluree_vocab::rdf::LANG_STRING,
+/// Returns `None` if the [`Explicit`](UnresolvedDatatypeConstraint::Explicit)
+/// IRI's namespace is not registered in the encoder.
+/// [`LangTag`](UnresolvedDatatypeConstraint::LangTag) always succeeds.
+pub fn encode_datatype_constraint(
+    dtc: UnresolvedDatatypeConstraint,
+    encoder: &impl IriEncoder,
+) -> Option<DatatypeConstraint> {
+    match dtc {
+        UnresolvedDatatypeConstraint::Explicit(iri) => {
+            encoder.encode_iri(&iri).map(DatatypeConstraint::Explicit)
         }
-    }
-
-    /// The language tag, if this is a [`LangTag`](Self::LangTag) constraint.
-    pub fn lang_tag(&self) -> Option<&str> {
-        match self {
-            UnresolvedDatatypeConstraint::LangTag(tag) => Some(tag),
-            UnresolvedDatatypeConstraint::Explicit(_) => None,
-        }
+        UnresolvedDatatypeConstraint::LangTag(tag) => Some(DatatypeConstraint::LangTag(tag)),
     }
 }
 

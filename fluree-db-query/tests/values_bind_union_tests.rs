@@ -45,6 +45,7 @@ fn make_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
         patterns,
         options: QueryOptions::default(),
         graph_select: None,
+        post_values: None,
     }
 }
 
@@ -249,8 +250,8 @@ async fn test_values_operator_overlap_compatibility() {
 
     // Check the values
     let col = batch.column_by_idx(0).unwrap();
-    let (val0, _, _) = col[0].as_lit().unwrap();
-    let (val1, _, _) = col[1].as_lit().unwrap();
+    let (val0, _) = col[0].as_lit().unwrap();
+    let (val1, _) = col[1].as_lit().unwrap();
     assert_eq!(*val0, FlakeValue::Long(1));
     assert_eq!(*val1, FlakeValue::Long(2));
 
@@ -372,7 +373,7 @@ async fn test_union_is_correlated_via_values_overlap() {
     // Expect exactly two rows, both ?s=1 (one from each branch)
     assert_eq!(rows.len(), 2);
     for r in rows {
-        let (val, _, _) = r.as_lit().unwrap();
+        let (val, _) = r.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(1));
     }
 }
@@ -412,7 +413,7 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     assert_eq!(batch.len(), 1);
 
     // Value should remain 42 (not clobbered to Unbound)
-    let (val, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (val, _) = batch.get_by_col(0, 0).as_lit().unwrap();
     assert_eq!(*val, FlakeValue::Long(42));
     bind_op.close();
 }
@@ -461,14 +462,14 @@ async fn test_bind_with_inline_filter() {
     assert_eq!(batch.len(), 2, "only two rows should pass the filter");
 
     // First passing row: ?x=20, ?y=30
-    let (x0, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
-    let (y0, _, _) = batch.get_by_col(0, 1).as_lit().unwrap();
+    let (x0, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (y0, _) = batch.get_by_col(0, 1).as_lit().unwrap();
     assert_eq!(*x0, FlakeValue::Long(20));
     assert_eq!(*y0, FlakeValue::Long(30));
 
     // Second passing row: ?x=30, ?y=40
-    let (x1, _, _) = batch.get_by_col(1, 0).as_lit().unwrap();
-    let (y1, _, _) = batch.get_by_col(1, 1).as_lit().unwrap();
+    let (x1, _) = batch.get_by_col(1, 0).as_lit().unwrap();
+    let (y1, _) = batch.get_by_col(1, 1).as_lit().unwrap();
     assert_eq!(*x1, FlakeValue::Long(30));
     assert_eq!(*y1, FlakeValue::Long(40));
 
@@ -564,20 +565,20 @@ async fn test_bind_with_multiple_inline_filters() {
     assert_eq!(batch.len(), 3, "only three rows should pass both filters");
 
     // Row 0: ?x=10, ?y=20
-    let (x0, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
-    let (y0, _, _) = batch.get_by_col(0, 1).as_lit().unwrap();
+    let (x0, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (y0, _) = batch.get_by_col(0, 1).as_lit().unwrap();
     assert_eq!(*x0, FlakeValue::Long(10));
     assert_eq!(*y0, FlakeValue::Long(20));
 
     // Row 1: ?x=20, ?y=30
-    let (x1, _, _) = batch.get_by_col(1, 0).as_lit().unwrap();
-    let (y1, _, _) = batch.get_by_col(1, 1).as_lit().unwrap();
+    let (x1, _) = batch.get_by_col(1, 0).as_lit().unwrap();
+    let (y1, _) = batch.get_by_col(1, 1).as_lit().unwrap();
     assert_eq!(*x1, FlakeValue::Long(20));
     assert_eq!(*y1, FlakeValue::Long(30));
 
     // Row 2: ?x=30, ?y=40
-    let (x2, _, _) = batch.get_by_col(2, 0).as_lit().unwrap();
-    let (y2, _, _) = batch.get_by_col(2, 1).as_lit().unwrap();
+    let (x2, _) = batch.get_by_col(2, 0).as_lit().unwrap();
+    let (y2, _) = batch.get_by_col(2, 1).as_lit().unwrap();
     assert_eq!(*x2, FlakeValue::Long(30));
     assert_eq!(*y2, FlakeValue::Long(40));
 

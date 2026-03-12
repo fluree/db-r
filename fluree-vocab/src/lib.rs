@@ -13,7 +13,44 @@
 //! - `namespaces` - Namespace codes used for IRI encoding
 //! - `errors` - Error type compact IRIs for API responses
 
+use std::sync::Arc;
+
 pub mod errors;
+
+/// Constraint on the datatype of an unresolved literal, using IRI strings.
+///
+/// Either an explicit datatype IRI or a language tag. Setting a language tag
+/// implies that the datatype is `rdf:langString` (per RDF 1.1); this sum
+/// type makes the illegal state (both an explicit non-`rdf:langString`
+/// datatype and a language tag) unrepresentable.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UnresolvedDatatypeConstraint {
+    /// Datatype IRI (not yet resolved to Sid)
+    Explicit(Arc<str>),
+    /// Language tag (implies the datatype is `rdf:langString`)
+    LangTag(Arc<str>),
+}
+
+impl UnresolvedDatatypeConstraint {
+    /// The effective datatype IRI.
+    ///
+    /// Returns the explicit IRI for [`Explicit`](Self::Explicit), or the
+    /// canonical `rdf:langString` IRI for [`LangTag`](Self::LangTag).
+    pub fn datatype_iri(&self) -> &str {
+        match self {
+            UnresolvedDatatypeConstraint::Explicit(iri) => iri,
+            UnresolvedDatatypeConstraint::LangTag(_) => rdf::LANG_STRING,
+        }
+    }
+
+    /// The language tag, if this is a [`LangTag`](Self::LangTag) constraint.
+    pub fn lang_tag(&self) -> Option<&str> {
+        match self {
+            UnresolvedDatatypeConstraint::LangTag(tag) => Some(tag),
+            UnresolvedDatatypeConstraint::Explicit(_) => None,
+        }
+    }
+}
 
 /// RDF vocabulary constants
 pub mod rdf {

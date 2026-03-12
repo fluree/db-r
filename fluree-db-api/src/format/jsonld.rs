@@ -99,7 +99,8 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
         Binding::Iri(iri) => Ok(JsonValue::String(iri.to_string())),
 
         // Literal value - never contains Ref (enforced by Binding::from_object)
-        Binding::Lit { val, dt, lang, .. } => {
+        Binding::Lit { val, dtc, .. } => {
+            let dt = dtc.datatype();
             // Full datatype IRI string (e.g., "http://www.w3.org/2001/XMLSchema#string" or "@json")
             let dt_full = compactor.decode_sid(dt)?;
             // Compact datatype for presentation in JSON-LD Query format (Clojure parity)
@@ -126,11 +127,11 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
             }
 
             // Language-tagged strings always use @language form (no @type)
-            if let Some(lang_tag) = lang {
+            if let Some(lang_tag) = dtc.lang_tag() {
                 return match val {
                     FlakeValue::String(s) => Ok(json!({
                         "@value": s,
-                        "@language": lang_tag.as_ref()
+                        "@language": lang_tag
                     })),
                     FlakeValue::Null => Ok(JsonValue::Null),
                     FlakeValue::Ref(_) => Err(FormatError::InvalidBinding(
@@ -441,11 +442,7 @@ mod tests {
     #[test]
     fn test_format_binding_language_tagged() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit_lang(
-            FlakeValue::String("Hello".to_string()),
-            Sid::new(3, "langString"), // rdf:langString
-            "en",
-        );
+        let binding = Binding::lit_lang(FlakeValue::String("Hello".to_string()), "en");
         let result = format_binding(&binding, &compactor).unwrap();
         assert_eq!(result, json!({"@value": "Hello", "@language": "en"}));
     }

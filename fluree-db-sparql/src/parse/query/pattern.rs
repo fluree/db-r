@@ -184,7 +184,14 @@ impl<'a> super::Parser<'a> {
 
         let span = start.union(self.stream.previous_span());
 
-        // Simplify: if there's only one pattern, return it directly
+        // Simplify: if there's only one pattern, return it directly.
+        //
+        // INVARIANT (consumed by lower/pattern.rs): nested Group nodes in the AST
+        // always correspond to explicitly braced `{ }` blocks from the source
+        // query — never synthetic wrappers.  This simplification ensures that: a
+        // single-pattern `{ }` block produces the pattern itself (not a Group),
+        // and only multi-pattern blocks produce Group nodes.  The lowering layer
+        // relies on this to decide when to introduce scope-boundary subqueries.
         if patterns.len() == 1 {
             Some(patterns.remove(0))
         } else {

@@ -32,6 +32,9 @@ pub struct ValuesOperator {
     state: OperatorState,
     /// Mapping: for each value_var, its position in child schema (None if new var)
     overlap_positions: Vec<Option<usize>>,
+    /// Reverse mapping: child column index → index into `overlap_positions` / `value_rows`.
+    /// Pre-computed at construction for O(1) lookup in `merge_rows`.
+    child_col_to_val_idx: std::collections::HashMap<usize, usize>,
 }
 
 impl ValuesOperator {
@@ -67,12 +70,21 @@ impl ValuesOperator {
 
         let schema = Arc::from(output_vars.into_boxed_slice());
 
+        // Pre-compute reverse map: child column → value_rows index.
+        // Used in `merge_rows` to fill unbound overlap vars in O(1).
+        let child_col_to_val_idx: std::collections::HashMap<usize, usize> = overlap_positions
+            .iter()
+            .enumerate()
+            .filter_map(|(val_idx, pos)| pos.map(|col| (col, val_idx)))
+            .collect();
+
         Self {
             child,
             value_rows,
             schema,
             state: OperatorState::Created,
             overlap_positions,
+            child_col_to_val_idx,
         }
     }
 
@@ -91,8 +103,9 @@ impl ValuesOperator {
                 let child_val = input_row[*child_pos];
                 let values_val = &value_row[val_idx];
 
-                // Skip if either is Unbound (compatible with anything)
-                if matches!(child_val, Binding::Unbound) || matches!(values_val, Binding::Unbound) {
+                // Skip if either side is effectively unbound (compatible with anything).
+                // Poisoned arises from failed OPTIONAL — semantically unbound for VALUES.
+                if child_val.is_unbound_or_poisoned() || values_val.is_unbound_or_poisoned() {
                     continue;
                 }
 
@@ -113,11 +126,23 @@ impl ValuesOperator {
     /// Merge an input row with a compatible value row
     ///
     /// Produces an output row with all child columns plus new value columns.
+    /// For overlap variables, if the child has an unbound/poisoned value but the
+    /// VALUES row has a concrete value, the VALUES value is used (fills in the gap).
     fn merge_rows(&self, input_row: &[&Binding], value_row: &[Binding]) -> Vec<Binding> {
         let mut output = Vec::with_capacity(self.schema.len());
 
-        // First, copy all child columns
-        for binding in input_row {
+        // Copy child columns, filling unbound overlap vars from VALUES row.
+        // The `child_col_to_val_idx` map gives O(1) lookup for overlap vars.
+        for (col, binding) in input_row.iter().enumerate() {
+            if binding.is_unbound_or_poisoned() {
+                if let Some(&val_idx) = self.child_col_to_val_idx.get(&col) {
+                    let values_val = &value_row[val_idx];
+                    if !values_val.is_unbound_or_poisoned() {
+                        output.push(values_val.clone());
+                        continue;
+                    }
+                }
+            }
             output.push((*binding).clone());
         }
 

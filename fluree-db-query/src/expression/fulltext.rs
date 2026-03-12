@@ -545,11 +545,12 @@ pub fn eval_fulltext<R: RowAccess>(
         }
         crate::binding::Binding::Lit {
             val,
-            dt,
+            dtc,
             p_id: lit_p_id,
             ..
         } => {
             // Check if the datatype matches @fulltext (Sid fields: namespace_code, name)
+            let dt = dtc.datatype();
             if !(dt.namespace_code == FLUREE_DB && dt.name.as_ref() == "fullText") {
                 return Ok(None);
             }

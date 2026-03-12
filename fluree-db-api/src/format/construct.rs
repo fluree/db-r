@@ -325,18 +325,19 @@ fn binding_to_ir_term(
         }
 
         // Literal value with explicit datatype
-        Binding::Lit { val, dt, lang, .. } => {
+        Binding::Lit { val, dtc, .. } => {
+            let dt = dtc.datatype();
             // Decode datatype SID to expanded IRI
             let dt_iri = compactor.decode_sid(dt)?;
 
             match val {
                 FlakeValue::String(s) => {
-                    if let Some(lang_tag) = lang {
+                    if let Some(lang_tag) = dtc.lang_tag() {
                         // Language-tagged string
                         Ok(Some(IrTerm::Literal {
                             value: LiteralValue::String(Arc::from(s.as_str())),
                             datatype: Datatype::rdf_lang_string(),
-                            language: Some(Arc::from(lang_tag.as_ref())),
+                            language: Some(Arc::from(lang_tag)),
                         }))
                     } else {
                         // Plain or typed string

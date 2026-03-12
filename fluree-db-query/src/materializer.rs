@@ -24,6 +24,7 @@
 use crate::binding::Binding;
 use chrono::{Datelike, Timelike};
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{FlakeValue, Sid};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -115,8 +116,7 @@ impl Hash for FlakeValueKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MaterializedLitKey {
     pub val: FlakeValueKey,
-    pub dt: Sid,
-    pub lang: Option<Arc<str>>,
+    pub dtc: DatatypeConstraint,
 }
 
 impl PartialEq for JoinKey<'_> {
@@ -363,10 +363,9 @@ impl Materializer {
                 }
             }
 
-            Binding::Lit { val, dt, lang, .. } => JoinKey::MaterializedLit(MaterializedLitKey {
+            Binding::Lit { val, dtc, .. } => JoinKey::MaterializedLit(MaterializedLitKey {
                 val: FlakeValueKey(val.clone()),
-                dt: dt.clone(),
-                lang: lang.clone(),
+                dtc: dtc.clone(),
             }),
 
             Binding::EncodedLit {
@@ -539,10 +538,13 @@ impl Materializer {
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
                     let meta = self.graph_view.store().decode_meta(*lang_id, *i_val);
+                    let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
+                        Some(lang) => DatatypeConstraint::LangTag(lang),
+                        None => DatatypeConstraint::Explicit(dt_sid),
+                    };
                     Binding::Lit {
                         val,
-                        dt: dt_sid,
-                        lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                        dtc,
                         t: Some(*t),
                         op: None,
                         p_id: Some(*p_id),
