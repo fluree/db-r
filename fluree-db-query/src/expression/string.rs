@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
+use crate::parse::UnresolvedDatatypeConstraint;
 
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
@@ -25,8 +26,8 @@ fn extract_lang_tag<R: RowAccess>(
 ) -> Option<Arc<str>> {
     if let Expression::Var(var_id) = expr {
         match row.get(*var_id) {
-            Some(Binding::Lit { lang, .. }) => {
-                return lang.clone();
+            Some(Binding::Lit { dtc, .. }) => {
+                return dtc.lang_tag().map(Arc::from);
             }
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
@@ -48,8 +49,7 @@ fn string_with_lang(s: &str, lang: Option<Arc<str>>) -> ComparableValue {
     match lang {
         Some(tag) => ComparableValue::TypedLiteral {
             val: FlakeValue::String(s.to_string()),
-            dt_iri: None,
-            lang: Some(tag),
+            dtc: Some(UnresolvedDatatypeConstraint::LangTag(tag)),
         },
         None => ComparableValue::String(Arc::from(s)),
     }
@@ -81,8 +81,8 @@ pub fn eval_lang<R: RowAccess>(
     check_arity(args, 1, "LANG")?;
     let tag = match &args[0] {
         Expression::Var(var_id) => match row.get(*var_id) {
-            Some(Binding::Lit { lang, .. }) => {
-                lang.as_ref().map(|l| l.to_string()).unwrap_or_default()
+            Some(Binding::Lit { dtc, .. }) => {
+                dtc.lang_tag().map(|l| l.to_string()).unwrap_or_default()
             }
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
@@ -482,8 +482,8 @@ pub fn eval_str_dt<R: RowAccess>(
     // Per W3C SPARQL spec: STRDT requires a simple literal (no language tag,
     // no existing datatype). If the variable binding has a language tag, error.
     if let Expression::Var(var_id) = &args[0] {
-        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
-            if lang.is_some() {
+        if let Some(Binding::Lit { dtc, .. }) = row.get(*var_id) {
+            if dtc.lang_tag().is_some() {
                 return Ok(None); // language-tagged → type error → unbound
             }
         }
@@ -494,8 +494,9 @@ pub fn eval_str_dt<R: RowAccess>(
         (Some(ComparableValue::String(s)), Some(dt_val)) => {
             Ok(Some(ComparableValue::TypedLiteral {
                 val: FlakeValue::String(s.to_string()),
-                dt_iri: dt_val.as_str().map(Arc::from),
-                lang: None,
+                dtc: dt_val
+                    .as_str()
+                    .map(|s| UnresolvedDatatypeConstraint::Explicit(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),
@@ -511,8 +512,8 @@ pub fn eval_str_lang<R: RowAccess>(
     check_arity(args, 2, "STRLANG")?;
     // Per W3C SPARQL spec: STRLANG requires a simple literal (no language tag).
     if let Expression::Var(var_id) = &args[0] {
-        if let Some(Binding::Lit { lang, .. }) = row.get(*var_id) {
-            if lang.is_some() {
+        if let Some(Binding::Lit { dtc, .. }) = row.get(*var_id) {
+            if dtc.lang_tag().is_some() {
                 return Ok(None); // language-tagged → type error → unbound
             }
         }
@@ -523,8 +524,9 @@ pub fn eval_str_lang<R: RowAccess>(
         (Some(ComparableValue::String(s)), Some(lang_val)) => {
             Ok(Some(ComparableValue::TypedLiteral {
                 val: FlakeValue::String(s.to_string()),
-                dt_iri: None,
-                lang: lang_val.as_str().map(Arc::from),
+                dtc: lang_val
+                    .as_str()
+                    .map(|s| UnresolvedDatatypeConstraint::LangTag(Arc::from(s))),
             }))
         }
         (Some(_), Some(_)) => Ok(None),

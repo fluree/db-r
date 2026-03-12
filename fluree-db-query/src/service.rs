@@ -29,6 +29,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{format_ledger_id, split_ledger_id, FlakeValue};
 use std::sync::Arc;
 
@@ -234,8 +235,7 @@ impl ServiceOperator {
                         // Bind endpoint variable to the endpoint IRI
                         let binding = Binding::Lit {
                             val: FlakeValue::String(endpoint_iri.to_string()),
-                            dt: self.well_known.xsd_string.clone(),
-                            lang: None,
+                            dtc: DatatypeConstraint::Explicit(self.well_known.xsd_string.clone()),
                             t: None,
                             op: None,
                             p_id: None,

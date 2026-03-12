@@ -18,8 +18,8 @@ use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
-use fluree_vocab::namespaces::{RDF, XSD};
-use fluree_vocab::{rdf_names, xsd, xsd_names};
+use fluree_vocab::namespaces::XSD;
+use fluree_vocab::{xsd, xsd_names};
 
 use super::{LowerError, LoweringContext, Result};
 
@@ -301,7 +301,6 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 )),
                 LiteralValue::LangTagged { value, lang } => Ok(Binding::lit_lang(
                     FlakeValue::String(value.to_string()),
-                    Sid::new(RDF, rdf_names::LANG_STRING),
                     lang.clone(),
                 )),
                 LiteralValue::Integer(i) => Ok(Binding::lit(

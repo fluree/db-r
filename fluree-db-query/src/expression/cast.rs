@@ -16,6 +16,7 @@ use std::sync::{Arc, LazyLock};
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
+use crate::parse::UnresolvedDatatypeConstraint;
 
 static XSD_FLOAT_IRI: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from(fluree_vocab::xsd::FLOAT));
 
@@ -31,11 +32,7 @@ fn unwrap_typed_literal(v: ComparableValue) -> ComparableValue {
             FlakeValue::Long(n) => ComparableValue::Long(n),
             FlakeValue::Double(d) => ComparableValue::Double(d),
             FlakeValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
-            _ => ComparableValue::TypedLiteral {
-                val,
-                dt_iri: None,
-                lang: None,
-            },
+            _ => ComparableValue::TypedLiteral { val, dtc: None },
         },
         other => other,
     }
@@ -170,8 +167,9 @@ fn float_typed_literal(f: f32) -> ComparableValue {
     let s = format_f32(f);
     ComparableValue::TypedLiteral {
         val: FlakeValue::String(s),
-        dt_iri: Some(XSD_FLOAT_IRI.clone()),
-        lang: None,
+        dtc: Some(UnresolvedDatatypeConstraint::Explicit(
+            XSD_FLOAT_IRI.clone(),
+        )),
     }
 }
 
@@ -637,9 +635,9 @@ mod tests {
         let result = eval_xsd_float(&[bool_expr(true)], &row, None).unwrap();
         assert!(result.is_some());
         // Should be a TypedLiteral with xsd:float datatype
-        if let Some(ComparableValue::TypedLiteral { dt_iri, .. }) = &result {
+        if let Some(ComparableValue::TypedLiteral { dtc, .. }) = &result {
             assert_eq!(
-                dt_iri.as_deref(),
+                dtc.as_ref().map(|d| d.datatype_iri()),
                 Some("http://www.w3.org/2001/XMLSchema#float")
             );
         } else {

@@ -24,13 +24,14 @@
 
 mod inner {
     use crate::commit_v2::StreamingCommitWriter;
-    use crate::generate::{infer_datatype, DT_ID, DT_JSON, DT_LANG_STRING};
+    use crate::generate::{infer_datatype, DT_ID, DT_JSON};
     use crate::namespace::{NamespaceRegistry, NsAllocator, SharedNamespaceAllocator, WorkerCache};
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
     use fluree_db_binary_index::RunRecord;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeConstraint;
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GraphId, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
@@ -50,11 +51,10 @@ mod inner {
     enum ResolvedTerm {
         /// IRI or blank node (already resolved to a Sid)
         Sid(Sid),
-        /// Literal value with datatype and optional language
+        /// Literal value with datatype constraint
         Literal {
             value: FlakeValue,
-            dt_sid: Sid,
-            language: Option<String>,
+            dtc: DatatypeConstraint,
         },
     }
 
@@ -573,14 +573,13 @@ mod inner {
             }
         }
 
-        fn resolve_object(&self, id: TermId) -> Option<(FlakeValue, Sid, Option<String>)> {
+        fn resolve_object(&self, id: TermId) -> Option<(FlakeValue, DatatypeConstraint)> {
             match &self.terms[id.index() as usize] {
-                ResolvedTerm::Sid(sid) => Some((FlakeValue::Ref(sid.clone()), DT_ID.clone(), None)),
-                ResolvedTerm::Literal {
-                    value,
-                    dt_sid,
-                    language,
-                } => Some((value.clone(), dt_sid.clone(), language.clone())),
+                ResolvedTerm::Sid(sid) => Some((
+                    FlakeValue::Ref(sid.clone()),
+                    DatatypeConstraint::Explicit(DT_ID.clone()),
+                )),
+                ResolvedTerm::Literal { value, dtc } => Some((value.clone(), dtc.clone())),
             }
         }
 
@@ -597,13 +596,12 @@ mod inner {
             let Some(p) = self.resolve_sid(predicate) else {
                 return;
             };
-            let Some((o, mut dt, lang)) = self.resolve_object(object) else {
+            let Some((o, dtc)) = self.resolve_object(object) else {
                 return;
             };
 
-            if lang.is_some() {
-                dt = DT_LANG_STRING.clone();
-            }
+            let dt = dtc.datatype().clone();
+            let lang = dtc.lang_tag().map(|s| s.to_string());
 
             let meta = match (&lang, list_index) {
                 (Some(l), Some(i)) => Some(FlakeMeta {
@@ -683,20 +681,17 @@ mod inner {
             datatype: Datatype,
             language: Option<&str>,
         ) -> TermId {
-            let lang = language.map(|s| s.to_string());
             let dt_iri = datatype.as_iri();
             let (flake_value, dt_sid) = convert_string_literal(value, dt_iri, &mut self.ns);
 
-            let dt_sid = if lang.is_some() {
-                DT_LANG_STRING.clone()
-            } else {
-                dt_sid
+            let dtc = match language {
+                Some(lang) => DatatypeConstraint::LangTag(Arc::from(lang)),
+                None => DatatypeConstraint::Explicit(dt_sid),
             };
 
             self.add_term(ResolvedTerm::Literal {
                 value: flake_value,
-                dt_sid,
-                language: lang,
+                dtc,
             })
         }
 
@@ -710,8 +705,7 @@ mod inner {
 
             self.add_term(ResolvedTerm::Literal {
                 value: flake_value,
-                dt_sid,
-                language: None,
+                dtc: DatatypeConstraint::Explicit(dt_sid),
             })
         }
 
