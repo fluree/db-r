@@ -136,14 +136,20 @@ where
         db: &GraphDb,
         q: impl Into<QueryInput<'_>>,
         format_config: Option<crate::format::FormatterConfig>,
+        tracking_override: Option<TrackingOptions>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let input = q.into();
 
-        // Get tracker - use tracked endpoint helpers that default to all tracking enabled
-        let tracker = match &input {
-            QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
-            QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+        // Get tracker: use caller-provided options if given, otherwise fall back
+        // to defaults (all-enabled for SPARQL, opts-derived for JSON-LD).
+        let tracker = if let Some(opts) = tracking_override {
+            Tracker::new(opts)
+        } else {
+            match &input {
+                QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+                QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+            }
         };
 
         // Determine output format: caller override > input-type default

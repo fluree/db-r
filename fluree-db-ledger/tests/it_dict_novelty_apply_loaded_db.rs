@@ -6,8 +6,8 @@
 //! novelty-only subject/string IDs can’t be decoded later (e.g. "string id N not found").
 
 use fluree_db_core::{Flake, FlakeValue, LedgerSnapshot, Sid};
-use fluree_db_novelty::Novelty;
 use fluree_db_ledger::LedgerState;
+use fluree_db_novelty::Novelty;
 
 #[test]
 fn apply_loaded_db_repopulates_dict_novelty_for_remaining_overlay_strings() {
@@ -76,4 +76,3 @@ fn apply_loaded_db_repopulates_dict_novelty_for_remaining_overlay_strings() {
     assert_eq!(state.dict_novelty.strings.watermark(), 2);
     assert_eq!(state.dict_novelty.strings.resolve_string(3), Some("b"));
 }
-

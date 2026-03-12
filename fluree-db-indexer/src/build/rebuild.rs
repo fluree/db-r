@@ -128,6 +128,9 @@ where
             // Enable fulltext collection during resolution.
             shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
 
+            // Enable schema hierarchy extraction during resolution.
+            shared.schema_hook = Some(crate::stats::SchemaExtractor::new());
+
             let chunk_max_flakes: u64 = 5_000_000; // ~5M flakes per chunk
             let mut chunk = RebuildChunk::new();
             let mut chunks: Vec<RebuildChunk> = Vec::new();
@@ -211,6 +214,12 @@ where
                 "Phase B complete: all commits resolved into chunks"
             );
             drop(_span_b);
+
+            // Finalize schema extraction from rebuild ops.
+            let db_schema: Option<fluree_db_core::IndexSchema> = shared
+                .schema_hook
+                .take()
+                .and_then(|ex| ex.finalize(commit_t));
 
             // ---- Phase C: Dict merge → global IDs + remap tables ----
             let _span_c = tracing::debug_span!("dict_merge_and_remap").entered();
@@ -1023,7 +1032,7 @@ where
 
                 is::IndexStats {
                     flakes: id_stats_result.total_flakes,
-                    size: 0,
+                    size: total_commit_size,
                     properties: Some(properties),
                     classes: root_classes,
                     graphs: Some(final_graphs),
@@ -1036,12 +1045,6 @@ where
                 graph_count = db_stats.graphs.as_ref().map_or(0, |g| g.len()),
                 "Phase D-V3 stats: collected"
             );
-
-            // Schema extraction during rebuild requires SID resolution via
-            // forward dicts (not yet uploaded at this point). Schema will be
-            // populated during the first incremental index after rebuild,
-            // matching V5 behavior.
-            let db_schema: Option<fluree_db_core::IndexSchema> = None;
 
             // Phase E-V3: Upload V3 artifacts to CAS.
             let v3_uploaded =

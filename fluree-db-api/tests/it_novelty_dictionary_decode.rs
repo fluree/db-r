@@ -63,7 +63,12 @@ async fn novelty_only_strings_subjects_predicates_and_json_decode_with_existing_
                 .expect("seed insert");
 
             let commit_t = seeded.receipt.t;
-            let _ = support::trigger_index_and_wait_outcome(&handle, seeded.ledger.ledger_id(), commit_t).await;
+            let _ = support::trigger_index_and_wait_outcome(
+                &handle,
+                seeded.ledger.ledger_id(),
+                commit_t,
+            )
+            .await;
 
             // Reload a ledger state with the binary store attached.
             let indexed = fluree.ledger(ledger_id).await.expect("load indexed ledger");
@@ -216,11 +221,7 @@ SELECT ?o (DATATYPE(?o) AS ?dt) WHERE { ex:s ex:data ?o }
                 .as_str()
                 .expect("dt value")
                 .to_lowercase();
-            assert!(
-                dt5.contains("json"),
-                "expected @json datatype, got: {dt5}"
-            );
+            assert!(dt5.contains("json"), "expected @json datatype, got: {dt5}");
         })
         .await;
 }
-

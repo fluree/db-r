@@ -125,7 +125,9 @@ where
             // Apply config-graph defaults (reasoning + datalog)
             let view = self.apply_config_defaults(view, None);
 
-            return self.query_tracked(&view, query_json, format_config).await;
+            return self
+                .query_tracked(&view, query_json, format_config, None)
+                .await;
         }
 
         // Single-ledger with time travel: use GraphDb API
@@ -153,7 +155,9 @@ where
             // Apply config-graph defaults (reasoning + datalog)
             let view = self.apply_config_defaults(view, None);
 
-            return self.query_tracked(&view, query_json, format_config).await;
+            return self
+                .query_tracked(&view, query_json, format_config, None)
+                .await;
         }
 
         // Multi-ledger: use DataSetDb
@@ -167,7 +171,7 @@ where
                 .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
         };
 
-        self.query_dataset_tracked(&dataset, query_json, format_config)
+        self.query_dataset_tracked(&dataset, query_json, format_config, None)
             .await
     }
 
@@ -239,7 +243,9 @@ where
         if let Some(view) = single_view {
             let view = view.with_policy(Arc::new(policy.clone()));
             let view = self.apply_config_defaults(view, None);
-            return self.query_tracked(&view, query_json, format_config).await;
+            return self
+                .query_tracked(&view, query_json, format_config, None)
+                .await;
         }
 
         // Multi-ledger: use DataSetDb and apply explicit policy to each view
@@ -248,7 +254,7 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
-        self.query_dataset_tracked(&dataset, query_json, format_config)
+        self.query_dataset_tracked(&dataset, query_json, format_config, None)
             .await
     }
 
@@ -319,7 +325,7 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
-        self.query_dataset_tracked(&dataset, sparql, format_config)
+        self.query_dataset_tracked(&dataset, sparql, format_config, None)
             .await
     }
 
@@ -354,7 +360,7 @@ where
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
 
-        self.query_dataset_tracked(&dataset, sparql, format_config)
+        self.query_dataset_tracked(&dataset, sparql, format_config, None)
             .await
     }
 

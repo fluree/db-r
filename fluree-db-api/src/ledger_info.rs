@@ -400,20 +400,54 @@ fn build_ledger_block(
         .map(|r| r.commit_t)
         .unwrap_or(ledger.t());
 
-    // Build named-graphs list
-    let mut named_graphs = Vec::new();
-    // Always include default graph
-    named_graphs.push(json!({"iri": "urn:default", "g-id": 0}));
-    // Add named graphs from binary store
-    if let Some(store) = store {
-        for (g_id, iri) in store.graph_entries() {
-            // Skip txn-meta (g_id=1) from the public list
-            if g_id == 1 {
-                continue;
+    // Build named-graphs list with minimal per-graph stats.
+    //
+    // `IndexStats.graphs` is authoritative for flakes/size, but may omit graphs that
+    // have never had flakes; the binary store provides the IRI mapping. We merge both
+    // and sort by `g-id` for a stable response.
+    let mut by_gid: std::collections::BTreeMap<GraphId, (String, u64, u64)> =
+        std::collections::BTreeMap::new();
+
+    // Seed from stats (flakes/size), and also capture any graph ids present there.
+    if let Some(graphs) = stats.graphs.as_ref() {
+        for g in graphs {
+            if g.g_id == 1 {
+                continue; // txn-meta not public
             }
-            named_graphs.push(json!({"iri": iri, "g-id": g_id}));
+            let iri = graph_display_name(g.g_id, store);
+            by_gid.insert(g.g_id, (iri, g.flakes, g.size));
         }
     }
+
+    // Ensure default graph is present even if no stats exist yet.
+    by_gid
+        .entry(0)
+        .or_insert_with(|| ("urn:default".to_string(), 0, 0));
+
+    // Merge in graph IRI entries from the binary store (keeps flakes/size from stats).
+    if let Some(store) = store {
+        for (g_id, iri) in store.graph_entries() {
+            if g_id == 1 {
+                continue; // txn-meta not public
+            }
+            by_gid
+                .entry(g_id)
+                .and_modify(|e| e.0 = iri.to_string())
+                .or_insert_with(|| (iri.to_string(), 0, 0));
+        }
+    }
+
+    let named_graphs: Vec<JsonValue> = by_gid
+        .into_iter()
+        .map(|(g_id, (iri, flakes, size))| {
+            json!({
+                "iri": iri,
+                "g-id": g_id,
+                "flakes": flakes,
+                "size": size,
+            })
+        })
+        .collect();
 
     json!({
         "alias": &ledger.snapshot.ledger_id,
@@ -1577,6 +1611,18 @@ where
         {
             let commit_t = ledger.t();
             let index_t = ledger.snapshot.t;
+            let index_id = ledger
+                .head_index_id
+                .as_ref()
+                .map(|cid| cid.to_string())
+                .or_else(|| {
+                    ledger
+                        .ns_record
+                        .as_ref()
+                        .and_then(|r| r.index_head_id.as_ref())
+                        .map(|cid| cid.to_string())
+                })
+                .unwrap_or_default();
 
             let ctx_hash: u64 = match self.context {
                 Some(ctx) => {
@@ -1599,10 +1645,11 @@ where
             };
 
             let key_str = format!(
-                "ledger-info:{}:{}:{}:{}:{}:{}:{}",
+                "ledger-info:{}:{}:{}:{}:{}:{}:{}:{}",
                 self.ledger_id,
                 commit_t,
                 index_t,
+                index_id,
                 self.options.realtime_property_details as u8,
                 self.options.include_property_datatypes as u8,
                 graph_key,

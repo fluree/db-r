@@ -634,6 +634,13 @@ where
     let index_config = core.index_config.unwrap_or_default();
     let store_raw_txn = core.txn_opts.store_raw_txn.unwrap_or(false);
 
+    // Create tracker from builder-level tracking options when present.
+    // This tracker is passed into the staging pipeline so fuel is counted per flake.
+    let tracker = core
+        .tracking
+        .map(Tracker::new)
+        .unwrap_or_else(Tracker::disabled);
+
     // Fast path retains legacy behavior for complex cases that cannot be retried
     // without cloning inputs (e.g., pre-built Txn IR), or when using tracked+policy staging.
     if core.pre_built_txn.is_some() || core.policy.is_some() {
@@ -681,9 +688,14 @@ where
                     core.commit_opts
                 };
 
-                // Stage (tracked+policy is guaranteed None in this branch)
+                // Stage with external tracker when tracking is enabled
+                let tracker_ref = if tracker.is_enabled() {
+                    Some(&tracker)
+                } else {
+                    None
+                };
                 let stage_result = fluree
-                    .stage_transaction_with_named_graphs(
+                    .stage_transaction_with_named_graphs_tracked(
                         ledger_state,
                         txn_type,
                         &txn_json,
@@ -691,6 +703,7 @@ where
                         Some(&index_config),
                         trig_meta.as_ref(),
                         &named_graphs,
+                        tracker_ref,
                     )
                     .await?;
                 (stage_result, txn_type, commit_opts)
@@ -749,6 +762,7 @@ where
         return Ok(TransactResultRef {
             receipt,
             indexing: indexing_status,
+            tally: tracker.tally(),
         });
     }
 
@@ -781,6 +795,12 @@ where
                 named_graphs: parsed.named_graphs,
             }
         }
+    };
+
+    let tracker_ref = if tracker.is_enabled() {
+        Some(&tracker)
+    } else {
+        None
     };
 
     const MAX_RETRIES: usize = 16;
@@ -819,7 +839,7 @@ where
                 };
 
                 let stage_result = fluree
-                    .stage_transaction_with_named_graphs(
+                    .stage_transaction_with_named_graphs_tracked(
                         ledger_state,
                         *txn_type,
                         txn_json,
@@ -827,6 +847,7 @@ where
                         Some(&index_config),
                         trig_meta.as_ref(),
                         named_graphs,
+                        tracker_ref,
                     )
                     .await?;
                 (stage_result, *txn_type, commit_opts)
@@ -871,6 +892,7 @@ where
                     index_t: base.index_t(),
                     commit_t: base.t(),
                 },
+                tally: tracker.tally(),
             });
         }
 
@@ -900,6 +922,7 @@ where
         return Ok(TransactResultRef {
             receipt,
             indexing: indexing_status,
+            tally: tracker.tally(),
         });
     }
 

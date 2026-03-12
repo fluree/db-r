@@ -966,6 +966,10 @@ pub struct SharedResolverState {
     /// Optional fulltext collection hook. When set, `on_op()` is called for
     /// every resolved user-data op to collect `@fulltext`-typed string entries.
     pub fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
+    /// Optional schema hierarchy extractor hook. When set, `on_flake()` is called
+    /// for every `rdfs:subClassOf` / `rdfs:subPropertyOf` user-data op so rebuild
+    /// can populate `IndexSchema` in the FIR6 root.
+    pub schema_hook: Option<crate::stats::SchemaExtractor>,
 }
 
 impl SharedResolverState {
@@ -1009,6 +1013,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            schema_hook: None,
         }
     }
 
@@ -1130,6 +1135,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            schema_hook: None,
         })
     }
 
@@ -1183,6 +1189,29 @@ impl SharedResolverState {
 
         // Resolve user-data ops into chunk-local records.
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
+            // Schema extraction (rebuild only): capture class/property hierarchy
+            // directly from commit ops before dict remap.
+            if let Some(ref mut schema) = self.schema_hook {
+                if raw_op.p_ns_code == fluree_vocab::namespaces::RDFS
+                    && (raw_op.p_name == "subClassOf" || raw_op.p_name == "subPropertyOf")
+                {
+                    if let RawObject::Ref { ns_code, name } = raw_op.o {
+                        let flake = fluree_db_core::Flake::new(
+                            fluree_db_core::Sid::new(raw_op.s_ns_code, raw_op.s_name),
+                            fluree_db_core::Sid::new(raw_op.p_ns_code, raw_op.p_name),
+                            fluree_db_core::FlakeValue::Ref(fluree_db_core::Sid::new(
+                                ns_code, name,
+                            )),
+                            fluree_db_core::Sid::new(0, ""),
+                            t as i64,
+                            raw_op.op,
+                            None,
+                        );
+                        schema.on_flake(&flake);
+                    }
+                }
+            }
+
             let record = self.resolve_op_chunk(&raw_op, t, chunk)?;
 
             // Feed raw op to spatial hook (needs raw WKT string + resolved IDs).

@@ -310,11 +310,8 @@ where
     /// Respects `.format()` config if set, otherwise defaults based on input type
     /// (JSON-LD for `.jsonld()`, SPARQL JSON for `.sparql()`).
     ///
-    /// **Note**: Custom `.tracking()` options are not yet wired through this
-    /// path. Fuel limits are extracted from the JSON-LD query body (if present);
-    /// SPARQL queries use default tracking. This will be addressed in a future
-    /// iteration when the tracked execution internals are refactored to accept
-    /// external tracker configuration.
+    /// Uses `.tracking()` options if set, otherwise defaults to all-enabled
+    /// (SPARQL) or opts-derived (JSON-LD).
     pub async fn execute_tracked(
         mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
@@ -325,9 +322,10 @@ where
         }
 
         let format_config = self.core.format.take();
+        let tracking = self.core.tracking.take();
         let input = self.core.input.unwrap();
         self.fluree
-            .query_tracked(self.view, input, format_config)
+            .query_tracked(self.view, input, format_config, tracking)
             .await
     }
 }
@@ -508,8 +506,8 @@ where
     ///
     /// Respects `.format()` config if set, otherwise defaults based on input type.
     ///
-    /// **Note**: Custom `.tracking()` options are not yet wired through this
-    /// path. See [`ViewQueryBuilder::execute_tracked()`] for details.
+    /// Uses `.tracking()` options if set, otherwise defaults to all-enabled
+    /// (SPARQL) or opts-derived (JSON-LD).
     pub async fn execute_tracked(
         mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {
@@ -520,9 +518,10 @@ where
         }
 
         let format_config = self.core.format.take();
+        let tracking = self.core.tracking.take();
         let input = self.core.input.unwrap();
         self.fluree
-            .query_dataset_tracked(self.dataset, input, format_config)
+            .query_dataset_tracked(self.dataset, input, format_config, tracking)
             .await
     }
 }
@@ -578,18 +577,6 @@ where
     /// Set the query input as SPARQL.
     pub fn sparql(mut self, sparql: &'a str) -> Self {
         self.core.set_sparql(sparql);
-        self
-    }
-
-    /// Enable tracking of all metrics.
-    pub fn track_all(mut self) -> Self {
-        self.core.set_track_all();
-        self
-    }
-
-    /// Set custom tracking options.
-    pub fn tracking(mut self, opts: TrackingOptions) -> Self {
-        self.core.set_tracking(opts);
         self
     }
 
@@ -795,8 +782,8 @@ where
 
     /// Execute with tracking (fuel, time, policy stats).
     ///
-    /// **Note**: Custom `.tracking()` options are not yet wired through this
-    /// path. See [`ViewQueryBuilder::execute_tracked()`] for details.
+    /// The connection layer constructs its own tracker from the query body,
+    /// so custom tracking options are not supported on this builder.
     pub async fn execute_tracked(
         mut self,
     ) -> std::result::Result<TrackedQueryResponse, TrackedErrorResponse> {

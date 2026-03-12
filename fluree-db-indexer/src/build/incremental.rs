@@ -2059,6 +2059,28 @@ where
         // Set garbage on the root before encoding.
         let mut final_root = new_root;
         final_root.garbage = garbage_ref.map(|id| BinaryGarbageRef { id });
+        if let Some(stats) = final_root.stats.as_mut() {
+            stats.size = final_root.total_commit_size;
+            if let Some(graphs) = stats.graphs.as_mut() {
+                let total_flakes: u64 = graphs.iter().map(|g| g.flakes).sum();
+                if total_flakes > 0 && stats.size > 0 {
+                    let total_size = stats.size;
+                    let n = graphs.len();
+                    let mut assigned: u64 = 0;
+                    for (i, g) in graphs.iter_mut().enumerate() {
+                        if i + 1 == n {
+                            g.size = total_size.saturating_sub(assigned);
+                        } else {
+                            let part = ((total_size as u128) * (g.flakes as u128)
+                                / (total_flakes as u128))
+                                as u64;
+                            g.size = part;
+                            assigned = assigned.saturating_add(part);
+                        }
+                    }
+                }
+            }
+        }
 
         let root_bytes = final_root.encode();
         let write_result = storage
@@ -2097,7 +2119,30 @@ where
             },
         })
     } else {
-        let root_bytes = new_root.encode();
+        let mut final_root = new_root;
+        if let Some(stats) = final_root.stats.as_mut() {
+            stats.size = final_root.total_commit_size;
+            if let Some(graphs) = stats.graphs.as_mut() {
+                let total_flakes: u64 = graphs.iter().map(|g| g.flakes).sum();
+                if total_flakes > 0 && stats.size > 0 {
+                    let total_size = stats.size;
+                    let n = graphs.len();
+                    let mut assigned: u64 = 0;
+                    for (i, g) in graphs.iter_mut().enumerate() {
+                        if i + 1 == n {
+                            g.size = total_size.saturating_sub(assigned);
+                        } else {
+                            let part = ((total_size as u128) * (g.flakes as u128)
+                                / (total_flakes as u128))
+                                as u64;
+                            g.size = part;
+                            assigned = assigned.saturating_add(part);
+                        }
+                    }
+                }
+            }
+        }
+        let root_bytes = final_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
             .await
@@ -2116,14 +2161,14 @@ where
 
         tracing::info!(
             %root_id,
-            index_t = new_root.index_t,
+            index_t = final_root.index_t,
             new_leaves = total_new_leaves,
             "V6 incremental index root published (no garbage)"
         );
 
         Ok(IndexResult {
             root_id,
-            index_t: new_root.index_t,
+            index_t: final_root.index_t,
             ledger_id: ledger_id.to_string(),
             stats: IndexStats {
                 flake_count: novelty.records.len(),

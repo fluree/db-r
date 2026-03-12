@@ -300,6 +300,15 @@ pub async fn stage(
             flakes
         };
 
+        // Count fuel per staged non-schema flake (mirrors query-side fuel counting)
+        if let Some(tracker) = options.tracker {
+            for flake in &flakes {
+                if !is_schema_flake(&flake.p, &flake.o) {
+                    tracker.consume_fuel_one()?;
+                }
+            }
+        }
+
         // Enforce modify policies (if policy context provided and not root)
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
@@ -390,7 +399,16 @@ pub async fn stage_flakes(
             }
         };
 
-        // 3. Policy enforcement
+        // 3. Count fuel per staged non-schema flake
+        if let Some(tracker) = options.tracker {
+            for flake in &flakes {
+                if !is_schema_flake(&flake.p, &flake.o) {
+                    tracker.consume_fuel_one()?;
+                }
+            }
+        }
+
+        // 4. Policy enforcement
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 tracing::debug!("enforcing modify policies on pre-built flakes");
@@ -514,21 +532,8 @@ async fn enforce_modify_policy_per_flake(
     // the correct graph. Cache executors to avoid rebuilding for every flake.
     let mut executors: HashMap<GraphId, QueryPolicyExecutor<'_>> = HashMap::new();
 
-    // Clojure parity: fuel is counted for work performed. For transactions, we count
-    // one unit of fuel per staged (non-schema) flake, regardless of whether the
-    // transaction ultimately fails policy enforcement.
-    if let Some(tracker) = tracker {
-        for flake in flakes {
-            if is_schema_flake(&flake.p, &flake.o) {
-                continue;
-            }
-            // Ignore fuel errors here; upstream can choose to set max-fuel.
-            let _ = tracker.consume_fuel_one();
-        }
-    }
-
-    // Use the provided tracker for async calls. We already consumed fuel above,
-    // so policy execution tracking is additive.
+    // Fuel is now counted upstream in stage() after flake generation,
+    // so we only use the tracker here for async policy query calls.
     let async_tracker = tracker.cloned().unwrap_or_else(Tracker::disabled);
 
     for flake in flakes {

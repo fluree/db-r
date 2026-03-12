@@ -381,7 +381,7 @@ pub async fn query_ledger(
         }
 
         let identity = effective_identity(&credential, &bearer);
-        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited)
+        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited, &headers)
             .await;
     }
 
@@ -915,9 +915,15 @@ async fn execute_sparql_ledger(
     sparql: &str,
     identity: Option<&str>,
     delimited: Option<DelimitedFormat>,
+    headers: &FlureeHeaders,
 ) -> Result<Response> {
     // Create span for peer mode loading
-    let span = tracing::debug_span!("sparql_execute", ledger_id = ledger_id);
+    let span = tracing::debug_span!(
+        "sparql_execute",
+        ledger_id = ledger_id,
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     async move {
         let span = tracing::Span::current();
 
@@ -1119,6 +1125,54 @@ async fn execute_sparql_ledger(
                 add_named(&iri_to_string(iri))?;
             }
 
+            // Tracked dataset query: if tracking headers are present, use tracked path
+            if headers.has_tracking() {
+                let tracking_opts = headers.to_tracking_options();
+                let response = match &state.fluree {
+                    FlureeInstance::File(f) => {
+                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(f.as_ref())
+                            .sparql(sparql)
+                            .tracking(tracking_opts)
+                            .execute_tracked()
+                            .await
+                    }
+                    FlureeInstance::Proxy(p) => {
+                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(p.as_ref())
+                            .sparql(sparql)
+                            .tracking(tracking_opts)
+                            .execute_tracked()
+                            .await
+                    }
+                };
+                let response = match response {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let server_error =
+                            ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                        set_span_error_code(&span, "error:QueryFailed");
+                        tracing::error!(error = %server_error, "tracked SPARQL dataset query failed");
+                        return Err(server_error);
+                    }
+                };
+
+                let tally = TrackingTally {
+                    time: response.time.clone(),
+                    fuel: response.fuel,
+                    policy: response.policy.clone(),
+                };
+                let headers = tracking_headers(&tally);
+                let json = serde_json::to_value(&response).map_err(|e| {
+                    ServerError::internal(format!("Failed to serialize response: {}", e))
+                })?;
+
+                tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
+                return Ok((headers, Json(json)).into_response());
+            }
+
             let result = match &state.fluree {
                 FlureeInstance::File(f) => {
                     let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
@@ -1151,6 +1205,57 @@ async fn execute_sparql_ledger(
             })?;
         let graph = GraphDb::from_ledger_state(&ledger);
         let fluree = state.fluree.as_file();
+
+        // Tracked SPARQL: if tracking headers are present, use tracked execution path
+        if headers.has_tracking() {
+            if let Some(fmt) = delimited {
+                return Err(ServerError::not_acceptable(format!(
+                    "{} format not supported for tracked queries",
+                    fmt.name().to_uppercase()
+                )));
+            }
+
+            let tracking_opts = headers.to_tracking_options();
+            let response = match graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .tracking(tracking_opts)
+                .execute_tracked()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    let server_error =
+                        ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                    set_span_error_code(&span, "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "tracked SPARQL query failed");
+                    return Err(server_error);
+                }
+            };
+
+            // Record tracker fields on the execution span
+            if let Some(ref time) = response.time {
+                span.record("tracker_time", time.as_str());
+            }
+            if let Some(fuel) = response.fuel {
+                span.record("tracker_fuel", fuel);
+            }
+
+            let tally = TrackingTally {
+                time: response.time.clone(),
+                fuel: response.fuel,
+                policy: response.policy.clone(),
+            };
+            let resp_headers = tracking_headers(&tally);
+
+            let json = serde_json::to_value(&response).map_err(|e| {
+                set_span_error_code(&span, "error:InternalError");
+                ServerError::internal(format!("Failed to serialize response: {}", e))
+            })?;
+
+            tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
+            return Ok((resp_headers, Json(json)).into_response());
+        }
 
         // Delimited fast path: execute raw query and format as TSV/CSV bytes
         if let Some(fmt) = delimited {
