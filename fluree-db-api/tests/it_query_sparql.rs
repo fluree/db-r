@@ -2879,3 +2879,108 @@ async fn sparql_lcase_preserves_language_tag() {
         "LCASE must preserve the language tag"
     );
 }
+
+// ---------------------------------------------------------------------------
+// XSD cast functions (W3C SPARQL 1.1 §17.5)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sparql_xsd_cast_integer_from_bool() {
+    // xsd:integer(true) should return 1
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "cast:int-bool").await;
+
+    let query = r#"
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (xsd:integer(true) AS ?one) (xsd:integer(false) AS ?zero)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("xsd:integer cast query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(jsonld, json!([[1, 0]]));
+}
+
+#[tokio::test]
+async fn sparql_xsd_cast_boolean_from_string() {
+    // xsd:boolean("true") should return true
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "cast:bool-str").await;
+
+    let query = r#"
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (xsd:boolean("true") AS ?t) (xsd:boolean("0") AS ?f)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("xsd:boolean cast query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(jsonld, json!([[true, false]]));
+}
+
+#[tokio::test]
+async fn sparql_xsd_cast_double_from_integer() {
+    // xsd:double(42) should return 42.0
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "cast:dbl-int").await;
+
+    let query = r#"
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (xsd:double(42) AS ?d)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("xsd:double cast query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(jsonld, json!([42.0]));
+}
+
+#[tokio::test]
+async fn sparql_xsd_cast_string_from_integer() {
+    // xsd:string(42) should return "42"
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "cast:str-int").await;
+
+    let query = r#"
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (xsd:string(42) AS ?s)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("xsd:string cast query");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(jsonld, json!(["42"]));
+}
+
+#[tokio::test]
+async fn sparql_xsd_cast_invalid_returns_unbound() {
+    // xsd:integer("not_a_number") should produce unbound (no binding), not an error.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_builtin_fn_data(&fluree, "cast:invalid").await;
+
+    let query = r#"
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        PREFIX ex: <http://example.org/ns/>
+        SELECT (xsd:integer("not_a_number") AS ?i)
+        WHERE { ex:sushi ex:label ?label }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("invalid cast should not error");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    // Unbound projected variables serialize as null in JSON-LD
+    assert_eq!(jsonld, json!([null]));
+}

@@ -532,6 +532,17 @@ See [Datasets](datasets.md) for details.
 - `URI(?str)` - URI from string
 - `BNODE(?str)` - Blank node
 
+### XSD Datatype Constructors (Casts)
+
+Per W3C SPARQL 1.1 §17.5, XSD constructor functions cast values between datatypes. Invalid casts produce unbound (no binding), not errors.
+
+- `xsd:boolean(?x)` - Cast to boolean (`"true"`, `"1"` → true; `"false"`, `"0"` → false; numeric 0 → false, non-zero → true)
+- `xsd:integer(?x)` - Cast to integer (truncates doubles, parses strings)
+- `xsd:float(?x)` - Cast to single-precision float
+- `xsd:double(?x)` - Cast to double-precision float
+- `xsd:decimal(?x)` - Cast to decimal (rejects scientific notation strings)
+- `xsd:string(?x)` - Cast to string (canonical form for decimals)
+
 ### Logical Functions
 
 - `BOUND(?var)` - Variable is bound
