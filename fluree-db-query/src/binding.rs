@@ -314,6 +314,16 @@ impl Binding {
         matches!(self, Binding::Poisoned)
     }
 
+    /// Check if this binding is effectively unbound (Unbound or Poisoned).
+    ///
+    /// For VALUES compatibility and merge semantics, both Unbound and Poisoned
+    /// act as wildcards — they match any value and can be filled in by the
+    /// VALUES row.  Poisoned arises from failed OPTIONAL; semantically the
+    /// variable has no value.
+    pub fn is_unbound_or_poisoned(&self) -> bool {
+        matches!(self, Binding::Unbound | Binding::Poisoned)
+    }
+
     /// Check if this binding can participate in pattern matching
     ///
     /// Returns true for Sid, IriMatch, Iri, and Lit bindings - values that can be used to

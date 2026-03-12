@@ -59,6 +59,7 @@ pub use error::{LowerError, Result};
 
 use crate::ast::query::{QueryBody, SelectVariables, SparqlAst};
 
+use fluree_db_query::ir::Pattern;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
@@ -178,6 +179,23 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     self.lower_select_expression_binds(&select_query.select, &aggregate_aliases)?;
                 patterns.extend(select_binds.pre);
 
+                // Lower post-query VALUES clause.  Stored in `post_values` (not
+                // in `patterns`) so the WHERE-clause planner cannot reorder it
+                // relative to OPTIONAL/UNION.  Applied after the WHERE tree.
+                let post_values = if let Some(ref values_pattern) = select_query.values {
+                    let mut values_ir = self.lower_graph_pattern(values_pattern)?;
+                    // lower_graph_pattern returns a Vec; post-query VALUES is always exactly one Pattern::Values.
+                    if values_ir.len() == 1 && matches!(values_ir[0], Pattern::Values { .. }) {
+                        Some(values_ir.remove(0))
+                    } else {
+                        // Fallback: shouldn't happen, but keep patterns inline.
+                        patterns.extend(values_ir);
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // Lower solution modifiers to QueryOptions.
                 // Expression-based GROUP BY produces pre-group BINDs that must be
                 // injected into the WHERE pattern list before query building.
@@ -204,6 +222,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     patterns,
                     options,
                     graph_select: None, // SPARQL doesn't support graph crawl
+                    post_values,
                 })
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
@@ -412,6 +431,90 @@ mod tests {
             .iter()
             .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern");
+    }
+
+    #[test]
+    fn test_bind_pattern_unbound_predicate() {
+        // Regression: BIND must be preserved when triple has unbound predicate (?p).
+        // Uses no space around + (i.e. ?o+10) to test that the lexer correctly
+        // tokenizes + as a separate Plus operator rather than consuming it as
+        // part of a signed integer literal.
+        let query = lower_query(
+            "PREFIX : <http://example.org/>
+             SELECT ?z
+             {
+               ?s ?p ?o .
+               BIND(?o+10 AS ?z)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(
+            has_bind,
+            "Expected Bind pattern in lowered query, got patterns: {:?}",
+            query.patterns
+        );
+    }
+
+    #[test]
+    fn test_bind10_scoping() {
+        // W3C bind10: BIND(4 AS ?z) { ?s :p ?v . FILTER(?v = ?z) }
+        // The inner { } creates a scope boundary; ?z from outer BIND is
+        // NOT visible inside. The inner group should lower to a Subquery
+        // whose SELECT does NOT include ?z.
+        let query = lower_query(
+            "PREFIX : <http://example.org/>
+             SELECT ?s ?v ?z
+             {
+               BIND(4 AS ?z)
+               {
+                 ?s :p ?v . FILTER(?v = ?z)
+               }
+             }",
+        )
+        .unwrap();
+
+        // Should have a Bind and a Subquery
+        assert!(
+            query
+                .patterns
+                .iter()
+                .any(|p| matches!(p, Pattern::Bind { .. })),
+            "Expected Bind pattern"
+        );
+        let subquery = query
+            .patterns
+            .iter()
+            .find(|p| matches!(p, Pattern::Subquery(_)));
+        assert!(
+            subquery.is_some(),
+            "Expected Subquery pattern for nested group"
+        );
+
+        if let Some(Pattern::Subquery(sq)) = subquery {
+            // ?z should NOT be in the subquery's select (it's only in FILTER, not bound)
+            let z_var = query
+                .patterns
+                .iter()
+                .find_map(|p| {
+                    if let Pattern::Bind { var, .. } = p {
+                        Some(*var)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert!(
+                !sq.select.contains(&z_var),
+                "Subquery SELECT should NOT contain ?z (VarId {:?}), but got select: {:?}",
+                z_var,
+                sq.select
+            );
+        }
     }
 
     #[test]

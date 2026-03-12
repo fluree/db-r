@@ -141,6 +141,7 @@ mod tests {
             patterns,
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         }
     }
 
@@ -261,6 +262,7 @@ mod tests {
             patterns: vec![],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let deps = compute_variable_deps(&query, &QueryOptions::default()).unwrap();

@@ -51,6 +51,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             patterns,
             options,
             graph_select: None, // SPARQL doesn't support graph crawl
+            post_values: None,
         })
     }
 

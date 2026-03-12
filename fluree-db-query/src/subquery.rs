@@ -77,21 +77,17 @@ impl SubqueryOperator {
         stats: Option<Arc<StatsView>>,
     ) -> Self {
         let parent_schema: HashSet<VarId> = child.schema().iter().copied().collect();
-        // Compute variables referenced by subquery patterns (correlation basis)
-        let mut subquery_pattern_vars: HashSet<VarId> = HashSet::new();
-        for p in &subquery.patterns {
-            for v in p.variables() {
-                subquery_pattern_vars.insert(v);
-            }
-        }
+        let subquery_select_vars: HashSet<VarId> = subquery.select.iter().copied().collect();
 
-        // Correlation vars are vars that exist in parent schema AND are referenced by subquery patterns.
-        // Preserve a stable order by iterating parent schema order.
+        // Correlation vars: variables in BOTH the parent schema AND the subquery
+        // SELECT list.  Per SPARQL semantics, the subquery's scope boundary is
+        // defined by its SELECT — variables not SELECTed are invisible from the
+        // parent, even if referenced internally (e.g., in FILTERs).
         let correlation_vars: Vec<VarId> = child
             .schema()
             .iter()
             .copied()
-            .filter(|v| subquery_pattern_vars.contains(v))
+            .filter(|v| subquery_select_vars.contains(v))
             .collect();
 
         // New vars are subquery *selected* vars that are not in parent schema, preserving select order.
@@ -370,5 +366,52 @@ impl SubqueryOperator {
 
         operator.close();
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::Binding;
+    use crate::ir::SubqueryPattern;
+    use crate::seed::SeedOperator;
+    use crate::var_registry::VarId;
+
+    /// Verifies that correlation uses SELECT vars, not internal pattern vars.
+    ///
+    /// Scenario: parent schema has [?s, ?name], subquery SELECT is [?s, ?age],
+    /// but subquery patterns also reference ?internal (not SELECTed).
+    /// Correlation should be [?s] only — ?internal must NOT appear in
+    /// correlation_vars even if it were somehow in the parent schema.
+    #[test]
+    fn correlation_uses_select_vars_not_pattern_vars() {
+        let v_s = VarId(0);
+        let v_name = VarId(1);
+        let v_age = VarId(2);
+        let v_internal = VarId(3);
+
+        // Parent provides [?s, ?name]
+        let parent_schema: Arc<[VarId]> = Arc::from(vec![v_s, v_name]);
+        let child = SeedOperator::from_row(parent_schema, vec![Binding::Unbound, Binding::Unbound]);
+
+        // Subquery SELECT [?s, ?age]; patterns also reference ?internal
+        let subquery = SubqueryPattern::new(
+            vec![v_s, v_age],
+            vec![], // patterns don't matter for this structural test
+        );
+
+        let op = SubqueryOperator::new(Box::new(child), subquery, None);
+
+        // ?s is in both parent schema and subquery SELECT → correlated
+        assert_eq!(op.correlation_vars, vec![v_s]);
+
+        // ?age is new (in subquery SELECT but not parent schema)
+        assert_eq!(op.new_vars, vec![v_age]);
+
+        // ?name is NOT in subquery SELECT → not correlated, not new
+        assert!(!op.correlation_vars.contains(&v_name));
+
+        // ?internal is NOT in subquery SELECT → never appears
+        assert!(!op.correlation_vars.contains(&v_internal));
     }
 }

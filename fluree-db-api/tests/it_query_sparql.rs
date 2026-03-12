@@ -2984,3 +2984,405 @@ async fn sparql_xsd_cast_invalid_returns_unbound() {
     // Unbound projected variables serialize as null in JSON-LD
     assert_eq!(jsonld, json!([null]));
 }
+
+// ============================================================================
+// W3C BIND compliance tests (#51)
+// ============================================================================
+
+/// W3C bind01 exact replica: unbound ?p, SELECT ?z WHERE { ?s ?p ?o . BIND(?o+10 AS ?z) }
+#[tokio::test]
+async fn sparql_bind01_exact_w3c_unbound_predicate() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:w3c01");
+
+    // Load turtle data matching W3C bind/data.ttl
+    let turtle = r#"
+        @prefix : <http://example.org/> .
+        :s1 :p 1 .
+        :s2 :p 2 .
+        :s3 :p 3 .
+        :s4 :p 4 .
+    "#;
+    let receipt = fluree
+        .insert_turtle(ledger0, turtle)
+        .await
+        .expect("insert turtle");
+    let ledger = receipt.ledger;
+
+    // Exact W3C bind01 query
+    let query = r#"
+        PREFIX : <http://example.org/>
+        SELECT ?z
+        {
+          ?s ?p ?o .
+          BIND(?o+10 AS ?z)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("bind01 exact W3C query should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    let mut values: Vec<i64> = jsonld
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(
+        values,
+        vec![11, 12, 13, 14],
+        "W3C bind01: BIND(?o+10 AS ?z)"
+    );
+}
+
+/// W3C bind01: BIND with arithmetic expression where output is in SELECT.
+/// SELECT ?z WHERE { ?s ?p ?o . BIND(?o+10 AS ?z) }
+#[tokio::test]
+async fn sparql_bind_expression_in_select() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:expr");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 1 },
+            { "@id": "ex:s2", "ex:p": 2 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?z WHERE {
+            ?s ex:p ?o .
+            BIND(?o + 10 AS ?z)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("bind01 pattern should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    let mut values: Vec<i64> = jsonld
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|v| v.as_i64().expect("int"))
+        .collect();
+    values.sort();
+    assert_eq!(values, vec![11, 12], "BIND(?o+10 AS ?z) with SELECT ?z");
+}
+
+/// W3C bind06: SELECT * with BIND — BIND output variable should appear in results.
+#[tokio::test]
+async fn sparql_bind_wildcard_select() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:wildcard");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 1 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT * WHERE {
+            ?s ex:p ?o .
+            BIND(?o + 10 AS ?z)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("bind06 wildcard should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+    let bindings = normalize_sparql_bindings(&sparql_json);
+
+    assert_eq!(bindings.len(), 1);
+    // ?z should be present in the result
+    assert!(
+        bindings[0].get("z").is_some(),
+        "BIND output ?z should appear in SELECT * results: {bindings:?}"
+    );
+}
+
+// ============================================================================
+// W3C VALUES compliance tests (#51)
+// ============================================================================
+
+/// Post-query VALUES constraining WHERE results (values01 pattern).
+#[tokio::test]
+async fn sparql_post_query_values() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "values:post");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:book1", "ex:title": "SPARQL Tutorial", "ex:price": 42 },
+            { "@id": "ex:book2", "ex:title": "The Semantic Web", "ex:price": 23 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?book ?title ?price
+        WHERE {
+            ?book ex:title ?title ;
+                  ex:price ?price .
+        }
+        VALUES ?book { ex:book1 }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("post-query VALUES should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+    let bindings = normalize_sparql_bindings(&sparql_json);
+
+    assert_eq!(
+        bindings.len(),
+        1,
+        "Post-query VALUES should filter to one book: {bindings:?}"
+    );
+}
+
+/// W3C bind02: chained BINDs — BIND(?o+10 AS ?z) BIND(?o+100 AS ?z2).
+#[tokio::test]
+async fn sparql_bind_chained_binds() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:chained");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 1 },
+            { "@id": "ex:s2", "ex:p": 2 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?o ?z ?z2
+        WHERE {
+            ?s ex:p ?o .
+            BIND(?o + 10 AS ?z)
+            BIND(?o + 100 AS ?z2)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("chained BINDs should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    let rows = jsonld.as_array().expect("array");
+    assert_eq!(rows.len(), 2, "two solutions: {rows:?}");
+    // Each row is [?o, ?z, ?z2]
+    let mut sorted: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            let arr = r.as_array().expect("row array");
+            (
+                arr[0].as_i64().expect("o"),
+                arr[1].as_i64().expect("z"),
+                arr[2].as_i64().expect("z2"),
+            )
+        })
+        .collect();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec![(1, 11, 101), (2, 12, 102)],
+        "chained BINDs: ?z=?o+10, ?z2=?o+100"
+    );
+}
+
+/// W3C bind07: BIND inside UNION branches.
+#[tokio::test]
+async fn sparql_bind_in_union() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:union");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 1 },
+            { "@id": "ex:s2", "ex:q": 10 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?z
+        WHERE {
+            { ?s ex:p ?o . BIND(?o + 10 AS ?z) }
+            UNION
+            { ?s ex:q ?o . BIND(?o + 100 AS ?z) }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("BIND in UNION should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let mut values: Vec<i64> = jsonld
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(values, vec![11, 110], "BIND in each UNION branch");
+}
+
+/// W3C bind05: BIND with FILTER — FILTER references BIND output.
+#[tokio::test]
+async fn sparql_bind_with_filter() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:filter");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 1 },
+            { "@id": "ex:s2", "ex:p": 2 },
+            { "@id": "ex:s3", "ex:p": 3 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?z
+        WHERE {
+            ?s ex:p ?o .
+            BIND(?o + 10 AS ?z)
+            FILTER(?z > 11)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("BIND+FILTER should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let mut values: Vec<i64> = jsonld
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+    values.sort();
+    assert_eq!(values, vec![12, 13], "FILTER(?z > 11) on BIND(?o+10 AS ?z)");
+}
+
+/// W3C bind10: BIND scoping — outer BIND not visible inside nested { }.
+#[tokio::test]
+async fn sparql_bind_scoping() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "bind:scope");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:p": 4 }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    // bind10: BIND(4 AS ?z) { ?s :p ?v . FILTER(?v = ?z) }
+    // The inner { } creates a new scope. ?z from outer BIND should NOT
+    // be visible inside, so FILTER(?v = ?z) never matches → 0 results.
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?z ?v
+        WHERE {
+            BIND(4 AS ?z)
+            { ?s ex:p ?v . FILTER(?v = ?z) }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("bind10 scoping should succeed");
+    let sparql_json = result
+        .to_sparql_json(&ledger.snapshot)
+        .expect("to_sparql_json");
+    let bindings = normalize_sparql_bindings(&sparql_json);
+
+    assert_eq!(
+        bindings.len(),
+        0,
+        "bind10: outer BIND should not be visible in nested scope: {bindings:?}"
+    );
+}
+
+/// Post-query VALUES with UNDEF (values04 pattern).
+/// UNDEF acts as wildcard for that variable position.
+#[tokio::test]
+async fn sparql_post_query_values_with_undef() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "values:undef");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:s1", "ex:color": "red" },
+            { "@id": "ex:s2", "ex:color": "blue" },
+            { "@id": "ex:s3", "ex:color": "green" }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    // Multi-var VALUES with UNDEF — constrains ?color to "red" for any ?s
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?s ?color
+        WHERE { ?s ex:color ?color }
+        VALUES (?s ?color) { (UNDEF "red") }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("VALUES with UNDEF should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows = jsonld.as_array().expect("array");
+
+    // UNDEF for ?s means any ?s; "red" constrains ?color
+    assert_eq!(
+        rows.len(),
+        1,
+        "VALUES with UNDEF should match exactly one row (ex:s1, red): {rows:?}"
+    );
+}
