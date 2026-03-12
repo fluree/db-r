@@ -13,8 +13,8 @@ use fluree_db_binary_index::{
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
-    Flake, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions, RangeProvider,
-    RangeTest, Sid,
+    Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions,
+    RangeProvider, RangeTest, Sid,
 };
 
 use crate::binary_scan::index_type_to_sort_order;
@@ -317,36 +317,7 @@ fn binary_range_eq_v3(
                 },
             };
             // Decode object.
-            //
-            // Overlay-only rows can introduce subject refs that are not present in the
-            // persisted subject forward packs yet (novel namespaces / local IDs). Decode
-            // IRI refs via DictNovelty-backed subject resolution to avoid hard failures.
-            let o_val = {
-                let ot = OType::from_u16(o_type);
-                if ot.is_iri_ref() || ot.is_blank_node() {
-                    fluree_db_core::FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?)
-                } else if matches!(ot.decode_kind(), fluree_db_core::DecodeKind::StringDict) {
-                    // Overlay can introduce novel string IDs that don't exist in the
-                    // persisted forward packs yet. Prefer persisted lookup, then novelty.
-                    let str_id = o_key as u32;
-                    match store.resolve_string_value(str_id) {
-                        Ok(s) => fluree_db_core::FlakeValue::String(s),
-                        Err(e) => {
-                            if dict_novelty.is_initialized() {
-                                if let Some(s) = dict_novelty.strings.resolve_string(str_id) {
-                                    fluree_db_core::FlakeValue::String(s.to_string())
-                                } else {
-                                    return Err(e);
-                                }
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    }
-                } else {
-                    view.decode_value(o_type, o_key, p_id)?
-                }
-            };
+            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
             // Resolve datatype.
             let dt = store
                 .resolve_datatype_sid(o_type)
@@ -421,6 +392,59 @@ fn resolve_sid(
                 format!("subject s_id={s_id} not found in persisted or novelty dict"),
             ))
         }
+    }
+}
+
+/// Decode an encoded object `(o_type, o_key)` with DictNovelty fallback.
+///
+/// This is required for overlay-only rows where IDs are assigned by `DictNovelty`
+/// (starting at watermark+1) and do not exist in persisted forward packs yet.
+///
+/// Applies to:
+/// - subject refs / blank nodes (`OType::IRI_REF`): resolve via subject dict → novelty
+/// - string-dict-backed types (`DecodeKind::StringDict` and `DecodeKind::JsonArena`):
+///   resolve via string dict → novelty
+/// - all other types: delegate to `BinaryGraphView::decode_value()`
+fn decode_value_with_novelty(
+    o_type: u16,
+    o_key: u64,
+    p_id: u32,
+    view: &BinaryGraphView,
+    store: &BinaryIndexStore,
+    dict_novelty: &Arc<DictNovelty>,
+) -> std::io::Result<FlakeValue> {
+    let ot = OType::from_u16(o_type);
+    if ot.is_iri_ref() || ot.is_blank_node() {
+        return Ok(FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?));
+    }
+
+    match ot.decode_kind() {
+        fluree_db_core::DecodeKind::StringDict | fluree_db_core::DecodeKind::JsonArena => {
+            let str_id = o_key as u32;
+            let wrap = |s: String| {
+                if matches!(ot.decode_kind(), fluree_db_core::DecodeKind::JsonArena) {
+                    FlakeValue::Json(s)
+                } else {
+                    FlakeValue::String(s)
+                }
+            };
+
+            match store.resolve_string_value(str_id) {
+                Ok(s) => Ok(wrap(s)),
+                Err(e) => {
+                    if dict_novelty.is_initialized() {
+                        if let Some(s) = dict_novelty.strings.resolve_string(str_id) {
+                            Ok(wrap(s.to_string()))
+                        } else {
+                            Err(e)
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
+        }
+        _ => view.decode_value(o_type, o_key, p_id),
     }
 }
 
@@ -890,7 +914,8 @@ fn binary_range_bounded_v3(
                     None => continue, // truly unknown — shouldn't happen
                 },
             };
-            let o_val = view.decode_value(o_type, o_key, p_id)?;
+            let o_val =
+                decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
             let dt = store
                 .resolve_datatype_sid(o_type)
                 .unwrap_or_else(|| Sid::new(0, ""));
