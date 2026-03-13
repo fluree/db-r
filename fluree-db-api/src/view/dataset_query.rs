@@ -153,7 +153,7 @@ where
             QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
             _ => crate::format::FormatterConfig::jsonld(),
         };
-        let format_config = format_config.unwrap_or(default_format);
+        let mut format_config = format_config.unwrap_or(default_format);
 
         // Require primary
         let primary = dataset.primary().ok_or_else(|| {
@@ -201,6 +201,13 @@ where
             None,
             primary.binary_graph(),
         );
+
+        // CONSTRUCT/DESCRIBE graph results must be formatted as JSON-LD.
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
 
         // Format with tracking
         let result_json = match primary.policy() {

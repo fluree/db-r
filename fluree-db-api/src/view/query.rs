@@ -157,7 +157,7 @@ where
             QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
             _ => crate::format::FormatterConfig::jsonld(),
         };
-        let format_config = format_config.unwrap_or(default_format);
+        let mut format_config = format_config.unwrap_or(default_format);
 
         // Parse
         let (vars, parsed) = match &input {
@@ -203,6 +203,13 @@ where
             Some(db.overlay.clone()),
             db.binary_graph(),
         );
+
+        // CONSTRUCT/DESCRIBE graph results must be formatted as JSON-LD.
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
 
         // Format with tracking
         let result_json = match db.policy() {

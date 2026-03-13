@@ -47,6 +47,7 @@
 mod aggregate;
 mod ask;
 mod construct;
+mod describe;
 mod error;
 mod expression;
 mod path;
@@ -227,7 +228,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
             QueryBody::Ask(ask_query) => self.lower_ask(ask_query),
-            QueryBody::Describe(_) => Err(LowerError::unsupported_form("DESCRIBE", self.ast.span)),
+            QueryBody::Describe(describe_query) => self.lower_describe(describe_query),
             QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
         }
     }

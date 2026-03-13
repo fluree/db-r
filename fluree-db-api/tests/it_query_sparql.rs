@@ -3379,3 +3379,61 @@ async fn sparql_post_query_values_with_undef() {
         "VALUES with UNDEF should match exactly one row (ex:s1, red): {rows:?}"
     );
 }
+
+// =========================================================================
+// SPARQL DESCRIBE Tests
+// =========================================================================
+
+#[tokio::test]
+async fn sparql_describe_constant_iri_outgoing_triples() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "describe:const");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:alice", "ex:name": "Alice", "ex:knows": {"@id": "ex:bob"} },
+            { "@id": "ex:bob", "ex:name": "Bob" }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        DESCRIBE ex:alice
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("DESCRIBE should succeed");
+
+    // DESCRIBE lowers to a graph (CONSTRUCT-style) result.
+    let json = result.to_construct(&ledger.snapshot).expect("to_construct");
+
+    let graph = json
+        .get("@graph")
+        .and_then(|v| v.as_array())
+        .expect("@graph array");
+
+    let alice = graph
+        .iter()
+        .find(|n| n.get("@id") == Some(&JsonValue::String("ex:alice".to_string())))
+        .expect("graph should include ex:alice node");
+
+    let name = alice.get("ex:name").expect("ex:name present");
+    let has_alice_name = match name {
+        JsonValue::String(s) => s == "Alice",
+        JsonValue::Array(items) => items.iter().any(|v| v == "Alice"),
+        _ => false,
+    };
+    assert!(
+        has_alice_name,
+        "DESCRIBE should include outgoing properties for ex:alice: {alice}"
+    );
+    assert!(
+        alice.get("ex:knows").is_some(),
+        "DESCRIBE should include outgoing link ex:knows: {alice}"
+    );
+}

@@ -345,6 +345,17 @@ pub async fn run(
                 // without materializing full SPARQL JSON / full-result formatting.
                 match query_format {
                     detect::QueryFormat::Sparql => {
+                        // CONSTRUCT/DESCRIBE produce graph results (not tabular SPARQL JSON).
+                        // For bench mode, avoid expensive graph materialization and just report size.
+                        if result.output.construct_template().is_some() {
+                            println!(
+                                "(graph result: {} triples)",
+                                format_count(result.row_count())
+                            );
+                            print_footer(result.row_count(), None, elapsed);
+                            return Ok(());
+                        }
+
                         if let Some(output) = output::format_sparql_table_from_result(
                             &result,
                             &view.snapshot,
@@ -400,6 +411,16 @@ pub async fn run(
                     _ => output_format,
                 };
 
+                // Graph results (SPARQL CONSTRUCT/DESCRIBE) don't have a meaningful table view.
+                let display_format = if query_format == detect::QueryFormat::Sparql
+                    && result.output.construct_template().is_some()
+                    && display_format == OutputFormatKind::Table
+                {
+                    OutputFormatKind::Json
+                } else {
+                    display_format
+                };
+
                 // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
                 // For table output, show a preview unless the result set is small.
                 let effective_limit = if display_format == OutputFormatKind::Table
@@ -450,7 +471,12 @@ pub async fn run(
 
                 // Full formatting path
                 let render_timer = Instant::now();
-                let formatted_json = if display_format == OutputFormatKind::TypedJson {
+                let formatted_json = if query_format == detect::QueryFormat::Sparql
+                    && result.output.construct_template().is_some()
+                {
+                    // CONSTRUCT/DESCRIBE graph results: render as JSON-LD.
+                    result.to_construct(&view.snapshot)?
+                } else if display_format == OutputFormatKind::TypedJson {
                     let mut config = fluree_db_api::FormatterConfig::typed_json();
                     if normalize_arrays {
                         config = config.with_normalize_arrays();
