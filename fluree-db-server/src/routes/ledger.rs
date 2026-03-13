@@ -597,6 +597,158 @@ pub async fn exists_ledger_tail(
     exists(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
+// ── Branch endpoints ──────────────────────────────────────────────────────
+
+/// Branch info in list response
+#[derive(Serialize)]
+pub struct BranchInfo {
+    /// Branch name (e.g., "main", "feature-x")
+    pub branch: String,
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Current transaction time on this branch
+    pub t: i64,
+    /// Source branch this was created from, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Create branch request body
+#[derive(Deserialize)]
+pub struct CreateBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// New branch name (e.g., "feature-x")
+    pub branch: String,
+    /// Source branch to create from (defaults to "main")
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Create branch response
+#[derive(Serialize)]
+pub struct CreateBranchResponse {
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Branch name
+    pub branch: String,
+    /// Source branch this was created from
+    pub source: String,
+    /// Transaction time at branch point
+    pub t: i64,
+}
+
+/// Create a new branch
+///
+/// POST /fluree/branch
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `branch`: New branch name (e.g., "feature-x")
+/// - `source`: Source branch (optional, defaults to "main")
+///
+/// Returns 201 Created on success, 409 Conflict if branch already exists,
+/// 404 Not Found if source branch does not exist.
+pub async fn create_branch(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    create_branch_local(state, request).await.into_response()
+}
+
+async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
+    let headers_result = FlureeHeaders::from_headers(request.headers());
+    let headers = match headers_result {
+        Ok(h) => h,
+        Err(e) => return Err(e),
+    };
+
+    let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: CreateBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
+    let span = create_request_span(
+        "branch:create",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&req.ledger),
+        None,
+        None,
+    );
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            branch = %req.branch,
+            source = req.source.as_deref().unwrap_or("main"),
+            "branch creation requested"
+        );
+
+        let record = match state
+            .fluree
+            .as_file()
+            .create_branch(&req.ledger, &req.branch, req.source.as_deref())
+            .await
+        {
+            Ok(record) => record,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchCreateFailed");
+                tracing::error!(error = %server_error, "branch creation failed");
+                return Err(server_error);
+            }
+        };
+
+        let bp = record.branch_point.as_ref();
+        let response = CreateBranchResponse {
+            ledger_id: record.ledger_id,
+            branch: record.branch,
+            source: bp.map(|b| b.source.clone()).unwrap_or_default(),
+            t: bp.map(|b| b.t).unwrap_or(0),
+        };
+
+        tracing::info!(status = "success", "branch created");
+        Ok((StatusCode::CREATED, Json(response)))
+    }
+    .instrument(span)
+    .await
+}
+
+/// List branches for a ledger
+///
+/// GET /fluree/branches/*ledger
+///
+/// Returns all non-retracted branches for the specified ledger.
+pub async fn list_branches(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+) -> Result<Json<Vec<BranchInfo>>> {
+    let records = state
+        .fluree
+        .list_branches(&ledger)
+        .await
+        .map_err(ServerError::Api)?;
+
+    let branches = records
+        .into_iter()
+        .map(|r| BranchInfo {
+            branch: r.branch,
+            ledger_id: r.ledger_id,
+            t: r.commit_t,
+            source: r.branch_point.map(|bp| bp.source),
+        })
+        .collect();
+
+    Ok(Json(branches))
+}
+
 /// Forward a write request to the transaction server (peer mode)
 async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {

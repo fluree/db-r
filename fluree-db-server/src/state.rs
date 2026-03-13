@@ -112,6 +112,17 @@ impl FlureeInstance {
         }
     }
 
+    /// List all non-retracted branches for a ledger.
+    pub async fn list_branches(
+        &self,
+        ledger_name: &str,
+    ) -> fluree_db_api::Result<Vec<fluree_db_nameservice::NsRecord>> {
+        match self {
+            FlureeInstance::File(f) => f.list_branches(ledger_name).await,
+            FlureeInstance::Proxy(p) => p.list_branches(ledger_name).await,
+        }
+    }
+
     // === Connection-level query methods (no ledger loading required) ===
 
     /// Execute a SPARQL query against a connection (dataset specified via FROM clause)

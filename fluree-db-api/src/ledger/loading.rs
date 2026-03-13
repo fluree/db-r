@@ -6,7 +6,7 @@ use crate::{
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
-use fluree_db_nameservice::{NameServiceError, Publisher};
+use fluree_db_nameservice::{BranchPoint, NameServiceError, NsRecord, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
 impl<S, N> Fluree<S, N>
@@ -193,5 +193,87 @@ where
 
         info!(ledger_id = %ledger_id, "Ledger created successfully");
         Ok(ledger)
+    }
+
+    /// Create a new branch for a ledger.
+    ///
+    /// Looks up the source branch to capture its current commit state, then
+    /// creates a new [`NsRecord`] for `ledger_name:new_branch` with the commit
+    /// head copied from the source. The caller specifies which branch to branch
+    /// from via `source_branch` (defaults to `"main"` if `None`).
+    ///
+    /// # Errors
+    ///
+    /// - [`ApiError::LedgerExists`] if the branch already exists
+    /// - [`ApiError::NotFound`] if the source branch does not exist
+    pub async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        source_branch: Option<&str>,
+    ) -> Result<NsRecord> {
+        use fluree_db_core::ledger_id::format_ledger_id;
+        use tracing::info;
+
+        let source = source_branch.unwrap_or("main");
+        let source_id = format_ledger_id(ledger_name, source);
+
+        info!(ledger_name, new_branch, source, "Creating branch");
+
+        // Look up the source branch to capture its commit state
+        let source_record = self
+            .nameservice
+            .lookup(&source_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
+
+        let commit_id = source_record.commit_head_id.clone().ok_or_else(|| {
+            ApiError::internal(format!("Source branch {} has no commit head", source_id))
+        })?;
+
+        let branch_point = BranchPoint {
+            source: source.to_string(),
+            commit_id,
+            t: source_record.commit_t,
+        };
+
+        match self
+            .nameservice
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+        {
+            Ok(()) => {}
+            Err(NameServiceError::LedgerAlreadyExists(a)) => {
+                return Err(ApiError::ledger_exists(a));
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+
+        let new_id = format_ledger_id(ledger_name, new_branch);
+        let record = self.nameservice.lookup(&new_id).await?.ok_or_else(|| {
+            ApiError::internal(format!(
+                "Branch {} was created but not found in nameservice",
+                new_id
+            ))
+        })?;
+
+        info!(
+            ledger_name,
+            new_branch, source, "Branch created successfully"
+        );
+        Ok(record)
+    }
+}
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService,
+{
+    /// List all non-retracted branches for a ledger.
+    pub async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        Ok(self.nameservice.list_branches(ledger_name).await?)
     }
 }

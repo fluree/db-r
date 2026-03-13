@@ -33,6 +33,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let v1_admin_protected_routes = Router::new()
         .route("/create", post(ledger::create))
         .route("/drop", post(ledger::drop))
+        .route("/branch", post(ledger::create_branch))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth::require_admin_token,
@@ -46,6 +47,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Ledger management (read-only)
         .route("/info/*ledger", get(ledger::info_ledger_tail))
         .route("/exists/*ledger", get(ledger::exists_ledger_tail))
+        .route("/branches/*ledger", get(ledger::list_branches))
         // Merge admin-protected routes
         .merge(v1_admin_protected_routes)
         // Query endpoints
