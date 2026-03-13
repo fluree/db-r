@@ -5,12 +5,13 @@
 //! async runtimes.
 
 use crate::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord,
-    Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue, Subscription,
+    AdminPublisher, BranchPoint, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent,
+    NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher, RefValue, Result,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
+use fluree_db_core::format_ledger_id;
 use fluree_db_core::ledger_id as core_ledger_id;
 use fluree_db_core::ContentId;
 use parking_lot::RwLock;
@@ -248,6 +249,28 @@ impl Publisher for MemoryNameService {
         let _ = self
             .event_tx
             .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
+        Ok(())
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()> {
+        let new_id = format_ledger_id(ledger_name, new_branch);
+        let key = self.normalize_ledger_id(&new_id);
+
+        if self.records.read().contains_key(&key) {
+            return Err(crate::NameServiceError::ledger_already_exists(&key));
+        }
+
+        let mut record = NsRecord::new(ledger_name, new_branch);
+        record.commit_head_id = Some(branch_point.commit_id.clone());
+        record.commit_t = branch_point.t;
+        record.branch_point = Some(branch_point);
+        self.records.write().insert(key, record);
+
         Ok(())
     }
 

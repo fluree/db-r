@@ -123,6 +123,24 @@ impl Publisher for AwsNameService {
         }
     }
 
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+        }
+    }
+
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
         match self {
             Self::DynamoDb(ns) => ns.publishing_ledger_id(ledger_id),

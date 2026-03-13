@@ -119,6 +119,27 @@ struct NsFileV2 {
     /// Config metadata beyond default_context (v2 extension)
     #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
     config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
+
+    /// Branch point metadata recording where this branch was created from
+    #[serde(
+        rename = "f:branchPoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    branch_point: Option<BranchPointRef>,
+}
+
+/// JSON-LD representation of a branch point in an ns@v2 file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BranchPointRef {
+    #[serde(rename = "f:source")]
+    source: String,
+
+    #[serde(rename = "f:commitCid", skip_serializing_if = "Option::is_none")]
+    commit_cid: Option<String>,
+
+    #[serde(rename = "f:t")]
+    t: i64,
 }
 
 /// JSON structure for index-only ns@v2 file
@@ -457,6 +478,14 @@ where
                 .as_deref()
                 .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
+            branch_point: main.branch_point.and_then(|bp| {
+                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
+                Some(crate::BranchPoint {
+                    source: bp.source,
+                    commit_id,
+                    t: bp.t,
+                })
+            }),
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -665,6 +694,7 @@ where
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
         };
 
         let bytes = serde_json::to_vec_pretty(&file)?;
@@ -787,6 +817,52 @@ where
             Some(file)
         })
         .await
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let key = self.ns_key(ledger_name, new_branch);
+        let normalized_id = format_ledger_id(ledger_name, new_branch);
+
+        let bp_ref = BranchPointRef {
+            source: branch_point.source.clone(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            t: branch_point.t,
+        };
+
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_id.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.to_string(),
+            },
+            branch: new_branch.to_string(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            config_cid: None,
+            t: branch_point.t,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            status_v: Some(1),
+            status_meta: None,
+            config_v: Some(0),
+            config_meta: None,
+            branch_point: Some(bp_ref),
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|e| NameServiceError::storage(e.to_string()))?;
+
+        let created = self.storage.insert(&key, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(&normalized_id));
+        }
+
+        Ok(())
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {

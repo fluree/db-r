@@ -415,6 +415,17 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         self.0.retract(alias).await
     }
 
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
         self.0.publishing_ledger_id(ledger_id)
     }
@@ -532,6 +543,17 @@ where
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.inner.retract(alias).await
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {

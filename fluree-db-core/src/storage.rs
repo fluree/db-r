@@ -1030,7 +1030,9 @@ impl StorageCas for FileStorage {
             .create(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|e| StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e)))?;
+            .map_err(|e| {
+                StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e))
+            })?;
 
         use fs2::FileExt;
         lock_file
