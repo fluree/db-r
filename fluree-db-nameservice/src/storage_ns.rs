@@ -615,6 +615,38 @@ where
         self.load_record(&ledger_name, &branch).await
     }
 
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let prefix = if self.prefix.is_empty() {
+            format!("{}/{}/", NS_VERSION, ledger_name)
+        } else {
+            format!("{}/{}/{}/", self.prefix, NS_VERSION, ledger_name)
+        };
+
+        let keys = StorageList::list_prefix(&self.storage, &prefix)
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to list branches: {}", e)))?;
+
+        let mut records = Vec::new();
+
+        for key in keys {
+            if key.ends_with(".index.json") || !key.ends_with(".json") {
+                continue;
+            }
+
+            // Extract branch name from the key suffix
+            let file_part = key.rsplit('/').next().unwrap_or("");
+            let branch = file_part.trim_end_matches(".json");
+
+            if let Ok(Some(record)) = self.load_record(ledger_name, branch).await {
+                if !record.retracted {
+                    records.push(record);
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         let prefix = if self.prefix.is_empty() {
             NS_VERSION.to_string()

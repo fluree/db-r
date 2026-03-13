@@ -488,6 +488,48 @@ impl NameService for FileNameService {
         self.load_record(&ledger_name, &branch).await
     }
 
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let ledger_dir = self.storage.base_path().join(NS_VERSION).join(ledger_name);
+
+        if !ledger_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut records = Vec::new();
+        let mut dir_entries = tokio::fs::read_dir(&ledger_dir).await.map_err(|e| {
+            NameServiceError::storage(format!("Failed to read directory {:?}: {}", ledger_dir, e))
+        })?;
+
+        while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
+            NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+        })? {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            if file_name.ends_with(".index.json")
+                || file_name.ends_with(".snapshots.json")
+                || file_name.ends_with(".lock")
+                || file_name.ends_with(".tmp")
+                || !file_name.ends_with(".json")
+            {
+                continue;
+            }
+
+            let branch = file_name.trim_end_matches(".json");
+
+            if self.is_graph_source_record(ledger_name, branch).await? {
+                continue;
+            }
+
+            if let Ok(Some(record)) = self.load_record(ledger_name, branch).await {
+                if !record.retracted {
+                    records.push(record);
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         let ns_dir = self.storage.base_path().join(NS_VERSION);
 
@@ -2512,5 +2554,127 @@ mod tests {
             }
             _ => panic!("expected conflict"),
         }
+    }
+
+    // =========================================================================
+    // Branch tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_file_create_branch_from_main() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-5");
+        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 5,
+        };
+        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+
+        let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
+        assert_eq!(record.name, "mydb");
+        assert_eq!(record.branch, "feature-x");
+        assert_eq!(record.commit_head_id, Some(cid.clone()));
+        assert_eq!(record.commit_t, 5);
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 5);
+    }
+
+    #[tokio::test]
+    async fn test_file_create_branch_duplicate_fails() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+
+        let result = ns.create_branch("mydb", "dev", bp).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-3");
+        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 3,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "staging", bp).await.unwrap();
+
+        // Also create a different ledger to ensure filtering works
+        ns.publish_ledger_init("other:main").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["dev", "main", "staging"]);
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_unknown_ledger() {
+        let (_temp, ns) = setup().await;
+        let branches = ns.list_branches("nonexistent").await.unwrap();
+        assert!(branches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_excludes_retracted() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.retract("mydb:dead").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].branch, "main");
+    }
+
+    #[tokio::test]
+    async fn test_file_branch_point_persists_across_reload() {
+        let (temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-2");
+        ns.publish_commit("mydb:main", 2, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 2,
+        };
+        ns.create_branch("mydb", "persisted", bp).await.unwrap();
+
+        // Create a new FileNameService pointing to the same directory
+        let ns2 = FileNameService::new(temp.path());
+        let record = ns2.lookup("mydb:persisted").await.unwrap().unwrap();
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 2);
     }
 }

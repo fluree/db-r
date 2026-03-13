@@ -116,6 +116,16 @@ impl NameService for MemoryNameService {
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         Ok(self.records.read().values().cloned().collect())
     }
+
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        Ok(self
+            .records
+            .read()
+            .values()
+            .filter(|r| r.name == ledger_name && !r.retracted)
+            .cloned()
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -1683,5 +1693,104 @@ mod tests {
             }
             _ => panic!("expected conflict when no record exists"),
         }
+    }
+
+    // =========================================================================
+    // Branch tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_branch_from_main() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-5");
+        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 5,
+        };
+        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+
+        let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
+        assert_eq!(record.name, "mydb");
+        assert_eq!(record.branch, "feature-x");
+        assert_eq!(record.commit_head_id, Some(cid.clone()));
+        assert_eq!(record.commit_t, 5);
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 5);
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_duplicate_fails() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+
+        let result = ns.create_branch("mydb", "dev", bp).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_branches() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-3");
+        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 3,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "staging", bp).await.unwrap();
+
+        // Also create a different ledger to ensure filtering works
+        ns.publish_ledger_init("other:main").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["dev", "main", "staging"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_branches_unknown_ledger() {
+        let ns = MemoryNameService::new();
+        let branches = ns.list_branches("nonexistent").await.unwrap();
+        assert!(branches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_branches_excludes_retracted() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.retract("mydb:dead").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].branch, "main");
     }
 }

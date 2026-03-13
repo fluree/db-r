@@ -349,6 +349,22 @@ pub trait NameService: Debug + Send + Sync {
     ///
     /// Used for building in-memory query indexes over the nameservice.
     async fn all_records(&self) -> Result<Vec<NsRecord>>;
+
+    /// List all branches for a given ledger name.
+    ///
+    /// Returns the [`NsRecord`] for every non-retracted branch that shares the
+    /// given base name (e.g., passing `"mydb"` returns records for `"mydb:main"`,
+    /// `"mydb:feature-x"`, etc.).
+    ///
+    /// The default implementation filters [`all_records`](Self::all_records);
+    /// backends may override for efficiency.
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let all = self.all_records().await?;
+        Ok(all
+            .into_iter()
+            .filter(|r| r.name == ledger_name && !r.retracted)
+            .collect())
+    }
 }
 
 /// Publisher trait for writing nameservice records
