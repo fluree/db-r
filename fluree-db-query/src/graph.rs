@@ -7,7 +7,7 @@
 //! Key semantics:
 //! - GraphOperator is a **correlated operator** (like EXISTS/Subquery)
 //! - For each parent row, inner patterns are executed in the appropriate graph context
-//! - ?g is bound as `Binding::Lit { val: FlakeValue::String(...), dt: xsd:string }`
+//! - ?g is bound as `Binding::Lit { val: FlakeValue::String(...), dtc: Explicit(xsd:string) }`
 //! - Graph-not-found produces empty result (Clojure parity), not an error
 //!
 //! # Single-DB Mode (Clojure Parity)
@@ -36,6 +36,7 @@ use crate::r2rml::rewrite_patterns_for_r2rml;
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::FlakeValue;
 use std::sync::Arc;
 // Note: tracing::debug removed to fix compilation - add tracing dependency if needed
@@ -199,8 +200,7 @@ impl GraphOperator {
                         // Bind ?g to graph IRI using xsd:string
                         let binding = Binding::Lit {
                             val: FlakeValue::String(graph_iri.to_string()),
-                            dt: self.well_known.xsd_string.clone(),
-                            lang: None,
+                            dtc: DatatypeConstraint::Explicit(self.well_known.xsd_string.clone()),
                             t: None,
                             op: None,
                             p_id: None,
@@ -506,8 +506,7 @@ mod tests {
         // Valid string binding
         let binding = Binding::Lit {
             val: FlakeValue::String("http://example.org/graph1".to_string()),
-            dt: Sid::new(2, "string"),
-            lang: None,
+            dtc: DatatypeConstraint::Explicit(Sid::new(2, "string")),
             t: None,
             op: None,
             p_id: None,
@@ -518,8 +517,7 @@ mod tests {
         // Non-string binding returns None
         let binding = Binding::Lit {
             val: FlakeValue::Long(42),
-            dt: Sid::new(2, "long"),
-            lang: None,
+            dtc: DatatypeConstraint::Explicit(Sid::new(2, "long")),
             t: None,
             op: None,
             p_id: None,

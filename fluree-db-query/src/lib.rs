@@ -142,7 +142,10 @@ pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
 pub use stats_query::StatsCountByPredicateOperator;
 pub use subquery::SubqueryOperator;
-pub use triple::{DatatypeConstraint, Ref, Term, TriplePattern};
+pub use triple::{Ref, Term, TriplePattern};
+
+// Re-export DatatypeConstraint from fluree-db-core for convenience
+pub use fluree_db_core::DatatypeConstraint;
 pub use union::UnionOperator;
 pub use values::ValuesOperator;
 

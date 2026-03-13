@@ -30,6 +30,7 @@ pub mod coerce;
 pub mod comparator;
 pub mod content_id;
 pub mod content_kind;
+pub mod datatype_constraint;
 pub mod datatypes;
 pub mod db;
 pub mod dict_novelty;
@@ -80,6 +81,7 @@ pub use content_kind::{
     CODEC_FLUREE_INDEX_LEAF, CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_LEDGER_CONFIG,
     CODEC_FLUREE_STATS_SKETCH, CODEC_FLUREE_TXN,
 };
+pub use datatype_constraint::DatatypeConstraint;
 pub use datatypes::dt_compatible;
 pub use db::{load_ledger_snapshot, LedgerSnapshot, LedgerSnapshotMetadata};
 pub use dict_novelty::DictNovelty;

@@ -11,8 +11,8 @@ use super::value::ComparableValue;
 use crate::ir::{ArithmeticOp, CompareOp};
 
 use super::{
-    arithmetic, conditional, datetime, fluree, fulltext, geo, hash, logical, numeric, rdf, string,
-    types, uuid, vector,
+    arithmetic, cast, conditional, datetime, fluree, fulltext, geo, hash, logical, numeric, rdf,
+    string, types, uuid, vector,
 };
 
 impl Function {
@@ -133,20 +133,20 @@ impl Function {
             Function::T => fluree::eval_t(args, row),
             Function::Op => fluree::eval_op(args, row),
 
+            // XSD datatype constructor (cast) functions — W3C SPARQL 1.1 §17.5
+            // SPARQL-only: JSON-LD queries do not produce these (casts are a SPARQL concept).
+            Function::XsdBoolean => cast::eval_xsd_boolean(args, row, ctx),
+            Function::XsdInteger => cast::eval_xsd_integer(args, row, ctx),
+            Function::XsdFloat => cast::eval_xsd_float(args, row, ctx),
+            Function::XsdDouble => cast::eval_xsd_double(args, row, ctx),
+            Function::XsdDecimal => cast::eval_xsd_decimal(args, row, ctx),
+            Function::XsdString => cast::eval_xsd_string(args, row, ctx),
+
             // Unknown function
-            Function::Custom(name) => match name.as_str() {
-                // SPARQL datatype constructor functions (subset)
-                //
-                // Some queries use `xsd:integer(<boolean>)` to count matches.
-                // Many SPARQL engines accept this and treat booleans as 0/1.
-                "http://www.w3.org/2001/XMLSchema#integer" => {
-                    numeric::eval_xsd_integer(args, row, ctx)
-                }
-                _ => Err(QueryError::InvalidFilter(format!(
-                    "Unknown function: {}",
-                    name
-                ))),
-            },
+            Function::Custom(name) => Err(QueryError::InvalidFilter(format!(
+                "Unknown function: {}",
+                name
+            ))),
         }
     }
 

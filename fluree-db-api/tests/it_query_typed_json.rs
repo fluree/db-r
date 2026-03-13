@@ -138,10 +138,10 @@ async fn typed_json_graph_crawl_json_datatype_preserved() {
 #[cfg(feature = "native")]
 #[tokio::test]
 async fn typed_json_graph_crawl_novelty_json_value_decodes_via_binary_range_provider() {
+    use fluree_db_api::ReindexOptions;
     use fluree_db_core::comparator::IndexType;
     use fluree_db_core::range::{RangeMatch, RangeTest};
     use fluree_db_core::value::FlakeValue;
-    use fluree_db_api::ReindexOptions;
     use fluree_db_transact::{CommitOpts, TxnOpts};
 
     let fluree = FlureeBuilder::memory().build_memory();
@@ -217,7 +217,9 @@ async fn typed_json_graph_crawl_novelty_json_value_decodes_via_binary_range_prov
         .expect("range query should decode novelty @json");
 
     assert!(
-        flakes.iter().any(|f| matches!(&f.o, FlakeValue::Json(s) if s.contains("novel-json-1"))),
+        flakes
+            .iter()
+            .any(|f| matches!(&f.o, FlakeValue::Json(s) if s.contains("novel-json-1"))),
         "expected novelty @json value decoded via range provider, got: {flakes:?}"
     );
 

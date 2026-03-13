@@ -253,10 +253,10 @@ mod tests {
         assert_eq!(seed.schema()[1], VarId(1));
 
         // Row 1 should have value 20 and "b"
-        let (val, _, _) = seed.row[0].as_lit().unwrap();
+        let (val, _) = seed.row[0].as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Long(20));
 
-        let (val, _, _) = seed.row[1].as_lit().unwrap();
+        let (val, _) = seed.row[1].as_lit().unwrap();
         assert_eq!(*val, FlakeValue::String("b".into()));
     }
 

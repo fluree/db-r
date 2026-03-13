@@ -1941,6 +1941,17 @@ pub enum Function {
     Coalesce,
 
     // =========================================================================
+    // XSD datatype constructor (cast) functions — W3C SPARQL 1.1 §17.5
+    // SPARQL-only: JSON-LD queries do not produce these (casts are a SPARQL concept).
+    // =========================================================================
+    XsdBoolean,
+    XsdInteger,
+    XsdFloat,
+    XsdDouble,
+    XsdDecimal,
+    XsdString,
+
+    // =========================================================================
     // Custom/unknown function
     // =========================================================================
     Custom(String),

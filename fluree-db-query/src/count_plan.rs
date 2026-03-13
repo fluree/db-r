@@ -1025,6 +1025,7 @@ mod tests {
             patterns,
             options: options.clone(),
             graph_select: None,
+            post_values: None,
         };
         (query, options)
     }

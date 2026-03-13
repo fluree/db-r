@@ -914,8 +914,7 @@ fn binary_range_bounded_v3(
                     None => continue, // truly unknown — shouldn't happen
                 },
             };
-            let o_val =
-                decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
+            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
             let dt = store
                 .resolve_datatype_sid(o_type)
                 .unwrap_or_else(|| Sid::new(0, ""));

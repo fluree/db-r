@@ -18,6 +18,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -128,9 +129,9 @@ fn is_batched_eligible(
 ///
 /// # Invariant
 ///
-/// We assume shared vars are never `Unbound` from the left side (except via
-/// OPTIONAL which uses `Poisoned`). This is simpler than supporting "unbound
-/// shared-vars" semantics.
+/// When a shared variable is `Unbound` on the left (e.g., from VALUES with UNDEF),
+/// `combine_rows` falls back to the right-side value so the concrete binding
+/// propagates through the join.
 pub struct NestedLoopJoinOperator {
     /// Left (driving) operator
     left: Box<dyn Operator>,
@@ -598,9 +599,34 @@ impl NestedLoopJoinOperator {
     ) -> Vec<Binding> {
         let right_schema = right_batch.schema();
 
-        // Chain left columns with new right columns (skip shared vars already in left)
+        // Chain left columns with new right columns (skip shared vars already in left).
+        //
+        // Special case: when a left-side shared variable is Unbound or Poisoned
+        // (e.g., from VALUES with UNDEF, or failed OPTIONAL), the right scan may
+        // still produce a concrete value for it (because the bind substitution left
+        // it as a variable in the scan pattern).  In that case, we take the right-side
+        // value instead of propagating the unbound marker.
+        //
+        // Perf note: the `right_schema` scan is O(right_schema.len()) which is at most
+        // 3 for a single triple pattern (s, p, o).  The `is_unbound_or_poisoned()` check
+        // is two enum-discriminant comparisons and almost always false for normal queries,
+        // so the branch predictor handles it efficiently.  Pre-computing a right-col map
+        // is not feasible here because the right schema varies per left row (depends on
+        // which bindings were substituted at scan time).
         (0..self.left_schema.len())
-            .map(|col| left_batch.get_by_col(left_row, col).clone())
+            .map(|col| {
+                let left_val = left_batch.get_by_col(left_row, col);
+                if left_val.is_unbound_or_poisoned() {
+                    let var = self.left_schema[col];
+                    if let Some(right_col) = right_schema.iter().position(|v| *v == var) {
+                        let right_val = right_batch.get_by_col(right_row, right_col);
+                        if !right_val.is_unbound_or_poisoned() {
+                            return right_val.clone();
+                        }
+                    }
+                }
+                left_val.clone()
+            })
             .chain(self.right_new_vars.iter().map(|var| {
                 right_schema
                     .iter()
@@ -1377,15 +1403,19 @@ impl NestedLoopJoinOperator {
                                 match val {
                                     fluree_db_core::FlakeValue::Ref(sid) => Binding::Sid(sid),
                                     other => {
-                                        let dt = store
-                                            .resolve_datatype_sid(o_type_val)
-                                            .unwrap_or_else(|| Sid::new(0, ""));
-                                        let lang =
-                                            store.resolve_lang_tag(o_type_val).map(Arc::from);
+                                        let dtc =
+                                            match store.resolve_lang_tag(o_type_val).map(Arc::from)
+                                            {
+                                                Some(lang) => DatatypeConstraint::LangTag(lang),
+                                                None => DatatypeConstraint::Explicit(
+                                                    store
+                                                        .resolve_datatype_sid(o_type_val)
+                                                        .unwrap_or_else(|| Sid::new(0, "")),
+                                                ),
+                                            };
                                         Binding::Lit {
                                             val: other,
-                                            dt,
-                                            lang,
+                                            dtc,
                                             t: Some(t),
                                             op: None,
                                             p_id: Some(p_id),

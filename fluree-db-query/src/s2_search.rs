@@ -104,7 +104,8 @@ impl S2SearchOperator {
 
                 // Extract geometry from the binding
                 match binding {
-                    Binding::Lit { val, dt, .. } => {
+                    Binding::Lit { val, dtc, .. } => {
+                        let dt = dtc.datatype();
                         match val {
                             fluree_db_core::FlakeValue::String(s) => {
                                 // Check datatype - warn if not geo:wktLiteral

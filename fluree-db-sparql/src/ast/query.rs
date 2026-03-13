@@ -136,6 +136,9 @@ pub struct SelectQuery {
     pub where_clause: WhereClause,
     /// Solution modifiers
     pub modifiers: SolutionModifiers,
+    /// Post-query VALUES clause (ValuesClause in SPARQL grammar, after SolutionModifier).
+    /// Boxed to avoid inflating the size of `QueryBody::Select`.
+    pub values: Option<Box<GraphPattern>>,
     /// Source span
     pub span: SourceSpan,
 }
@@ -153,6 +156,7 @@ impl SelectQuery {
             dataset: None,
             where_clause,
             modifiers,
+            values: None,
             span,
         }
     }

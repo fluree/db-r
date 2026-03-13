@@ -32,7 +32,7 @@
 //! - JSON-LD IRI objects: `{"@id": "..."}` or `{"@value": "...", "@type": "@id"}`
 //! - Vector literals (when explicitly typed): `{"@value": [0.7, 0.6], "@type": "fluree:vector"}`
 
-use super::ast::{LiteralValue, UnresolvedPattern, UnresolvedValue};
+use super::ast::{LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedValue};
 use super::error::{ParseError, Result};
 use fluree_graph_json_ld::{details, ParsedContext};
 use serde_json::Value as JsonValue;
@@ -147,21 +147,18 @@ fn parse_values_cell(cell: &JsonValue, context: &ParsedContext) -> Result<Unreso
         JsonValue::Null => Ok(UnresolvedValue::Unbound),
         JsonValue::Bool(b) => Ok(UnresolvedValue::Literal {
             value: LiteralValue::Boolean(*b),
-            dt_iri: None,
-            lang: None,
+            dtc: None,
         }),
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(UnresolvedValue::Literal {
                     value: LiteralValue::Long(i),
-                    dt_iri: None,
-                    lang: None,
+                    dtc: None,
                 })
             } else if let Some(f) = n.as_f64() {
                 Ok(UnresolvedValue::Literal {
                     value: LiteralValue::Double(f),
-                    dt_iri: None,
-                    lang: None,
+                    dtc: None,
                 })
             } else {
                 Err(ParseError::InvalidWhere(format!(
@@ -172,8 +169,7 @@ fn parse_values_cell(cell: &JsonValue, context: &ParsedContext) -> Result<Unreso
         }
         JsonValue::String(s) => Ok(UnresolvedValue::Literal {
             value: LiteralValue::String(Arc::from(s.as_str())),
-            dt_iri: None,
-            lang: None,
+            dtc: None,
         }),
         JsonValue::Object(map) => parse_jsonld_object(map, context),
         JsonValue::Array(_) => Err(ParseError::InvalidWhere(
@@ -236,11 +232,10 @@ fn parse_typed_literal(
 
     // Otherwise, parse as literal
     let lit = parse_literal_value(value_val, dt_iri.as_deref())?;
-    Ok(UnresolvedValue::Literal {
-        value: lit,
-        dt_iri,
-        lang,
-    })
+    let dtc = lang
+        .map(UnresolvedDatatypeConstraint::LangTag)
+        .or_else(|| dt_iri.map(UnresolvedDatatypeConstraint::Explicit));
+    Ok(UnresolvedValue::Literal { value: lit, dtc })
 }
 
 /// Parse IRI from @value when @type is @id

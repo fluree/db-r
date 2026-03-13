@@ -710,10 +710,20 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                                 .encode_iri(&dt_iri)
                                 .expect("encode_iri always returns Some");
                             let meta = store_ref.decode_meta(*lang_id, *i_val);
+                            let dtc = meta
+                                .as_ref()
+                                .and_then(|m| m.lang.as_ref())
+                                .map(|s| {
+                                    fluree_db_core::DatatypeConstraint::LangTag(
+                                        std::sync::Arc::from(s.as_str()),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    fluree_db_core::DatatypeConstraint::Explicit(dt)
+                                });
                             Binding::Lit {
                                 val: other,
-                                dt,
-                                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                                dtc,
                                 t: Some(*t),
                                 op: None,
                                 p_id: Some(*p_id),
@@ -803,7 +813,7 @@ fn binding_to_flake_object(binding: &Binding) -> Option<(FlakeValue, Sid)> {
         Binding::IriMatch { primary_sid, .. } => {
             Some((FlakeValue::Ref(primary_sid.clone()), Sid::new(1, "id")))
         }
-        Binding::Lit { val, dt, .. } => Some((val.clone(), dt.clone())),
+        Binding::Lit { val, dtc, .. } => Some((val.clone(), dtc.datatype().clone())),
         Binding::EncodedLit { .. } => None,
         Binding::EncodedSid { .. } => None, // Requires materialization
         Binding::EncodedPid { .. } => None, // Requires materialization

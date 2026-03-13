@@ -1925,6 +1925,17 @@ fn build_operator_tree_inner(
         required_where_vars,
     )?;
 
+    // Apply post-query VALUES clause after the WHERE tree is fully built.
+    // This is kept separate from `patterns` so the WHERE-clause planner cannot
+    // reorder it relative to OPTIONAL/UNION (which would change semantics).
+    if let Some(Pattern::Values { vars, rows }) = &query.post_values {
+        operator = Box::new(crate::values::ValuesOperator::new(
+            operator,
+            vars.clone(),
+            rows.clone(),
+        ));
+    }
+
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
 
@@ -2203,6 +2214,7 @@ mod tests {
             patterns,
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         }
     }
 
@@ -2215,6 +2227,7 @@ mod tests {
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let result = build_operator_tree(&query, &QueryOptions::default(), None);
@@ -2233,6 +2246,7 @@ mod tests {
             patterns: vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             options: QueryOptions::default(),
             graph_select: None,
+            post_values: None,
         };
 
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var

@@ -643,18 +643,24 @@ async fn query_predicate(
         for flake in flakes {
             match flake.o {
                 FlakeValue::Ref(sid) => results.push(Binding::Sid(sid)),
-                val => results.push(Binding::Lit {
-                    val,
-                    dt: flake.dt,
-                    lang: flake
+                val => {
+                    let dtc = match flake
                         .m
                         .as_ref()
                         .and_then(|m| m.lang.as_ref())
-                        .map(|s| Arc::<str>::from(s.as_str())),
-                    t: Some(flake.t),
-                    op: None,
-                    p_id: None,
-                }),
+                        .map(|s| Arc::<str>::from(s.as_str()))
+                    {
+                        Some(lang) => fluree_db_core::DatatypeConstraint::LangTag(lang),
+                        None => fluree_db_core::DatatypeConstraint::Explicit(flake.dt),
+                    };
+                    results.push(Binding::Lit {
+                        val,
+                        dtc,
+                        t: Some(flake.t),
+                        op: None,
+                        p_id: None,
+                    });
+                }
             }
         }
     }

@@ -414,21 +414,19 @@ impl Operator for PredicateGroupCountFirstsOperator {
                         binary_index_store.resolve_lang_tag(o_type).map(Arc::from);
                     col_o.push(Binding::Lit {
                         val,
-                        dt,
-                        lang,
+                        dtc: match lang {
+                            Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
+                            None => fluree_db_core::DatatypeConstraint::Explicit(dt),
+                        },
                         t: None,
                         op: None,
                         p_id: None,
                     });
                 }
-                col_c.push(Binding::Lit {
-                    val: fluree_db_core::FlakeValue::Long(count),
-                    dt: fluree_db_core::Sid::xsd_integer(),
-                    lang: None,
-                    t: None,
-                    op: None,
-                    p_id: None,
-                });
+                col_c.push(Binding::lit(
+                    fluree_db_core::FlakeValue::Long(count),
+                    fluree_db_core::Sid::xsd_integer(),
+                ));
             }
 
             return Ok(Some(crate::binding::Batch::new(
@@ -471,22 +469,20 @@ impl Operator for PredicateGroupCountFirstsOperator {
                     let lang: Option<Arc<str>> = store.resolve_lang_tag(o_type).map(Arc::from);
                     col_o.push(Binding::Lit {
                         val,
-                        dt,
-                        lang,
+                        dtc: match lang {
+                            Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
+                            None => fluree_db_core::DatatypeConstraint::Explicit(dt),
+                        },
                         t: None,
                         op: None,
                         p_id: None,
                     });
                 }
             }
-            col_c.push(Binding::Lit {
-                val: fluree_db_core::FlakeValue::Long(count),
-                dt: fluree_db_core::Sid::xsd_integer(),
-                lang: None,
-                t: None,
-                op: None,
-                p_id: None,
-            });
+            col_c.push(Binding::lit(
+                fluree_db_core::FlakeValue::Long(count),
+                fluree_db_core::Sid::xsd_integer(),
+            ));
         }
 
         Ok(Some(crate::binding::Batch::new(
@@ -668,14 +664,10 @@ impl Operator for PredicateObjectCountFirstsOperator {
         }
         self.emitted = true;
 
-        let col_c = vec![Binding::Lit {
-            val: fluree_db_core::FlakeValue::Long(self.count),
-            dt: fluree_db_core::Sid::xsd_integer(),
-            lang: None,
-            t: None,
-            op: None,
-            p_id: None,
-        }];
+        let col_c = vec![Binding::lit(
+            fluree_db_core::FlakeValue::Long(self.count),
+            fluree_db_core::Sid::xsd_integer(),
+        )];
 
         Ok(Some(crate::binding::Batch::new(
             self.schema.clone(),
@@ -1595,21 +1587,19 @@ fn compute_group_by_object_star_topk(
             let lang = store.resolve_lang_tag(k.o_type).map(Arc::from);
             col_o1.push(Binding::Lit {
                 val,
-                dt,
-                lang,
+                dtc: match lang {
+                    Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
+                    None => fluree_db_core::DatatypeConstraint::Explicit(dt),
+                },
                 t: None,
                 op: None,
                 p_id: None,
             });
         }
-        col_count.push(Binding::Lit {
-            val: FlakeValue::Long(st.count as i64),
-            dt: dt_count.clone(),
-            lang: None,
-            t: None,
-            op: None,
-            p_id: None,
-        });
+        col_count.push(Binding::lit(
+            FlakeValue::Long(st.count as i64),
+            dt_count.clone(),
+        ));
         if want_min {
             col_min.push(
                 st.min_s

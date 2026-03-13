@@ -184,18 +184,19 @@ fn format_binding(
         }
 
         // Literal value
-        Binding::Lit { val, dt, lang, .. } => {
+        Binding::Lit { val, dtc, .. } => {
+            let dt = dtc.datatype();
             // Decode datatype sid to full IRI
             let dt_iri = compactor.decode_sid(dt)?;
 
             match val {
                 FlakeValue::String(s) => {
-                    if let Some(lang_tag) = lang {
+                    if let Some(lang_tag) = dtc.lang_tag() {
                         // Language-tagged string
                         Ok(Some(json!({
                             "type": "literal",
                             "value": s,
-                            "xml:lang": lang_tag.as_ref()
+                            "xml:lang": lang_tag
                         })))
                     } else if is_inferable_datatype(&dt_iri) {
                         // Inferable type - omit datatype
@@ -538,11 +539,7 @@ mod tests {
     fn test_format_binding_language_tagged() {
         let compactor = make_test_compactor();
         let result = make_test_result();
-        let binding = Binding::lit_lang(
-            FlakeValue::String("Hello".to_string()),
-            Sid::new(3, "langString"),
-            "en",
-        );
+        let binding = Binding::lit_lang(FlakeValue::String("Hello".to_string()), "en");
         let formatted = format_binding(&result, &binding, &compactor)
             .unwrap()
             .unwrap();

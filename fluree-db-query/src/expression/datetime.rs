@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use super::helpers::{check_arity, parse_datetime_from_binding};
 use super::value::ComparableValue;
+use crate::parse::UnresolvedDatatypeConstraint;
 
 #[derive(Copy, Clone, Debug)]
 enum DateComponent {
@@ -175,10 +176,9 @@ pub fn eval_timezone<R: RowAccess>(
                         let duration = format_day_time_duration(total_secs);
                         Ok(Some(ComparableValue::TypedLiteral {
                             val: fluree_db_core::FlakeValue::String(duration),
-                            dt_iri: Some(Arc::from(
+                            dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
                                 "http://www.w3.org/2001/XMLSchema#dayTimeDuration",
-                            )),
-                            lang: None,
+                            ))),
                         }))
                     }
                     None => Ok(None),
@@ -296,7 +296,7 @@ fn fast_datetime_component_from_binding(
         };
 
     match binding {
-        Binding::Lit { val, dt, .. } => match val {
+        Binding::Lit { val, dtc, .. } => match val {
             FlakeValue::GYear(gy) => extract_from_parts(gy.year() as i64, 1, 1, 0, 0),
             FlakeValue::GYearMonth(gym) => {
                 extract_from_parts(gym.year() as i64, gym.month() as i64, 1, 0, 0)
@@ -311,7 +311,7 @@ fn fast_datetime_component_from_binding(
             // Numeric gYear encoding fallback (see helpers.rs::flake_value_to_datetime()).
             FlakeValue::Long(year) => {
                 let dts = &*crate::expression::helpers::WELL_KNOWN_DATATYPES;
-                if *dt == dts.xsd_g_year {
+                if *dtc.datatype() == dts.xsd_g_year {
                     extract_from_parts(*year, 1, 1, 0, 0)
                 } else {
                     None

@@ -581,7 +581,7 @@ async fn read_bool_field(
 
     let bindings = query_config_predicate(snapshot, overlay, to_t, subject_sid, &pred_sid).await?;
     for binding in bindings {
-        if let Some((fluree_db_core::FlakeValue::Boolean(b), _dt, _lang)) = binding.as_lit() {
+        if let Some((fluree_db_core::FlakeValue::Boolean(b), _)) = binding.as_lit() {
             return Ok(Some(*b));
         }
     }
@@ -671,7 +671,7 @@ async fn read_i64_field(
 
     let bindings = query_config_predicate(snapshot, overlay, to_t, subject_sid, &pred_sid).await?;
     for binding in bindings {
-        if let Some((fluree_db_core::FlakeValue::Long(n), _dt, _lang)) = binding.as_lit() {
+        if let Some((fluree_db_core::FlakeValue::Long(n), _)) = binding.as_lit() {
             return Ok(Some(*n));
         }
     }

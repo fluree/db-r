@@ -18,6 +18,7 @@ use fluree_db_binary_index::{
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
+use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
     NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
@@ -467,22 +468,28 @@ impl BinaryScanOperator {
             if let Some(pos) = self.o_var_pos.filter(|p| *p < base_len) {
                 bindings[pos] = match &flake.o {
                     FlakeValue::Ref(r) => sid_binding(ctx, r, ledger_alias.as_ref()),
-                    v => Binding::Lit {
-                        val: v.clone(),
-                        dt: flake.dt.clone(),
-                        lang: flake
+                    v => {
+                        let dtc = match flake
                             .m
                             .as_ref()
                             .and_then(|m| m.lang.as_ref())
-                            .map(|s| Arc::<str>::from(s.as_str())),
-                        t: Some(flake.t),
-                        op: if ctx.history_mode {
-                            Some(flake.op)
-                        } else {
-                            None
-                        },
-                        p_id: None,
-                    },
+                            .map(|s| Arc::<str>::from(s.as_str()))
+                        {
+                            Some(lang) => DatatypeConstraint::LangTag(lang),
+                            None => DatatypeConstraint::Explicit(flake.dt.clone()),
+                        };
+                        Binding::Lit {
+                            val: v.clone(),
+                            dtc,
+                            t: Some(flake.t),
+                            op: if ctx.history_mode {
+                                Some(flake.op)
+                            } else {
+                                None
+                            },
+                            p_id: None,
+                        }
+                    }
                 };
             }
 
@@ -1046,15 +1053,17 @@ impl BinaryScanOperator {
                     match &val {
                         FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
                         _ => {
-                            let dt = self
-                                .store()
-                                .resolve_datatype_sid(o_type)
-                                .unwrap_or_else(|| Sid::new(0, ""));
-                            let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
+                            let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from) {
+                                Some(lang) => DatatypeConstraint::LangTag(lang),
+                                None => DatatypeConstraint::Explicit(
+                                    self.store()
+                                        .resolve_datatype_sid(o_type)
+                                        .unwrap_or_else(|| Sid::new(0, "")),
+                                ),
+                            };
                             Binding::Lit {
                                 val,
-                                dt,
-                                lang,
+                                dtc,
                                 t: Some(t),
                                 op: None,
                                 p_id: Some(p_id),
@@ -1068,15 +1077,18 @@ impl BinaryScanOperator {
                         match decode_value(o_type, o_key, p_id) {
                             Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
                             Ok(val) => {
-                                let dt = self
-                                    .store()
-                                    .resolve_datatype_sid(o_type)
-                                    .unwrap_or_else(|| Sid::new(0, ""));
-                                let lang = self.store().resolve_lang_tag(o_type).map(Arc::from);
+                                let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from)
+                                {
+                                    Some(lang) => DatatypeConstraint::LangTag(lang),
+                                    None => DatatypeConstraint::Explicit(
+                                        self.store()
+                                            .resolve_datatype_sid(o_type)
+                                            .unwrap_or_else(|| Sid::new(0, "")),
+                                    ),
+                                };
                                 Binding::Lit {
                                     val,
-                                    dt,
-                                    lang,
+                                    dtc,
                                     t: Some(t),
                                     op: None,
                                     p_id: Some(p_id),

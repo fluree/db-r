@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use fluree_db_tabular::{Column, ColumnBatch};
-use fluree_vocab::rdf;
+use fluree_vocab::UnresolvedDatatypeConstraint;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -31,11 +31,10 @@ pub enum RdfTerm {
     Iri(String),
     /// A blank node with local identifier
     BlankNode(String),
-    /// A literal with optional datatype and language
+    /// A literal with optional datatype constraint
     Literal {
         value: String,
-        datatype: Option<String>,
-        language: Option<String>,
+        dtc: Option<UnresolvedDatatypeConstraint>,
     },
 }
 
@@ -54,8 +53,7 @@ impl RdfTerm {
     pub fn string(value: impl Into<String>) -> Self {
         RdfTerm::Literal {
             value: value.into(),
-            datatype: None,
-            language: None,
+            dtc: None,
         }
     }
 
@@ -63,8 +61,9 @@ impl RdfTerm {
     pub fn typed(value: impl Into<String>, datatype: impl Into<String>) -> Self {
         RdfTerm::Literal {
             value: value.into(),
-            datatype: Some(datatype.into()),
-            language: None,
+            dtc: Some(UnresolvedDatatypeConstraint::Explicit(
+                datatype.into().into(),
+            )),
         }
     }
 
@@ -72,8 +71,7 @@ impl RdfTerm {
     pub fn lang_string(value: impl Into<String>, lang: impl Into<String>) -> Self {
         RdfTerm::Literal {
             value: value.into(),
-            datatype: Some(rdf::LANG_STRING.to_string()),
-            language: Some(lang.into()),
+            dtc: Some(UnresolvedDatatypeConstraint::LangTag(lang.into().into())),
         }
     }
 
@@ -99,6 +97,18 @@ impl RdfTerm {
             _ => None,
         }
     }
+}
+
+/// Convert separate `ObjectMap` datatype/language fields into an
+/// `UnresolvedDatatypeConstraint`, preferring language over datatype
+/// (per R2RML spec, they are mutually exclusive).
+fn object_map_dtc(
+    datatype: Option<&str>,
+    language: Option<&str>,
+) -> Option<UnresolvedDatatypeConstraint> {
+    language
+        .map(|l| UnresolvedDatatypeConstraint::LangTag(l.into()))
+        .or_else(|| datatype.map(|d| UnresolvedDatatypeConstraint::Explicit(d.into())))
 }
 
 /// Expand a template by substituting column placeholders with values
@@ -281,20 +291,10 @@ pub fn materialize_object(
                 Some(Some(value)) => match term_type {
                     TermType::Iri => Ok(Some(RdfTerm::iri(value.clone()))),
                     TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value.clone()))),
-                    TermType::Literal => {
-                        if language.is_some() {
-                            Ok(Some(RdfTerm::lang_string(
-                                value.clone(),
-                                language.clone().unwrap(),
-                            )))
-                        } else {
-                            Ok(Some(RdfTerm::Literal {
-                                value: value.clone(),
-                                datatype: datatype.clone(),
-                                language: None,
-                            }))
-                        }
-                    }
+                    TermType::Literal => Ok(Some(RdfTerm::Literal {
+                        value: value.clone(),
+                        dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
+                    })),
                 },
                 _ => Ok(None), // Null produces no object
             }
@@ -308,8 +308,7 @@ pub fn materialize_object(
                 language,
             } => Ok(Some(RdfTerm::Literal {
                 value: value.clone(),
-                datatype: datatype.clone(),
-                language: language.clone(),
+                dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
             })),
         },
 
@@ -324,20 +323,10 @@ pub fn materialize_object(
                 Ok(expanded) => match term_type {
                     TermType::Iri => Ok(Some(RdfTerm::iri(expanded))),
                     TermType::BlankNode => Ok(Some(RdfTerm::blank_node(expanded))),
-                    TermType::Literal => {
-                        if language.is_some() {
-                            Ok(Some(RdfTerm::lang_string(
-                                expanded,
-                                language.clone().unwrap(),
-                            )))
-                        } else {
-                            Ok(Some(RdfTerm::Literal {
-                                value: expanded,
-                                datatype: datatype.clone(),
-                                language: None,
-                            }))
-                        }
-                    }
+                    TermType::Literal => Ok(Some(RdfTerm::Literal {
+                        value: expanded,
+                        dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
+                    })),
                 },
                 Err(_) => Ok(None), // Null in template produces no object
             }
@@ -660,17 +649,10 @@ pub fn materialize_object_from_batch(
             Some(value) => match term_type {
                 TermType::Iri => Ok(Some(RdfTerm::iri(value))),
                 TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value))),
-                TermType::Literal => {
-                    if language.is_some() {
-                        Ok(Some(RdfTerm::lang_string(value, language.clone().unwrap())))
-                    } else {
-                        Ok(Some(RdfTerm::Literal {
-                            value,
-                            datatype: datatype.clone(),
-                            language: None,
-                        }))
-                    }
-                }
+                TermType::Literal => Ok(Some(RdfTerm::Literal {
+                    value,
+                    dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
+                })),
             },
             None => Ok(None),
         },
@@ -683,8 +665,7 @@ pub fn materialize_object_from_batch(
                 language,
             } => Ok(Some(RdfTerm::Literal {
                 value: value.clone(),
-                datatype: datatype.clone(),
-                language: language.clone(),
+                dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
             })),
         },
 
@@ -698,20 +679,10 @@ pub fn materialize_object_from_batch(
             Ok(expanded) => match term_type {
                 TermType::Iri => Ok(Some(RdfTerm::iri(expanded))),
                 TermType::BlankNode => Ok(Some(RdfTerm::blank_node(expanded))),
-                TermType::Literal => {
-                    if language.is_some() {
-                        Ok(Some(RdfTerm::lang_string(
-                            expanded,
-                            language.clone().unwrap(),
-                        )))
-                    } else {
-                        Ok(Some(RdfTerm::Literal {
-                            value: expanded,
-                            datatype: datatype.clone(),
-                            language: None,
-                        }))
-                    }
-                }
+                TermType::Literal => Ok(Some(RdfTerm::Literal {
+                    value: expanded,
+                    dtc: object_map_dtc(datatype.as_deref(), language.as_deref()),
+                })),
             },
             Err(_) => Ok(None),
         },

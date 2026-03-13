@@ -337,6 +337,39 @@ async fn language_binding_value_object_language_variable() {
 }
 
 #[tokio::test]
+async fn language_binding_rejects_type_and_language_conflict() {
+    // Per JSON-LD §9.5 / RDF 1.1, a value object cannot have both @type (non-langString)
+    // and @language. E.g. {"@value": "?val", "@type": "xsd:integer", "@language": "en"}
+    // must be rejected at parse time.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "lang-conflict:main");
+    let ctx = ctx_datatype();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {"@id":"ex:greeting","ex:hello":{"@value":"Hello","@language":"en"}}
+        ]
+    });
+    let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
+
+    let q = json!({
+        "@context": ctx,
+        "select": ["?val"],
+        "where": [{"@id":"?id","ex:hello":{"@value":"?val","@type":"xsd:integer","@language":"en"}}]
+    });
+
+    let err = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot have both @type and @language"),
+        "expected @type/@language conflict error, got: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn json_datatype_insert_query_and_filter() {
     // Test @json datatype: store arbitrary JSON, deserialize on query
     let fluree = FlureeBuilder::memory().build_memory();

@@ -34,6 +34,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             patterns,
             options,
             graph_select: None,
+            post_values: None,
         })
     }
 }
