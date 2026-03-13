@@ -168,8 +168,17 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     // Determine graph display name
     let graph_name = graph_display_name(g_id, binary_store.as_deref());
 
-    // Get current stats (always returns IndexStats)
-    let mut stats = ledger.current_stats();
+    // Start from indexed stats when available.
+    //
+    // We intentionally do NOT use `ledger.current_stats()` here because that merges
+    // novelty into per-property datatype breakdowns, but ledger-info only merges
+    // datatype deltas when `realtime_property_details=true`.
+    let mut stats: IndexStats = ledger
+        .snapshot
+        .stats
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| ledger.current_stats());
 
     // Novelty merge: keep graph-scoped stats current to latest commit `t`.
     //
@@ -189,7 +198,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     store,
                     &ledger.snapshot.namespace_codes,
                     graph_iri.as_deref(),
-                    options.include_property_datatypes,
+                    options.realtime_property_details,
                 );
                 merge_graph_class_counts_from_novelty(
                     graph_entry,
@@ -228,6 +237,15 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
             }
         }
     }
+
+    // Keep ledger-wide totals current (indexed + novelty).
+    //
+    // Graph-scoped details are handled above (and may selectively merge novelty
+    // details depending on options), but the `ledger` block expects up-to-date
+    // `flakes` and `size` totals.
+    let current = ledger.current_stats();
+    stats.flakes = current.flakes;
+    stats.size = current.size;
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
