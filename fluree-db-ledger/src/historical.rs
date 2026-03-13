@@ -26,9 +26,10 @@
 //! ```
 
 use crate::error::{LedgerError, Result};
+use crate::LedgerState;
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
-    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue,
+    GraphDbRef, GraphId, IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
 
@@ -95,8 +96,25 @@ impl HistoricalLedgerView {
             return Err(LedgerError::future_time(alias, target_t, record.commit_t));
         }
 
-        let store = content_store_for(storage.clone(), &record.ledger_id);
+        // For branched ledgers, build a recursive content store that falls
+        // back through the branch ancestry DAG.
+        if record.branch_point.is_some() {
+            let store = LedgerState::build_branched_store(ns, &record, &storage).await?;
+            return Self::load_at_with_store(store, record, target_t).await;
+        }
 
+        let store = content_store_for(storage, &record.ledger_id);
+        Self::load_at_with_store(store, record, target_t).await
+    }
+
+    /// Load a historical view using a given content store.
+    ///
+    /// Shared implementation for both regular and branched ledgers.
+    async fn load_at_with_store<C: ContentStore + Clone + 'static>(
+        store: C,
+        record: fluree_db_nameservice::NsRecord,
+        target_t: i64,
+    ) -> Result<Self> {
         // If the requested time is *before* the latest index_t, we cannot assume the
         // binary index can answer time-travel purely via the index. Until the index
         // format guarantees history coverage for all updates, we fall back to an

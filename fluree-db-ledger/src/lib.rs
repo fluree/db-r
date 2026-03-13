@@ -34,8 +34,8 @@ pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, DictNovelty, Flake, GraphDbRef, GraphId,
-    LedgerSnapshot, Storage,
+    content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
+    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, Storage,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
@@ -138,8 +138,57 @@ impl LedgerState {
             .await?
             .ok_or_else(|| LedgerError::not_found(ledger_id))?;
 
-        let store = content_store_for(storage.clone(), &record.ledger_id);
+        // For branched ledgers, build a recursive content store that falls
+        // back through the branch ancestry DAG. This avoids copying the
+        // commit chain when creating a branch — reads fall through to
+        // ancestor namespaces for pre-branch-point content.
+        if record.branch_point.is_some() {
+            let store = Self::build_branched_store(ns, &record, &storage).await?;
+            return Self::load_with_store(store, record).await;
+        }
 
+        let store = content_store_for(storage, &record.ledger_id);
+        Self::load_with_store(store, record).await
+    }
+
+    /// Build a recursive `BranchedContentStore` by walking the branch ancestry.
+    ///
+    /// Each branch gets its own namespace store with its parent(s) as fallbacks.
+    /// Currently branches have a single parent; merges will add multiple parents.
+    pub(crate) async fn build_branched_store<S: Storage + Clone + 'static, N: NameService>(
+        ns: &N,
+        record: &NsRecord,
+        storage: &S,
+    ) -> Result<BranchedContentStore<S>> {
+        let bp = record.branch_point.as_ref().expect("called on non-branch");
+        let parent_id = format_ledger_id(&record.name, &bp.source);
+
+        let parent_store = match ns.lookup(&parent_id).await? {
+            Some(parent_record) if parent_record.branch_point.is_some() => {
+                // Parent is itself a branch — recurse
+                Box::pin(Self::build_branched_store(ns, &parent_record, storage)).await?
+            }
+            _ => {
+                // Parent is a root branch (or not found) — leaf store
+                BranchedContentStore::leaf(storage.clone(), &parent_id)
+            }
+        };
+
+        Ok(BranchedContentStore::with_parents(
+            storage.clone(),
+            &record.ledger_id,
+            vec![parent_store],
+        ))
+    }
+
+    /// Load ledger state using a given content store.
+    ///
+    /// Shared implementation used by `load` for both regular and branched
+    /// ledgers — the only difference is which `ContentStore` is provided.
+    async fn load_with_store<C: ContentStore + Clone + 'static>(
+        store: C,
+        record: NsRecord,
+    ) -> Result<Self> {
         // Handle missing index (genesis fallback)
         let (mut snapshot, dict_novelty) = match &record.index_head_id {
             Some(index_cid) => {

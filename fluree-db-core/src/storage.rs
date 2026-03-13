@@ -480,6 +480,93 @@ pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageC
 }
 
 // ============================================================================
+// BranchedContentStore (fallback from branch namespace to parent namespace)
+// ============================================================================
+
+/// Content store for branched ledgers that reads from the branch namespace
+/// first, falling back through a DAG of parent namespaces.
+///
+/// Writes always go to the branch's own namespace. Reads try the branch
+/// namespace first, then recurse into parent stores. The recursive structure
+/// supports both linear branching (branch from branch) and future merge
+/// scenarios where a branch has multiple parents.
+#[derive(Debug, Clone)]
+pub struct BranchedContentStore<S: Storage> {
+    /// Store scoped to this branch's own namespace
+    branch_store: StorageContentStore<S>,
+    /// Parent stores to fall back to on read misses. Typically one parent
+    /// for a simple branch; multiple parents after a merge.
+    parents: Vec<BranchedContentStore<S>>,
+}
+
+impl<S: Storage + Clone> BranchedContentStore<S> {
+    /// Create a leaf content store with no parents (equivalent to a root branch).
+    pub fn leaf(storage: S, namespace_id: &str) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents: Vec::new(),
+        }
+    }
+
+    /// Create a branched content store with parent fallbacks.
+    pub fn with_parents(storage: S, namespace_id: &str, parents: Vec<Self>) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents,
+        }
+    }
+}
+
+#[async_trait]
+impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        if self.branch_store.has(id).await? {
+            return Ok(true);
+        }
+        for parent in &self.parents {
+            if parent.has(id).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        match self.branch_store.get(id).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(_) if !self.parents.is_empty() => {}
+            Err(e) => return Err(e),
+        }
+        let mut last_err = None;
+        for parent in &self.parents {
+            match parent.get(id).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| crate::error::Error::not_found(id.to_string())))
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        self.branch_store.put(kind, bytes).await
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        self.branch_store.put_with_id(id, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        self.branch_store.resolve_local_path(id).or_else(|| {
+            self.parents
+                .iter()
+                .find_map(|p| p.resolve_local_path(id))
+        })
+    }
+}
+
+// ============================================================================
 // Helper Functions (Public for use by other storage implementations)
 // ============================================================================
 

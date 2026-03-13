@@ -126,6 +126,7 @@ pub use storage::{
     // Helper functions for storage implementations
     ledger_id_prefix_for_path,
     sha256_hex,
+    BranchedContentStore,
     CasAction,
     CasOutcome,
     ContentAddressedWrite,

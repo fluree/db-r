@@ -197,10 +197,10 @@ where
 
     /// Create a new branch for a ledger.
     ///
-    /// Looks up the source branch to capture its current commit state, then
+    /// Looks up the source branch to capture its current commit state, copies
+    /// the source's commit chain into the new branch's storage namespace, then
     /// creates a new [`NsRecord`] for `ledger_name:new_branch` with the commit
-    /// head copied from the source. The caller specifies which branch to branch
-    /// from via `source_branch` (defaults to `"main"` if `None`).
+    /// head copied from the source.
     ///
     /// # Errors
     ///
@@ -217,6 +217,7 @@ where
 
         let source = source_branch.unwrap_or("main");
         let source_id = format_ledger_id(ledger_name, source);
+        let new_id = format_ledger_id(ledger_name, new_branch);
 
         info!(ledger_name, new_branch, source, "Creating branch");
 
@@ -251,7 +252,6 @@ where
             }
         }
 
-        let new_id = format_ledger_id(ledger_name, new_branch);
         let record = self.nameservice.lookup(&new_id).await?.ok_or_else(|| {
             ApiError::internal(format!(
                 "Branch {} was created but not found in nameservice",
