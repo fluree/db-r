@@ -6,7 +6,7 @@
 //! subject-ID ranges in bulk, filtering to the requested subject set
 //! in-memory.
 //!
-//! Mirrors Clojure's `batched-get-subject-classes` strategy.
+//! Mirrors the legacy `batched-get-subject-classes` strategy.
 
 use super::binary_cursor::BinaryCursor;
 use super::binary_index_store::BinaryIndexStore;
@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// from the persisted index at `to_t`. No overlay/novelty merge -- caller
 /// applies novelty deltas separately.
 ///
-/// Mirrors Clojure's `batched-get-subject-classes` strategy: one streaming
+/// Mirrors the legacy `batched-get-subject-classes` strategy: one streaming
 /// pass over PSOT bounded by the subject range, filtering to the requested
 /// subject set in-memory.
 ///

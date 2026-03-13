@@ -55,7 +55,7 @@ pub struct CommitInfo {
     pub hash: String,
 }
 
-/// Transaction response - matches Clojure server format
+/// Transaction response - expected server format
 #[derive(Serialize)]
 pub struct TransactResponse {
     /// Ledger identifier
@@ -71,7 +71,7 @@ pub struct TransactResponse {
 
 /// Compute transaction ID from request body (SHA-256 hash)
 ///
-/// This matches Clojure's derive-tx-id which hashes the JSON-LD normalized data.
+/// This matches the legacy derive-tx-id behavior which hashes the JSON-LD normalized data.
 /// For simplicity we hash the raw JSON bytes - this is deterministic for the same input.
 fn compute_tx_id(body: &JsonValue) -> String {
     let json_bytes = serde_json::to_vec(body).unwrap_or_default();

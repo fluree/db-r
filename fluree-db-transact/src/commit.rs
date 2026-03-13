@@ -36,7 +36,7 @@ pub struct CommitOpts {
     pub message: Option<String>,
     /// Optional author identity
     pub author: Option<String>,
-    /// Original transaction JSON for storage (Clojure parity)
+    /// Original transaction JSON for storage
     /// When present, the raw transaction JSON is stored separately and
     /// can be retrieved via history queries with `txn: true`.
     pub raw_txn: Option<serde_json::Value>,
@@ -89,7 +89,7 @@ impl CommitOpts {
         self
     }
 
-    /// Set the raw transaction JSON for storage (Clojure parity)
+    /// Set the raw transaction JSON for storage
     pub fn with_raw_txn(mut self, txn: serde_json::Value) -> Self {
         self.raw_txn = Some(txn);
         self
@@ -245,7 +245,7 @@ where
         // externally-sourced timestamps when needed.
         let timestamp = Utc::now().to_rfc3339();
 
-        // Store original transaction JSON if provided (Clojure parity)
+        // Store original transaction JSON if provided
         let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
             let (txn_bytes, res) = async {
                 let txn_bytes = serde_json::to_vec(txn_json)?;
@@ -334,9 +334,9 @@ where
             .instrument(tracing::debug_span!("commit_publish_nameservice"))
             .await?;
 
-        // 9. Generate commit metadata flakes (Clojure parity)
+        // 9. Generate commit metadata flakes
         // Note: We merge these into novelty only, not into commit_record.flakes
-        // (matching Clojure's behavior where metadata flakes are derived separately)
+        // (matching legacy behavior where metadata flakes are derived separately)
         let commit_metadata_flakes = {
             let span = tracing::debug_span!("commit_generate_metadata_flakes");
             let _g = span.enter();

@@ -126,7 +126,7 @@ where
         .await
     }
 
-    /// Execute a query with tracking (Clojure parity).
+    /// Execute a query with tracking.
     ///
     /// Returns a tracked response with fuel, time, and policy statistics.
     /// When `format_config` is `None`, defaults to JSON-LD for FlureeQL

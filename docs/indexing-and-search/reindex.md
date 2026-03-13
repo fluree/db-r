@@ -25,7 +25,7 @@ Consider these factors:
 
 ## Rust API
 
-The reindex API is exposed through the `Fluree` type in `fluree-db-api`. In Rust, `Fluree` serves as the equivalent of Clojure's "connection" object - it owns the storage backend, node cache, nameservice, and provides all ledger operations including queries, transactions, and admin functions like reindex.
+The reindex API is exposed through the `Fluree` type in `fluree-db-api`. `Fluree` owns the storage backend, node cache, nameservice, and provides all ledger operations including queries, transactions, and admin functions like reindex.
 
 ### Basic Reindex
 

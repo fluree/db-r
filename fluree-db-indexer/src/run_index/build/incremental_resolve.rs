@@ -172,14 +172,10 @@ pub async fn resolve_incremental_commits_v6(
     // 3. Load subject + string reverse dict trees (same DictRefs as V5).
     let subject_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, None)
         .await
-        .map_err(|e| {
-            IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}"))
-        })?;
+        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}")))?;
     let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
         .await
-        .map_err(|e| {
-            IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}"))
-        })?;
+        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
 
     // 4. Seed SharedResolverState from V6 root.
     let mut shared = SharedResolverState::from_index_root(&root)?;
@@ -566,4 +562,3 @@ fn remap_record(
 
     Ok(())
 }
-

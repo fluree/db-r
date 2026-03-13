@@ -32,7 +32,7 @@ xxhash-rust = { workspace = true }
 moka = { workspace = true, optional = true }
 dashmap = { workspace = true, optional = true }
 
-# Numeric and temporal types for Clojure parity
+# Numeric and temporal types
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 bigdecimal = { version = "0.4", features = ["serde"] }

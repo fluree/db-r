@@ -1,7 +1,7 @@
-//! Explain API: query optimization plan (Clojure parity)
+//! Explain API: query optimization plan
 //!
 //! This module builds a user-facing explanation of query planning decisions.
-//! It is intended for integration testing parity with `db-clojure`'s `explain-test`.
+//! It is intended for integration testing coverage of the explain surface.
 
 use crate::error::{ApiError, Result};
 use crate::format::iri::IriCompactor;
@@ -100,7 +100,7 @@ fn plan_patterns_to_json(
             _ => "triple",
         };
 
-        // Inputs: keep close to Clojure's fields, but backed by our explain inputs.
+        // Inputs: keep close to the existing fields, but backed by our explain inputs.
         let mut inputs = Map::new();
         inputs.insert("type".to_string(), JsonValue::String(typ.to_string()));
         // Always include these flags for parity/stability; they will be overwritten
@@ -127,7 +127,7 @@ fn plan_patterns_to_json(
                     inputs.insert("clamped-to-one?".to_string(), json!(false));
                 }
             } else if tp.o_bound() {
-                // Clojure parity: these flags are present for bound-object patterns even if NDV
+                // These flags are present for bound-object patterns even if NDV.
                 // stats aren't available (they'll just be false).
                 inputs.insert("used-values-ndv?".to_string(), json!(false));
                 inputs.insert("clamped-to-one?".to_string(), json!(false));

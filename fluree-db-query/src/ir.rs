@@ -1279,7 +1279,7 @@ pub enum Pattern {
     /// - `GraphName::Var(v)`: If bound, use that graph; if unbound, iterate all named
     ///   graphs and bind `?v` to each graph IRI
     ///
-    /// Graph-not-found produces empty result (Clojure parity), not an error.
+    /// Graph-not-found produces empty result (not an error).
     Graph {
         /// The graph name (concrete IRI or variable)
         name: GraphName,

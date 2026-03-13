@@ -34,7 +34,7 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 
 /// Resolve an ISO-8601 datetime to a transaction number using POST index queries.
 ///
-/// # Algorithm (matches Clojure)
+/// # Algorithm
 ///
 /// 1. Query POST for first commit with `ledger#time > target_epoch_ms`
 /// 2. Return that flake's `t - 1` (the previous commit's t)

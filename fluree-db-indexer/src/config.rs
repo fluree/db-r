@@ -9,13 +9,13 @@ pub struct IndexerConfig {
     /// Target estimated bytes per leaf node
     ///
     /// Leaves will be sized to approximately this many bytes during splits.
-    /// Default: 187,500 (half of Clojure default overflow-bytes)
+    /// Default: 187,500 (half of the legacy default overflow-bytes)
     pub leaf_target_bytes: u64,
 
     /// Maximum estimated bytes per leaf node
     ///
     /// Leaves split when they exceed this threshold.
-    /// Default: 375,000 (Clojure default overflow-bytes)
+    /// Default: 375,000 (legacy default overflow-bytes)
     pub leaf_max_bytes: u64,
 
     /// Target number of children per branch node

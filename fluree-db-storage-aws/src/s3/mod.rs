@@ -56,7 +56,7 @@ pub struct S3Config {
     pub endpoint: Option<String>,
     /// Operation timeout in milliseconds (optional)
     pub timeout_ms: Option<u64>,
-    /// Max retries (Clojure parity: retries *after* the initial attempt)
+    /// Max retries (retries *after* the initial attempt)
     pub max_retries: Option<u32>,
     /// Initial backoff for retries in milliseconds (randomized with jitter by SDK)
     pub retry_base_delay_ms: Option<u64>,
@@ -128,7 +128,7 @@ impl S3Storage {
             s3_config_builder = s3_config_builder.endpoint_url(endpoint);
         }
 
-        // Apply retry overrides (Clojure parity)
+        // Apply retry overrides
         if config.max_retries.is_some()
             || config.retry_base_delay_ms.is_some()
             || config.retry_max_delay_ms.is_some()

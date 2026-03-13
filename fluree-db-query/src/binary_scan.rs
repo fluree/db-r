@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use fluree_db_binary_index::format::column_block::ColumnId;
+use fluree_db_binary_index::read::column_types::ColumnSet;
 use fluree_db_binary_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch,
     ColumnProjection, OverlayOp,
@@ -27,6 +29,7 @@ use fluree_db_core::{
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::ir::{Expression, Function};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
@@ -109,6 +112,25 @@ pub fn schema_from_pattern_with_emit(
     }
 
     (schema, s_pos, p_pos, o_pos)
+}
+
+#[inline]
+fn expr_needs_t(expr: &Expression) -> bool {
+    match expr {
+        Expression::Var(_) | Expression::Const(_) => false,
+        Expression::Call { func, args } => {
+            matches!(func, Function::T) || args.iter().any(expr_needs_t)
+        }
+        Expression::Exists { .. } => false,
+    }
+}
+
+#[inline]
+fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
+    ops.iter().any(|op| match op {
+        InlineOperator::Filter(e) => expr_needs_t(e),
+        InlineOperator::Bind { expr, .. } => expr_needs_t(expr),
+    })
 }
 
 // `translate_overlay_flakes` lives below, after BinaryScanOperator.
@@ -929,7 +951,12 @@ impl BinaryScanOperator {
             let o_type = batch.o_type.get_or(row, 0);
             let o_key = batch.o_key.get(row);
             let o_i = batch.o_i.get_or(row, u32::MAX);
-            let t = batch.t.get_or(row, 0) as i64;
+            let t_opt = if batch.t.is_absent() {
+                None
+            } else {
+                Some(batch.t.get(row) as i64)
+            };
+            let t_enc = t_opt.unwrap_or(0);
 
             // Skip internal db: predicates on wildcard scans.
             if self.is_internal_predicate(p_id) {
@@ -1064,14 +1091,14 @@ impl BinaryScanOperator {
                             Binding::Lit {
                                 val,
                                 dtc,
-                                t: Some(t),
+                                t: t_opt,
                                 op: None,
                                 p_id: Some(p_id),
                             }
                         }
                     }
                 } else {
-                    encode_object(o_type, o_key, p_id, t, o_i).unwrap_or_else(|| {
+                    encode_object(o_type, o_key, p_id, t_enc, o_i).unwrap_or_else(|| {
                         // Fallback: decode if we don't have a safe encoded representation.
                         // This preserves correctness for uncommon/custom OTypes.
                         match decode_value(o_type, o_key, p_id) {
@@ -1089,7 +1116,7 @@ impl BinaryScanOperator {
                                 Binding::Lit {
                                     val,
                                     dtc,
-                                    t: Some(t),
+                                    t: t_opt,
                                     op: None,
                                     p_id: Some(p_id),
                                 }
@@ -1437,7 +1464,18 @@ impl Operator for BinaryScanOperator {
         }
 
         let order = index_type_to_sort_order(self.index);
-        let projection = ColumnProjection::all();
+        // Decode only columns needed for correctness:
+        // - `o_i` is part of the V3 identity model (list semantics)
+        // - `t` is only required for history mode
+        let mut output = ColumnSet::CORE;
+        output.insert(ColumnId::OI);
+        if ctx.history_mode || inline_ops_need_t(&self.inline_ops) {
+            output.insert(ColumnId::T);
+        }
+        let projection = ColumnProjection {
+            output,
+            internal: ColumnSet::EMPTY,
+        };
 
         // Get branch manifest (clone into Arc for cursor ownership).
         let store_arc = Arc::clone(self.store.as_ref().expect("store set above"));
@@ -2131,6 +2169,20 @@ pub(crate) fn value_to_otype_okey_simple(
         FlakeValue::Time(t) => Ok((
             OType::XSD_TIME,
             ObjKey::encode_time(t.micros_since_midnight()).as_u64(),
+        )),
+        FlakeValue::GYear(g) => Ok((OType::XSD_G_YEAR, ObjKey::encode_g_year(g.year()).as_u64())),
+        FlakeValue::GYearMonth(g) => Ok((
+            OType::XSD_G_YEAR_MONTH,
+            ObjKey::encode_g_year_month(g.year(), g.month()).as_u64(),
+        )),
+        FlakeValue::GMonth(g) => Ok((
+            OType::XSD_G_MONTH,
+            ObjKey::encode_g_month(g.month()).as_u64(),
+        )),
+        FlakeValue::GDay(g) => Ok((OType::XSD_G_DAY, ObjKey::encode_g_day(g.day()).as_u64())),
+        FlakeValue::GMonthDay(g) => Ok((
+            OType::XSD_G_MONTH_DAY,
+            ObjKey::encode_g_month_day(g.month(), g.day()).as_u64(),
         )),
         _ => Err(QueryError::execution(format!(
             "unsupported FlakeValue variant for V6 fast-path: {:?}",

@@ -1,4 +1,4 @@
-//! Policy f:query integration tests (Clojure parity)
+//! Policy f:query integration tests
 //!
 //! Tests f:query policy evaluation using the main query parser/IR.
 //!
@@ -157,7 +157,7 @@ async fn policy_fquery_simple_where_pattern() {
 
 /// Tests that f:query with FILTER expressions works.
 ///
-/// This is the key test for Clojure parity - FILTER should work in policy queries
+/// Key test: FILTER should work in policy queries
 /// because we now use the main query parser instead of a bespoke policy parser.
 #[tokio::test]
 async fn policy_fquery_with_filter_expression() {
@@ -218,7 +218,7 @@ async fn policy_fquery_with_filter_expression() {
 
 /// Tests that default-allow works when NO policy applies.
 ///
-/// Clojure parity: default-allow only applies when NO policies apply to a flake.
+/// default-allow only applies when NO policies apply to a flake.
 /// When policies DO apply but their f:query returns no results, that's a deny.
 #[tokio::test]
 async fn policy_fquery_default_allow_fallback() {
@@ -270,7 +270,7 @@ async fn policy_fquery_default_allow_fallback() {
 
     // The policy APPLIED (it ran its f:query), but the query returned false.
     // Therefore the policy didn't "allow", and default-allow doesn't override this.
-    // Clojure semantics: default-allow only applies when NO policies apply.
+    // Semantics: default-allow only applies when NO policies apply.
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!([])),
@@ -354,7 +354,7 @@ async fn policy_fquery_default_allow_fallback() {
 /// Tests that empty f:query {} allows access (matches anything).
 ///
 /// An empty WHERE clause in f:query should succeed, allowing access.
-/// This is used as a "default allow view" pattern in Clojure.
+/// This is used as a "default allow view" pattern.
 #[tokio::test]
 async fn policy_fquery_empty_where_allows() {
     assert_index_defaults();

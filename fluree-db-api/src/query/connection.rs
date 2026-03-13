@@ -175,7 +175,7 @@ where
             .await
     }
 
-    /// Clojure-parity alias: tracked connection query entrypoint.
+    /// Compatibility alias: tracked connection query entrypoint.
     pub async fn query_connection_tracked(
         &self,
         query_json: &JsonValue,

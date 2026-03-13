@@ -1,4 +1,4 @@
-//! Ledger lifecycle integration tests (Clojure parity)
+//! Ledger lifecycle integration tests
 //!
 //! Tests the full ledger lifecycle: creation, name validation, existence checking,
 //! basic querying, fuel tracking, and duplicate prevention.
@@ -167,13 +167,13 @@ async fn exists_test() {
 async fn query_integration_test() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Load people data (matches Clojure test-utils/load-people)
+    // Load people data
     let ledger_id = support::load_people(&fluree).await.unwrap();
 
     // Get the ledger
     let ledger = fluree.ledger(&ledger_id).await.unwrap();
 
-    // Query for all users with their names (matches Clojure query-test)
+    // Query for all users with their names
     let query = json!({
         "@context": [
             support::default_context(),

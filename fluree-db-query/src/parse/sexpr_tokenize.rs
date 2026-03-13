@@ -1,6 +1,6 @@
 //! S-expression tokenization and string parsing utilities
 //!
-//! Provides tokenization for Clojure-style S-expressions used in:
+//! Provides tokenization for S-expressions used in:
 //! - Aggregate function syntax: `(as (count ?x) ?cnt)`
 //! - Filter expressions: `(and (> ?age 18) (< ?age 65))`
 //!

@@ -1,6 +1,5 @@
-//! Transact object variable parsing integration tests (Clojure parity)
+//! Transact object variable parsing integration tests
 //!
-//! Ports integration tests from `db-clojure/test/fluree/db/transact/object_var_parsing_test.clj`.
 //! Tests how variables in transaction objects are handled.
 //!
 //! Note: Internal parsing tests are marked as ignored since they test transaction parser

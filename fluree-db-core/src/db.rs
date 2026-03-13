@@ -137,7 +137,7 @@ impl LedgerSnapshot {
             ledger_id: ledger_id.to_string(),
             t: 0,
             version: 3,
-            // Seed with baseline Fluree namespace codes (matches Clojure genesis-root-map).
+            // Seed with baseline Fluree namespace codes.
             namespace_codes: default_namespace_codes(),
             stats: None,
             schema: None,

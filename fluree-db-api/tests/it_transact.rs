@@ -1,6 +1,5 @@
-//! Transact integration tests (Clojure parity)
+//! Transact integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/transact/transact_test.clj`.
 //! Tests core transaction functionality including validation, data types, and API behavior.
 
 mod support;
@@ -407,7 +406,7 @@ async fn transact_api_test() {
 
 #[tokio::test]
 async fn base_and_vocab_test() {
-    // Clojure: transact-test/base-and-vocab-test
+    // Scenario: transact-test/base-and-vocab-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = fluree.create_ledger("cookbook/base:main").await.unwrap();
 
@@ -499,7 +498,7 @@ async fn base_and_vocab_test() {
 
 #[tokio::test]
 async fn json_objects() {
-    // Clojure: transact-test/json-objects
+    // Scenario: transact-test/json-objects
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = fluree.create_ledger("jsonpls:main").await.unwrap();
 
@@ -603,7 +602,7 @@ async fn no_where_solutions() {
 
 #[tokio::test]
 async fn transaction_iri_special_char() {
-    // Clojure: transact-test/transaction-iri-special-char
+    // Scenario: transact-test/transaction-iri-special-char
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = fluree
         .create_ledger("transaction-iri-special-char:main")

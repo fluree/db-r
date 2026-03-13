@@ -1197,7 +1197,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         //
         // This allows patterns like "delete if exists, then insert" to execute safely when
         // there are no matches, and supports conditional updates.
@@ -1294,7 +1294,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         let (receipt, ledger) =
             if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
                 let (base, flakes) = view.into_parts();
@@ -1392,7 +1392,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         let (receipt, ledger) =
             if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
                 let (base, flakes) = view.into_parts();
@@ -1812,7 +1812,7 @@ where
     // CREDENTIALED TRANSACTION METHODS
     // ========================================================================
 
-    /// Execute a credentialed transaction (Clojure: credential-transact!)
+    /// Execute a credentialed transaction
     ///
     /// Verifies the signed credential, extracts the identity (DID), and executes
     /// the transaction with policy enforcement based on the verified identity.
@@ -1921,7 +1921,7 @@ where
 {
     /// Update data using a transaction that specifies the ledger ID.
     ///
-    /// This mirrors Clojure's `update!` API where the transaction payload includes
+    /// Transaction update helper where the transaction payload includes
     /// a `ledger` field. The ledger is loaded by alias before executing the update.
     pub async fn update_with_ledger(&self, update_json: &JsonValue) -> Result<TransactResult> {
         let ledger_id = ledger_id_from_txn(update_json)?;

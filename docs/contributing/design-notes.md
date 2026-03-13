@@ -51,9 +51,9 @@ Design documents are located in the `/docs/design/` directory and various planni
 - Location: `/INTEGRATION_TESTS_STRATEGY.md`
 - Covers: Test organization, coverage goals, CI/CD integration
 
-**Clojure Test Porting:**
+**Legacy test porting:**
 - Location: `/CLOJURE_TEST_PORTING_MAP.md`
-- Covers: Mapping Clojure tests to Rust, parity tracking
+- Covers: Mapping legacy tests to Rust, parity tracking
 
 **Test Suite Mapping:**
 - Location: `/parity_clojure_to_rust_suite_map.tsv`
@@ -89,7 +89,7 @@ Design documents are located in the `/docs/design/` directory and various planni
 - Location: `/NUMERIC_TEMPORAL_PARITY_PLAN.md`
 - Covers: Numeric types, temporal operations, XSD datatypes
 
-**Clojure Test Inventory:**
+**Legacy test inventory:**
 - Location: `/parity_clojure_test_inventory.tsv`
 - Covers: Feature parity tracking
 

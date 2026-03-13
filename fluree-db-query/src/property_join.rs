@@ -260,11 +260,6 @@ impl PropertyJoinOperator {
         self.subject_var
     }
 
-    /// Get the predicates with their object variables
-    pub fn predicates(&self) -> &[(Ref, VarId, Option<DatatypeConstraint>, bool)] {
-        &self.predicates
-    }
-
     /// Get the output schema (non-trait method for tests)
     pub fn output_schema(&self) -> &Arc<[VarId]> {
         &self.output_schema
@@ -474,13 +469,33 @@ impl Operator for PropertyJoinOperator {
                             // nearly the entire predicate partition.
                             //
                             // To improve locality, chunk the subject IDs into smaller sorted ranges
-                            // and probe each chunk independently.
+                            // and probe each chunk independently. We split both by count and by
+                            // span to avoid scanning large gaps.
                             const PROBE_CHUNK_SIZE: usize = 256;
+                            const PROBE_MAX_SPAN: u64 = 100_000;
 
                             let mut ids = subject_ids.clone();
                             ids.sort_unstable();
 
-                            for chunk in ids.chunks(PROBE_CHUNK_SIZE) {
+                            let mut chunk_start: usize = 0;
+                            for i in 1..=ids.len() {
+                                let is_end = i == ids.len();
+                                let size = i - chunk_start;
+                                let span = if size == 0 {
+                                    0
+                                } else {
+                                    ids[i - 1].saturating_sub(ids[chunk_start])
+                                };
+                                let should_split =
+                                    is_end || size >= PROBE_CHUNK_SIZE || span > PROBE_MAX_SPAN;
+                                if !should_split {
+                                    continue;
+                                }
+
+                                let chunk = &ids[chunk_start..i];
+                                if chunk.is_empty() {
+                                    continue;
+                                }
                                 used_batched_probe = true;
                                 probe_chunks += 1;
                                 probe_subjects_total += chunk.len() as u64;
@@ -540,6 +555,7 @@ impl Operator for PropertyJoinOperator {
                                     }
                                 }
                                 join.close();
+                                chunk_start = i;
                             }
 
                             continue;
@@ -764,7 +780,7 @@ mod tests {
         let op = PropertyJoinOperator::new(&patterns, HashMap::new());
 
         assert_eq!(op.subject_var(), VarId(0));
-        assert_eq!(op.predicates().len(), 2);
+        assert_eq!(op.predicates.len(), 2);
         assert_eq!(op.output_schema().len(), 3); // subject + 2 object vars
     }
 

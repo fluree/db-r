@@ -232,7 +232,7 @@ pub async fn stage(
             let mut retractions =
                 generator.generate_retractions(&txn.delete_templates, &bindings)?;
 
-            // Clojure parity: DELETE templates often omit list indices even when
+            // DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
             // list-index meta from the currently asserted flake (if present).
             hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph)
@@ -264,7 +264,7 @@ pub async fn stage(
         );
         let assertions = {
             let _guard = insert_span.enter();
-            // Clojure parity: For UPDATE transactions, it's common to write:
+            // For UPDATE transactions, it's common to write:
             //   WHERE { ... maybe matches ... }
             //   DELETE { ... bound vars ... }
             //   INSERT { ... constant assertions ... }
@@ -551,7 +551,7 @@ async fn enforce_modify_policy_per_flake(
         // Resolve the graph for this flake and get/create a cached executor.
         let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
         let executor = executors.entry(g_id).or_insert_with(|| {
-            // Clojure parity: modify policy queries see the state *before* this transaction.
+            // Modify policy queries see the state *before* this transaction.
             QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t())
                 .with_graph_id(g_id)
         });

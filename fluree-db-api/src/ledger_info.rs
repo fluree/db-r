@@ -118,7 +118,7 @@ pub enum LedgerInfoError {
 /// Result type for ledger info operations
 pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 
-/// Build comprehensive ledger metadata with Clojure parity.
+/// Build comprehensive ledger metadata.
 ///
 /// Returns JSON containing:
 /// - `ledger`: ledger-wide metadata
@@ -207,17 +207,6 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     graph_iri.as_deref(),
                     store,
                 );
-                merge_graph_class_property_usage_from_novelty(
-                    &ledger.snapshot,
-                    ledger.novelty.as_ref(),
-                    ledger.t(),
-                    g_id,
-                    graph_entry,
-                    &ledger.snapshot.namespace_codes,
-                    graph_iri.as_deref(),
-                    store,
-                )
-                .await?;
             }
 
             if options.realtime_property_details {
@@ -291,7 +280,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
         )?,
     );
 
-    // 4. Commit section (ALWAYS include, even if None - for Clojure parity)
+    // 4. Commit section (ALWAYS include, even if None)
     if let Some(head_cid) = &ledger.head_commit_id {
         match build_commit_jsonld(storage, head_cid, &ledger.snapshot.ledger_id).await {
             Ok(commit_json) => {
@@ -418,54 +407,20 @@ fn build_ledger_block(
         .map(|r| r.commit_t)
         .unwrap_or(ledger.t());
 
-    // Build named-graphs list with minimal per-graph stats.
-    //
-    // `IndexStats.graphs` is authoritative for flakes/size, but may omit graphs that
-    // have never had flakes; the binary store provides the IRI mapping. We merge both
-    // and sort by `g-id` for a stable response.
-    let mut by_gid: std::collections::BTreeMap<GraphId, (String, u64, u64)> =
-        std::collections::BTreeMap::new();
-
-    // Seed from stats (flakes/size), and also capture any graph ids present there.
-    if let Some(graphs) = stats.graphs.as_ref() {
-        for g in graphs {
-            if g.g_id == 1 {
-                continue; // txn-meta not public
-            }
-            let iri = graph_display_name(g.g_id, store);
-            by_gid.insert(g.g_id, (iri, g.flakes, g.size));
-        }
-    }
-
-    // Ensure default graph is present even if no stats exist yet.
-    by_gid
-        .entry(0)
-        .or_insert_with(|| ("urn:default".to_string(), 0, 0));
-
-    // Merge in graph IRI entries from the binary store (keeps flakes/size from stats).
+    // Build named-graphs list
+    let mut named_graphs = Vec::new();
+    // Always include default graph
+    named_graphs.push(json!({"iri": "urn:default", "g-id": 0}));
+    // Add named graphs from binary store
     if let Some(store) = store {
         for (g_id, iri) in store.graph_entries() {
+            // Skip txn-meta (g_id=1) from the public list
             if g_id == 1 {
-                continue; // txn-meta not public
+                continue;
             }
-            by_gid
-                .entry(g_id)
-                .and_modify(|e| e.0 = iri.to_string())
-                .or_insert_with(|| (iri.to_string(), 0, 0));
+            named_graphs.push(json!({"iri": iri, "g-id": g_id}));
         }
     }
-
-    let named_graphs: Vec<JsonValue> = by_gid
-        .into_iter()
-        .map(|(g_id, (iri, flakes, size))| {
-            json!({
-                "iri": iri,
-                "g-id": g_id,
-                "flakes": flakes,
-                "size": size,
-            })
-        })
-        .collect();
 
     json!({
         "alias": &ledger.snapshot.ledger_id,
@@ -801,153 +756,6 @@ fn merge_graph_class_counts_from_novelty(
         classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
     }
 }
-
-/// Merge novelty deltas into a graph entry's class->property usage counts.
-///
-/// Updates:
-/// - `classes[*].properties[*].datatypes` counts (ValueTypeTag u8)
-/// - `classes[*].properties[*].langs` counts (when `flake.m.lang` is present)
-///
-/// Uses a single batch `lookup_subject_classes` over novelty subjects so we can
-/// attribute each novelty flake to the subject's *current* class set (base + novelty)
-/// at `to_t`. This stays fast when novelty is small, which is the common case.
-#[allow(clippy::too_many_arguments)]
-async fn merge_graph_class_property_usage_from_novelty(
-    snapshot: &LedgerSnapshot,
-    novelty: &Novelty,
-    to_t: i64,
-    g_id: GraphId,
-    graph_entry: &mut GraphStatsEntry,
-    namespace_codes: &HashMap<u16, String>,
-    graph_iri: Option<&str>,
-    store: &BinaryIndexStore,
-) -> Result<()> {
-    if novelty.is_empty() {
-        return Ok(());
-    }
-    let Some(classes) = graph_entry.classes.as_mut() else {
-        return Ok(());
-    };
-
-    // Collect subjects that have non-rdf:type novelty flakes in this graph.
-    let mut subj_set: HashSet<Sid> = HashSet::new();
-    let mut events: Vec<(&Sid, &Sid, u8, Option<&str>, i64)> = Vec::new();
-    for flake_id in novelty.iter_index(IndexType::Post) {
-        let flake = novelty.get_flake(flake_id);
-        if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
-            continue;
-        }
-        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
-            continue;
-        }
-        if is_rdf_type(&flake.p) {
-            continue;
-        }
-        let delta = if flake.op { 1i64 } else { -1i64 };
-        let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
-        if tag == ValueTypeTag::UNKNOWN {
-            continue;
-        }
-        subj_set.insert(flake.s.clone());
-        let lang = flake.m.as_ref().and_then(|m| m.lang.as_deref());
-        events.push((&flake.s, &flake.p, tag.as_u8(), lang, delta));
-    }
-    if events.is_empty() {
-        return Ok(());
-    }
-
-    let overlay: &dyn OverlayProvider = novelty;
-    let mut subjects: Vec<Sid> = subj_set.into_iter().collect();
-    subjects.sort();
-    let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
-    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db)
-        .await
-        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
-
-    // Index class entries and their property usage for in-place updates.
-    let mut class_idx: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
-    for (i, c) in classes.iter().enumerate() {
-        class_idx.insert(c.class_sid.clone(), i);
-    }
-
-    for (s, p, tag, lang, delta) in events {
-        let Some(s_classes) = subj_classes.get(s) else {
-            continue;
-        };
-        for cls in s_classes {
-            let ci = match class_idx.get(cls).copied() {
-                Some(i) => i,
-                None => continue,
-            };
-            let class_entry = &mut classes[ci];
-
-            // Find or create property usage.
-            let mut pi_opt: Option<usize> = None;
-            for (i, pu) in class_entry.properties.iter().enumerate() {
-                if &pu.property_sid == p {
-                    pi_opt = Some(i);
-                    break;
-                }
-            }
-            if pi_opt.is_none() && delta > 0 {
-                class_entry.properties.push(ClassPropertyUsage {
-                    property_sid: p.clone(),
-                    datatypes: Vec::new(),
-                    langs: Vec::new(),
-                    ref_classes: Vec::new(),
-                });
-                // Keep deterministic ordering for stable output.
-                class_entry
-                    .properties
-                    .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
-                pi_opt = class_entry
-                    .properties
-                    .iter()
-                    .position(|pu| &pu.property_sid == p);
-            }
-            let Some(pi) = pi_opt else {
-                continue;
-            };
-            let pu = &mut class_entry.properties[pi];
-
-            // Update datatype count.
-            let mut found_dt = false;
-            for (dt_tag, count) in pu.datatypes.iter_mut() {
-                if *dt_tag == tag {
-                    let next = (*count as i64 + delta).max(0) as u64;
-                    *count = next;
-                    found_dt = true;
-                    break;
-                }
-            }
-            if !found_dt && delta > 0 {
-                pu.datatypes.push((tag, delta as u64));
-                pu.datatypes.sort_by(|a, b| a.0.cmp(&b.0));
-            }
-            pu.datatypes.retain(|(_, c)| *c > 0);
-
-            // Update language tag count when present.
-            if let Some(lang) = lang {
-                let mut found_lang = false;
-                for (l, count) in pu.langs.iter_mut() {
-                    if l == lang {
-                        let next = (*count as i64 + delta).max(0) as u64;
-                        *count = next;
-                        found_lang = true;
-                        break;
-                    }
-                }
-                if !found_lang && delta > 0 {
-                    pu.langs.push((lang.to_string(), delta as u64));
-                    pu.langs.sort_by(|a, b| a.0.cmp(&b.0));
-                }
-                pu.langs.retain(|(_, c)| *c > 0);
-            }
-        }
-    }
-
-    Ok(())
-}
 /// Merge novelty ref-edge deltas into a graph entry's class stats.
 ///
 /// Only considers novelty flakes belonging to the specified graph
@@ -1121,7 +929,7 @@ async fn merge_graph_class_ref_edges_from_novelty(
 // Commit / Nameservice JSON-LD helpers
 // ============================================================================
 
-/// Build commit JSON-LD in Clojure parity format.
+/// Build commit JSON-LD block.
 async fn build_commit_jsonld<S: Storage + Clone>(
     storage: &S,
     head_id: &fluree_db_core::ContentId,
@@ -1629,18 +1437,6 @@ where
         {
             let commit_t = ledger.t();
             let index_t = ledger.snapshot.t;
-            let index_id = ledger
-                .head_index_id
-                .as_ref()
-                .map(|cid| cid.to_string())
-                .or_else(|| {
-                    ledger
-                        .ns_record
-                        .as_ref()
-                        .and_then(|r| r.index_head_id.as_ref())
-                        .map(|cid| cid.to_string())
-                })
-                .unwrap_or_default();
 
             let ctx_hash: u64 = match self.context {
                 Some(ctx) => {
@@ -1663,11 +1459,10 @@ where
             };
 
             let key_str = format!(
-                "ledger-info:{}:{}:{}:{}:{}:{}:{}:{}",
+                "ledger-info:{}:{}:{}:{}:{}:{}:{}",
                 self.ledger_id,
                 commit_t,
                 index_t,
-                index_id,
                 self.options.realtime_property_details as u8,
                 self.options.include_property_datatypes as u8,
                 graph_key,

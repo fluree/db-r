@@ -71,7 +71,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             SparqlGraphPattern::Optional { pattern, .. } => {
                 let inner = self.lower_graph_pattern(pattern)?;
-                // Fluree semantics (Clojure parity): when an OPTIONAL block contains only
+                // Fluree semantics: when an OPTIONAL block contains only
                 // triple patterns, allow "partial binding" by treating each triple as its
                 // own OPTIONAL clause.
                 //

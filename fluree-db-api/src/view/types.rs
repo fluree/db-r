@@ -23,7 +23,7 @@ use fluree_db_query::rewrite::ReasoningModes;
 pub enum ReasoningModePrecedence {
     /// Use wrapper modes only if query doesn't specify reasoning.
     ///
-    /// This is the default, matching Clojure's ergonomic defaults:
+    /// This is the default:
     /// the wrapper provides convenient defaults, but power users can
     /// override via query JSON.
     #[default]
@@ -47,7 +47,7 @@ pub enum ReasoningModePrecedence {
 ///
 /// # Composition
 ///
-/// Views support Clojure-style wrapper composition via builder methods:
+/// Views support wrapper composition via builder methods:
 ///
 /// ```ignore
 /// let view = GraphDb::from_ledger_state(&ledger)
@@ -526,7 +526,7 @@ impl GraphDb {
     /// Attach a policy context to the view.
     ///
     /// Policy is enforced during query execution and result formatting.
-    /// This mirrors Clojure's `wrap-policy` / `policy-enforce-db`.
+    /// Wrap with policy enforcement.
     ///
     /// # Example
     ///
@@ -585,7 +585,7 @@ impl GraphDb {
 impl GraphDb {
     /// Apply default reasoning modes to queries on this view.
     ///
-    /// This mirrors Clojure's `wrap-reasoning`. The reasoning modes apply
+    /// Wrap with reasoning. The reasoning modes apply
     /// to all queries executed against this view, subject to precedence rules.
     ///
     /// Uses `DefaultUnlessQueryOverrides` precedence by default.

@@ -114,9 +114,10 @@ impl DictTreeReader {
         refs: &crate::format::wire_helpers::DictTreeRefs,
         leaflet_cache: Option<&Arc<LeafletCache>>,
     ) -> io::Result<Self> {
-        let branch_bytes = cs.get(&refs.branch).await.map_err(|e| {
-            io::Error::other(format!("failed to load branch: {e}"))
-        })?;
+        let branch_bytes = cs
+            .get(&refs.branch)
+            .await
+            .map_err(|e| io::Error::other(format!("failed to load branch: {e}")))?;
         let branch = DictBranch::decode(&branch_bytes)?;
 
         let mut local_files = HashMap::with_capacity(branch.leaves.len());

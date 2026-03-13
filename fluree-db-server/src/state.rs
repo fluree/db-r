@@ -144,7 +144,7 @@ impl FlureeInstance {
     /// Execute a tracked JSON-LD query against a connection.
     ///
     /// Returns a tracked response body (status/result/time/fuel/policy) that callers can
-    /// forward directly, and optionally translate to tracking headers for Clojure parity.
+    /// forward directly, and optionally translate to tracking headers.
     pub async fn query_connection_jsonld_tracked(
         &self,
         query_json: &serde_json::Value,

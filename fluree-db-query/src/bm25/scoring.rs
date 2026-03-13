@@ -1,6 +1,6 @@
 //! BM25 Scoring Algorithm
 //!
-//! Implements BM25 scoring with Clojure parity:
+//! Implements BM25 scoring:
 //! - IDF: log(1 + (N - n + 0.5) / (n + 0.5))
 //! - Score: Σ IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_len / avg_doc_len)))
 //!
@@ -259,7 +259,7 @@ impl<'a> Bm25Scorer<'a> {
     /// Create a new scorer for the given query terms.
     ///
     /// `query_terms` should be the analyzed (tokenized, filtered, stemmed) query terms.
-    /// Duplicate terms are automatically deduplicated (matching Clojure's `distinct`).
+    /// Duplicate terms are automatically deduplicated (matching `distinct` behavior).
     pub fn new(index: &'a Bm25Index, query_terms: &[&str]) -> Self {
         // Deduplicate query terms using BTreeMap for deterministic order
         // (term_idx -> idf), where each term contributes only once
@@ -544,13 +544,13 @@ impl<'a> Bm25Scorer<'a> {
 /// Uses the formula: log(1 + (N - n + 0.5) / (n + 0.5))
 /// where N is total number of documents and n is document frequency of the term.
 ///
-/// This matches the Clojure implementation.
+/// This matches the legacy implementation.
 #[inline]
 pub fn compute_idf(total_docs: u64, doc_freq: u32) -> f64 {
     let n = total_docs as f64;
     let df = doc_freq as f64;
 
-    // IDF formula matching Clojure: log(1 + (N - n + 0.5) / (n + 0.5))
+    // IDF formula: log(1 + (N - n + 0.5) / (n + 0.5))
     ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
 }
 

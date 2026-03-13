@@ -11,7 +11,7 @@
 //! FlakeValue implements strict total ordering with **numeric class comparison**:
 //!
 //! 1. **Numeric class**: All numeric types (Long, Double, BigInt, Decimal) are compared
-//!    mathematically by value, not by type. This matches Clojure's "number is a number"
+//!    mathematically by value, not by type ("number is a number" semantics).
 //!    semantics. For example, `Long(3) < Double(3.5) < Long(4)`.
 //!
 //! 2. **Temporal class**: DateTime, Date, Time are compared by instant (not lexically).
@@ -368,7 +368,7 @@ impl FlakeValue {
     ///
     /// Returns `None` if either value is not numeric.
     ///
-    /// This implements the "number is a number" semantics from Clojure:
+    /// This implements "number is a number" semantics:
     /// - `Long(3) < Double(3.5) < Long(4)`
     /// - Equal values compare as Equal regardless of type
     pub fn numeric_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -788,7 +788,7 @@ impl Ord for FlakeValue {
 
         // 2. Both numeric → compare by mathematical value
         // Equal numeric values return Equal so cmp_object can use dt as tie-breaker
-        // (Clojure parity: "number is a number" - equal values are equal regardless of type)
+        // "number is a number": equal values are equal regardless of numeric type
         if self.is_numeric() && other.is_numeric() {
             if let Some(ord) = self.numeric_cmp(other) {
                 return ord;
@@ -1235,14 +1235,14 @@ mod tests {
         let double_3_5 = FlakeValue::Double(3.5);
         let long_4 = FlakeValue::Long(4);
 
-        // Clojure semantics: 3 < 3.5 < 4 regardless of type
+        // Numeric ordering semantics: 3 < 3.5 < 4 regardless of type
         assert!(long_3 < double_3_5);
         assert!(double_3_5 < long_4);
     }
 
     #[test]
     fn test_numeric_equality_across_types() {
-        // Long(3) and Double(3.0) should compare equal in value (Clojure parity)
+        // Long(3) and Double(3.0) should compare equal in value
         let long_3 = FlakeValue::Long(3);
         let double_3 = FlakeValue::Double(3.0);
 

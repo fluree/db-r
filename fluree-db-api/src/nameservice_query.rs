@@ -4,7 +4,7 @@
 //! in-memory database from all nameservice records (ledgers and graph sources)
 //! and executes a query against it.
 //!
-//! This is the Rust parity implementation of Clojure's `query-nameservice` API.
+//! Nameservice query API implementation.
 //!
 //! ## Example Queries
 //!

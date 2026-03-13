@@ -4,7 +4,7 @@
 //! of Fluree databases. For the actual namespace codes and IRI constants, see the
 //! `fluree-vocab` crate.
 //!
-//! The Clojure implementation seeds the genesis database/root with a baseline
+//! The genesis database/root is seeded with a baseline
 //! namespace table (`default-namespaces` / `default-namespace-codes`) and then
 //! allocates new namespace codes lazily at first use during transactions.
 //!

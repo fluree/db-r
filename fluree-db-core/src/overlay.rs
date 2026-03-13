@@ -72,7 +72,7 @@ pub trait OverlayProvider: Send + Sync {
     /// Overlay applies `to_t` filter (avoids emitting irrelevant flakes).
     /// Core applies `from_t` filter + stale-removal.
     ///
-    /// # Boundary Semantics (Clojure compatibility)
+    /// # Boundary Semantics (compatibility)
     ///
     /// * If `leftmost=false`: left boundary is EXCLUSIVE (`> first`)
     /// * If `leftmost=true`: no left boundary (start from beginning)

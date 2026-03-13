@@ -153,7 +153,7 @@ impl ObjectBounds {
 
     /// Check if a value satisfies the bounds
     ///
-    /// Uses **type class comparison** for Clojure parity:
+    /// Uses **type class comparison**:
     /// - All numeric types (Long, Double, BigInt, Decimal) are comparable to each other
     /// - Temporal types are only comparable within the same kind (Date vs Date, etc.)
     /// - Other types require exact type match

@@ -127,7 +127,7 @@ impl R2rmlScanOperator {
     /// 2. Cross-ledger SIDs don't match anyway (different namespace codes)
     /// 3. Encoding would silently drop rows for IRIs not in namespace table
     ///
-    /// This matches the Clojure implementation which uses `match-iri` for graph source results.
+    /// This matches the legacy implementation which uses `match-iri` for graph source results.
     fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_>) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {

@@ -139,7 +139,6 @@ pub(crate) async fn fetch_cached_bytes_cid(
     Ok(bytes)
 }
 
-
 // ============================================================================
 // Per-graph V3 index data
 // ============================================================================
@@ -1264,9 +1263,8 @@ async fn build_dictionary_set(
     }
 
     // Subject reverse tree.
-    let subject_reverse_tree = Some(
-        DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, leaflet_cache).await?,
-    );
+    let subject_reverse_tree =
+        Some(DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, leaflet_cache).await?);
 
     // String forward packs.
     let string_forward_packs = ForwardPackReader::from_pack_refs(
@@ -1279,9 +1277,8 @@ async fn build_dictionary_set(
     .await?;
 
     // String reverse tree.
-    let string_reverse_tree = Some(
-        DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, leaflet_cache).await?,
-    );
+    let string_reverse_tree =
+        Some(DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, leaflet_cache).await?);
 
     // Namespace codes.
     let namespace_codes: HashMap<u16, String> = root

@@ -138,7 +138,7 @@ use fluree_db_api::{connect_s3, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // LocalStack/MinIO: endpoint is required for parity with Clojure connect-s3
+    // LocalStack/MinIO: endpoint is required
     let fluree = connect_s3("my-bucket", "http://localhost:4566").await?;
 
     let ledger = fluree.create_ledger("mydb").await?;
@@ -667,7 +667,7 @@ async fn main() -> Result<()> {
 
 #### Dropping Ledgers
 
-Use `drop_ledger` to permanently remove a ledger. This is the Rust equivalent of Clojure's `fluree.db.api/drop`:
+Use `drop_ledger` to permanently remove a ledger:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, DropMode, DropStatus, Result};
@@ -739,7 +739,7 @@ if !report.warnings.is_empty() {
 
 #### Refreshing Cached Ledgers
 
-Use `refresh` to poll-check whether a cached ledger is stale and update it if needed. This is the Rust equivalent of Clojure's `fluree.db.api/refresh`:
+Use `refresh` to poll-check whether a cached ledger is stale and update it if needed:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, NotifyResult, Result};
@@ -1563,7 +1563,7 @@ The response includes:
 
 | Section | Description |
 |---------|-------------|
-| `commit` | Commit info in JSON-LD format (Clojure parity) |
+| `commit` | Commit info in JSON-LD format |
 | `nameservice` | NsRecord in JSON-LD format |
 | `namespace-codes` | Inverted mapping (prefix → code) for IRI expansion |
 | `stats` | Flake counts, size, property/class statistics with selectivity |

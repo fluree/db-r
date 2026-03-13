@@ -1,6 +1,5 @@
-//! Reverse predicate integration tests (Clojure parity)
+//! Reverse predicate integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/reverse_query_test.clj` using JSON inputs only.
 //! We focus first on reverse predicates **in WHERE** (query semantics).
 //! Graph crawl output using reverse selections and policy wrapping are included but ignored for now.
 
@@ -64,7 +63,7 @@ async fn seed_reverse_family(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLe
 
 #[tokio::test]
 async fn reverse_predicate_in_where_selects_inverse_edges() {
-    // Clojure: context-reverse-test (adapted: WHERE-based assertion, avoids reverse graph crawl formatting)
+    // Scenario: context-reverse-test (adapted: WHERE-based assertion, avoids reverse graph crawl formatting)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_friends(&fluree, "reverse:friends").await;
 
@@ -98,7 +97,7 @@ async fn reverse_predicate_in_where_selects_inverse_edges() {
 
 #[tokio::test]
 async fn reverse_predicate_in_where_finds_kid() {
-    // Clojure: reverse-preds-in-where-and-select / "where clause" (adapted: avoid graph crawl selector)
+    // Scenario: reverse-preds-in-where-and-select / "where clause" (adapted: avoid graph crawl selector)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_family(&fluree, "reverse:family").await;
 
@@ -122,7 +121,7 @@ async fn reverse_predicate_in_where_finds_kid() {
 
 #[tokio::test]
 async fn reverse_at_type_in_where_finds_classes() {
-    // Clojure: reverse-preds-in-where-and-select / "@type reverse"
+    // Scenario: reverse-preds-in-where-and-select / "@type reverse"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_family(&fluree, "reverse:type").await;
 
@@ -149,7 +148,7 @@ async fn reverse_at_type_in_where_finds_classes() {
 
 #[tokio::test]
 async fn forward_at_type_in_where_finds_classes() {
-    // Clojure: reverse-preds-in-where-and-select / "@type forward"
+    // Scenario: reverse-preds-in-where-and-select / "@type forward"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_family(&fluree, "reverse:type-forward").await;
 
@@ -173,7 +172,7 @@ async fn forward_at_type_in_where_finds_classes() {
 
 #[tokio::test]
 async fn context_reverse_select_one_graph_crawl() {
-    // Clojure: context-reverse-test
+    // Scenario: context-reverse-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_friends(&fluree, "reverse-friends-graph-crawl:main").await;
 
@@ -252,7 +251,7 @@ async fn context_reverse_select_one_graph_crawl() {
 
 #[tokio::test]
 async fn reverse_predicate_in_where_selects_parents() {
-    // Same dataset as Clojure reverse-preds-in-where-and-select, but assert the inverse edges directly.
+    // Same dataset as reverse-preds-in-where-and-select, but assert the inverse edges directly.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_family(&fluree, "reverse:family2").await;
 
@@ -281,7 +280,7 @@ async fn reverse_predicate_in_where_selects_parents() {
 
 #[tokio::test]
 async fn type_reverse_and_forward_agree_on_classes() {
-    // Clojure: reverse-preds-in-where-and-select / "@type reverse" + "@type forward"
+    // Scenario: reverse-preds-in-where-and-select / "@type reverse" + "@type forward"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_reverse_family(&fluree, "reverse:types").await;
 

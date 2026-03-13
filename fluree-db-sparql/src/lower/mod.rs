@@ -209,7 +209,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 let ctx = self.build_jsonld_context()?;
 
                 // SELECT * should behave like "wildcard select" for JSON-LD-style outputs.
-                // This lets formatters emit object rows keyed by variable name (Clojure parity).
+                // This lets formatters emit object rows keyed by variable name.
                 let output = match &select_query.select.variables {
                     SelectVariables::Star => QueryOutput::Wildcard,
                     _ => QueryOutput::Select(select),

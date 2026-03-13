@@ -1,6 +1,5 @@
-//! Identity-based policy integration tests (Clojure parity)
+//! Identity-based policy integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/policy/identity_based_test.clj`.
 //! Tests identity-based access control and policy restrictions.
 
 mod support;
@@ -291,7 +290,7 @@ async fn identity_based_policy_lookup() {
 /// Test wrap_identity_policy_view API helper function.
 ///
 /// This test verifies the `wrap_identity_policy_view` convenience function
-/// that mirrors Clojure's `wrap-identity-policy`.
+/// that mirrors the legacy `wrap-identity-policy` helper.
 #[tokio::test]
 async fn wrap_identity_policy_view_api() {
     assert_index_defaults();

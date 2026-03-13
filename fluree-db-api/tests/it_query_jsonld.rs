@@ -1,8 +1,6 @@
-//! JSON-LD query integration tests (Clojure parity)
+//! JSON-LD query integration tests
 //!
 //! Focus: query semantics (filters / optionals / union) using JSON inputs only.
-//! Mirrors query namespaces under `db-clojure/test/fluree/db/query/*_test.clj`,
-//! converting EDN query maps to JSON objects and always providing explicit `@context`.
 
 mod support;
 
@@ -1023,7 +1021,7 @@ async fn query_jsonld_works_for_values_only_query() {
     let fluree: MemoryFluree = FlureeBuilder::memory().build_memory();
     let ledger = genesis_ledger(&fluree, "test/main");
 
-    // No WHERE, only VALUES (allowed in Clojure; we support this now)
+    // No WHERE, only VALUES (supported)
     let q = json!({
         "@context": context_ex_schema(),
         "select": ["?x"],
@@ -1057,10 +1055,10 @@ async fn query_format_async_works_for_non_crawl_queries() {
 }
 
 // =============================================================================
-// Grouping, Having, Ordering, Distinct tests (Clojure parity)
+// Grouping, Having, Ordering, Distinct tests
 // =============================================================================
 //
-// Mirrors `db-clojure/test/fluree/db/query/fql_test.clj` using JSON inputs only.
+// Grouping/having/ordering/distinct coverage using JSON inputs only.
 // All inserts and queries are explicit with `@context`.
 //
 // Features covered:
@@ -1074,7 +1072,7 @@ async fn seed_people_grouping(fluree: &MemoryFluree, ledger_id: &str) -> MemoryL
     let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = context_ex_schema();
 
-    // Matches `db-clojure/test/fluree/db/test_utils.cljc` `people-strings`
+    // Seed dataset: people-strings
     let insert = json!({
         "@context": ctx,
         "@graph": [
@@ -1122,7 +1120,7 @@ async fn seed_people_grouping(fluree: &MemoryFluree, ledger_id: &str) -> MemoryL
 
 #[tokio::test]
 async fn grouping_single_field() {
-    // Clojure: "with a single grouped-by field"
+    // Scenario: "with a single grouped-by field"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/grouping:main").await;
     let ctx = context_ex_schema();
@@ -1145,7 +1143,7 @@ async fn grouping_single_field() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected grouped results per Clojure test
+    // Expected grouped results
     let expected = json!([
         [
             "Alice",
@@ -1177,7 +1175,7 @@ async fn grouping_single_field() {
 
 #[tokio::test]
 async fn grouping_multiple_fields() {
-    // Clojure: "with multiple grouped-by fields"
+    // Scenario: "with multiple grouped-by fields"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/grouping-multi:main").await;
     let ctx = context_ex_schema();
@@ -1200,7 +1198,7 @@ async fn grouping_multiple_fields() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected grouped results per Clojure test
+    // Expected grouped results
     let expected = json!([
         ["Alice", "alice@example.org", 50, [9, 42, 76]],
         ["Brian", "brian@example.org", 50, [7]],
@@ -1213,7 +1211,7 @@ async fn grouping_multiple_fields() {
 
 #[tokio::test]
 async fn having_count_filter() {
-    // Clojure: "with having clauses" - count filter
+    // Scenario: "with having clauses" - count filter
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/having-count:main").await;
     let ctx = context_ex_schema();
@@ -1234,7 +1232,7 @@ async fn having_count_filter() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected filtered results per Clojure test
+    // Expected filtered results
     let expected = json!([["Alice", [9, 42, 76]], ["Cam", [5, 10]], ["Liam", [11, 42]]]);
 
     assert_eq!(rows, expected);
@@ -1242,7 +1240,7 @@ async fn having_count_filter() {
 
 #[tokio::test]
 async fn having_avg_filter() {
-    // Clojure: "with having clauses" - avg filter
+    // Scenario: "with having clauses" - avg filter
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/having-avg:main").await;
     let ctx = context_ex_schema();
@@ -1263,7 +1261,7 @@ async fn having_avg_filter() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected filtered results per Clojure test
+    // Expected filtered results
     let expected = json!([["Alice", [9, 42, 76]], ["Liam", [11, 42]]]);
 
     assert_eq!(rows, expected);
@@ -1271,7 +1269,7 @@ async fn having_avg_filter() {
 
 #[tokio::test]
 async fn ordering_single_field_asc() {
-    // Clojure: "with a single ordered field" (ascending)
+    // Scenario: "with a single ordered field" (ascending)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/ordering-asc:main").await;
     let ctx = context_ex_schema();
@@ -1292,7 +1290,7 @@ async fn ordering_single_field_asc() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected ordered results per Clojure test
+    // Expected ordered results
     let expected = json!([
         ["Alice", "alice@example.org", 50],
         ["Brian", "brian@example.org", 50],
@@ -1305,7 +1303,7 @@ async fn ordering_single_field_asc() {
 
 #[tokio::test]
 async fn ordering_single_field_desc() {
-    // Clojure: "with a specified direction" (descending)
+    // Scenario: "with a specified direction" (descending)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/ordering-desc:main").await;
     let ctx = context_ex_schema();
@@ -1326,7 +1324,7 @@ async fn ordering_single_field_desc() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected ordered results per Clojure test
+    // Expected ordered results
     let expected = json!([
         ["Liam", "liam@example.org", 13],
         ["Cam", "cam@example.org", 34],
@@ -1339,7 +1337,7 @@ async fn ordering_single_field_desc() {
 
 #[tokio::test]
 async fn ordering_multiple_fields_asc() {
-    // Clojure: "with multiple ordered fields" (ascending)
+    // Scenario: "with multiple ordered fields" (ascending)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/ordering-multi-asc:main").await;
     let ctx = context_ex_schema();
@@ -1360,7 +1358,7 @@ async fn ordering_multiple_fields_asc() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected ordered results per Clojure test
+    // Expected ordered results
     let expected = json!([
         ["Liam", "liam@example.org", 13],
         ["Cam", "cam@example.org", 34],
@@ -1373,7 +1371,7 @@ async fn ordering_multiple_fields_asc() {
 
 #[tokio::test]
 async fn ordering_multiple_fields_mixed() {
-    // Clojure: "with a specified direction" (multiple fields, mixed directions)
+    // Scenario: "with a specified direction" (multiple fields, mixed directions)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/ordering-multi-mixed:main").await;
     let ctx = context_ex_schema();
@@ -1394,7 +1392,7 @@ async fn ordering_multiple_fields_mixed() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected ordered results per Clojure test
+    // Expected ordered results
     let expected = json!([
         ["Alice", "alice@example.org", 50],
         ["Brian", "brian@example.org", 50],
@@ -1407,7 +1405,7 @@ async fn ordering_multiple_fields_mixed() {
 
 #[tokio::test]
 async fn select_distinct_basic() {
-    // Clojure: "distinct results"
+    // Scenario: "distinct results"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/select-distinct:main").await;
     let ctx = context_ex_schema();
@@ -1427,7 +1425,7 @@ async fn select_distinct_basic() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected distinct results per Clojure test
+    // Expected distinct results
     let expected = json!([
         ["Alice", "alice@example.org"],
         ["Brian", "brian@example.org"],
@@ -1440,7 +1438,7 @@ async fn select_distinct_basic() {
 
 #[tokio::test]
 async fn select_distinct_with_limit_offset() {
-    // Clojure: "distinct results with limit and offset"
+    // Scenario: "distinct results with limit and offset"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_grouping(&fluree, "query/jsonld/select-distinct-limit:main").await;
     let ctx = context_ex_schema();
@@ -1462,7 +1460,7 @@ async fn select_distinct_with_limit_offset() {
         .unwrap();
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
 
-    // Expected distinct results with limit/offset per Clojure test
+    // Expected distinct results with limit/offset
     let expected = json!([["Brian", "brian@example.org"], ["Cam", "cam@example.org"]]);
 
     assert_eq!(rows, expected);

@@ -167,7 +167,7 @@ pub struct Bm25SearchOperator {
     cached_search_result: Option<Bm25SearchResult>,
     /// Whether we're using search provider mode (true) or index provider mode (false)
     use_search_provider: bool,
-    /// Analyzer used for query analysis (Clojure-parity) - only used in legacy mode
+    /// Analyzer used for query analysis - only used in legacy mode
     analyzer: Analyzer,
     /// Datatypes for typed literal bindings
     datatypes: WellKnownDatatypes,

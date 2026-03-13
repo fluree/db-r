@@ -3,7 +3,7 @@
 //! Provides the `clean_garbage` function that walks the prev-index chain,
 //! identifies gc-eligible indexes, and deletes obsolete nodes.
 //!
-//! # Clojure Parity Semantics
+//! # GC semantics
 //!
 //! The garbage record in root N contains addresses of nodes that were replaced
 //! when creating root N from root N-1. When we GC:
@@ -145,7 +145,7 @@ fn current_timestamp_ms() -> i64 {
 
 /// Clean garbage from old index versions.
 ///
-/// This function implements Clojure-parity GC semantics:
+/// This function implements the expected GC semantics:
 ///
 /// 1. Walks the prev-index chain to collect all index versions
 /// 2. Retains `current + max_old_indexes` versions (e.g., max_old_indexes=5 keeps 6 total)
@@ -547,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clean_garbage_clojure_semantics() {
-        // Test Clojure parity GC with FIR6-encoded roots and garbage items.
+        // Test GC with FIR6-encoded roots and garbage items.
         let storage = MemoryStorage::new();
 
         let (cid1, addr1) = cid_and_addr(ContentKind::IndexRoot, b"root1");

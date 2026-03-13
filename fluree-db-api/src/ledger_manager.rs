@@ -1072,12 +1072,12 @@ where
 }
 
 // ============================================================================
-// Notify Types - Update Plan (Clojure parity)
+// Notify Types - Update Plan
 // ============================================================================
 
 /// Decision from comparing cached state to nameservice record
 ///
-/// Based on Clojure's `plan-ns-update` in `fluree.db.connection`:
+/// Based on the legacy `plan-ns-update` behavior:
 /// - Compare local `t()` (max of index + novelty) against nameservice `commit_t`
 /// - Determine minimal action needed to bring cache up to date
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1116,7 +1116,7 @@ pub enum UpdatePlan {
 impl UpdatePlan {
     /// Plan the update action based on local state vs nameservice record
     ///
-    /// This mirrors Clojure's `plan-ns-update` logic:
+    /// This mirrors the legacy `plan-ns-update` logic:
     /// - If commit_t matches local t(), check if index advanced
     /// - If commit_t is exactly local t() + 1, we can apply just that commit
     /// - If commit_t is further ahead, we're stale and need full reload
@@ -1218,7 +1218,7 @@ where
 {
     /// Handle nameservice update notification
     ///
-    /// Uses Clojure-style update planning to determine minimal action:
+    /// Uses update planning to determine minimal action:
     /// - Noop: nothing to do
     /// - IndexOnly: index advanced, trim novelty (v1: falls back to Reload)
     /// - CommitNext: apply single commit (v1: falls back to Reload)
@@ -1359,7 +1359,7 @@ mod tests {
     }
 
     // ========================================================================
-    // UpdatePlan::plan() tests - Clojure parity scenarios
+    // UpdatePlan::plan() tests - compatibility scenarios
     // ========================================================================
 
     fn make_cid(label: &str) -> ContentId {

@@ -876,7 +876,7 @@ where
             .with_txn_meta(txn_meta)
             .with_graph_delta(graph_delta.into_iter().collect());
 
-        // Handle no-op updates: return success without committing (Clojure parity).
+        // Handle no-op updates: return success without committing.
         if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
             let (base, _) = view.into_parts();
             return Ok(TransactResultRef {

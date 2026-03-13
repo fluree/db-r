@@ -53,7 +53,7 @@ const DEFAULT_PROPERTY_SCAN_SELECTIVITY: f64 = 1_000_000.0;
 /// Full scan - all variables unbound
 const FULL_SCAN: f64 = 1e12;
 
-// Clojure fallback caps differ by pattern type:
+// Fallback caps differ by pattern type:
 // - bound-subject (s p ?o): min count 10
 // - bound-object (?s p o): min count 1000
 const BOUND_SUBJECT_FALLBACK_CAP: f64 = 10.0;
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn test_reorder_patterns_seeded_prefers_joinable_over_more_selective_cartesian() {
         // If vars are already bound from an upstream operator, prefer patterns that
-        // join with those vars to avoid cartesian explosions (Clojure parity).
+        // join with those vars to avoid cartesian explosions.
 
         let s = VarId(0);
         let o1 = VarId(1);

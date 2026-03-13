@@ -1,6 +1,5 @@
-//! Indexing workflow integration tests (Clojure parity)
+//! Indexing workflow integration tests
 //!
-//! Mirrors the high-signal parts of `db-clojure/test/fluree/db/indexing_test.clj`.
 
 #![cfg(feature = "native")]
 
@@ -18,7 +17,7 @@ use support::{assert_index_defaults, normalize_rows, start_background_indexer_lo
 
 #[tokio::test]
 async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
-    // Clojure: `manual-indexing-test` (transaction metadata)
+    // Scenario: `manual-indexing-test` (transaction metadata)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/indexing-disabled-metadata:main";
 
@@ -53,7 +52,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
         "with indexing disabled, indexed state should remain at t=0"
     );
 
-    // Clojure: "Trigger index API can be called" (Rust: trigger+wait succeeds).
+    // Scenario: "Trigger index API can be called" (trigger+wait succeeds).
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
         (*fluree.nameservice()).clone(),
@@ -73,7 +72,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
 
 #[tokio::test]
 async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_loads_indexed_ledger() {
-    // Clojure: `manual-indexing-blocking-test` + `manual-indexing-updates-branch-state-test`
+    // Scenario: `manual-indexing-blocking-test` + `manual-indexing-updates-branch-state-test`
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/indexing-manual-trigger:main";
 
@@ -281,7 +280,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
 
 #[tokio::test]
 async fn file_based_indexing_then_new_connection_loads_and_queries() {
-    // Clojure: `file-based-indexing-test` (subset: new connection load)
+    // Scenario: `file-based-indexing-test` (subset: new connection load)
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -356,7 +355,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
 
 #[tokio::test]
 async fn automatic_indexing_disabled_mode_allows_novelty_to_accumulate_without_indexing() {
-    // Clojure: `automatic-indexing-disabled-test`
+    // Scenario: `automatic-indexing-disabled-test`
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/indexing-disabled-accumulate:main";
 
@@ -605,7 +604,7 @@ async fn reindex_rebuilds_and_publishes_index_at_current_commit_t() {
     assert_eq!(jsonld.as_array().expect("array").len(), 4);
 }
 
-/// Clojure parity: reindex-basic-test
+/// reindex-basic-test
 /// Verifies that reindex populates statistics (properties and classes)
 #[tokio::test]
 async fn reindex_populates_statistics() {
@@ -723,13 +722,13 @@ async fn reindex_populates_statistics() {
     );
 }
 
-/// Clojure parity: reindex-with-existing-index-test
+/// reindex-with-existing-index-test
 /// Verifies that reindex works correctly when an existing index exists.
 ///
-/// **Intentional divergence from Clojure**: In Rust, indices are content-addressed.
+/// **Intentional divergence**: In Rust, indices are content-addressed.
 /// If the same data is indexed with the same configuration, it produces the same
 /// content hash. This is actually beneficial for deduplication - identical data
-/// yields identical indices. Clojure may produce different addresses due to
+/// yields identical indices. Other implementations may produce different addresses due to
 /// non-deterministic serialization or metadata differences.
 #[tokio::test]
 async fn reindex_with_existing_index_completes_successfully() {
@@ -775,7 +774,7 @@ async fn reindex_with_existing_index_completes_successfully() {
             );
 
             // NOTE: Content-addressed storage means identical data produces identical hashes.
-            // This is an intentional divergence from Clojure - in Rust, identical indices
+            // This is an intentional divergence - in Rust, identical indices
             // at the same t with the same data will have the same content address.
             // The key verification is that reindex completed successfully.
 
@@ -808,7 +807,7 @@ async fn reindex_with_existing_index_completes_successfully() {
         .await;
 }
 
-/// Clojure parity: reindex-preserves-queries-test
+/// reindex-preserves-queries-test
 /// Verifies that queries with filters work after reindex
 #[tokio::test]
 async fn reindex_preserves_filter_queries() {
@@ -901,7 +900,7 @@ async fn reindex_preserves_filter_queries() {
 }
 
 /// Verifies that reindex uses provided IndexerConfig
-/// (Rust equivalent of Clojure's batch-bytes affecting index structure)
+/// (Equivalent of batch-bytes affecting index structure)
 #[tokio::test]
 async fn reindex_uses_provided_indexer_config() {
     assert_index_defaults();
@@ -974,7 +973,7 @@ async fn reindex_uses_provided_indexer_config() {
     );
 }
 
-/// Clojure parity: reindex-from-t-test
+/// reindex-from-t-test
 /// Verifies default from_t behavior (starts from t=1)
 #[tokio::test]
 async fn reindex_default_from_t_includes_all_data() {

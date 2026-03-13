@@ -69,7 +69,7 @@ pub enum OutputFormat {
 /// Only used when `OutputFormat::JsonLd` is selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JsonLdRowShape {
-    /// Rows are arrays aligned to select order (Clojure parity)
+    /// Rows are arrays aligned to select order.
     ///
     /// ```json
     /// [["ex:alice", "Alice", 30], ["ex:bob", "Bob", 25]]

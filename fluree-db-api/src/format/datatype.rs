@@ -22,7 +22,7 @@ pub mod jsonld {
 /// - xsd:integer/xsd:long - whole number in JSON
 /// - xsd:double/xsd:decimal - floating point in JSON
 /// - xsd:boolean - true/false in JSON
-/// - fluree:vector - JSON array of floats (Clojure parity)
+/// - fluree:vector - JSON array of floats
 ///
 /// These types are automatically inferred by JSON parsers.
 pub fn is_inferable_datatype(dt_iri: &str) -> bool {
@@ -37,7 +37,7 @@ pub fn is_inferable_datatype(dt_iri: &str) -> bool {
             | fluree::EMBEDDING_VECTOR
             // Some code paths may provide already-compacted datatype strings
             // (e.g., "xsd:string") instead of full IRIs. Treat these the same
-            // as their full-IRI counterparts for Clojure-parity JSON-LD output.
+            // as their full-IRI counterparts for JSON-LD output.
             | "xsd:string"
             | "xsd:long"
             | "xsd:integer"

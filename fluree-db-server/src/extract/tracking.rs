@@ -1,4 +1,4 @@
-//! Tracking response headers for Clojure parity
+//! Tracking response headers
 //!
 //! When tracking is enabled (via meta/max-fuel options), the server returns
 //! tracking metrics both in the response body AND as HTTP headers:
@@ -21,7 +21,7 @@ pub const X_FDB_POLICY: &str = "x-fdb-policy";
 /// Build tracking headers from a TrackingTally
 ///
 /// Returns a HeaderMap with tracking headers set based on what's present in the tally.
-/// This matches Clojure's `with-tracking-headers` behavior.
+/// This matches the legacy `with-tracking-headers` behavior.
 pub fn tracking_headers(tally: &TrackingTally) -> HeaderMap {
     let mut headers = HeaderMap::new();
 

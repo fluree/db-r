@@ -70,7 +70,7 @@ pub struct IndexConfig {
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
-            // Clojure parity defaults (see fluree/db `add-reindex-thresholds`):
+            // Compatibility defaults:
             // - reindex-min-bytes: 100000  (100 kb, decimal)
             // - reindex-max-bytes: 1000000 (1 mb, decimal)
             reindex_min_bytes: 100_000,

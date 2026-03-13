@@ -1,9 +1,6 @@
-//! Misc query integration tests (Clojure parity)
+//! Misc query integration tests
 //!
-//! Mirrors *supported* portions of `db-clojure/test/fluree/db/query/misc_queries_test.clj`.
-//! We prioritize query semantics; some Clojure tests in this namespace cover
-//! graph crawl formatting, connection-level history, and file-backed reconnect
-//! behavior that are not yet ported.
+//! We prioritize query semantics; some scenarios are intentionally out of scope here.
 
 mod support;
 
@@ -33,7 +30,7 @@ async fn seed_three_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedg
 
 #[tokio::test]
 async fn simple_where_select_limit_without_context_returns_full_iri() {
-    // Clojure: misc-queries-test/simple-where-select-test (adapted: Rust requires select array)
+    // Scenario: misc-queries-test/simple-where-select-test (adapted: Rust requires select array)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_three_people(&fluree, "misc/simple-where-select:main").await;
 
@@ -55,7 +52,7 @@ async fn simple_where_select_limit_without_context_returns_full_iri() {
 
 #[tokio::test]
 async fn simple_where_select_limit_with_context_returns_compacted_iri() {
-    // Clojure: misc-queries-test/simple-where-select-test (with context)
+    // Scenario: misc-queries-test/simple-where-select-test (with context)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_three_people(&fluree, "misc/simple-where-select:main").await;
     let ctx = context_ex_schema();
@@ -79,7 +76,7 @@ async fn simple_where_select_limit_with_context_returns_compacted_iri() {
 
 #[tokio::test]
 async fn class_queries_type_and_all_types() {
-    // Clojure: misc-queries-test/class-queries (subset: rdf:type queries)
+    // Scenario: misc-queries-test/class-queries (subset: rdf:type queries)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/class-queries:main");
     let ctx = context_ex_schema();
@@ -134,7 +131,7 @@ async fn class_queries_type_and_all_types() {
 
 #[tokio::test]
 async fn result_formatting_graph_crawl_variants() {
-    // Clojure: misc-queries-test/result-formatting (current query section)
+    // Scenario: misc-queries-test/result-formatting (current query section)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/result-formatting:main");
 
@@ -302,7 +299,7 @@ async fn result_formatting_graph_crawl_variants() {
 
 #[tokio::test]
 async fn s_p_o_full_db_queries_parity() {
-    // Clojure: misc-queries-test/s+p+o-full-db-queries (partial parity: skip commit metadata scan)
+    // Scenario: misc-queries-test/s+p+o-full-db-queries (partial coverage: skip commit metadata scan)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/s-p-o-full-db:main");
     let ctx = json!([context_ex_schema(), {"rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}]);
@@ -412,7 +409,7 @@ async fn s_p_o_full_db_queries_parity() {
 
 #[tokio::test]
 async fn commit_db_metadata_spo_queries_parity() {
-    // Clojure: misc-queries-test/s+p+o-full-db-queries (commit/db metadata portion)
+    // Scenario: misc-queries-test/s+p+o-full-db-queries (commit/db metadata portion)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/commit-metadata:main");
     let ctx = context_ex_schema();
@@ -507,7 +504,7 @@ async fn commit_db_metadata_spo_queries_parity() {
 
 #[tokio::test]
 async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
-    // Clojure: misc-queries-test/illegal-reference-test
+    // Scenario: misc-queries-test/illegal-reference-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_three_people(&fluree, "misc/illegal-reference:main").await;
     let ctx = context_ex_schema();
@@ -547,7 +544,7 @@ async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
 
 #[tokio::test]
 async fn type_handling_parity() {
-    // Clojure: misc-queries-test/type-handling
+    // Scenario: misc-queries-test/type-handling
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/type-handling:main");
 
@@ -717,7 +714,7 @@ async fn type_handling_parity() {
 
 #[tokio::test]
 async fn load_with_new_connection_placeholder() {
-    // Clojure: misc-queries-test/load-with-new-connection
+    // Scenario: misc-queries-test/load-with-new-connection
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
@@ -759,7 +756,7 @@ async fn load_with_new_connection_placeholder() {
 
 #[tokio::test]
 async fn repeated_transaction_results_parity() {
-    // Clojure: misc-queries-test/repeated-transaction-results
+    // Scenario: misc-queries-test/repeated-transaction-results
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/repeated-tx-results:main");
 
@@ -790,7 +787,7 @@ async fn repeated_transaction_results_parity() {
 
 #[tokio::test]
 async fn base_context_parity() {
-    // Clojure: misc-queries-test/base-context
+    // Scenario: misc-queries-test/base-context
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/base-context:main");
 
@@ -853,7 +850,7 @@ async fn base_context_parity() {
 
 #[tokio::test]
 async fn untyped_value_matching_parity() {
-    // Clojure: misc-queries-test/untyped-value-matching-test
+    // Scenario: misc-queries-test/untyped-value-matching-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "misc/untyped-value-matching:main");
 

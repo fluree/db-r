@@ -1,6 +1,4 @@
-//! Indexing statistics integration tests (Clojure parity)
-//!
-//! Mirrors `db-clojure/test/fluree/db/property_class_statistics_test.clj`.
+//! Indexing statistics integration tests
 //!
 //! Includes tests for:
 //! - Property and class statistics persistence
@@ -269,7 +267,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
 
 #[tokio::test]
 async fn statistics_work_with_memory_storage_when_indexed() {
-    // Clojure: `property-class-statistics-memory-storage-test`
+    // Scenario: `property-class-statistics-memory-storage-test`
     let mut fluree = FlureeBuilder::memory().build_memory();
 
     let (local, handle) = start_background_indexer_local(
@@ -451,7 +449,7 @@ async fn ledger_info_api_returns_expected_structure() {
             assert_eq!(info["graph"], "urn:default", "default graph should be urn:default");
 
             // ================================================================
-            // Verify commit structure (Clojure parity)
+            // Verify commit structure
             // ================================================================
             let commit = &info["commit"];
             assert_eq!(commit["@context"], "https://ns.flur.ee/db/v1");

@@ -1,7 +1,6 @@
 //! Policy enforcement for Fluree DB
 //!
-//! This crate provides fine-grained access control policies for queries and transactions
-//! with full Clojure parity:
+//! This crate provides fine-grained access control policies for queries and transactions.
 //!
 //! - **Targeting**: `f:onProperty`, `f:onSubject`, `f:onClass`
 //! - **Evaluation**: `f:allow` (boolean) and `f:query` (conditional)
@@ -18,7 +17,7 @@
 //!
 //! # Evaluation Semantics
 //!
-//! Policy evaluation follows Clojure parity:
+//! Policy evaluation follows the expected semantics:
 //!
 //! 1. **Schema bypass**: Schema flakes (rdfs:subClassOf, etc.) always allowed
 //! 2. **Candidate collection**: Policies gathered in order (property → subject → default)

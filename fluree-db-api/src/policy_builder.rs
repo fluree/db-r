@@ -5,12 +5,12 @@
 //! - Class-based policies (policies of given types/classes)
 //! - Inline policy JSON-LD
 //!
-//! # Clojure Parity
+//! # Compatibility notes
 //!
-//! This mirrors the Clojure functions:
-//! - `wrap-identity-policy` - Load policies via identity's `f:policyClass`
-//! - `wrap-class-policy` - Load policies of given classes
-//! - `wrap-policy` - Parse inline policy JSON-LD
+//! This module preserves the legacy policy-wrapping behavior:
+//! - Load policies via an identity's `f:policyClass`
+//! - Load policies of given classes
+//! - Parse inline policy JSON-LD
 
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
@@ -137,7 +137,7 @@ use fluree_vocab::{fluree, policy_iris};
 /// 2. **policy_class**: Query for policies of the given class types
 /// 3. **policy**: Parse inline policy JSON-LD
 ///
-/// Priority follows Clojure semantics: identity > policy_class > policy
+/// Priority: identity > policy_class > policy
 ///
 /// # Arguments
 ///
@@ -165,7 +165,7 @@ pub async fn build_policy_context_from_opts(
         policy_values.insert("?$identity".to_string(), sid.clone());
         Some(sid)
     } else if let Some(sid) = policy_values.get("?$identity") {
-        // Identity provided via policy_values (Clojure parity for wrap-policy)
+        // Identity may be provided via `policy_values`.
         Some(sid.clone())
     } else if let Some(pv) = &opts.policy_values {
         // Check if ?$identity was provided but failed to encode (treat as error)
@@ -180,7 +180,7 @@ pub async fn build_policy_context_from_opts(
     };
 
     // Load or parse policies based on options.
-    // Priority follows Clojure semantics: identity > policy_class > policy
+    // Priority: identity > policy_class > policy
     // If identity is present, it triggers f:policyClass lookup AND binds ?$identity.
     // For inline policies with identity binding, use policy_values["?$identity"] instead.
     let restrictions = if let Some(identity) = &opts.identity {
@@ -253,7 +253,7 @@ pub async fn build_policy_context_from_opts(
 
 /// Load policies by querying the identity's `f:policyClass` property.
 ///
-/// Clojure equivalent: `wrap-identity-policy`
+/// Legacy equivalent: `wrap-identity-policy`
 ///
 /// Query pattern:
 /// ```sparql
@@ -312,7 +312,7 @@ async fn load_policies_by_identity(
 
 /// Load policies by querying for subjects of the given class types.
 ///
-/// Clojure equivalent: `wrap-class-policy`
+/// Legacy equivalent: `wrap-class-policy`
 async fn load_policies_by_class(
     snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
@@ -558,7 +558,7 @@ async fn load_policy_restriction(
         .unwrap_or_else(|| policy_sid.name.to_string());
 
     // Determine policy value (allow/deny/query)
-    // Priority: f:allow takes precedence over f:query (per Clojure semantics)
+    // Priority: f:allow takes precedence over f:query
     let value = match allow {
         Some(true) => PolicyValue::Allow,
         Some(false) => PolicyValue::Deny,
@@ -674,7 +674,7 @@ async fn query_predicate(
 
 /// Parse inline policy JSON-LD into restrictions.
 ///
-/// Clojure equivalent: `wrap-policy` with inline policy
+/// Legacy equivalent: `wrap-policy` with inline policy
 fn parse_inline_policy(
     snapshot: &LedgerSnapshot,
     policy_json: &JsonValue,
@@ -714,7 +714,7 @@ fn parse_inline_policy(
         // - String: JSON query string
         // - Object: {"@type":"@json","@value":{...}} where @value is serialized to JSON string
         //
-        // Clojure parity: @json values can have object @value (not just string).
+        // `@json` values can use object `@value` (not just string).
         let policy_query_json: Option<String> = obj
             .get("f:query")
             .or_else(|| obj.get(&format!("{}query", fluree::DB)))
@@ -859,7 +859,7 @@ fn parse_inline_policy(
         // Determine target mode
         //
         // When f:onProperty is combined with f:onClass, the policy targets those
-        // properties ONLY on instances of those classes (Clojure parity).
+        // Properties should apply only to instances of those classes.
         // The `for_classes` field carries the class restriction.
         let (target_mode, targets, for_classes) = if !on_property.is_empty() {
             // OnProperty may also have a class restriction
@@ -873,7 +873,7 @@ fn parse_inline_policy(
         };
 
         // Policy value (allow/deny/query)
-        // Priority: f:allow takes precedence over f:query (Clojure parity)
+        // Priority: `f:allow` takes precedence over `f:query`.
         let value = match allow {
             Some(true) => PolicyValue::Allow,
             Some(false) => PolicyValue::Deny,
@@ -923,7 +923,7 @@ fn parse_inline_policy(
 /// rather than `encode_iri_strict()`. Policy inputs often contain full IRIs that may
 /// not have an explicit namespace-code registration in unindexed / in-memory ledgers.
 /// Using the EMPTY fallback keeps policy enforcement consistent with how queries and
-/// transactions encode such IRIs (Clojure parity).
+/// transactions encode such IRIs.
 fn resolve_iri_to_sid(snapshot: &LedgerSnapshot, iri: &str) -> Result<Sid> {
     Ok(snapshot.encode_iri(iri).unwrap_or_else(|| Sid::new(0, iri)))
 }

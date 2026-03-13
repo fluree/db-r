@@ -246,7 +246,7 @@ pub async fn format_async(
                     };
 
                     let Some(root_sid) = root_sid else {
-                        // Unbound/poisoned root var - skip this row (Clojure behavior)
+                        // Unbound/poisoned root var - skip this row
                         continue;
                     };
 
@@ -542,7 +542,7 @@ impl<'a> GraphCrawlFormatter<'a> {
                         // @type special case: compact IRI string, not {"@id": ...}
                         values.push(json!(self.compactor.compact_sid(ref_sid)?));
                     } else {
-                        // Expansion decision (Clojure parity):
+                        // Expansion decision:
                         // 1. If explicit sub-selection exists → expand with that spec
                         // 2. Else if current_depth < max_depth → auto-expand with FULL parent spec
                         // 3. Else → just return {"@id": ...}
@@ -1062,7 +1062,7 @@ impl<'a> GraphCrawlFormatter<'a> {
 
     fn apply_fuel_tracking(&self, flakes: Vec<Flake>) -> Result<Vec<Flake>> {
         if let Some(tracker) = self.tracker {
-            // Clojure parity: count fuel per flake emitted downstream (post-filters).
+            // Count fuel per flake emitted downstream (post-filters).
             for _ in 0..flakes.len() {
                 tracker.consume_fuel_one()?;
             }

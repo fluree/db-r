@@ -12,7 +12,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
-    /// Execute a credentialed connection query (Clojure: credential-query-connection)
+    /// Execute a credentialed connection query
     pub async fn credential_query_connection(
         &self,
         credential: credential::Input<'_>,
@@ -36,7 +36,7 @@ where
         self.query_connection(&query).await
     }
 
-    /// Execute a credentialed SPARQL query (Clojure: credential-query-connection with :format :sparql)
+    /// Execute a credentialed SPARQL query
     pub async fn credential_query_sparql(
         &self,
         jws: &str,

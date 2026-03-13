@@ -15,7 +15,7 @@ use std::fmt;
 ///
 /// This adapter implements [`Bm25SearchProvider`] by:
 /// 1. Loading the BM25 index via the underlying [`Bm25IndexProvider`]
-/// 2. Analyzing the query text with the Clojure-parity analyzer
+/// 2. Analyzing the query text with the default analyzer
 /// 3. Scoring documents using [`Bm25Scorer`]
 /// 4. Returning results as [`Bm25SearchResult`]
 ///
@@ -43,7 +43,7 @@ use std::fmt;
 pub struct EmbeddedBm25SearchProvider<'a, P: Bm25IndexProvider> {
     /// The underlying index provider that loads BM25 indexes.
     index_provider: &'a P,
-    /// Text analyzer for query processing (Clojure-parity).
+    /// Text analyzer for query processing.
     analyzer: Analyzer,
 }
 

@@ -378,7 +378,7 @@ impl Novelty {
     ///
     /// Uses binary search for O(log n + k) slicing.
     ///
-    /// Clojure semantics:
+    /// Semantics:
     /// - If leftmost=false: left boundary is EXCLUSIVE (> first)
     /// - If leftmost=true: no left boundary
     /// - rhs is INCLUSIVE when present

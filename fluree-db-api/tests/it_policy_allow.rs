@@ -1,6 +1,5 @@
-//! Policy f:allow integration tests (Clojure parity)
+//! Policy f:allow integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/policy/allow_test.clj`.
 //! Tests f:allow true/false, precedence over f:query, and targeting modes.
 
 mod support;
@@ -51,7 +50,7 @@ async fn seed_user_data(fluree: &support::MemoryFluree, ledger_id: &str) {
 
 /// Test f:allow false for property-level deny.
 ///
-/// Clojure parity: f:allow: false on a property should deny access to that property
+/// f:allow: false on a property should deny access to that property
 /// even when default-allow is true.
 #[tokio::test]
 async fn policy_allow_false_denies_property() {
@@ -148,7 +147,7 @@ async fn policy_allow_false_denies_property() {
 
 /// Test f:allow precedence over f:query.
 ///
-/// Clojure parity: When a policy has BOTH f:allow and f:query, f:allow takes precedence.
+/// When a policy has BOTH f:allow and f:query, f:allow takes precedence.
 /// This is useful for defining a "static deny" that doesn't evaluate the query.
 #[tokio::test]
 async fn policy_allow_precedence_over_fquery() {
@@ -221,7 +220,7 @@ async fn policy_allow_precedence_over_fquery() {
 
 /// Test f:onClass targeting with f:query.
 ///
-/// Clojure parity: Policies can target specific classes using f:onClass.
+/// Policies can target specific classes using f:onClass.
 /// The policy only applies to instances of that class.
 #[tokio::test]
 async fn policy_onclass_with_fquery() {
@@ -276,7 +275,7 @@ async fn policy_onclass_with_fquery() {
 
 /// Test f:onClass with f:query that uses ?$this.
 ///
-/// Clojure parity: f:onClass combined with f:query that checks properties of ?$this.
+/// f:onClass combined with f:query that checks properties of ?$this.
 #[tokio::test]
 async fn policy_onclass_with_fquery_this_check() {
     assert_index_defaults();
@@ -350,7 +349,7 @@ async fn policy_onclass_with_fquery_this_check() {
 
 /// Test f:onProperty with f:query combining targeting and dynamic evaluation.
 ///
-/// Clojure parity: f:onProperty targets specific properties, f:query provides
+/// f:onProperty targets specific properties, f:query provides
 /// dynamic evaluation for whether access is granted.
 #[tokio::test]
 async fn policy_onproperty_with_fquery() {
@@ -425,7 +424,7 @@ async fn policy_onproperty_with_fquery() {
 
 /// Test multiple f:onProperty values (union behavior).
 ///
-/// Clojure parity: When f:onProperty contains multiple values, the policy
+/// When f:onProperty contains multiple values, the policy
 /// applies to ANY of those properties.
 #[tokio::test]
 async fn policy_onproperty_multiple_values() {
@@ -526,7 +525,7 @@ async fn policy_onproperty_multiple_values() {
 
 /// Test f:required flag behavior.
 ///
-/// Clojure parity: f:required: true means this policy MUST allow for access
+/// f:required: true means this policy MUST allow for access
 /// to be granted. It's a "required policy" that cannot be bypassed.
 #[tokio::test]
 async fn policy_required_flag() {
@@ -596,7 +595,7 @@ async fn policy_required_flag() {
 
 /// Test combining f:onClass and f:onProperty.
 ///
-/// Clojure parity: When both f:onClass and f:onProperty are present,
+/// When both f:onClass and f:onProperty are present,
 /// the policy targets those properties ONLY on instances of those classes.
 #[tokio::test]
 async fn policy_onclass_and_onproperty_combined() {

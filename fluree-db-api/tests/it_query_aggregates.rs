@@ -1,9 +1,8 @@
-//! Aggregate query integration tests (Clojure parity)
+//! Aggregate query integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/aggregate_test.clj` using JSON inputs only.
 //! All inserts and queries are explicit with `@context`.
 //!
-//! Aggregate S-expression syntax (Clojure parity):
+//! Aggregate S-expression syntax:
 //! - `(count ?x)` - simple aggregate, auto-generates output var `?count`
 //! - `(as (count ?x) ?alias)` - aggregate with explicit alias
 //! - `(count *)` - count all rows in group
@@ -19,8 +18,7 @@ async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
     let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = context_ex_schema();
 
-    // Matches `db-clojure/test/fluree/db/test_utils.cljc` `people-strings`
-    // plus typed birthDate fields used by aggregate tests.
+    // Seed dataset with typed birthDate fields used by aggregate tests.
     let insert = json!({
         "@context": ctx,
         "@graph": [
@@ -74,7 +72,7 @@ fn extract_single_column_numbers(rows: &JsonValue) -> Vec<i64> {
         .iter()
         .map(|row| {
             // JSON-LD formatter flattens single-column selects to a flat array
-            // (Clojure parity). Accept both flat and legacy 1-element row arrays.
+            // Accept both flat and legacy 1-element row arrays.
             if let Some(n) = row.as_i64() {
                 return n;
             }
@@ -88,8 +86,8 @@ fn extract_single_column_numbers(rows: &JsonValue) -> Vec<i64> {
 
 #[tokio::test]
 async fn aggregates_explicit_grouping_count() {
-    // Clojure: "with explicit grouping" (count favNums by name)
-    // Clojure syntax: :select '[?name (as (count ?favNums) ?count)]
+    // Scenario: "with explicit grouping" (count favNums by name)
+    // Equivalent syntax: :select '[?name (as (count ?favNums) ?count)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate:main").await;
     let ctx = context_ex_schema();
@@ -119,7 +117,7 @@ async fn aggregates_explicit_grouping_count() {
 
 #[tokio::test]
 async fn aggregates_with_bind_ucase_and_count() {
-    // Clojure: "with data function syntax" (ucase via bind + count)
+    // Scenario: "with data function syntax" (ucase via bind + count)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-bind:main").await;
     let ctx = context_ex_schema();
@@ -152,7 +150,7 @@ async fn aggregates_with_bind_ucase_and_count() {
 
 #[tokio::test]
 async fn aggregates_singular_selector_count_per_group() {
-    // Clojure: "with singular function selector" expects [3 1 2 2]
+    // Scenario: "with singular function selector" expects [3 1 2 2]
     // Using simple (count ?favNums) which auto-generates ?count
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-singular:main").await;
@@ -177,8 +175,8 @@ async fn aggregates_singular_selector_count_per_group() {
 
 #[tokio::test]
 async fn aggregates_implicit_grouping_count_all() {
-    // Clojure: "with implicit grouping" => [4]
-    // Clojure syntax: :select '[(count ?name)]
+    // Scenario: "with implicit grouping" => [4]
+    // Equivalent syntax: :select '[(count ?name)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-implicit:main").await;
     let ctx = context_ex_schema();
@@ -198,8 +196,8 @@ async fn aggregates_implicit_grouping_count_all() {
 
 #[tokio::test]
 async fn aggregates_min_implicit_grouping() {
-    // Clojure: "with min and implicit grouping" => [5]
-    // Clojure syntax: :select '[(min ?nums)]
+    // Scenario: "with min and implicit grouping" => [5]
+    // Equivalent syntax: :select '[(min ?nums)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-min:main").await;
     let ctx = context_ex_schema();
@@ -219,9 +217,9 @@ async fn aggregates_min_implicit_grouping() {
 
 #[tokio::test]
 async fn aggregates_max_date_implicit_grouping() {
-    // Clojure: "with implicit grouping and comparable data types" expects LocalDate(2011-09-26).
+    // Scenario: "with implicit grouping and comparable data types" expects 2011-09-26.
     // Rust returns a typed JSON-LD value map for xsd:date.
-    // Clojure syntax: :select ['(max ?birthDate)]
+    // Equivalent syntax: :select ['(max ?birthDate)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-max-date:main").await;
     let ctx = context_ex_schema();
@@ -244,8 +242,8 @@ async fn aggregates_max_date_implicit_grouping() {
 
 #[tokio::test]
 async fn aggregates_with_ordering_on_count() {
-    // Clojure: "with ordering" (order by ?count)
-    // Clojure syntax: :select '[?name (as (count ?favNums) ?count)]
+    // Scenario: "with ordering" (order by ?count)
+    // Equivalent syntax: :select '[?name (as (count ?favNums) ?count)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-order:main").await;
     let ctx = context_ex_schema();
@@ -286,7 +284,7 @@ async fn aggregates_with_ordering_on_count() {
 
 #[tokio::test]
 async fn aggregates_count_all_favnums_implicit_grouping() {
-    // Clojure has two cases here: non-sequential select returns [8], sequential returns [[8]].
+    // Note: some clients return [8] vs [[8]] depending on row-shape configuration.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-count-all:main").await;
     let ctx = context_ex_schema();
@@ -306,8 +304,8 @@ async fn aggregates_count_all_favnums_implicit_grouping() {
 
 #[tokio::test]
 async fn aggregates_groupconcat_default_separator() {
-    // Clojure: groupconcat without explicit separator (defaults to " ")
-    // Clojure syntax: :select ['?s '(groupconcat ?favNums)]
+    // Scenario: groupconcat without explicit separator (defaults to " ")
+    // Equivalent syntax: :select ['?s '(groupconcat ?favNums)]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-gc:main").await;
     let ctx = context_ex_schema();
@@ -340,8 +338,8 @@ async fn aggregates_groupconcat_default_separator() {
 
 #[tokio::test]
 async fn aggregates_groupconcat_custom_separator() {
-    // Clojure: groupconcat with explicit separator ", "
-    // Clojure syntax: :select ['?s '(groupconcat ?favNums ", ")]
+    // Scenario: groupconcat with explicit separator ", "
+    // Equivalent syntax: :select ['?s '(groupconcat ?favNums ", ")]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-gc2:main").await;
     let ctx = context_ex_schema();
@@ -371,7 +369,7 @@ async fn aggregates_groupconcat_custom_separator() {
 
 #[tokio::test]
 async fn aggregates_groupby_multiple_vars_with_grouped_selects() {
-    // Clojure: "with multiple variables" (groupBy adult/gender, select grouped ?name list)
+    // Scenario: "with multiple variables" (groupBy adult/gender, select grouped ?name list)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-multi:main").await;
     let ctx = context_ex_schema();
@@ -419,8 +417,8 @@ async fn aggregates_groupby_multiple_vars_with_grouped_selects() {
 
 #[tokio::test]
 async fn aggregates_count_star() {
-    // Clojure: "with count *" - COUNT(*) counts all rows in each group
-    // Clojure syntax: :select '["?adult" "?gender" "(count *)"]
+    // Scenario: "with count *" - COUNT(*) counts all rows in each group
+    // Equivalent syntax: :select '["?adult" "?gender" "(count *)"]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "query/aggregate-countstar:main").await;
     let ctx = context_ex_schema();

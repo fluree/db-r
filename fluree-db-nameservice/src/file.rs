@@ -365,7 +365,7 @@ impl FileNameService {
 
     /// Atomically update a JSON file under an OS-level lock (native, unix only).
     ///
-    /// This mirrors Clojure's `swap-json` behavior on FileStore: lock + read + transform + write.
+    /// Atomic JSON update: lock + read + transform + write.
     ///
     /// The update function receives the current parsed value (or None if missing) and
     /// returns Some(new_value) to write, or None to perform a no-op.
@@ -646,7 +646,7 @@ impl NameService for FileNameService {
         let mut records = Vec::new();
 
         // Walk the ns@v2 directory recursively so ledger names that contain '/'
-        // (e.g., "tenant1/customers") are discovered (Clojure parity).
+        // (e.g., "tenant1/customers") are discovered.
         let mut stack = vec![ns_dir];
         let ns_dir_base = self.base_path.join(NS_VERSION);
 

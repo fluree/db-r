@@ -1,6 +1,5 @@
-//! Datatype-focused query integration tests (Clojure parity)
+//! Datatype-focused query integration tests
 //!
-//! Mirrors supported portions of `db-clojure/test/fluree/db/query/datatype_test.clj`.
 //! Always uses explicit `@context` and JSON inputs.
 //!
 //! NOTE:
@@ -47,7 +46,7 @@ async fn seed_people_for_datatype(fluree: &MemoryFluree, ledger_id: &str) -> Mem
 
 #[tokio::test]
 async fn mixed_datatypes_query_matches_only_requested_type() {
-    // Clojure: mixed-datatypes-test (adapted to analytical select; avoids subject crawl)
+    // Scenario: mixed-datatypes-test (adapted to analytical select; avoids subject crawl)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "ledger/datatype:main");
     let ctx = ctx_datatype();
@@ -101,7 +100,7 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
 
 #[tokio::test]
 async fn datatype_query_explicit_typed_value_object_matches() {
-    // Clojure: datatype-test / "specifying an explicit data type (compatible)"
+    // Scenario: datatype-test / "specifying an explicit data type (compatible)"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_for_datatype(&fluree, "people:datatype").await;
     let ctx = ctx_datatype();
@@ -109,7 +108,7 @@ async fn datatype_query_explicit_typed_value_object_matches() {
     let q = json!({
         "@context": ctx,
         "select": ["?name"],
-        // Rust normalizes xsd:int to xsd:integer (parity gap vs Clojure).
+        // Rust normalizes xsd:int to xsd:integer.
         "where": {"ex:name":"?name","ex:age":{"@value":36,"@type":"xsd:integer"}}
     });
 
@@ -129,7 +128,7 @@ async fn datatype_query_explicit_typed_value_object_matches() {
 
 #[tokio::test]
 async fn datatype_bind_datatype_function_includes_dt_in_results() {
-    // Clojure: datatype-test / datatype() bound to variable and returned
+    // Scenario: datatype-test / datatype() bound to variable and returned
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_for_datatype(&fluree, "people:datatype").await;
     let ctx = ctx_datatype();
@@ -163,7 +162,7 @@ async fn datatype_bind_datatype_function_includes_dt_in_results() {
 
 #[tokio::test]
 async fn datatype_filter_with_datatype_function() {
-    // Clojure: datatype-test / filtered with the datatype function
+    // Scenario: datatype-test / filtered with the datatype function
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_for_datatype(&fluree, "people:datatype").await;
     let ctx = ctx_datatype();
@@ -212,7 +211,7 @@ async fn datatype_query_incompatible_type_returns_no_matches() {
 
 #[tokio::test]
 async fn datatype_filter_value_object_by_type_constant() {
-    // Clojure: datatype-test / "filtered in value maps (explicit type IRIs)"
+    // Scenario: datatype-test / "filtered in value maps (explicit type IRIs)"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_for_datatype(&fluree, "people:datatype").await;
     let ctx = ctx_datatype();
@@ -233,7 +232,7 @@ async fn datatype_filter_value_object_by_type_constant() {
 
 #[tokio::test]
 async fn language_binding_lang_function() {
-    // Clojure: language-binding-test / LANG(?val)
+    // Scenario: language-binding-test / LANG(?val)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "lang-test:main");
     let ctx = ctx_datatype();
@@ -473,7 +472,7 @@ async fn json_datatype_insert_query_and_filter() {
 #[tokio::test]
 async fn value_type_binding_variable_in_value_object() {
     // Test binding @type to a variable: {"@value": "?val", "@type": "?type"}
-    // This should work similar to the Clojure test
+    // This should work similarly to other language-tag tests
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_for_datatype(&fluree, "people:datatype").await;
     let ctx = ctx_datatype();
