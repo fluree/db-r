@@ -208,6 +208,31 @@ impl FlureeHeaders {
             .unwrap_or(false)
     }
 
+    /// Check if the client explicitly requests SPARQL Results XML output via Accept header.
+    ///
+    /// Matches `application/sparql-results+xml` (case-insensitive).
+    /// Does NOT match `*/*` — XML must be explicitly requested.
+    pub fn wants_sparql_results_xml(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| {
+                a.to_ascii_lowercase()
+                    .contains("application/sparql-results+xml")
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check if the client explicitly requests RDF/XML output via Accept header.
+    ///
+    /// Matches `application/rdf+xml` (case-insensitive).
+    /// Does NOT match `*/*` — RDF/XML must be explicitly requested.
+    pub fn wants_rdf_xml(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| a.to_ascii_lowercase().contains("application/rdf+xml"))
+            .unwrap_or(false)
+    }
+
     /// Check if this is a JWT/JWS based on Content-Type
     pub fn is_jwt(&self) -> bool {
         self.content_type
