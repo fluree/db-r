@@ -15,11 +15,10 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
-use fluree_db_binary_index::dict::{DictBranch, DictTreeReader};
+use fluree_db_binary_index::dict::DictTreeReader;
 use fluree_db_binary_index::format::index_root::IndexRoot;
 use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
-use fluree_db_binary_index::DictTreeRefs;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::storage::ContentStore;
@@ -171,8 +170,16 @@ pub async fn resolve_incremental_commits_v6(
     let o_type_registry = OTypeRegistry::new(&custom_dt_iris);
 
     // 3. Load subject + string reverse dict trees (same DictRefs as V5).
-    let subject_tree = load_reverse_tree(&cs, &root.dict_refs.subject_reverse).await?;
-    let string_tree = load_reverse_tree(&cs, &root.dict_refs.string_reverse).await?;
+    let subject_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, None)
+        .await
+        .map_err(|e| {
+            IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}"))
+        })?;
+    let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
+        .await
+        .map_err(|e| {
+            IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}"))
+        })?;
 
     // 4. Seed SharedResolverState from V6 root.
     let mut shared = SharedResolverState::from_index_root(&root)?;
@@ -560,41 +567,3 @@ fn remap_record(
     Ok(())
 }
 
-// ============================================================================
-// Internal: Load reverse dict tree from CAS
-// ============================================================================
-
-pub(crate) async fn load_reverse_tree(
-    cs: &Arc<dyn ContentStore>,
-    refs: &DictTreeRefs,
-) -> Result<DictTreeReader, IncrementalResolveError> {
-    let branch_bytes = cs.get(&refs.branch).await.map_err(|e| {
-        IncrementalResolveError::DictTreeLoad(format!("failed to load branch: {}", e))
-    })?;
-    let branch = DictBranch::decode(&branch_bytes).map_err(|e| {
-        IncrementalResolveError::DictTreeLoad(format!("failed to decode branch: {}", e))
-    })?;
-
-    let mut local_files = HashMap::with_capacity(branch.leaves.len());
-    let mut remote_cids = HashMap::new();
-
-    for (cid, bl) in refs.leaves.iter().zip(branch.leaves.iter()) {
-        if let Some(local_path) = cs.resolve_local_path(cid) {
-            local_files.insert(bl.address.clone(), local_path);
-        } else {
-            remote_cids.insert(bl.address.clone(), cid.clone());
-        }
-    }
-
-    let leaf_source = if remote_cids.is_empty() {
-        fluree_db_binary_index::dict::reader::LeafSource::LocalFiles(local_files)
-    } else {
-        fluree_db_binary_index::dict::reader::LeafSource::CasOnDemand {
-            cs: Arc::clone(cs),
-            local_files,
-            remote_cids,
-        }
-    };
-
-    Ok(DictTreeReader::new(branch, leaf_source))
-}

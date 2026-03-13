@@ -20,16 +20,12 @@ use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie,
 use crate::dict::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
 use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
 use crate::dict::pack_reader::ForwardPackReader;
+use crate::dict::DictTreeReader;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
 use crate::format::index_root::{IndexRoot, OTypeTableEntry};
 use crate::format::run_record::RunSortOrder;
 
 use super::leaflet_cache::LeafletCache;
-
-use crate::dict::reader::LeafSource;
-use crate::dict::{DictBranch, DictTreeReader};
-use fluree_db_core::address::parse_fluree_address;
-use std::collections::HashSet;
 
 // ============================================================================
 // Shared dictionary / CAS utilities
@@ -143,111 +139,6 @@ pub(crate) async fn fetch_cached_bytes_cid(
     Ok(bytes)
 }
 
-/// Load a `DictTreeReader` from CAS by fetching branch + leaf artifacts via CID.
-pub(crate) async fn load_dict_tree_from_cas(
-    cs: Arc<dyn ContentStore>,
-    refs: &crate::format::wire_helpers::DictTreeRefs,
-    cache_dir: &Path,
-    _leaf_ext: &str,
-    leaflet_cache: Option<&Arc<LeafletCache>>,
-) -> io::Result<DictTreeReader> {
-    fn leaf_digest_hex_from_address(address: &str) -> Option<&str> {
-        let path = parse_fluree_address(address)
-            .map(|p| p.path)
-            .unwrap_or(address);
-        let file = path.rsplit('/').next().unwrap_or(path);
-        let digest = file.split('.').next().unwrap_or(file);
-        if digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()) {
-            Some(digest)
-        } else {
-            None
-        }
-    }
-
-    let branch_bytes = fetch_cached_bytes(cs.as_ref(), &refs.branch, cache_dir, "dtb").await?;
-    let branch = DictBranch::decode(&branch_bytes)?;
-
-    if branch.leaves.len() != refs.leaves.len() {
-        tracing::warn!(
-            branch_leaves = branch.leaves.len(),
-            root_leaves = refs.leaves.len(),
-            "dict tree: branch leaf count does not match root leaf list"
-        );
-    }
-
-    let root_digests: HashSet<String> = refs.leaves.iter().map(|cid| cid.digest_hex()).collect();
-    let mut missing_count = 0usize;
-    let mut unparsable_count = 0usize;
-    let mut sample: Vec<&str> = Vec::new();
-    for bl in &branch.leaves {
-        match leaf_digest_hex_from_address(&bl.address) {
-            Some(digest) => {
-                if !root_digests.contains(digest) {
-                    missing_count += 1;
-                    if sample.len() < 3 {
-                        sample.push(&bl.address);
-                    }
-                }
-            }
-            None => {
-                unparsable_count += 1;
-                if sample.len() < 3 {
-                    sample.push(&bl.address);
-                }
-            }
-        }
-    }
-    if missing_count > 0 || unparsable_count > 0 {
-        tracing::warn!(
-            branch_leaves = branch.leaves.len(),
-            root_leaves = refs.leaves.len(),
-            missing = missing_count,
-            unparsable = unparsable_count,
-            sample = ?sample,
-            "dict tree: branch leaf references not represented in root leaf list (GC safety warning)"
-        );
-    }
-
-    let mut local_files = HashMap::with_capacity(branch.leaves.len());
-    let mut remote_cids = HashMap::new();
-    let mut local_resolved = 0usize;
-    let mut remote_mapped = 0usize;
-
-    for (cid, bl) in refs.leaves.iter().zip(branch.leaves.iter()) {
-        if let Some(local_path) = cs.resolve_local_path(cid) {
-            local_files.insert(bl.address.clone(), local_path);
-            local_resolved += 1;
-        } else {
-            remote_cids.insert(bl.address.clone(), cid.clone());
-            remote_mapped += 1;
-        }
-    }
-
-    tracing::info!(
-        leaves = branch.leaves.len(),
-        local_resolved,
-        remote_mapped,
-        "dict tree leaf sources resolved"
-    );
-
-    let leaf_source = if remote_mapped > 0 {
-        LeafSource::CasOnDemand {
-            cs: Arc::clone(&cs),
-            local_files,
-            remote_cids,
-        }
-    } else {
-        LeafSource::LocalFiles(local_files)
-    };
-    match leaflet_cache {
-        Some(cache) => Ok(DictTreeReader::with_cache(
-            branch,
-            leaf_source,
-            Arc::clone(cache),
-        )),
-        None => Ok(DictTreeReader::new(branch, leaf_source)),
-    }
-}
 
 // ============================================================================
 // Per-graph V3 index data
@@ -1374,14 +1265,7 @@ async fn build_dictionary_set(
 
     // Subject reverse tree.
     let subject_reverse_tree = Some(
-        load_dict_tree_from_cas(
-            Arc::clone(&cs),
-            &root.dict_refs.subject_reverse,
-            cache_dir,
-            "srl",
-            leaflet_cache,
-        )
-        .await?,
+        DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, leaflet_cache).await?,
     );
 
     // String forward packs.
@@ -1396,14 +1280,7 @@ async fn build_dictionary_set(
 
     // String reverse tree.
     let string_reverse_tree = Some(
-        load_dict_tree_from_cas(
-            Arc::clone(&cs),
-            &root.dict_refs.string_reverse,
-            cache_dir,
-            "trl",
-            leaflet_cache,
-        )
-        .await?,
+        DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, leaflet_cache).await?,
     );
 
     // Namespace codes.
