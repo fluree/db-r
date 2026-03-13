@@ -52,6 +52,23 @@ pub fn parse_default_context_value(s: &str) -> Option<ContentId> {
     s.parse::<ContentId>().ok()
 }
 
+/// Records where a branch was created from.
+///
+/// When a branch is created via [`Publisher::create_branch`], this struct captures
+/// the source branch and commit state at the time of branching. This enables ancestry
+/// queries (e.g., determining common ancestors for future merge operations).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchPoint {
+    /// The branch this was created from (e.g., "main")
+    pub source: String,
+
+    /// Content identifier of the source commit at branch time
+    pub commit_id: ContentId,
+
+    /// Transaction time of the source commit at branch time
+    pub t: i64,
+}
+
 /// Nameservice record containing ledger metadata
 ///
 /// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
@@ -99,6 +116,11 @@ pub struct NsRecord {
     /// origins, auth requirements, and replication defaults.
     #[serde(default)]
     pub config_id: Option<ContentId>,
+
+    /// The point at which this branch was created, if it was created via
+    /// [`Publisher::create_branch`]. `None` for the initial branch (typically "main").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_point: Option<BranchPoint>,
 }
 
 impl NsRecord {
@@ -119,6 +141,7 @@ impl NsRecord {
             default_context: None,
             retracted: false,
             config_id: None,
+            branch_point: None,
         }
     }
 

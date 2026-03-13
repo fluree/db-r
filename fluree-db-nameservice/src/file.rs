@@ -560,6 +560,7 @@ impl Publisher for FileNameService {
             status_meta: None,
             config_v: Some(0), // Unborn config
             config_meta: None,
+            branch_point: None,
         };
         let bytes = serde_json::to_vec_pretty(&file)?;
 
@@ -626,6 +627,7 @@ impl Publisher for FileNameService {
                             status_meta: None,
                             config_v: Some(0),
                             config_meta: None,
+                            branch_point: None,
                         };
                         let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
                         Ok(CasAction::Write(new_bytes))
@@ -1200,6 +1202,7 @@ impl RefPublisher for FileNameService {
                             status_meta: None,
                             config_v: Some(0),
                             config_meta: None,
+                            branch_point: None,
                         });
 
                         // CID goes into the commit_cid field.

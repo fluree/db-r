@@ -249,6 +249,7 @@ impl<S> StorageNameService<S> {
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
         }
     }
 }
