@@ -96,6 +96,7 @@ fluree-db/
 - `ContentId` - CIDv1 content-addressed identifier
 - `ContentKind` - Content type enum (Commit, Txn, IndexRoot, etc.)
 - `ContentStore` - Content-addressed storage trait
+- `BranchedContentStore` - Recursive content store with namespace fallback for branches
 
 **Dependencies:**
 - fluree-vocab
@@ -280,11 +281,14 @@ fluree-db/
 - Nameservice abstraction
 - Ledger metadata management
 - Publish/lookup operations
+- Branch creation and listing
 - File and DynamoDB backends
 
 **Key Types:**
-- `NameService` trait
+- `NameService` trait (includes `list_branches`)
+- `Publisher` trait (includes `create_branch`)
 - `NsRecord` - Nameservice record
+- `BranchPoint` - Branch origin metadata (source, commit_id, t)
 - `FileNameService`
 
 **Dependencies:**
@@ -351,6 +355,7 @@ fluree-db/
 - Combining indexed DB with novelty overlay
 - Ledger snapshot creation
 - State transitions
+- Building `BranchedContentStore` trees from branch ancestry
 
 **Key Types:**
 - `LedgerState` - Complete ledger snapshot
@@ -540,7 +545,7 @@ fluree-db/
 **Purpose:** Public API and orchestration
 
 **Responsibilities:**
-- Ledger lifecycle (create, load, drop)
+- Ledger lifecycle (create, load, drop, branch)
 - Query execution coordination
 - Transaction execution
 - Time travel resolution

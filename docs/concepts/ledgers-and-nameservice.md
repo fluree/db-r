@@ -94,6 +94,15 @@ The commit represents the most recent transaction that has been persisted. Commi
 
 The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits. Like commits, the `index_id` is a content-addressed identifier.
 
+#### Branch Metadata
+
+- **`branch_point`**: For branches created via `create_branch`, records the branch origin:
+  - `source` — the source branch name (e.g., `"main"`)
+  - `commit_id` — the source's commit head ContentId at the time of branching
+  - `t` — the source's transaction time at the time of branching
+
+This metadata is absent for the original `main` branch and present only on branches created from other branches.
+
 #### Additional Metadata
 
 - **`default_context_id`**: ContentId of the default JSON-LD @context for the ledger
@@ -153,6 +162,13 @@ Record new commits and indexes:
 - **`publish_index(ledger_id, index_id, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
 Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
+
+#### Branching
+
+Create and list branches:
+
+- **`create_branch(ledger_name, new_branch, branch_point)`**: Create a new branch with a `BranchPoint` linking to the source
+- **`list_branches(ledger_name)`**: List all non-retracted branches for a ledger
 
 #### Discovery
 
@@ -224,6 +240,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:status` | Status: "ready" or "retracted" |
 | `f:ledgerCommit` | Reference to latest commit ContentId |
 | `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
+| `f:branchPoint` | Branch origin info with `f:source`, `f:commitCid`, `f:t` (if branched) |
 | `f:defaultContextCid` | Default JSON-LD context ContentId (if set) |
 
 **Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
@@ -424,26 +441,85 @@ if let Some(record) = record {
 }
 ```
 
-### Branching Workflows
+### Branching
 
-Create feature branches for isolated development:
+Branches let you create isolated copies of a ledger's state for independent development. After branching, transactions on one branch are invisible to the other.
+
+#### Creating a Branch
+
+Branches are created from a source branch (default: `main`). The new branch starts at the same transaction time as the source:
 
 ```text
-# Main branch
-mydb:main (t=100)
-
-# Create feature branch (copies state from main)
-mydb:feature-x (t=100)  # Starts from same state
-
-# Develop independently
-mydb:main (t=101, t=102, ...)
-mydb:feature-x (t=101, t=102, ...)  # Different changes
-
-# Merge (application-specific logic)
-# Compare branches, resolve conflicts, apply to main
+mydb:main (t=5)
+  └── create_branch("mydb", "dev")
+mydb:dev  (t=5)  # starts with same data as main at t=5
 ```
 
-Branches are independent ledgers—they share no data unless explicitly merged through application logic.
+Branches can also be nested — you can branch from a branch:
+
+```text
+mydb:main (t=5)
+  └── mydb:dev (t=7)      # branched from main at t=5, then advanced
+        └── mydb:feature (t=8)  # branched from dev at t=7, then advanced
+```
+
+#### Data Isolation
+
+After branching, each branch has its own independent transaction history:
+
+```text
+mydb:main   → t=5 (shared) → t=6: insert Bob   → t=7: insert Dave
+mydb:dev    → t=5 (shared) → t=6: insert Carol
+```
+
+Querying `main` returns Alice + Bob + Dave. Querying `dev` returns Alice + Carol. Bob and Dave never appear on `dev`; Carol never appears on `main`.
+
+#### Storage Model
+
+Branches share storage efficiently through a **`BranchedContentStore`** — a recursive content store that reads from the branch's own namespace first, then falls back to parent namespaces for pre-branch-point content.
+
+- **Commits are not copied** — historical commits are read from the source namespace via fallback
+- **Index files are copied** — protects the branch from garbage collection on the source after reindexing
+- **String dictionaries are not copied** — they are append-only and shared across branches via fallback
+
+Each branch is a fully independent `LedgerState` with its own snapshot, novelty layer, commit chain, storage namespace, and `t` sequence.
+
+#### Nameservice Metadata
+
+When a branch is created, the nameservice records a **branch point** on the new branch's `NsRecord`:
+
+- `source` — the branch it was created from (e.g., `"main"`)
+- `commit_id` — the source branch's commit head at the time of branching
+- `t` — the source branch's transaction time at the time of branching
+
+This metadata enables the system to reconstruct the `BranchedContentStore` tree when loading a branch. For nested branches, the ancestry chain is walked recursively.
+
+#### API
+
+**Rust:**
+```rust
+// Create a branch from main (default)
+let record = fluree.create_branch("mydb", "dev", None).await?;
+
+// Create a branch from another branch
+let record = fluree.create_branch("mydb", "feature", Some("dev")).await?;
+
+// List all branches
+let branches = fluree.list_branches("mydb").await?;
+```
+
+**HTTP:**
+```bash
+# Create branch
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+
+# List branches
+curl http://localhost:8090/v1/fluree/branches/mydb
+```
+
+See [POST /fluree/branch](../api/endpoints.md#post-flureebranch) and [GET /fluree/branches/{ledger}](../api/endpoints.md#get-flureebranchesledger) for full endpoint details.
 
 ## Architecture Deep Dive
 
