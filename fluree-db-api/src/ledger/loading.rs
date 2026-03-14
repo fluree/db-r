@@ -242,19 +242,13 @@ where
             t: source_record.commit_t,
         };
 
-        match self
-            .nameservice
+        self.nameservice
             .create_branch(ledger_name, new_branch, branch_point)
             .await
-        {
-            Ok(()) => {}
-            Err(NameServiceError::LedgerAlreadyExists(a)) => {
-                return Err(ApiError::ledger_exists(a));
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-        }
+            .map_err(|e| match e {
+                NameServiceError::LedgerAlreadyExists(a) => ApiError::ledger_exists(a),
+                other => other.into(),
+            })?;
 
         // Copy the source's index files into the new branch's namespace.
         // This gives the branch its own copy, safe from GC on the source.
@@ -356,33 +350,26 @@ where
         all_cids.dedup();
 
         // Copy each artifact from source namespace to target namespace
-        let mut copied = 0usize;
         for cid in &all_cids {
-            let kind = match cid.content_kind() {
-                Some(k) => k,
-                None => continue,
+            let Some(kind) = cid.content_kind() else {
+                continue;
             };
             let hex = cid.digest_hex();
             let src_addr = content_address(&method, kind, source_id, &hex);
             let dst_addr = content_address(&method, kind, target_id, &hex);
 
-            match storage.read_bytes(&src_addr).await {
-                Ok(bytes) => {
-                    storage.write_bytes(&dst_addr, &bytes).await?;
-                    copied += 1;
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        cid = %cid, error = %e,
-                        "skipping index artifact during branch copy"
-                    );
-                }
-            }
+            let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
+                ApiError::internal(format!(
+                    "failed to read index artifact {} from {}: {}",
+                    cid, source_id, e
+                ))
+            })?;
+            storage.write_bytes(&dst_addr, &bytes).await?;
         }
 
         tracing::info!(
             source = %source_id, target = %target_id,
-            total = all_cids.len(), copied,
+            count = all_cids.len(),
             "copied index artifacts to branch namespace"
         );
 

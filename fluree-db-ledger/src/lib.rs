@@ -163,15 +163,15 @@ impl LedgerState {
         let bp = record.branch_point.as_ref().expect("called on non-branch");
         let parent_id = format_ledger_id(&record.name, &bp.source);
 
-        let parent_store = match ns.lookup(&parent_id).await? {
-            Some(parent_record) if parent_record.branch_point.is_some() => {
-                // Parent is itself a branch — recurse
-                Box::pin(Self::build_branched_store(ns, &parent_record, storage)).await?
-            }
-            _ => {
-                // Parent is a root branch (or not found) — leaf store
-                BranchedContentStore::leaf(storage.clone(), &parent_id)
-            }
+        let parent_record = ns
+            .lookup(&parent_id)
+            .await?
+            .ok_or_else(|| LedgerError::not_found(&parent_id))?;
+
+        let parent_store = if parent_record.branch_point.is_some() {
+            Box::pin(Self::build_branched_store(ns, &parent_record, storage)).await?
+        } else {
+            BranchedContentStore::leaf(storage.clone(), &parent_id)
         };
 
         Ok(BranchedContentStore::with_parents(

@@ -536,8 +536,9 @@ impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         match self.branch_store.get(id).await {
             Ok(bytes) => return Ok(bytes),
-            Err(_) if !self.parents.is_empty() => {}
-            Err(e) => return Err(e),
+            Err(e) if self.parents.is_empty() => return Err(e),
+            Err(e) if !matches!(e, crate::error::Error::NotFound(_)) => return Err(e),
+            Err(_) => {} // not-found with parents available — fall through
         }
         let mut last_err = None;
         for parent in &self.parents {
