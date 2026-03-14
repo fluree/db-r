@@ -197,10 +197,14 @@ where
 
     /// Create a new branch for a ledger.
     ///
-    /// Looks up the source branch to capture its current commit state, copies
-    /// the source's commit chain into the new branch's storage namespace, then
+    /// Looks up the source branch to capture its current commit state, then
     /// creates a new [`NsRecord`] for `ledger_name:new_branch` with the commit
-    /// head copied from the source.
+    /// head copied from the source. If the source has an index, the index
+    /// files are copied into the new branch's storage namespace so the branch
+    /// owns its own copy (safe from GC on the source).
+    ///
+    /// Commits are **not** copied — the branch's [`BranchedContentStore`]
+    /// reads historical commits from the source namespace via fallback.
     ///
     /// # Errors
     ///
@@ -252,6 +256,25 @@ where
             }
         }
 
+        // Copy the source's index files into the new branch's namespace.
+        // This gives the branch its own copy, safe from GC on the source.
+        if let Some(ref index_cid) = source_record.index_head_id {
+            if let Err(e) = self
+                .copy_index_to_branch(&source_id, &new_id, index_cid)
+                .await
+            {
+                tracing::warn!(
+                    %e, source = %source_id, branch = %new_id,
+                    "failed to copy index to branch; branch will replay from genesis"
+                );
+            } else {
+                // Register the copied index in the new branch's nameservice record
+                self.nameservice
+                    .publish_index(&new_id, source_record.index_t, index_cid)
+                    .await?;
+            }
+        }
+
         let record = self.nameservice.lookup(&new_id).await?.ok_or_else(|| {
             ApiError::internal(format!(
                 "Branch {} was created but not found in nameservice",
@@ -264,6 +287,106 @@ where
             new_branch, source, "Branch created successfully"
         );
         Ok(record)
+    }
+
+    /// Copy index artifacts (excluding dictionaries) from the source branch
+    /// namespace into the target branch namespace.
+    ///
+    /// Copies the index root, fact leaves, branch manifests, and specialty
+    /// arenas (numbig, vector, spatial, fulltext). Dictionary blobs are
+    /// **not** copied — they are append-only and shared across branches
+    /// via the `BranchedContentStore` fallback.
+    async fn copy_index_to_branch(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        index_cid: &fluree_db_core::ContentId,
+    ) -> Result<()> {
+        use fluree_db_binary_index::format::branch::read_branch_v2_from_bytes;
+        use fluree_db_binary_index::IndexRootV5;
+        use fluree_db_core::content_kind::ContentKind;
+        use fluree_db_core::storage::content_address;
+        use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
+
+        let storage = self.connection.storage().clone();
+        let method = storage.storage_method().to_string();
+        let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
+
+        // Read and parse the index root
+        let root_bytes = source_store.get(index_cid).await.map_err(|e| {
+            ApiError::internal(format!("failed to read index root {}: {}", index_cid, e))
+        })?;
+        let root = IndexRootV5::decode(&root_bytes).map_err(|e| {
+            ApiError::internal(format!("failed to decode index root {}: {}", index_cid, e))
+        })?;
+
+        // Collect all CIDs referenced by the index root
+        let mut all_cids = root.all_cas_ids();
+
+        // Expand named graph branch manifests → leaf CIDs
+        // (all_cas_ids includes branch CIDs but not the leaves within)
+        for ng in &root.named_graphs {
+            for (_, branch_cid) in &ng.orders {
+                let branch_addr = content_address(
+                    &method,
+                    ContentKind::IndexBranch,
+                    source_id,
+                    &branch_cid.digest_hex(),
+                );
+                if let Ok(branch_bytes) = storage.read_bytes(&branch_addr).await {
+                    if let Ok(manifest) = read_branch_v2_from_bytes(&branch_bytes) {
+                        for leaf in &manifest.leaves {
+                            all_cids.push(leaf.leaf_cid.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the root CID itself
+        all_cids.push(index_cid.clone());
+
+        // Skip dictionary blobs — they are append-only and shared across
+        // branches via the BranchedContentStore fallback. Copying them
+        // would waste storage since they can grow large.
+        all_cids.retain(|cid| cid.codec() != CODEC_FLUREE_DICT_BLOB);
+
+        // Deduplicate
+        all_cids.sort();
+        all_cids.dedup();
+
+        // Copy each artifact from source namespace to target namespace
+        let mut copied = 0usize;
+        for cid in &all_cids {
+            let kind = match cid.content_kind() {
+                Some(k) => k,
+                None => continue,
+            };
+            let hex = cid.digest_hex();
+            let src_addr = content_address(&method, kind, source_id, &hex);
+            let dst_addr = content_address(&method, kind, target_id, &hex);
+
+            match storage.read_bytes(&src_addr).await {
+                Ok(bytes) => {
+                    storage.write_bytes(&dst_addr, &bytes).await?;
+                    copied += 1;
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        cid = %cid, error = %e,
+                        "skipping index artifact during branch copy"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            source = %source_id, target = %target_id,
+            total = all_cids.len(), copied,
+            "copied index artifacts to branch namespace"
+        );
+
+        Ok(())
     }
 }
 
