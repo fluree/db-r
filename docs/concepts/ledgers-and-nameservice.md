@@ -516,10 +516,22 @@ curl -X POST http://localhost:8090/v1/fluree/branch \
   -d '{"ledger": "mydb", "branch": "dev"}'
 
 # List branches
-curl http://localhost:8090/v1/fluree/branches/mydb
+curl http://localhost:8090/v1/fluree/branch/mydb
 ```
 
-See [POST /fluree/branch](../api/endpoints.md#post-flureebranch) and [GET /fluree/branches/{ledger}](../api/endpoints.md#get-flureebranchesledger) for full endpoint details.
+**CLI:**
+```bash
+# Create branch
+fluree branch create dev --ledger mydb
+
+# Create branch from another branch
+fluree branch create feature-x --from dev --ledger mydb
+
+# List branches
+fluree branch list --ledger mydb
+```
+
+See [POST /fluree/branch](../api/endpoints.md#post-flureebranch) and [GET /fluree/branch/{ledger}](../api/endpoints.md#get-flureebranchledger) for full endpoint details.
 
 ## Architecture Deep Dive
 

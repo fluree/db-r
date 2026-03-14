@@ -751,12 +751,12 @@ impl RemoteLedgerClient {
 
     /// List all branches for a ledger on the remote server.
     ///
-    /// Calls `GET {base_url}/branches/{ledger}`.
+    /// Calls `GET {base_url}/branch/{ledger}`.
     pub async fn list_branches(
         &self,
         ledger: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/branches/{}", self.base_url, ledger);
+        let url = format!("{}/branch/{}", self.base_url, ledger);
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
     }

@@ -1398,13 +1398,13 @@ curl -X POST http://localhost:8090/v1/fluree/branch \
   -d '{"ledger": "mydb", "branch": "staging", "source": "dev"}'
 ```
 
-### GET /fluree/branches/{ledger}
+### GET /fluree/branch/{ledger}
 
 List all non-retracted branches for a ledger.
 
 **URL:**
 ```
-GET /fluree/branches/{ledger-name}
+GET /fluree/branch/{ledger-name}
 ```
 
 **Response:**
@@ -1435,7 +1435,7 @@ GET /fluree/branches/{ledger-name}
 **Examples:**
 
 ```bash
-curl http://localhost:8090/v1/fluree/branches/mydb
+curl http://localhost:8090/v1/fluree/branch/mydb
 ```
 
 ### GET /fluree/info

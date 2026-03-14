@@ -723,7 +723,7 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
 
 /// List branches for a ledger
 ///
-/// GET /fluree/branches/*ledger
+/// GET /fluree/branch/*ledger
 ///
 /// Returns all non-retracted branches for the specified ledger.
 pub async fn list_branches(
