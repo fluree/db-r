@@ -115,6 +115,34 @@ pub enum Commands {
         remote: Option<String>,
     },
 
+    /// Create a new branch for a ledger
+    Branch {
+        /// New branch name (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Source branch to create from (defaults to "main")
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// List all branches for a ledger
+    Branches {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// List branches on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
     /// Drop (delete) a ledger
     Drop {
         /// Ledger name to drop

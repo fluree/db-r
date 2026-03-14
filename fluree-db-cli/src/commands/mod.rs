@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod branch;
+pub mod branches;
 pub mod completions;
 pub mod config_cmd;
 pub mod create;

@@ -8,6 +8,8 @@
   - [use](cli/use.md)
   - [list](cli/list.md)
   - [info](cli/info.md)
+  - [branch](cli/branch.md)
+  - [branches](cli/branches.md)
   - [drop](cli/drop.md)
   - [insert](cli/insert.md)
   - [upsert](cli/upsert.md)

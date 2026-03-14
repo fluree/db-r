@@ -720,6 +720,48 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
+    // Branch management
+    // =========================================================================
+
+    /// Create a new branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/branch` with a JSON body.
+    pub async fn create_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+        source: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("branch");
+        let mut body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        if let Some(s) = source {
+            body["source"] = serde_json::Value::String(s.to_string());
+        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    /// List all branches for a ledger on the remote server.
+    ///
+    /// Calls `GET {base_url}/branches/{ledger}`.
+    pub async fn list_branches(
+        &self,
+        ledger: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!("{}/branches/{}", self.base_url, ledger);
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
+    // =========================================================================
     // Push commits
     // =========================================================================
 
