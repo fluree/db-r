@@ -16,7 +16,8 @@ Explain plans show:
 
 ### JSON-LD Query
 
-Add `"explain": true` to your query:
+Use the `/fluree/explain` endpoint (or the CLI `fluree query --explain ...`) to get a plan without executing.
+For JSON-LD, the explain request body is the same as a normal JSON-LD query body.
 
 ```json
 {
@@ -25,18 +26,17 @@ Add `"explain": true` to your query:
   "where": [
     { "@id": "?person", "ex:name": "?name" }
   ],
-  "explain": true
+  "from": "mydb:main"
 }
 ```
 
 ### SPARQL
 
-Use the `EXPLAIN` keyword:
+Use the explain endpoint with SPARQL content type:
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
 
-EXPLAIN
 SELECT ?name
 WHERE {
   ?person ex:name ?name .

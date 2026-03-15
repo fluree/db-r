@@ -173,6 +173,7 @@ pub struct BinaryIndexStore {
     max_t: i64,
     base_t: i64,
     language_tags: Vec<String>,
+    lex_sorted_string_ids: bool,
 }
 
 impl BinaryIndexStore {
@@ -289,6 +290,7 @@ impl BinaryIndexStore {
             max_t: root.index_t,
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
+            lex_sorted_string_ids: root.lex_sorted_string_ids,
         })
     }
 
@@ -300,6 +302,12 @@ impl BinaryIndexStore {
 
     pub fn base_t(&self) -> i64 {
         self.base_t
+    }
+
+    /// True if `StringId` / `LEX_ID` ordering is lexicographic by UTF-8 bytes.
+    #[inline]
+    pub fn lex_sorted_string_ids(&self) -> bool {
+        self.lex_sorted_string_ids
     }
 
     /// Get the branch manifest for a graph + sort order.

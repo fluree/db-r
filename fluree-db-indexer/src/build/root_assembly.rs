@@ -221,6 +221,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         dict_refs,
         subject_watermarks: inputs.uploaded_dicts.subject_watermarks,
         string_watermark: inputs.uploaded_dicts.string_watermark,
+        lex_sorted_string_ids: false,
         total_commit_size: inputs.total_commit_size,
         total_asserts: inputs.total_asserts,
         total_retracts: inputs.total_retracts,

@@ -25,6 +25,11 @@ pub struct IncrementalRootBuilder {
 impl IncrementalRootBuilder {
     /// Create a builder from an existing root (cloned).
     pub fn from_old_root(root: IndexRoot) -> Self {
+        // This flag is only valid for roots produced by the bulk import pipeline.
+        // Incremental dictionary updates append new string IDs above the watermark,
+        // which breaks lex-order preservation. Clear on first post-import write.
+        let mut root = root;
+        root.lex_sorted_string_ids = false;
         Self {
             root,
             replaced_cids: Vec::new(),

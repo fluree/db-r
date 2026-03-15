@@ -369,6 +369,7 @@ mod tests {
             },
             subject_watermarks: Vec::new(),
             string_watermark: 0,
+            lex_sorted_string_ids: false,
             total_commit_size: 0,
             total_asserts: 0,
             total_retracts: 0,

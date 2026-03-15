@@ -3113,6 +3113,9 @@ where
             dict_refs: dict_refs_v6,
             subject_watermarks: uploaded_dicts.subject_watermarks,
             string_watermark: uploaded_dicts.string_watermark,
+            // Bulk import assigns global string IDs via k-way merge over per-chunk
+            // sorted vocab files, so StringId order is lexicographic by UTF-8 bytes.
+            lex_sorted_string_ids: true,
             total_commit_size,
             total_asserts,
             total_retracts,

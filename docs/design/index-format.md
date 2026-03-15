@@ -103,6 +103,10 @@ Key properties:
 - **Default graph routing is inline**: leaf entries (first/last key, row count, leaf CID) are embedded directly, avoiding an extra branch fetch for the common single-graph case.
 - **Named graph routing uses branch CID pointers**: larger multi-graph setups reference branch manifests by CID.
 - Optional binary sections for **stats**, **schema**, **prev_index** (GC chain), **garbage** manifest, and **sketch** (HLL).
+- Import-only performance hint: `IndexRoot.lex_sorted_string_ids` indicates whether `StringId` assignment preserves
+  lexicographic UTF-8 byte order of strings (true for bulk imports). Query execution can use this to avoid
+  materializing simple string values during `ORDER BY` comparisons. This flag must be cleared on the first
+  post-import write because incremental dictionary appends break the invariant.
 
 At a high level the root contains:
 

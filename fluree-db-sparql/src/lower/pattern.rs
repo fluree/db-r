@@ -71,52 +71,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             SparqlGraphPattern::Optional { pattern, .. } => {
                 let inner = self.lower_graph_pattern(pattern)?;
-                // Fluree semantics: when an OPTIONAL block contains only
-                // triple patterns, allow "partial binding" by treating each triple as its
-                // own OPTIONAL clause.
-                //
-                // Example:
-                // OPTIONAL { ?s :p1 ?o1 . ?s :p2 ?o2 . }
-                // becomes:
-                // OPTIONAL { ?s :p1 ?o1 . } OPTIONAL { ?s :p2 ?o2 . }
-                //
-                // If the OPTIONAL contains non-triple patterns (FILTER/BIND/UNION/etc.),
-                // keep it as a single left join over the full inner group.
-                //
-                // IMPORTANT: do NOT split when the optional group contains an internal
-                // join dependency between triples (e.g., a property path sequence expands
-                // into `?s p ?__pp0 . ?__pp0 p ?o`). Splitting would lose the join and is
-                // not semantics-preserving even under Fluree's "partial binding" behavior.
-                let all_triples = inner.iter().all(|p| matches!(p, Pattern::Triple(_)));
-                let has_internal_chain_join = if all_triples && inner.len() > 1 {
-                    use fluree_db_query::triple::{Ref as QRef, Term as QTerm, TriplePattern};
-                    use fluree_db_query::var_registry::VarId;
-
-                    let mut subj_vars: Vec<VarId> = Vec::new();
-                    let mut obj_vars: Vec<VarId> = Vec::new();
-                    for p in &inner {
-                        let Pattern::Triple(tp) = p else { continue };
-                        let TriplePattern { s, o, .. } = tp;
-                        if let QRef::Var(v) = s {
-                            subj_vars.push(*v);
-                        }
-                        if let QTerm::Var(v) = o {
-                            obj_vars.push(*v);
-                        }
-                    }
-                    subj_vars.iter().any(|v| obj_vars.contains(v))
-                } else {
-                    false
-                };
-
-                if inner.len() > 1 && all_triples && !has_internal_chain_join {
-                    Ok(inner
-                        .into_iter()
-                        .map(|p| Pattern::Optional(vec![p]))
-                        .collect())
-                } else {
-                    Ok(vec![Pattern::Optional(inner)])
-                }
+                // SPARQL semantics: OPTIONAL is a left-join of the ENTIRE inner group.
+                // Do not split multi-triple OPTIONAL blocks; doing so changes results
+                // (e.g., OPTIONAL { A . B } FILTER(!bound(?v)) patterns in BSBM Q3).
+                Ok(vec![Pattern::Optional(inner)])
             }
 
             SparqlGraphPattern::Union { left, right, .. } => {

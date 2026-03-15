@@ -93,6 +93,7 @@ pub async fn run(
     format_str: &str,
     normalize_arrays: bool,
     bench: bool,
+    explain: bool,
     sparql_flag: bool,
     fql_flag: bool,
     at: Option<&str>,
@@ -131,6 +132,27 @@ pub async fn run(
             )));
         }
     };
+
+    if explain {
+        if bench {
+            return Err(CliError::Usage(
+                "--bench is not compatible with --explain".to_string(),
+            ));
+        }
+        if normalize_arrays {
+            return Err(CliError::Usage(
+                "--normalize-arrays is not applicable to --explain".to_string(),
+            ));
+        }
+        if !matches!(
+            output_format,
+            OutputFormatKind::Json | OutputFormatKind::TypedJson
+        ) {
+            return Err(CliError::Usage(
+                "--explain output is JSON only; use --format json".to_string(),
+            ));
+        }
+    }
 
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
@@ -216,8 +238,59 @@ pub async fn run(
 
             // Execute query via remote HTTP
             let timer = Instant::now();
-            let result = match (query_format, at) {
-                (detect::QueryFormat::Sparql, Some(at_str)) => {
+            let result = match (query_format, at, explain) {
+                (detect::QueryFormat::Sparql, Some(at_str), true) => {
+                    // Remote time travel explain uses connection-scoped SPARQL:
+                    // server requires FROM clause to identify the ledger/time.
+                    if fluree_db_api::sparql_dataset_ledger_ids(&content)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        return Err(CliError::Usage(
+                            "SPARQL query already contains FROM/FROM NAMED; \
+                             for remote time travel, encode time travel in the FROM IRI \
+                             (e.g., FROM <ledger@t:1>) instead of using --at"
+                                .to_string(),
+                        ));
+                    }
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_iri = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let injected = inject_sparql_from_before_where(&content, &from_iri).ok_or_else(
+                        || {
+                            CliError::Usage(
+                                "unable to inject SPARQL FROM clause for remote time travel; \
+                                 please write the query as `SELECT ... WHERE { ... }` or include an explicit FROM"
+                                    .to_string(),
+                            )
+                        },
+                    )?;
+                    client.explain_connection_sparql(&injected).await?
+                }
+                (detect::QueryFormat::JsonLd, Some(at_str), true) => {
+                    // Remote time travel explain uses connection-scoped JSON-LD:
+                    // inject `"from": "<ledger>@t:..."` and POST to /explain.
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_id = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let mut json_query: serde_json::Value = serde_json::from_str(&content)?;
+                    if let Some(obj) = json_query.as_object_mut() {
+                        obj.insert("from".to_string(), serde_json::Value::String(from_id));
+                    } else {
+                        return Err(CliError::Input(
+                            "JSON-LD query must be a JSON object".to_string(),
+                        ));
+                    }
+                    client.explain_connection_jsonld(&json_query).await?
+                }
+                (detect::QueryFormat::Sparql, None, true) => {
+                    client.explain_sparql(&remote_alias, &content).await?
+                }
+                (detect::QueryFormat::JsonLd, None, true) => {
+                    let json_query: serde_json::Value = serde_json::from_str(&content)?;
+                    client.explain_jsonld(&remote_alias, &json_query).await?
+                }
+                (detect::QueryFormat::Sparql, Some(at_str), false) => {
                     // Remote time travel uses connection-scoped SPARQL:
                     // server requires FROM clause to identify the ledger/time.
                     //
@@ -249,7 +322,7 @@ pub async fn run(
                     )?;
                     client.query_connection_sparql(&injected).await?
                 }
-                (detect::QueryFormat::JsonLd, Some(at_str)) => {
+                (detect::QueryFormat::JsonLd, Some(at_str), false) => {
                     // Remote time travel uses connection-scoped JSON-LD:
                     // inject `"from": "<ledger>@t:..."` and POST to /query.
                     let spec = parse_time_spec(at_str);
@@ -265,10 +338,10 @@ pub async fn run(
                     }
                     client.query_connection_jsonld(&json_query).await?
                 }
-                (detect::QueryFormat::Sparql, None) => {
+                (detect::QueryFormat::Sparql, None, false) => {
                     client.query_sparql(&remote_alias, &content).await?
                 }
-                (detect::QueryFormat::JsonLd, None) => {
+                (detect::QueryFormat::JsonLd, None, false) => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
                     client.query_jsonld(&remote_alias, &json_query).await?
                 }
@@ -276,6 +349,12 @@ pub async fn run(
             let elapsed = timer.elapsed();
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+            if explain {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                eprintln!("(explain, {})", format_duration(elapsed));
+                return Ok(());
+            }
 
             // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
             // For table output, show a preview unless the result set is small (or --bench is used).
@@ -314,6 +393,23 @@ pub async fn run(
                 }
                 None => fluree.db(&alias).await?,
             };
+
+            if explain {
+                let timer = Instant::now();
+                let resp = match query_format {
+                    detect::QueryFormat::Sparql => {
+                        fluree.explain_sparql(&view, content.as_str()).await?
+                    }
+                    detect::QueryFormat::JsonLd => {
+                        let json_query: serde_json::Value = serde_json::from_str(&content)?;
+                        fluree.explain(&view, &json_query).await?
+                    }
+                };
+                let elapsed = timer.elapsed();
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+                eprintln!("(explain, {})", format_duration(elapsed));
+                return Ok(());
+            }
 
             // Benchmark mode should measure query execution only (not view loading or result formatting).
             // For FQL, we also exclude CLI-side JSON parsing from the timed region.

@@ -209,19 +209,54 @@ fn explain_from_parsed(
         }
     };
 
-    let triples_in_order: Vec<TriplePattern> = parsed
-        .patterns
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Triple(tp) => Some(TriplePattern {
-                s: normalize_ref(&tp.s),
-                p: normalize_ref(&tp.p),
-                o: normalize_term(&tp.o),
-                dtc: tp.dtc.clone(),
-            }),
-            _ => None,
-        })
-        .collect();
+    fn collect_triples_in_order(
+        out: &mut Vec<TriplePattern>,
+        patterns: &[Pattern],
+        normalize_ref: &impl Fn(&Ref) -> Ref,
+        normalize_term: &impl Fn(&Term) -> Term,
+    ) {
+        for p in patterns {
+            match p {
+                Pattern::Triple(tp) => out.push(TriplePattern {
+                    s: normalize_ref(&tp.s),
+                    p: normalize_ref(&tp.p),
+                    o: normalize_term(&tp.o),
+                    dtc: tp.dtc.clone(),
+                }),
+                Pattern::Optional(inner)
+                | Pattern::Minus(inner)
+                | Pattern::Exists(inner)
+                | Pattern::NotExists(inner) => {
+                    collect_triples_in_order(out, inner, normalize_ref, normalize_term);
+                }
+                Pattern::Union(branches) => {
+                    for branch in branches {
+                        collect_triples_in_order(out, branch, normalize_ref, normalize_term);
+                    }
+                }
+                Pattern::Graph { patterns, .. } => {
+                    collect_triples_in_order(out, patterns, normalize_ref, normalize_term);
+                }
+                Pattern::Service(sp) => {
+                    collect_triples_in_order(out, &sp.patterns, normalize_ref, normalize_term);
+                }
+                Pattern::Subquery(sq) => {
+                    collect_triples_in_order(out, &sq.patterns, normalize_ref, normalize_term);
+                }
+                // Non-triple patterns (FILTER, BIND, VALUES, SEARCH, etc.) don't contribute
+                // to triple-level selectivity scoring.
+                _ => {}
+            }
+        }
+    }
+
+    let mut triples_in_order = Vec::new();
+    collect_triples_in_order(
+        &mut triples_in_order,
+        &parsed.patterns,
+        &normalize_ref,
+        &normalize_term,
+    );
 
     let stats_view = snapshot
         .stats

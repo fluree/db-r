@@ -117,6 +117,52 @@ fn extract_query_params(request: &Request) -> TransactQueryParams {
         .unwrap_or_default()
 }
 
+/// Check if the credential contains a W3C SPARQL Protocol form-encoded update
+/// (`Content-Type: application/x-www-form-urlencoded` with `update=<sparql>`).
+///
+/// If detected, rewrites the credential's body and flags so the rest of the
+/// pipeline treats it as `application/sparql-update`.  This is required for
+/// standard SPARQL benchmarking tools (e.g. BSBM test driver) that use the
+/// form-encoded transport defined in the SPARQL 1.1 Protocol spec §2.2.
+fn maybe_rewrite_form_encoded_update(credential: &mut MaybeCredential) {
+    // Only act when none of the typed content-type flags are already set
+    if credential.is_sparql_update
+        || credential.is_sparql
+        || credential.is_turtle
+        || credential.is_trig
+    {
+        return;
+    }
+
+    // Check Content-Type header for form-urlencoded
+    let is_form = credential
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("application/x-www-form-urlencoded"))
+        .unwrap_or(false);
+
+    if !is_form {
+        return;
+    }
+
+    // Try to parse the body as form data and extract the `update` field
+    let body_str = match std::str::from_utf8(&credential.body) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let parsed: Vec<(String, String)> = match serde_urlencoded::from_str(body_str) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    if let Some((_, sparql)) = parsed.iter().find(|(k, _)| k == "update") {
+        credential.body = axum::body::Bytes::from(sparql.clone());
+        credential.is_sparql_update = true;
+    }
+}
+
 /// Inject header-based tracking options into transaction body (modifies in place).
 ///
 /// Mirrors the query-side `inject_headers_into_query` pattern: header values act
@@ -295,7 +341,10 @@ async fn transact_local(
     };
 
     // Extract credential (consumes the request body)
-    let credential = MaybeCredential::extract(request).await?;
+    let mut credential = MaybeCredential::extract(request).await?;
+
+    // W3C SPARQL Protocol: rewrite form-encoded `update=...` to sparql-update
+    maybe_rewrite_form_encoded_update(&mut credential);
 
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
@@ -483,7 +532,10 @@ async fn transact_ledger_local(
         Ok(h) => h,
         Err(e) => return Err(e),
     };
-    let credential = MaybeCredential::extract(request).await?;
+    let mut credential = MaybeCredential::extract(request).await?;
+
+    // W3C SPARQL Protocol: rewrite form-encoded `update=...` to sparql-update
+    maybe_rewrite_form_encoded_update(&mut credential);
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);

@@ -143,6 +143,18 @@ pub struct IndexRoot {
     pub subject_watermarks: Vec<u64>,
     pub string_watermark: u32,
 
+    // ── Import-only ordering invariants ────────────────────────────
+    /// True if string dictionary IDs (LEX_ID / StringId) are assigned in
+    /// lexicographic UTF-8 byte order of the underlying string values.
+    ///
+    /// This is true for ledgers created via the bulk import pipeline which
+    /// assigns global string IDs via a k-way merge of per-chunk sorted vocab files.
+    ///
+    /// **Important**: incremental dictionary updates append new strings above the
+    /// current watermark, which breaks this invariant. Indexing code must clear
+    /// this flag on the first post-import write.
+    pub lex_sorted_string_ids: bool,
+
     // ── Cumulative commit stats ────────────────────────────────────
     pub total_commit_size: u64,
     pub total_asserts: u64,
@@ -460,6 +472,7 @@ impl IndexRoot {
     const FLAG_HAS_PREV_INDEX: u8 = 1 << 2;
     const FLAG_HAS_GARBAGE: u8 = 1 << 3;
     const FLAG_HAS_SKETCH: u8 = 1 << 4;
+    const FLAG_LEX_SORTED_STRING_IDS: u8 = 1 << 5;
 
     /// Encode to the binary FIR6 wire format.
     ///
@@ -489,6 +502,10 @@ impl IndexRoot {
             0
         }) | (if self.sketch_ref.is_some() {
             Self::FLAG_HAS_SKETCH
+        } else {
+            0
+        }) | (if self.lex_sorted_string_ids {
+            Self::FLAG_LEX_SORTED_STRING_IDS
         } else {
             0
         });
@@ -660,6 +677,7 @@ impl IndexRoot {
         let mut pos = 8; // skip pad(2)
         let index_t = read_i64_at(data, &mut pos)?;
         let base_t = read_i64_at(data, &mut pos)?;
+        let lex_sorted_string_ids = (flags & Self::FLAG_LEX_SORTED_STRING_IDS) != 0;
 
         // Ledger ID
         let ledger_id = read_string(data, &mut pos)?;
@@ -861,6 +879,7 @@ impl IndexRoot {
             graph_arenas,
             subject_watermarks,
             string_watermark,
+            lex_sorted_string_ids,
             total_commit_size,
             total_asserts,
             total_retracts,
@@ -1127,6 +1146,7 @@ mod tests {
             },
             subject_watermarks: vec![50],
             string_watermark: 100,
+            lex_sorted_string_ids: false,
             total_commit_size: 1024,
             total_asserts: 10,
             total_retracts: 0,
