@@ -1402,16 +1402,14 @@ impl Operator for BinaryScanOperator {
         let mut filter = self
             .build_filter(&s_sid, &p_sid)
             .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
-        if std::env::var_os("FLUREE_DEBUG_SCAN").is_some() {
-            eprintln!(
-                "BinaryScanOperator::open pattern={:?} s_bound={} p_bound={} filter_s_id={:?} filter_p_id={:?}",
-                self.pattern,
-                s_sid.is_some(),
-                p_sid.is_some(),
-                filter.s_id,
-                filter.p_id
-            );
-        }
+        tracing::debug!(
+            ?self.pattern,
+            s_bound = s_sid.is_some(),
+            p_bound = p_sid.is_some(),
+            ?filter.s_id,
+            ?filter.p_id,
+            "BinaryScanOperator::open"
+        );
 
         // Bound-object fast path: if the triple pattern has a constant object, encode it into
         // (o_type, o_key) so the cursor can seek directly to the relevant leaf range.

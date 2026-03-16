@@ -12,12 +12,10 @@ use crate::format::column_block::{
     decode_column_u16, decode_column_u32, decode_column_u64, ColumnBlockRef, ColumnId,
 };
 use crate::format::leaf::LeafletDirEntryV3;
+use crate::format::leaflet::flags::{
+    HAS_O_I as FLAG_HAS_O_I, HAS_O_TYPE_COL as FLAG_HAS_O_TYPE_COL,
+};
 use crate::format::run_record::RunSortOrder;
-
-/// Leaflet flag: at least one row has `o_i != u32::MAX`.
-const FLAG_HAS_O_I: u32 = 1;
-/// Leaflet flag: `o_type_const` is None — a per-row `o_type[]` column exists.
-const FLAG_HAS_O_TYPE_COL: u32 = 2;
 
 /// Load columns from a single leaflet within a V3 leaf blob.
 ///

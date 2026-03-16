@@ -45,7 +45,10 @@ pub fn count_rows_operator(
                 return Ok(Some(build_count_batch(out_var, 0)?));
             };
             let count = count_rows_for_predicate_psot(store, ctx.binary_g_id, p_id)?;
-            Ok(Some(build_count_batch(out_var, count as i64)?))
+            Ok(Some(build_count_batch(
+                out_var,
+                i64::try_from(count).unwrap_or(i64::MAX),
+            )?))
         },
         fallback,
         "COUNT rows",
@@ -69,7 +72,10 @@ pub fn count_distinct_object_operator(
                 return Ok(None);
             };
             match count_distinct_object_post(store, ctx.binary_g_id, &predicate)? {
-                Some(count) => Ok(Some(build_count_batch(out_var, count as i64)?)),
+                Some(count) => Ok(Some(build_count_batch(
+                    out_var,
+                    i64::try_from(count).unwrap_or(i64::MAX),
+                )?)),
                 None => Ok(None), // Unsupported at runtime — fall through to planned pipeline.
             }
         },

@@ -126,15 +126,20 @@ pub fn eval_same_term<R: RowAccess>(
     check_arity(args, 2, "SAMETERM")?;
 
     // Fast path: avoid decoding EncodedSid/EncodedPid to IRI strings.
-    if std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
-        .ok()
-        .as_deref()
-        != Some("1")
     {
-        if let Some(ctx) = ctx {
-            if let Some(store) = ctx.binary_store.as_deref() {
-                if let Some(b) = fast_same_term_encoded_ids(args, row, ctx, store)? {
-                    return Ok(Some(ComparableValue::Bool(b)));
+        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let disabled = *DISABLED.get_or_init(|| {
+            std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
+                .ok()
+                .as_deref()
+                == Some("1")
+        });
+        if !disabled {
+            if let Some(ctx) = ctx {
+                if let Some(store) = ctx.binary_store.as_deref() {
+                    if let Some(b) = fast_same_term_encoded_ids(args, row, ctx, store)? {
+                        return Ok(Some(ComparableValue::Bool(b)));
+                    }
                 }
             }
         }

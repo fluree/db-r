@@ -51,6 +51,7 @@ mod rdf_xml;
 mod sparql;
 mod sparql_xml;
 mod typed;
+mod xml_escape;
 
 pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use iri::IriCompactor;

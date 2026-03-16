@@ -13,35 +13,12 @@
 //! - `CountPlan` — the plan root, wrapping a `CountPlanRoot` + output var
 //! - `count_plan_exec.rs` — evaluates a `CountPlan` against a `BinaryIndexStore`
 
-use crate::aggregate::AggregateFn;
+use crate::execute::operator_tree::{detect_count_all_aggregate, validate_simple_triple};
 use crate::ir::{Expression, Pattern};
 use crate::options::QueryOptions;
-use crate::parse::{ParsedQuery, QueryOutput};
-use crate::triple::{Ref, Term, TriplePattern};
+use crate::parse::ParsedQuery;
+use crate::triple::Ref;
 use crate::var_registry::VarId;
-
-// ---------------------------------------------------------------------------
-// Pattern validation helpers (mirrored from execute::operator_tree)
-// ---------------------------------------------------------------------------
-
-/// Extract a bound predicate (IRI or SID) from a triple pattern's predicate position.
-fn extract_bound_predicate(p: &Ref) -> Option<Ref> {
-    match p {
-        Ref::Sid(_) | Ref::Iri(_) => Some(p.clone()),
-        _ => None,
-    }
-}
-
-/// Validate a triple pattern as `?s <bound_pred> ?o` with no datatype constraint.
-fn validate_simple_triple(tp: &TriplePattern) -> Option<(VarId, Ref, VarId)> {
-    let Ref::Var(sv) = &tp.s else { return None };
-    let pred = extract_bound_predicate(&tp.p)?;
-    let Term::Var(ov) = &tp.o else { return None };
-    if tp.dtc.is_some() {
-        return None;
-    }
-    Some((*sv, pred, *ov))
-}
 
 /// Resolve an EXISTS block from a `Filter(Expression::Exists { .. })` expression.
 fn resolve_filter_exists(expr: &Expression) -> Option<(&[Pattern], bool)> {
@@ -261,38 +238,6 @@ pub(crate) fn try_build_count_plan(
 // ---------------------------------------------------------------------------
 // Internal: gate check
 // ---------------------------------------------------------------------------
-
-/// Same gate check as the existing `detect_count_all_aggregate` in operator_tree.rs.
-fn detect_count_all_aggregate(query: &ParsedQuery, options: &QueryOptions) -> Option<VarId> {
-    if matches!(
-        query.output,
-        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
-    ) {
-        return None;
-    }
-    if !options.group_by.is_empty()
-        || options.aggregates.len() != 1
-        || options.having.is_some()
-        || !options.post_binds.is_empty()
-        || !options.order_by.is_empty()
-        || options.offset.is_some()
-        || options.distinct
-    {
-        return None;
-    }
-    let agg = &options.aggregates[0];
-    if agg.distinct || !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
-        return None;
-    }
-    if options.limit == Some(0) {
-        return None;
-    }
-    let select_vars = query.output.select_vars()?;
-    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
-        return None;
-    }
-    Some(agg.output_var)
-}
 
 // ---------------------------------------------------------------------------
 // Internal: pattern classification
@@ -1000,6 +945,9 @@ fn build_keyset_for_object_chain_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aggregate::AggregateFn;
+    use crate::parse::QueryOutput;
+    use crate::triple::{Term, TriplePattern};
     use crate::var_registry::VarRegistry;
     use fluree_db_core::Sid;
     use fluree_graph_json_ld::ParsedContext;

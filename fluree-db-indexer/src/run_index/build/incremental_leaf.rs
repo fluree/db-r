@@ -336,7 +336,7 @@ fn merge_and_encode_leaflet(
 
     if chunks.len() == 1 {
         // Common case: no split, all history stays with the single chunk.
-        let encoded = encode_leaflet(chunks[0], order, zstd_level);
+        let encoded = encode_leaflet(chunks[0], order, zstd_level)?;
         result.push(ProcessedLeafletV3 {
             encoded: EncodedLeafletInfo::Encoded(encoded),
             history,
@@ -345,7 +345,7 @@ fn merge_and_encode_leaflet(
         // Multiple chunks: partition history entries by chunk key boundaries.
         let partitioned = partition_history_to_chunks(&chunks, &history, order);
         for (chunk, chunk_history) in chunks.iter().zip(partitioned) {
-            let encoded = encode_leaflet(chunk, order, zstd_level);
+            let encoded = encode_leaflet(chunk, order, zstd_level)?;
             result.push(ProcessedLeafletV3 {
                 encoded: EncodedLeafletInfo::Encoded(encoded),
                 history: chunk_history,

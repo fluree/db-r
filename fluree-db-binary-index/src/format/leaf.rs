@@ -238,7 +238,7 @@ impl LeafWriter {
         }
 
         let records = std::mem::take(&mut self.record_buf);
-        let encoded = encode_leaflet(&records, self.order, self.zstd_level);
+        let encoded = encode_leaflet(&records, self.order, self.zstd_level)?;
         let row_count = encoded.row_count as u64;
 
         // Ensure a history segment exists for this leaflet.

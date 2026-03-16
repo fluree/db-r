@@ -51,12 +51,16 @@ fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
     if !matches!(op, CompareOp::Eq | CompareOp::Ne) || args.len() != 2 {
         return Ok(None);
     }
-    if std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
-        .ok()
-        .as_deref()
-        == Some("1")
     {
-        return Ok(None);
+        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DISABLED.get_or_init(|| {
+            std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
+                .ok()
+                .as_deref()
+                == Some("1")
+        }) {
+            return Ok(None);
+        }
     }
     let Some(ctx) = ctx else {
         return Ok(None);

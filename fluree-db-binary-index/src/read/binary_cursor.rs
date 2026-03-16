@@ -228,7 +228,11 @@ impl BinaryCursor {
                                 self.order,
                                 cache,
                                 leaf.handle.leaf_id(),
-                                leaflet_idx as u8,
+                                u8::try_from(leaflet_idx).map_err(|_| {
+                                    std::io::Error::other(format!(
+                                        "leaflet index {leaflet_idx} exceeds u8::MAX"
+                                    ))
+                                })?,
                             )?
                         } else {
                             leaf.handle
@@ -243,8 +247,9 @@ impl BinaryCursor {
                     if self.need_replay() {
                         // Quick-skip: if this leaflet's history doesn't extend past to_t,
                         // and no base rows have t > to_t, replay is unnecessary.
-                        let needs_leaflet_replay = entry.history_max_t > self.to_t as u32
-                            || batch_has_rows_above_t(&batch, self.to_t as u32);
+                        let to_t_u32 = u32::try_from(self.to_t).unwrap_or(u32::MAX);
+                        let needs_leaflet_replay = entry.history_max_t > to_t_u32
+                            || batch_has_rows_above_t(&batch, to_t_u32);
 
                         if needs_leaflet_replay && entry.history_len > 0 {
                             let history = leaf
@@ -572,7 +577,10 @@ fn push_overlay_row(
     p_id.push(ov.p_id);
     o_type.push(ov.o_type);
     o_i.push(ov.o_i);
-    t.push(ov.t as u32);
+    t.push(u32::try_from(ov.t).unwrap_or_else(|_| {
+        debug_assert!(false, "overlay t={} does not fit u32", ov.t);
+        u32::MAX
+    }));
 }
 
 // ============================================================================

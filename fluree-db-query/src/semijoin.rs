@@ -149,12 +149,11 @@ impl Operator for SemijoinOperator {
             .key_vars
             .iter()
             .map(|kv| {
-                inner_schema
-                    .iter()
-                    .position(|v| v == kv)
-                    .expect("key var must be in inner schema")
+                inner_schema.iter().position(|v| v == kv).ok_or_else(|| {
+                    QueryError::Internal(format!("key var {kv:?} not found in inner schema"))
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         inner_op.open(ctx).await?;
 
@@ -175,12 +174,11 @@ impl Operator for SemijoinOperator {
             .key_vars
             .iter()
             .map(|kv| {
-                child_schema
-                    .iter()
-                    .position(|v| v == kv)
-                    .expect("key var must be in child schema")
+                child_schema.iter().position(|v| v == kv).ok_or_else(|| {
+                    QueryError::Internal(format!("key var {kv:?} not found in child schema"))
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;

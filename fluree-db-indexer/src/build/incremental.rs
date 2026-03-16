@@ -155,21 +155,25 @@ where
 
                     let cs = content_store.clone();
                     let cs2 = content_store.clone();
-                    let result = update_branch(
-                        &branch_bytes,
-                        &sorted_records,
-                        &sorted_ops,
-                        &branch_config,
-                        &|cid| {
-                            futures::executor::block_on(async { cs.get(cid).await })
-                                .map_err(std::io::Error::other)
-                        },
-                        &|cid| {
-                            futures::executor::block_on(async { cs2.get(cid).await })
-                                .map(Some)
-                                .or(Ok(None))
-                        },
-                    )
+                    let result = tokio::task::block_in_place(|| {
+                        update_branch(
+                            &branch_bytes,
+                            &sorted_records,
+                            &sorted_ops,
+                            &branch_config,
+                            &|cid| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(async { cs.get(cid).await })
+                                    .map_err(std::io::Error::other)
+                            },
+                            &|cid| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(async { cs2.get(cid).await })
+                                    .map(Some)
+                                    .or(Ok(None))
+                            },
+                        )
+                    })
                     .map_err(|e| {
                         IndexerError::StorageWrite(format!(
                             "V6 branch update g={g_id} {order:?}: {e}"
@@ -177,27 +181,7 @@ where
                     })?;
 
                     // Upload new leaf + sidecar blobs.
-                    for blob in &result.new_leaf_blobs {
-                        storage
-                            .content_write_bytes(
-                                ContentKind::IndexLeaf,
-                                ledger_id,
-                                &blob.info.leaf_bytes,
-                            )
-                            .await
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
-                            storage
-                                .content_write_bytes(
-                                    ContentKind::HistorySidecar,
-                                    ledger_id,
-                                    sc_bytes,
-                                )
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        }
-                    }
+                    upload_leaf_blobs(storage, ledger_id, &result).await?;
 
                     total_new_leaves += result.new_leaf_blobs.len();
 
@@ -215,28 +199,7 @@ where
                         &config,
                     )?;
 
-                    // Upload blobs.
-                    for blob in &result.new_leaf_blobs {
-                        storage
-                            .content_write_bytes(
-                                ContentKind::IndexLeaf,
-                                ledger_id,
-                                &blob.info.leaf_bytes,
-                            )
-                            .await
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
-                            storage
-                                .content_write_bytes(
-                                    ContentKind::HistorySidecar,
-                                    ledger_id,
-                                    sc_bytes,
-                                )
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        }
-                    }
+                    upload_leaf_blobs(storage, ledger_id, &result).await?;
 
                     total_new_leaves += result.new_leaf_blobs.len();
                     root_builder.set_default_graph_order(order, result.leaf_entries);
@@ -272,49 +235,32 @@ where
 
                     let cs = content_store.clone();
                     let cs2 = content_store.clone();
-                    let result = update_branch(
-                        &branch_bytes,
-                        &sorted_records,
-                        &sorted_ops,
-                        &branch_config,
-                        &|cid| {
-                            futures::executor::block_on(async { cs.get(cid).await })
-                                .map_err(std::io::Error::other)
-                        },
-                        &|cid| {
-                            futures::executor::block_on(async { cs2.get(cid).await })
-                                .map(Some)
-                                .or(Ok(None))
-                        },
-                    )
+                    let result = tokio::task::block_in_place(|| {
+                        update_branch(
+                            &branch_bytes,
+                            &sorted_records,
+                            &sorted_ops,
+                            &branch_config,
+                            &|cid| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(async { cs.get(cid).await })
+                                    .map_err(std::io::Error::other)
+                            },
+                            &|cid| {
+                                tokio::runtime::Handle::current()
+                                    .block_on(async { cs2.get(cid).await })
+                                    .map(Some)
+                                    .or(Ok(None))
+                            },
+                        )
+                    })
                     .map_err(|e| {
                         IndexerError::StorageWrite(format!(
                             "V6 branch update g={g_id} {order:?}: {e}"
                         ))
                     })?;
 
-                    // Upload new leaf + sidecar blobs.
-                    for blob in &result.new_leaf_blobs {
-                        storage
-                            .content_write_bytes(
-                                ContentKind::IndexLeaf,
-                                ledger_id,
-                                &blob.info.leaf_bytes,
-                            )
-                            .await
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
-                            storage
-                                .content_write_bytes(
-                                    ContentKind::HistorySidecar,
-                                    ledger_id,
-                                    sc_bytes,
-                                )
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        }
-                    }
+                    upload_leaf_blobs(storage, ledger_id, &result).await?;
 
                     // Upload new branch manifest.
                     storage
@@ -334,28 +280,7 @@ where
                     // No existing branch for this named graph + order — build from scratch.
                     let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, &config)?;
 
-                    // Upload blobs.
-                    for blob in &result.new_leaf_blobs {
-                        storage
-                            .content_write_bytes(
-                                ContentKind::IndexLeaf,
-                                ledger_id,
-                                &blob.info.leaf_bytes,
-                            )
-                            .await
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
-                            storage
-                                .content_write_bytes(
-                                    ContentKind::HistorySidecar,
-                                    ledger_id,
-                                    sc_bytes,
-                                )
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        }
-                    }
+                    upload_leaf_blobs(storage, ledger_id, &result).await?;
 
                     // Upload branch manifest.
                     storage
@@ -2183,6 +2108,33 @@ where
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Upload leaf and sidecar blobs from a branch update result.
+///
+/// Shared by all four code paths: default-graph existing/fresh, named-graph existing/fresh.
+async fn upload_leaf_blobs<S>(
+    storage: &S,
+    ledger_id: &str,
+    result: &BranchUpdateResult,
+) -> Result<()>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    for blob in &result.new_leaf_blobs {
+        storage
+            .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob.info.leaf_bytes)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+        if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
+            storage
+                .content_write_bytes(ContentKind::HistorySidecar, ledger_id, sc_bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
 
 /// Build a fresh V3 branch from pure novelty for the default graph.
 fn build_fresh_default_graph_v3(

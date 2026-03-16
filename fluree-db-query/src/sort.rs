@@ -501,7 +501,12 @@ impl Operator for SortOperator {
             .map(|gv| gv.store().lex_sorted_string_ids())
             .unwrap_or(false)
             // Temporary override for benchmarking existing roots without the flag set.
-            || std::env::var("FLUREE_ASSUME_LEX_STRING_IDS").ok().as_deref() == Some("1");
+            || {
+                static OVERRIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *OVERRIDE.get_or_init(|| {
+                    std::env::var("FLUREE_ASSUME_LEX_STRING_IDS").ok().as_deref() == Some("1")
+                })
+            };
         self.state = OperatorState::Open;
         Ok(())
     }

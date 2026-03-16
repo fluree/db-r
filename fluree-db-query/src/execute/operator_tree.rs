@@ -62,7 +62,7 @@ use super::where_plan::collect_var_stats;
 
 /// Extract a bound predicate (IRI or SID) from a triple pattern's predicate position.
 /// Returns `None` if the predicate is a variable or other non-bound form.
-fn extract_bound_predicate(p: &Ref) -> Option<Ref> {
+pub(crate) fn extract_bound_predicate(p: &Ref) -> Option<Ref> {
     match p {
         Ref::Sid(_) | Ref::Iri(_) => Some(p.clone()),
         _ => None,
@@ -71,7 +71,7 @@ fn extract_bound_predicate(p: &Ref) -> Option<Ref> {
 
 /// Validate a triple pattern as `?s <bound_pred> ?o` with no datatype constraint.
 /// Returns `(subject_var, bound_predicate, object_var)`.
-fn validate_simple_triple(tp: &TriplePattern) -> Option<(VarId, Ref, VarId)> {
+pub(crate) fn validate_simple_triple(tp: &TriplePattern) -> Option<(VarId, Ref, VarId)> {
     let Ref::Var(sv) = &tp.s else { return None };
     let pred = extract_bound_predicate(&tp.p)?;
     let Term::Var(ov) = &tp.o else { return None };
@@ -417,7 +417,10 @@ fn extract_regex_const_pattern(
 /// - No group_by, having, post_binds, order_by, offset, or DISTINCT
 /// - LIMIT >= 1 (or no limit)
 /// - SELECT vars == `[agg.output_var]`
-fn detect_count_all_aggregate(query: &ParsedQuery, options: &QueryOptions) -> Option<VarId> {
+pub(crate) fn detect_count_all_aggregate(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<VarId> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard

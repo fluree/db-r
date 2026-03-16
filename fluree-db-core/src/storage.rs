@@ -866,43 +866,49 @@ impl StorageRead for FileStorage {
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let path = self.resolve_path(address)?;
         let len = (range.end - range.start) as usize;
-        let mut buf = vec![0u8; len];
-        let file = std::fs::File::open(&path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                crate::error::Error::not_found(format!("{}: {}", address, path.display()))
-            } else {
-                crate::error::Error::io(format!("Failed to open {}: {}", path.display(), e))
+        let offset = range.start;
+        let address = address.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; len];
+            let file = std::fs::File::open(&path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    crate::error::Error::not_found(format!("{}: {}", address, path.display()))
+                } else {
+                    crate::error::Error::io(format!("Failed to open {}: {}", path.display(), e))
+                }
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                let n = file.read_at(&mut buf, offset).map_err(|e| {
+                    crate::error::Error::io(format!(
+                        "Failed to read range from {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                buf.truncate(n);
             }
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileExt;
-            let n = file.read_at(&mut buf, range.start).map_err(|e| {
-                crate::error::Error::io(format!(
-                    "Failed to read range from {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            buf.truncate(n);
-        }
-        #[cfg(not(unix))]
-        {
-            use std::io::{Read, Seek, SeekFrom};
-            let mut file = file;
-            file.seek(SeekFrom::Start(range.start)).map_err(|e| {
-                crate::error::Error::io(format!("Failed to seek {}: {}", path.display(), e))
-            })?;
-            let n = file.read(&mut buf).map_err(|e| {
-                crate::error::Error::io(format!(
-                    "Failed to read range from {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            buf.truncate(n);
-        }
-        Ok(buf)
+            #[cfg(not(unix))]
+            {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = file;
+                file.seek(SeekFrom::Start(offset)).map_err(|e| {
+                    crate::error::Error::io(format!("Failed to seek {}: {}", path.display(), e))
+                })?;
+                let n = file.read(&mut buf).map_err(|e| {
+                    crate::error::Error::io(format!(
+                        "Failed to read range from {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                buf.truncate(n);
+            }
+            Ok(buf)
+        })
+        .await
+        .map_err(|e| crate::error::Error::io(format!("spawn_blocking failed: {e}")))?
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {

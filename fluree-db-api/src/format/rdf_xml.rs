@@ -221,29 +221,7 @@ fn is_ncname(s: &str) -> bool {
     true
 }
 
-fn escape_text_into(input: &str, out: &mut String) {
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(ch),
-        }
-    }
-}
-
-fn escape_attr_into(input: &str, out: &mut String) {
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-}
+use super::xml_escape::{escape_attr_into, escape_text_into};
 
 #[cfg(test)]
 mod tests {

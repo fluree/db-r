@@ -65,7 +65,7 @@ pub fn encode_leaflet(
     records: &[RunRecordV2],
     order: RunSortOrder,
     zstd_level: i32,
-) -> EncodedLeaflet {
+) -> std::io::Result<EncodedLeaflet> {
     assert!(!records.is_empty(), "cannot encode empty leaflet");
 
     // Validate segmentation invariants.
@@ -156,7 +156,7 @@ pub fn encode_leaflet(
                     ColumnId::OType,
                     &o_types,
                     zstd_level,
-                );
+                )?;
             }
             append_column_u64(
                 &mut payload,
@@ -164,21 +164,21 @@ pub fn encode_leaflet(
                 ColumnId::OKey,
                 &o_keys,
                 zstd_level,
-            );
+            )?;
             append_column_u64(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::SId,
                 &s_ids,
                 zstd_level,
-            );
+            )?;
             append_column_u32(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::T,
                 &t_vals,
                 zstd_level,
-            );
+            )?;
         }
         RunSortOrder::Psot => {
             // p_const: p_id omitted. Hot path: s_id for subject scans.
@@ -188,7 +188,7 @@ pub fn encode_leaflet(
                 ColumnId::SId,
                 &s_ids,
                 zstd_level,
-            );
+            )?;
             if o_type_const.is_none() {
                 let o_types: Vec<u16> = records.iter().map(|r| r.o_type).collect();
                 append_column_u16(
@@ -197,7 +197,7 @@ pub fn encode_leaflet(
                     ColumnId::OType,
                     &o_types,
                     zstd_level,
-                );
+                )?;
             }
             append_column_u64(
                 &mut payload,
@@ -205,14 +205,14 @@ pub fn encode_leaflet(
                 ColumnId::OKey,
                 &o_keys,
                 zstd_level,
-            );
+            )?;
             append_column_u32(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::T,
                 &t_vals,
                 zstd_level,
-            );
+            )?;
         }
         RunSortOrder::Spot => {
             // No constant columns. Full set.
@@ -222,7 +222,7 @@ pub fn encode_leaflet(
                 ColumnId::SId,
                 &s_ids,
                 zstd_level,
-            );
+            )?;
             let p_ids: Vec<u32> = records.iter().map(|r| r.p_id).collect();
             append_column_u32(
                 &mut payload,
@@ -230,7 +230,7 @@ pub fn encode_leaflet(
                 ColumnId::PId,
                 &p_ids,
                 zstd_level,
-            );
+            )?;
             if o_type_const.is_none() {
                 let o_types: Vec<u16> = records.iter().map(|r| r.o_type).collect();
                 append_column_u16(
@@ -239,7 +239,7 @@ pub fn encode_leaflet(
                     ColumnId::OType,
                     &o_types,
                     zstd_level,
-                );
+                )?;
             }
             append_column_u64(
                 &mut payload,
@@ -247,14 +247,14 @@ pub fn encode_leaflet(
                 ColumnId::OKey,
                 &o_keys,
                 zstd_level,
-            );
+            )?;
             append_column_u32(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::T,
                 &t_vals,
                 zstd_level,
-            );
+            )?;
         }
         RunSortOrder::Opst => {
             // o_type_const always set (type-homogeneous by segmentation).
@@ -265,7 +265,7 @@ pub fn encode_leaflet(
                 ColumnId::OKey,
                 &o_keys,
                 zstd_level,
-            );
+            )?;
             let p_ids: Vec<u32> = records.iter().map(|r| r.p_id).collect();
             append_column_u32(
                 &mut payload,
@@ -273,21 +273,21 @@ pub fn encode_leaflet(
                 ColumnId::PId,
                 &p_ids,
                 zstd_level,
-            );
+            )?;
             append_column_u64(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::SId,
                 &s_ids,
                 zstd_level,
-            );
+            )?;
             append_column_u32(
                 &mut payload,
                 &mut column_refs,
                 ColumnId::T,
                 &t_vals,
                 zstd_level,
-            );
+            )?;
         }
     }
 
@@ -300,10 +300,10 @@ pub fn encode_leaflet(
             ColumnId::OI,
             &o_i_vals,
             zstd_level,
-        );
+        )?;
     }
 
-    EncodedLeaflet {
+    Ok(EncodedLeaflet {
         row_count,
         lead_group_count,
         first_key,
@@ -313,7 +313,7 @@ pub fn encode_leaflet(
         flags: fl,
         column_refs,
         payload,
-    }
+    })
 }
 
 /// Compute `lead_group_count`: the number of distinct leading-key values.
@@ -363,11 +363,12 @@ fn append_column_u64(
     col_id: ColumnId,
     values: &[u64],
     zstd_level: i32,
-) {
-    let (compressed, mut block_ref) = encode_column_u64(col_id, values, zstd_level);
+) -> std::io::Result<()> {
+    let (compressed, mut block_ref) = encode_column_u64(col_id, values, zstd_level)?;
     block_ref.offset = payload.len() as u32;
     payload.extend_from_slice(&compressed);
     refs.push(block_ref);
+    Ok(())
 }
 
 fn append_column_u32(
@@ -376,11 +377,12 @@ fn append_column_u32(
     col_id: ColumnId,
     values: &[u32],
     zstd_level: i32,
-) {
-    let (compressed, mut block_ref) = encode_column_u32(col_id, values, zstd_level);
+) -> std::io::Result<()> {
+    let (compressed, mut block_ref) = encode_column_u32(col_id, values, zstd_level)?;
     block_ref.offset = payload.len() as u32;
     payload.extend_from_slice(&compressed);
     refs.push(block_ref);
+    Ok(())
 }
 
 fn append_column_u16(
@@ -389,11 +391,12 @@ fn append_column_u16(
     col_id: ColumnId,
     values: &[u16],
     zstd_level: i32,
-) {
-    let (compressed, mut block_ref) = encode_column_u16(col_id, values, zstd_level);
+) -> std::io::Result<()> {
+    let (compressed, mut block_ref) = encode_column_u16(col_id, values, zstd_level)?;
     block_ref.offset = payload.len() as u32;
     payload.extend_from_slice(&compressed);
     refs.push(block_ref);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -423,7 +426,7 @@ mod tests {
             make_rec(20, 1, OType::XSD_INTEGER.as_u16(), 200, LIST_INDEX_NONE, 2),
             make_rec(30, 1, OType::XSD_INTEGER.as_u16(), 300, LIST_INDEX_NONE, 3),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
         assert_eq!(enc.row_count, 3);
         assert_eq!(enc.p_const, Some(1));
         assert_eq!(enc.o_type_const, Some(OType::XSD_INTEGER.as_u16()));
@@ -439,7 +442,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_INTEGER.as_u16(), 100, LIST_INDEX_NONE, 1),
             make_rec(20, 1, OType::XSD_STRING.as_u16(), 200, LIST_INDEX_NONE, 2),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
         assert_eq!(enc.o_type_const, None);
         assert_ne!(enc.flags & flags::HAS_O_TYPE_COL, 0);
         // Columns: o_type, o_key, s_id, t (4 columns)
@@ -452,7 +455,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_INTEGER.as_u16(), 100, LIST_INDEX_NONE, 1),
             make_rec(10, 2, OType::XSD_STRING.as_u16(), 200, LIST_INDEX_NONE, 2),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Spot, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Spot, 1).unwrap();
         assert_eq!(enc.p_const, None);
         assert_eq!(enc.o_type_const, None);
         // Columns: s_id, p_id, o_type, o_key, t (5 columns)
@@ -465,7 +468,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_INTEGER.as_u16(), 100, LIST_INDEX_NONE, 1),
             make_rec(20, 2, OType::XSD_INTEGER.as_u16(), 200, LIST_INDEX_NONE, 2),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Opst, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Opst, 1).unwrap();
         assert_eq!(enc.o_type_const, Some(OType::XSD_INTEGER.as_u16()));
         assert_eq!(enc.flags & flags::HAS_O_TYPE_COL, 0);
         // Columns: o_key, p_id, s_id, t (4 columns)
@@ -479,7 +482,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_STRING.as_u16(), 100, 1, 2),
             make_rec(10, 1, OType::XSD_STRING.as_u16(), 100, LIST_INDEX_NONE, 3),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
         assert_ne!(enc.flags & flags::HAS_O_I, 0);
         // o_type_const present (all same type), so: o_key, s_id, t, o_i = 4 columns
         assert_eq!(enc.column_refs.len(), 4);
@@ -494,7 +497,7 @@ mod tests {
             make_rec(30, 1, OType::XSD_INTEGER.as_u16(), 200, LIST_INDEX_NONE, 3),
             make_rec(40, 1, OType::XSD_INTEGER.as_u16(), 300, LIST_INDEX_NONE, 4),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
         assert_eq!(enc.lead_group_count, 3); // 100, 200, 300
     }
 
@@ -506,7 +509,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_INTEGER.as_u16(), 200, LIST_INDEX_NONE, 2),
             make_rec(20, 1, OType::XSD_INTEGER.as_u16(), 300, LIST_INDEX_NONE, 3),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Psot, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Psot, 1).unwrap();
         assert_eq!(enc.lead_group_count, 2); // s_id 10, 20
     }
 
@@ -516,7 +519,7 @@ mod tests {
             make_rec(100, 5, OType::XSD_INTEGER.as_u16(), 42, LIST_INDEX_NONE, 7),
             make_rec(200, 5, OType::XSD_INTEGER.as_u16(), 43, LIST_INDEX_NONE, 8),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
 
         // Verify we can decode the o_key column.
         let o_key_ref = enc
@@ -554,7 +557,7 @@ mod tests {
             make_rec(1, 1, OType::XSD_STRING.as_u16(), 10, LIST_INDEX_NONE, 1),
             make_rec(1, 2, OType::XSD_STRING.as_u16(), 20, LIST_INDEX_NONE, 2),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Spot, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Spot, 1).unwrap();
         assert_eq!(enc.o_type_const, None);
         assert_ne!(enc.flags & flags::HAS_O_TYPE_COL, 0);
         // s_id, p_id, o_type, o_key, t = 5 columns
@@ -567,7 +570,7 @@ mod tests {
             make_rec(10, 1, OType::XSD_INTEGER.as_u16(), 42, LIST_INDEX_NONE, 1),
             make_rec(20, 1, OType::XSD_DOUBLE.as_u16(), 43, LIST_INDEX_NONE, 2),
         ];
-        let enc = encode_leaflet(&records, RunSortOrder::Post, 1);
+        let enc = encode_leaflet(&records, RunSortOrder::Post, 1).unwrap();
         assert!(enc.o_type_const.is_none());
 
         let ot_ref = enc

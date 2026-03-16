@@ -123,9 +123,10 @@ pub fn encode_column_u64(
     col_id: ColumnId,
     values: &[u64],
     zstd_level: i32,
-) -> (Vec<u8>, ColumnBlockRef) {
+) -> std::io::Result<(Vec<u8>, ColumnBlockRef)> {
     let raw = u64_slice_to_le_bytes(values);
-    let compressed = zstd::bulk::compress(&raw, zstd_level).expect("zstd compress column");
+    let compressed = zstd::bulk::compress(&raw, zstd_level)
+        .map_err(|e| std::io::Error::other(format!("zstd compress u64 column: {e}")))?;
     let r = ColumnBlockRef {
         col_id: col_id.to_u16(),
         codec: Codec::Zstd as u8,
@@ -134,7 +135,7 @@ pub fn encode_column_u64(
         compressed_len: compressed.len() as u32,
         uncompressed_len: raw.len() as u32,
     };
-    (compressed, r)
+    Ok((compressed, r))
 }
 
 /// Encode a column of `u32` values into a compressed block.
@@ -142,9 +143,10 @@ pub fn encode_column_u32(
     col_id: ColumnId,
     values: &[u32],
     zstd_level: i32,
-) -> (Vec<u8>, ColumnBlockRef) {
+) -> std::io::Result<(Vec<u8>, ColumnBlockRef)> {
     let raw = u32_slice_to_le_bytes(values);
-    let compressed = zstd::bulk::compress(&raw, zstd_level).expect("zstd compress column");
+    let compressed = zstd::bulk::compress(&raw, zstd_level)
+        .map_err(|e| std::io::Error::other(format!("zstd compress u32 column: {e}")))?;
     let r = ColumnBlockRef {
         col_id: col_id.to_u16(),
         codec: Codec::Zstd as u8,
@@ -153,7 +155,7 @@ pub fn encode_column_u32(
         compressed_len: compressed.len() as u32,
         uncompressed_len: raw.len() as u32,
     };
-    (compressed, r)
+    Ok((compressed, r))
 }
 
 /// Encode a column of `u16` values into a compressed block.
@@ -161,9 +163,10 @@ pub fn encode_column_u16(
     col_id: ColumnId,
     values: &[u16],
     zstd_level: i32,
-) -> (Vec<u8>, ColumnBlockRef) {
+) -> std::io::Result<(Vec<u8>, ColumnBlockRef)> {
     let raw = u16_slice_to_le_bytes(values);
-    let compressed = zstd::bulk::compress(&raw, zstd_level).expect("zstd compress column");
+    let compressed = zstd::bulk::compress(&raw, zstd_level)
+        .map_err(|e| std::io::Error::other(format!("zstd compress u16 column: {e}")))?;
     let r = ColumnBlockRef {
         col_id: col_id.to_u16(),
         codec: Codec::Zstd as u8,
@@ -172,7 +175,7 @@ pub fn encode_column_u16(
         compressed_len: compressed.len() as u32,
         uncompressed_len: raw.len() as u32,
     };
-    (compressed, r)
+    Ok((compressed, r))
 }
 
 // ============================================================================
@@ -302,7 +305,7 @@ mod tests {
     #[test]
     fn encode_decode_u64() {
         let values: Vec<u64> = (0..100).collect();
-        let (compressed, mut block_ref) = encode_column_u64(ColumnId::SId, &values, 1);
+        let (compressed, mut block_ref) = encode_column_u64(ColumnId::SId, &values, 1).unwrap();
         block_ref.offset = 0;
         let decoded = decode_column_u64(&compressed, &block_ref).unwrap();
         assert_eq!(decoded, values);
@@ -311,7 +314,7 @@ mod tests {
     #[test]
     fn encode_decode_u32() {
         let values: Vec<u32> = (0..100).collect();
-        let (compressed, mut block_ref) = encode_column_u32(ColumnId::PId, &values, 1);
+        let (compressed, mut block_ref) = encode_column_u32(ColumnId::PId, &values, 1).unwrap();
         block_ref.offset = 0;
         let decoded = decode_column_u32(&compressed, &block_ref).unwrap();
         assert_eq!(decoded, values);
@@ -320,7 +323,7 @@ mod tests {
     #[test]
     fn encode_decode_u16() {
         let values: Vec<u16> = (0..100).collect();
-        let (compressed, mut block_ref) = encode_column_u16(ColumnId::OType, &values, 1);
+        let (compressed, mut block_ref) = encode_column_u16(ColumnId::OType, &values, 1).unwrap();
         block_ref.offset = 0;
         let decoded = decode_column_u16(&compressed, &block_ref).unwrap();
         assert_eq!(decoded, values);
@@ -329,7 +332,7 @@ mod tests {
     #[test]
     fn element_count() {
         let values: Vec<u64> = vec![1, 2, 3, 4, 5];
-        let (_, block_ref) = encode_column_u64(ColumnId::OKey, &values, 1);
+        let (_, block_ref) = encode_column_u64(ColumnId::OKey, &values, 1).unwrap();
         assert_eq!(block_ref.element_count(), 5);
     }
 
@@ -337,7 +340,7 @@ mod tests {
     fn encode_decode_with_offset() {
         // Simulate block at a non-zero offset within a larger buffer.
         let values: Vec<u32> = vec![10, 20, 30];
-        let (compressed, mut block_ref) = encode_column_u32(ColumnId::T, &values, 1);
+        let (compressed, mut block_ref) = encode_column_u32(ColumnId::T, &values, 1).unwrap();
 
         let prefix = vec![0u8; 64]; // some preceding data
         let mut full_buf = prefix;
