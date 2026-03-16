@@ -9,7 +9,9 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use std::collections::HashSet;
+use hashbrown::HashMap;
+use rustc_hash::{FxBuildHasher, FxHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Row signature type for deduplication
@@ -27,7 +29,7 @@ pub struct DistinctOperator {
     /// Child operator
     child: BoxedOperator,
     /// Set of seen row signatures
-    seen: HashSet<RowSignature>,
+    seen: HashMap<RowSignature, (), FxBuildHasher>,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -44,7 +46,7 @@ impl DistinctOperator {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
-            seen: HashSet::new(),
+            seen: HashMap::with_hasher(FxBuildHasher),
             schema,
             state: OperatorState::Created,
         }
@@ -55,11 +57,25 @@ impl DistinctOperator {
         self.seen.len()
     }
 
-    /// Extract row signature from batch at given row index
-    fn extract_signature(&self, batch: &Batch, row_idx: usize) -> RowSignature {
-        (0..self.schema.len())
-            .map(|col| batch.get_by_col(row_idx, col).clone())
-            .collect()
+    /// Extract row signature from batch at given row index.
+    #[inline]
+    fn extract_signature_with_len(batch: &Batch, row_idx: usize, cols: usize) -> RowSignature {
+        let mut sig = Vec::with_capacity(cols);
+        for col in 0..cols {
+            sig.push(batch.get_by_col(row_idx, col).clone());
+        }
+        sig
+    }
+
+    #[inline]
+    fn row_hash_with_len(batch: &Batch, row_idx: usize, cols: usize) -> u64 {
+        let mut h = FxHasher::default();
+        // Match `Vec<T>` / slice hashing which incorporates length.
+        cols.hash(&mut h);
+        for col in 0..cols {
+            batch.get_by_col(row_idx, col).hash(&mut h);
+        }
+        h.finish()
     }
 }
 
@@ -101,31 +117,45 @@ impl Operator for DistinctOperator {
                 }
             };
 
-            // Find rows that are not duplicates
-            let mut keep_indices = Vec::new();
+            // Find rows that are not duplicates.
+            //
+            // IMPORTANT: avoid allocating/cloning a `Vec<Binding>` per row. We compute
+            // the hash directly from the batch row, probe the set with a borrowed
+            // equality check, and only allocate the full signature for rows that
+            // are genuinely new.
+            let num_cols = self.schema.len();
+            let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
+
             for row_idx in 0..batch.len() {
-                let signature = self.extract_signature(&batch, row_idx);
-                if self.seen.insert(signature) {
-                    // Row is new, keep it
-                    keep_indices.push(row_idx);
+                let hash = Self::row_hash_with_len(&batch, row_idx, num_cols);
+                let entry = self.seen.raw_entry_mut().from_hash(hash, |sig| {
+                    if sig.len() != num_cols {
+                        return false;
+                    }
+                    for col in 0..num_cols {
+                        let Some(b) = sig.get(col) else {
+                            return false;
+                        };
+                        if b != batch.get_by_col(row_idx, col) {
+                            return false;
+                        }
+                    }
+                    true
+                });
+
+                if let hashbrown::hash_map::RawEntryMut::Vacant(v) = entry {
+                    let signature = Self::extract_signature_with_len(&batch, row_idx, num_cols);
+                    v.insert_hashed_nocheck(hash, signature, ());
+
+                    for (col_idx, col) in columns.iter_mut().enumerate() {
+                        col.push(batch.get_by_col(row_idx, col_idx).clone());
+                    }
                 }
             }
 
-            if keep_indices.is_empty() {
+            if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
                 // All rows were duplicates, try next batch
                 continue;
-            }
-
-            // Build filtered batch with only unique rows
-            let num_cols = self.schema.len();
-            let mut columns: Vec<Vec<Binding>> = (0..num_cols)
-                .map(|_| Vec::with_capacity(keep_indices.len()))
-                .collect();
-
-            for row_idx in keep_indices {
-                for (col_idx, col) in columns.iter_mut().enumerate() {
-                    col.push(batch.get_by_col(row_idx, col_idx).clone());
-                }
             }
 
             return Ok(Some(Batch::new(self.schema.clone(), columns)?));

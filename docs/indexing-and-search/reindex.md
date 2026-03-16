@@ -6,6 +6,8 @@ The Reindex API provides full rebuilds of ledger indexes from the commit chain. 
 
 Unlike [background indexing](background-indexing.md) which incrementally updates indexes as transactions commit, reindexing rebuilds the entire binary columnar index from the commit history.
 
+Reindex publishes the new index root via `publish_index_allow_equal`, which means a reindex can produce a **new index root CID** even when `index_t` stays the same (same logical snapshot, different physical layout/config).
+
 ## When to Reindex
 
 ### Common Use Cases

@@ -363,6 +363,21 @@ impl BinaryScanOperator {
         if object_bounds.is_some() && index == IndexType::Psot {
             index = IndexType::Post;
         }
+        // Generic optimization: if the object is a constant (and can be safely encoded),
+        // prefer the object-leading OPST index when the subject is unbound. This avoids
+        // pathological scans like PSOT(p, *, o_const) that can't narrow by o_key.
+        //
+        // IMPORTANT: plain strings without a datatype constraint are ambiguous (xsd:string
+        // vs rdf:langString). In that case we don't force OPST because we may be unable to
+        // encode (o_type, o_key) during open(), and OPST would devolve into a wide scan.
+        if index_hint.is_none()
+            && object_bounds.is_none()
+            && !s_bound
+            && o_bound
+            && (pattern.dtc.is_some() || !matches!(&pattern.o, Term::Value(FlakeValue::String(_))))
+        {
+            index = IndexType::Opst;
+        }
         if let Some(hint) = index_hint {
             index = hint;
         }

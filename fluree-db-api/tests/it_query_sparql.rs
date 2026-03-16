@@ -668,7 +668,7 @@ async fn sparql_optional_includes_unbound_values_as_null() {
 }
 
 #[tokio::test]
-async fn sparql_optional_multi_pattern_allows_partial_binding() {
+async fn sparql_optional_multi_pattern_requires_conjunctive_match() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "people:main";
@@ -693,19 +693,10 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
-        ["ex:bbob", 23, null],
-        ["ex:fbueller", null, "fb@example.com"],
-        ["ex:jbob", 0, null],
-        ["ex:jbob", 3, null],
-        ["ex:jbob", 5, null],
-        ["ex:jbob", 6, null],
-        ["ex:jbob", 7, null],
-        ["ex:jbob", 8, null],
-        ["ex:jbob", 9, null],
-        ["ex:jdoe", 3, null],
-        ["ex:jdoe", 7, null],
-        ["ex:jdoe", 42, null],
-        ["ex:jdoe", 99, null]
+        ["ex:bbob", null, null],
+        ["ex:fbueller", null, null],
+        ["ex:jbob", null, null],
+        ["ex:jdoe", null, null]
     ]);
 
     assert_eq!(

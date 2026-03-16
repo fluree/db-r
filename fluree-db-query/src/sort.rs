@@ -12,9 +12,10 @@ use crate::operator::{
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
-use fluree_db_core::DatatypeConstraint;
-use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_core::value_id::ObjKind;
+use fluree_db_core::{DatatypeConstraint, DatatypeDictId, FlakeValue, Sid};
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
@@ -23,7 +24,11 @@ use tracing::Instrument;
 ///
 /// This ensures ORDER BY uses correct term ordering (namespace/name for IRIs,
 /// value semantics for literals) rather than raw ID ordering.
-fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Binding> {
+fn materialize_encoded_for_sort(
+    b: &Binding,
+    gv: &BinaryGraphView,
+    assume_lex_sorted_string_ids: bool,
+) -> Option<Binding> {
     match b {
         Binding::EncodedLit {
             o_kind,
@@ -34,6 +39,16 @@ fn materialize_encoded_for_sort(b: &Binding, gv: &BinaryGraphView) -> Option<Bin
             i_val,
             t,
         } => {
+            // Experiment: if string IDs are lex-order-preserving, keep EncodedLit for
+            // simple xsd:string values so ORDER BY can compare by raw o_key.
+            if assume_lex_sorted_string_ids
+                && *o_kind == ObjKind::LEX_ID.as_u8()
+                && *dt_id == DatatypeDictId::STRING.as_u16()
+                && *lang_id == 0
+            {
+                return None;
+            }
+
             let val = gv
                 .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                 .ok()?;
@@ -83,16 +98,34 @@ fn materialize_sort_keys_in_rows(
     rows: &mut [Vec<Binding>],
     sort_col_indices: &[usize],
     gv: &BinaryGraphView,
+    assume_lex_sorted_string_ids: bool,
 ) {
     for row in rows.iter_mut() {
         for &col_idx in sort_col_indices {
             if let Some(existing) = row.get(col_idx) {
-                if let Some(materialized) = materialize_encoded_for_sort(existing, gv) {
+                if let Some(materialized) =
+                    materialize_encoded_for_sort(existing, gv, assume_lex_sorted_string_ids)
+                {
                     row[col_idx] = materialized;
                 }
             }
         }
     }
+}
+
+#[inline]
+fn materialize_sort_keys_in_row(
+    row: &mut Vec<Binding>,
+    sort_col_indices: &[usize],
+    gv: &BinaryGraphView,
+    assume_lex_sorted_string_ids: bool,
+) {
+    materialize_sort_keys_in_rows(
+        std::slice::from_mut(row),
+        sort_col_indices,
+        gv,
+        assume_lex_sorted_string_ids,
+    );
 }
 
 /// Sort direction for ORDER BY clauses
@@ -296,12 +329,82 @@ pub struct SortOperator {
     state: OperatorState,
     /// Buffered rows (collected during first next_batch call)
     buffer: Option<Vec<Vec<Binding>>>,
+    /// Optional top-k optimization: keep only the first k rows after ordering.
+    ///
+    /// This reduces sort cost from O(n log n) to ~O(n + k log k), but still
+    /// requires draining the full child stream (ORDER BY is blocking).
+    topk: Option<usize>,
+    /// Experiment: assume string IDs are lex-order preserving for ORDER BY.
+    assume_lex_sorted_string_ids: bool,
     /// Current emit position in sorted buffer
     emit_idx: usize,
     /// Column indices for sort keys (resolved from schema)
     sort_col_indices: Vec<usize>,
     /// Variables required by downstream operators; if set, emitted output is trimmed.
     out_schema: Option<Arc<[VarId]>>,
+}
+
+#[derive(Clone)]
+struct HeapKeyPart {
+    val: Binding,
+    direction: SortDirection,
+}
+
+#[derive(Clone)]
+struct HeapRow {
+    key: Vec<HeapKeyPart>,
+    row: Vec<Binding>,
+}
+
+impl HeapRow {
+    fn from_row(row: Vec<Binding>, sort_col_indices: &[usize], sort_specs: &[SortSpec]) -> Self {
+        let mut key: Vec<HeapKeyPart> = Vec::with_capacity(sort_col_indices.len());
+        for (i, &col_idx) in sort_col_indices.iter().enumerate() {
+            if let Some(v) = row.get(col_idx) {
+                key.push(HeapKeyPart {
+                    val: v.clone(),
+                    direction: sort_specs
+                        .get(i)
+                        .map(|s| s.direction)
+                        .unwrap_or(SortDirection::Ascending),
+                });
+            }
+        }
+        Self { key, row }
+    }
+
+    #[inline]
+    fn cmp_key(&self, other: &Self) -> Ordering {
+        for (a, b) in self.key.iter().zip(other.key.iter()) {
+            let ord = compare_bindings(&a.val, &b.val);
+            if ord != Ordering::Equal {
+                return match a.direction {
+                    SortDirection::Ascending => ord,
+                    SortDirection::Descending => ord.reverse(),
+                };
+            }
+        }
+        Ordering::Equal
+    }
+}
+
+impl PartialEq for HeapRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp_key(other) == Ordering::Equal
+    }
+}
+impl Eq for HeapRow {}
+
+impl PartialOrd for HeapRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_key(other)
+    }
 }
 
 impl SortOperator {
@@ -334,7 +437,19 @@ impl SortOperator {
             emit_idx: 0,
             sort_col_indices,
             out_schema: None,
+            topk: None,
+            assume_lex_sorted_string_ids: false,
         }
+    }
+
+    /// Create a sort operator with a top-k optimization.
+    ///
+    /// This is safe only when downstream semantics don't depend on rows beyond k
+    /// (e.g., ORDER BY ... LIMIT k without DISTINCT/OFFSET applied after sort).
+    pub fn new_topk(child: BoxedOperator, sort_specs: Vec<SortSpec>, k: usize) -> Self {
+        let mut op = Self::new(child, sort_specs);
+        op.topk = Some(k);
+        op
     }
 
     /// Trim output to only the specified downstream variables.
@@ -381,6 +496,12 @@ impl Operator for SortOperator {
         self.child.open(ctx).await?;
         self.buffer = None;
         self.emit_idx = 0;
+        self.assume_lex_sorted_string_ids = ctx
+            .graph_view()
+            .map(|gv| gv.store().lex_sorted_string_ids())
+            .unwrap_or(false)
+            // Temporary override for benchmarking existing roots without the flag set.
+            || std::env::var("FLUREE_ASSUME_LEX_STRING_IDS").ok().as_deref() == Some("1");
         self.state = OperatorState::Open;
         Ok(())
     }
@@ -399,6 +520,7 @@ impl Operator for SortOperator {
                 "sort_blocking",
                 sort_keys = self.sort_col_indices.len(),
                 schema_cols = self.in_schema.len(),
+                topk = self.topk.unwrap_or(0),
                 input_batches = tracing::field::Empty,
                 input_rows = tracing::field::Empty,
                 drain_ms = tracing::field::Empty,
@@ -411,7 +533,16 @@ impl Operator for SortOperator {
             // trace contamination in tokio's multi-threaded runtime).
             let buffer = async {
                 let span = tracing::Span::current();
+                let use_streaming_topk = self.topk.is_some();
                 let mut all_rows: Vec<Vec<Binding>> = Vec::new();
+                let mut heap: Option<BinaryHeap<HeapRow>> = self.topk.map(|k| {
+                    // ORDER BY ... LIMIT 0 => empty result.
+                    if k == 0 {
+                        BinaryHeap::new()
+                    } else {
+                        BinaryHeap::with_capacity(k + 1)
+                    }
+                });
 
                 // Drain child operator
                 let drain_start = Instant::now();
@@ -419,6 +550,7 @@ impl Operator for SortOperator {
                 let mut input_rows: u64 = 0;
                 let mut child_next_ms: u64 = 0;
                 let mut build_rows_ms: u64 = 0;
+                let k = self.topk.unwrap_or(0);
                 loop {
                     let next_start = Instant::now();
                     let next = self
@@ -441,7 +573,34 @@ impl Operator for SortOperator {
                         let row: Vec<Binding> = (0..self.in_schema.len())
                             .map(|col| batch.get_by_col(row_idx, col).clone())
                             .collect();
-                        all_rows.push(row);
+                        if use_streaming_topk {
+                            if k == 0 {
+                                continue;
+                            }
+                            let mut row = row;
+                            if let Some(gv) = ctx.graph_view() {
+                                materialize_sort_keys_in_row(
+                                    &mut row,
+                                    &self.sort_col_indices,
+                                    &gv,
+                                    self.assume_lex_sorted_string_ids,
+                                );
+                            }
+                            let candidate =
+                                HeapRow::from_row(row, &self.sort_col_indices, &self.sort_specs);
+                            let h = heap.as_mut().expect("heap initialized when topk set");
+                            if h.len() < k {
+                                h.push(candidate);
+                            } else if let Some(worst) = h.peek() {
+                                // BinaryHeap is a max-heap; peek() is the worst row (last by ordering).
+                                if candidate.cmp_key(worst) == Ordering::Less {
+                                    let _ = h.pop();
+                                    h.push(candidate);
+                                }
+                            }
+                        } else {
+                            all_rows.push(row);
+                        }
                     }
                     build_rows_ms += (build_start.elapsed().as_secs_f64() * 1000.0) as u64;
                 }
@@ -453,16 +612,49 @@ impl Operator for SortOperator {
                 // materialize ONLY the ORDER BY key columns before sorting.
                 let sort_execute_span = tracing::debug_span!(
                     "sort_execute",
-                    total_rows = all_rows.len(),
+                    total_rows = if use_streaming_topk {
+                        heap.as_ref().map(|h| h.len()).unwrap_or(0)
+                    } else {
+                        all_rows.len()
+                    },
                     sort_columns = self.sort_col_indices.len(),
                     materialize = ctx.graph_view().is_some(),
                 );
                 let _sort_exec_guard = sort_execute_span.enter();
-                if let Some(gv) = ctx.graph_view() {
-                    materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, &gv);
+                if !use_streaming_topk {
+                    if let Some(gv) = ctx.graph_view() {
+                        materialize_sort_keys_in_rows(
+                            &mut all_rows,
+                            &self.sort_col_indices,
+                            &gv,
+                            self.assume_lex_sorted_string_ids,
+                        );
+                    }
+                    if let Some(k) = self.topk {
+                        if k == 0 {
+                            all_rows.clear();
+                        } else if all_rows.len() > k {
+                            // Keep only the first k rows by ordering.
+                            let nth = k - 1;
+                            all_rows.select_nth_unstable_by(nth, |a, b| self.compare_rows(a, b));
+                            all_rows.truncate(k);
+                        }
+                    }
                 }
                 let sort_start = Instant::now();
-                all_rows.sort_by(|a, b| self.compare_rows(a, b));
+                let out_rows: Vec<Vec<Binding>> = if use_streaming_topk {
+                    let mut rows: Vec<Vec<Binding>> = heap
+                        .take()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|r| r.row)
+                        .collect();
+                    rows.sort_by(|a, b| self.compare_rows(a, b));
+                    rows
+                } else {
+                    all_rows.sort_by(|a, b| self.compare_rows(a, b));
+                    all_rows
+                };
                 let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
                 drop(_sort_exec_guard);
 
@@ -473,7 +665,7 @@ impl Operator for SortOperator {
                 span.record("child_next_ms", child_next_ms);
                 span.record("build_rows_ms", build_rows_ms);
 
-                Ok::<_, crate::error::QueryError>(all_rows)
+                Ok::<_, crate::error::QueryError>(out_rows)
             }
             .instrument(span)
             .await?;

@@ -23,10 +23,12 @@ use crate::fast_group_count_firsts::{
     GroupByObjectStarTopKOperator, PredicateGroupCountFirstsOperator,
     PredicateObjectCountFirstsOperator,
 };
+use crate::fast_label_regex_type::label_regex_type_operator;
 use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
 use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
 use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
 use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
+use crate::fast_star_const_order_topk::star_const_ordered_limit_operator;
 use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
 use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
 use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
@@ -41,6 +43,7 @@ use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, QueryOutput};
 use crate::project::ProjectOperator;
+use crate::sort::SortDirection;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::triple::{Ref, Term, TriplePattern};
@@ -96,6 +99,314 @@ fn find_two_hop_chain(
             Some((a, p1, b1, p2, c))
         };
     try_order(t1, t2).or_else(|| try_order(t2, t1))
+}
+
+#[derive(Clone)]
+struct StarConstOrderTopKSpec {
+    subject_var: VarId,
+    label_var: VarId,
+    label_pred: Ref,
+    const_constraints: Vec<(Ref, Term)>,
+    numeric_pred: Ref,
+    numeric_threshold: crate::triple::Term, // stored as Term::Value for convenience
+    limit: usize,
+}
+
+/// Detect a common benchmark shape:
+/// - Same-subject star constraints with **constant IRI-ref objects**: `?s <p> <o>`
+/// - One numeric predicate with `FILTER(?v > K)` used only as an existence constraint
+/// - One label predicate whose object var is ORDER BY key
+/// - SELECT DISTINCT of exactly `(?s, ?label)` plus `ORDER BY ?label LIMIT k`
+fn detect_star_const_numeric_label_order_limit(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<StarConstOrderTopKSpec> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.distinct
+        || options.offset.is_some()
+        || !options.group_by.is_empty()
+        || !options.aggregates.is_empty()
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+    {
+        return None;
+    }
+    let limit = options.limit?;
+    if limit == 0 {
+        return None;
+    }
+    if options.order_by.len() != 1 {
+        return None;
+    }
+    let ob = &options.order_by[0];
+    if ob.direction != SortDirection::Ascending {
+        return None;
+    }
+    let label_var = ob.var;
+
+    // Must select exactly (?s, ?label) in any order.
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 2 || !select_vars.contains(&label_var) {
+        return None;
+    }
+
+    // Only triples + a single FILTER.
+    let mut triples: Vec<&TriplePattern> = Vec::new();
+    let mut filters: Vec<&crate::ir::Expression> = Vec::new();
+    for p in &query.patterns {
+        match p {
+            crate::ir::Pattern::Triple(tp) => triples.push(tp),
+            crate::ir::Pattern::Filter(expr) => filters.push(expr),
+            _ => return None,
+        }
+    }
+    if triples.len() < 3 || filters.len() != 1 {
+        return None;
+    }
+
+    // All triples share the same subject var.
+    let mut subject_var: Option<VarId> = None;
+    for tp in &triples {
+        let Ref::Var(sv) = &tp.s else { return None };
+        match subject_var {
+            None => subject_var = Some(*sv),
+            Some(x) if x != *sv => return None,
+            _ => {}
+        }
+        if tp.dtc.is_some() {
+            return None;
+        }
+        if !tp.p_bound() {
+            return None;
+        }
+    }
+    let subject_var = subject_var?;
+    if !select_vars.contains(&subject_var) {
+        return None;
+    }
+
+    // Find the label triple: ?s <p_label> ?label where ?label is ORDER BY var.
+    let mut label_pred: Option<Ref> = None;
+    for tp in &triples {
+        if matches!(&tp.o, Term::Var(v) if *v == label_var) {
+            if label_pred.is_some() {
+                return None;
+            }
+            label_pred = Some(tp.p.clone());
+        }
+    }
+    let label_pred = label_pred?;
+
+    // Extract numeric threshold from FILTER(?v > K) and find matching triple ?s <p_num> ?v.
+    let (value_var, thr_value) = extract_simple_gt_threshold(filters[0])?;
+    let mut numeric_pred: Option<Ref> = None;
+    for tp in &triples {
+        if matches!(&tp.o, Term::Var(v) if *v == value_var) {
+            if numeric_pred.is_some() {
+                return None;
+            }
+            numeric_pred = Some(tp.p.clone());
+        }
+    }
+    let numeric_pred = numeric_pred?;
+    // Numeric var must not be selected.
+    if select_vars.contains(&value_var) {
+        return None;
+    }
+
+    // All remaining triples must be constant IRI-ref object constraints: ?s <p> <oRef>
+    let mut const_constraints: Vec<(Ref, Term)> = Vec::new();
+    for tp in &triples {
+        if tp.p == label_pred && matches!(&tp.o, Term::Var(v) if *v == label_var) {
+            continue;
+        }
+        if tp.p == numeric_pred && matches!(&tp.o, Term::Var(v) if *v == value_var) {
+            continue;
+        }
+        match &tp.o {
+            Term::Sid(_) | Term::Iri(_) => const_constraints.push((tp.p.clone(), tp.o.clone())),
+            _ => return None,
+        }
+    }
+    if const_constraints.is_empty() {
+        return None;
+    }
+
+    Some(StarConstOrderTopKSpec {
+        subject_var,
+        label_var,
+        label_pred,
+        const_constraints,
+        numeric_pred,
+        numeric_threshold: Term::Value(thr_value),
+        limit,
+    })
+}
+
+fn extract_simple_gt_threshold(
+    expr: &crate::ir::Expression,
+) -> Option<(VarId, fluree_db_core::FlakeValue)> {
+    use crate::ir::{Expression, FilterValue, Function};
+    let Expression::Call { func, args } = expr else {
+        return None;
+    };
+    if *func != Function::Gt || args.len() != 2 {
+        return None;
+    }
+    let (Expression::Var(v), Expression::Const(c)) = (&args[0], &args[1]) else {
+        return None;
+    };
+    let thr = match c {
+        FilterValue::Long(n) => fluree_db_core::FlakeValue::Long(*n),
+        FilterValue::Double(d) => fluree_db_core::FlakeValue::Double(*d),
+        _ => return None,
+    };
+    Some((*v, thr))
+}
+
+#[derive(Clone)]
+struct LabelRegexTypeSpec {
+    subject_var: VarId,
+    label_var: VarId,
+    label_pred: Ref,
+    class_term: Term,
+    regex_pattern: Arc<str>,
+    regex_flags: Arc<str>,
+}
+
+/// Detect:
+/// `?s rdfs:label ?label . ?s rdf:type <Class> . FILTER regex(?label, "pat"[, "flags"])`
+/// with plain SELECT of exactly `(?s, ?label)` (no ORDER BY/LIMIT/DISTINCT).
+fn detect_label_regex_type(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<LabelRegexTypeSpec> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if options.distinct
+        || options.limit.is_some()
+        || options.offset.is_some()
+        || !options.order_by.is_empty()
+        || !options.group_by.is_empty()
+        || !options.aggregates.is_empty()
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+    {
+        return None;
+    }
+
+    let select = query.output.select_vars()?;
+    if select.len() != 2 {
+        return None;
+    }
+
+    let mut triples: Vec<&TriplePattern> = Vec::new();
+    let mut filters: Vec<&crate::ir::Expression> = Vec::new();
+    for p in &query.patterns {
+        match p {
+            Pattern::Triple(tp) => triples.push(tp),
+            Pattern::Filter(expr) => filters.push(expr),
+            _ => return None,
+        }
+    }
+    if triples.len() != 2 || filters.len() != 1 {
+        return None;
+    }
+
+    // Determine subject var (must be same in both).
+    let Ref::Var(sv0) = &triples[0].s else {
+        return None;
+    };
+    let Ref::Var(sv1) = &triples[1].s else {
+        return None;
+    };
+    if sv0 != sv1 {
+        return None;
+    }
+    let subject_var = *sv0;
+    if !select.contains(&subject_var) {
+        return None;
+    }
+
+    // Find label triple (?s <p> ?label) and type triple (?s rdf:type <Class>).
+    let mut label_pred: Option<Ref> = None;
+    let mut label_var: Option<VarId> = None;
+    let mut class_term: Option<Term> = None;
+    for tp in &triples {
+        if tp.dtc.is_some() || !tp.p_bound() {
+            return None;
+        }
+        if matches!(&tp.o, Term::Var(_)) {
+            // Candidate label triple.
+            let Term::Var(lv) = &tp.o else { unreachable!() };
+            if label_pred.is_some() {
+                return None;
+            }
+            label_pred = Some(tp.p.clone());
+            label_var = Some(*lv);
+        } else if tp.p.is_rdf_type() {
+            // Candidate type triple.
+            class_term = Some(tp.o.clone());
+        } else {
+            return None;
+        }
+    }
+    let (label_pred, label_var, class_term) = (label_pred?, label_var?, class_term?);
+    if !select.contains(&label_var) {
+        return None;
+    }
+
+    // Filter must be regex(?label, "pat"[, "flags"]) with constant strings.
+    let (pattern, flags) = extract_regex_const_pattern(filters[0], label_var)?;
+
+    Some(LabelRegexTypeSpec {
+        subject_var,
+        label_var,
+        label_pred,
+        class_term,
+        regex_pattern: pattern,
+        regex_flags: flags,
+    })
+}
+
+fn extract_regex_const_pattern(
+    expr: &crate::ir::Expression,
+    label_var: VarId,
+) -> Option<(Arc<str>, Arc<str>)> {
+    use crate::ir::{Expression, FilterValue, Function};
+    let Expression::Call { func, args } = expr else {
+        return None;
+    };
+    if *func != Function::Regex {
+        return None;
+    }
+    if args.len() != 2 && args.len() != 3 {
+        return None;
+    }
+    if !matches!(&args[0], Expression::Var(v) if *v == label_var) {
+        return None;
+    }
+    let Expression::Const(FilterValue::String(pat)) = &args[1] else {
+        return None;
+    };
+    let flags: Arc<str> = if args.len() == 3 {
+        let Expression::Const(FilterValue::String(f)) = &args[2] else {
+            return None;
+        };
+        Arc::from(f.as_str())
+    } else {
+        Arc::from("")
+    };
+    Some((Arc::from(pat.as_str()), flags))
 }
 
 /// Validate that a query has a single `COUNT(*)` aggregate with standard constraints.
@@ -1747,6 +2058,43 @@ fn build_operator_tree_inner(
         }
     }
 
+    // Fast-path: constant-object star constraints + numeric existence filter + label ORDER BY + LIMIT.
+    if enable_fused_fast_paths {
+        if let Some(spec) = detect_star_const_numeric_label_order_limit(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            let threshold = match spec.numeric_threshold {
+                Term::Value(v) => v,
+                _ => return Ok(fallback),
+            };
+            return Ok(star_const_ordered_limit_operator(
+                spec.subject_var,
+                spec.label_var,
+                spec.label_pred,
+                spec.const_constraints,
+                spec.numeric_pred,
+                threshold,
+                spec.limit,
+                Some(fallback),
+            ));
+        }
+    }
+
+    // Fast-path: label scan + regex filter + rdf:type membership check.
+    if enable_fused_fast_paths {
+        if let Some(spec) = detect_label_regex_type(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(label_regex_type_operator(
+                spec.subject_var,
+                spec.label_var,
+                spec.label_pred,
+                spec.class_term,
+                spec.regex_pattern,
+                spec.regex_flags,
+                Some(fallback),
+            ));
+        }
+    }
+
     // Fast-path: `?s <p_group> ?o GROUP BY ?o` top-k with same-subject star constraints:
     // `?s <p_group> ?o . ?s <p_filter1> ?x1 . ...`
     //
@@ -1922,6 +2270,7 @@ fn build_operator_tree_inner(
         stats,
         &needed_where_vars,
         &options.group_by,
+        options.distinct,
         required_where_vars,
     )?;
 
@@ -2103,18 +2452,46 @@ fn build_operator_tree_inner(
     // Get the schema after grouping/aggregation/binds (for validation)
     let post_group_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
 
-    // ORDER BY (before projection - may reference vars not in SELECT)
+    // ORDER BY, PROJECT, DISTINCT, OFFSET, LIMIT
+    //
+    // SPARQL algebra conversion order is: ORDER BY → PROJECT → DISTINCT → SLICE.
+    //
+    // Generic optimization for DISTINCT SELECT queries:
+    // If ORDER BY references ONLY projected variables, we can safely perform
+    // PROJECT + DISTINCT before ORDER BY. This can drastically reduce sort input
+    // size (and allow top-k truncation) while preserving semantics:
+    // duplicates eliminated by DISTINCT have identical sort keys, so removing
+    // them before sorting does not change the ordered set of unique solutions.
+    let select_vars_opt: Option<&[VarId]> = query.output.select_vars();
+    let can_project_distinct_before_sort = options.distinct
+        && !options.order_by.is_empty()
+        && select_vars_opt.is_some_and(|vars| {
+            !vars.is_empty() && options.order_by.iter().all(|s| vars.contains(&s.var))
+        });
+
+    // Validate SELECT vars (when present) exist in the post-group schema.
+    if let Some(vars) = select_vars_opt {
+        if !vars.is_empty() {
+            for var in vars {
+                if !post_group_schema.contains(var) {
+                    return Err(QueryError::VariableNotFound(format!(
+                        "Selected variable {:?} not found in query schema",
+                        var
+                    )));
+                }
+            }
+        }
+    }
+
+    // Validate ORDER BY vars exist in the post-group schema and are allowed under grouping.
     if !options.order_by.is_empty() {
-        // Validate sort vars exist in current schema
         // Disallow sorting on Grouped variables (non-key, non-aggregated) because comparison is undefined.
         let mut allowed_sort_vars: Option<std::collections::HashSet<VarId>> = None;
         if needs_grouping {
             let mut allowed = std::collections::HashSet::new();
-            // GROUP BY keys are scalar
             for v in &options.group_by {
                 allowed.insert(*v);
             }
-            // Aggregate outputs are scalar
             for spec in &options.aggregates {
                 allowed.insert(spec.output_var);
             }
@@ -2136,35 +2513,70 @@ fn build_operator_tree_inner(
                 }
             }
         }
-        operator = Box::new(
-            SortOperator::new(operator, options.order_by.clone()).with_out_schema(
+    }
+
+    if can_project_distinct_before_sort {
+        // PROJECT
+        if let Some(vars) = select_vars_opt {
+            operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+        }
+        // DISTINCT (pre-sort)
+        operator = Box::new(DistinctOperator::new(operator));
+
+        // ORDER BY (post-distinct, projected vars only)
+        let k = match (options.limit, options.offset) {
+            (Some(limit), Some(offset)) => limit.saturating_add(offset),
+            (Some(limit), None) => limit,
+            _ => 0,
+        };
+        let can_topk = options.limit.is_some();
+        let mut sort_op = if can_topk {
+            SortOperator::new_topk(operator, options.order_by.clone(), k)
+        } else {
+            SortOperator::new(operator, options.order_by.clone())
+        };
+        sort_op = sort_op.with_out_schema(
+            variable_deps
+                .as_ref()
+                .map(|d| d.required_sort_vars.as_slice()),
+        );
+        operator = Box::new(sort_op);
+    } else {
+        // ORDER BY (before projection - may reference vars not in SELECT)
+        if !options.order_by.is_empty() {
+            // Safe top-k: ORDER BY + (OFFSET o) + LIMIT l can keep only (o + l) rows.
+            //
+            // This is safe when DISTINCT is not in play because slicing happens after sorting.
+            let can_topk = options.limit.is_some() && !options.distinct;
+            let k = match (options.limit, options.offset) {
+                (Some(limit), Some(offset)) => limit.saturating_add(offset),
+                (Some(limit), None) => limit,
+                _ => 0,
+            };
+            let mut sort_op = if can_topk {
+                SortOperator::new_topk(operator, options.order_by.clone(), k)
+            } else {
+                SortOperator::new(operator, options.order_by.clone())
+            };
+            sort_op = sort_op.with_out_schema(
                 variable_deps
                     .as_ref()
                     .map(|d| d.required_sort_vars.as_slice()),
-            ),
-        );
-    }
-
-    // PROJECT (select specific columns)
-    // Skip projection for CONSTRUCT/Wildcard/Boolean - only Select/SelectOne project
-    if let Some(vars) = query.output.select_vars() {
-        if !vars.is_empty() {
-            // Validate all select vars exist in schema
-            for var in vars {
-                if !post_group_schema.contains(var) {
-                    return Err(QueryError::VariableNotFound(format!(
-                        "Selected variable {:?} not found in query schema",
-                        var
-                    )));
-                }
-            }
-            operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            );
+            operator = Box::new(sort_op);
         }
-    }
 
-    // DISTINCT (after projection)
-    if options.distinct {
-        operator = Box::new(DistinctOperator::new(operator));
+        // PROJECT
+        if let Some(vars) = select_vars_opt {
+            if !vars.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, vars.to_vec()));
+            }
+        }
+
+        // DISTINCT (after projection)
+        if options.distinct {
+            operator = Box::new(DistinctOperator::new(operator));
+        }
     }
 
     // OFFSET
@@ -2216,6 +2628,65 @@ mod tests {
             graph_select: None,
             post_values: None,
         }
+    }
+
+    #[test]
+    fn test_detect_star_const_numeric_label_order_limit() {
+        let s = VarId(0);
+        let label = VarId(1);
+        let v = VarId(2);
+
+        let p_label = Ref::Sid(Sid::new(100, "label"));
+        let p_num = Ref::Sid(Sid::new(100, "num"));
+        let p_c1 = Ref::Sid(Sid::new(100, "c1"));
+        let p_c2 = Ref::Sid(Sid::new(100, "c2"));
+
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(s),
+                p_label.clone(),
+                Term::Var(label),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(s),
+                p_c1.clone(),
+                Term::Sid(Sid::new(100, "o1")),
+            )),
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(s),
+                p_c2.clone(),
+                Term::Sid(Sid::new(100, "o2")),
+            )),
+            Pattern::Triple(TriplePattern::new(Ref::Var(s), p_num.clone(), Term::Var(v))),
+            Pattern::Filter(crate::ir::Expression::gt(
+                crate::ir::Expression::Var(v),
+                crate::ir::Expression::Const(crate::ir::FilterValue::Long(50)),
+            )),
+        ];
+
+        let query = ParsedQuery {
+            context: ParsedContext::default(),
+            orig_context: None,
+            output: QueryOutput::Select(vec![s, label]),
+            patterns,
+            options: QueryOptions::default(),
+            graph_select: None,
+            post_values: None,
+        };
+
+        let opts = QueryOptions::new()
+            .with_distinct()
+            .with_limit(10)
+            .with_order_by(vec![SortSpec::asc(label)]);
+
+        let spec = detect_star_const_numeric_label_order_limit(&query, &opts)
+            .expect("should detect shape");
+        assert_eq!(spec.subject_var, s);
+        assert_eq!(spec.label_var, label);
+        assert_eq!(spec.limit, 10);
+        assert_eq!(spec.const_constraints.len(), 2);
+        assert_eq!(spec.numeric_pred, p_num);
+        assert_eq!(spec.label_pred, p_label);
     }
 
     #[test]

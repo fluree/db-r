@@ -593,38 +593,6 @@ mem:fact-01kjte2qeekkgz4dryv84sqq8e a mem:Fact ;
     mem:createdAt "2026-03-03T18:06:34.446036+00:00"^^xsd:dateTime ;
     mem:factKind "command" .
 
-mem:fact-01kk1sq2xwmxsqe828pgk28svw a mem:Fact ;
-    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06 on fix/sparql-xsd-casts)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 225/327 (68.8%) — up from 214/327 (65.4%) after #46 fix\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%) — ✅ #54 closed\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%) — ✅ #48 closed (PR #75)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- cast: 6/6 (100%) — ✅ #46 (fix/sparql-xsd-casts branch)\n- construct: 0/7 (0%) — #53\n\nClosed since last update: #46 (PR pending)\nAlso closed: #48 (PR #75), #54 (PR #74)\n\nOpen: #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
-    mem:tag "compliance" ;
-    mem:tag "issue-55" ;
-    mem:tag "sparql" ;
-    mem:tag "status" ;
-    mem:tag "test-counts" ;
-    mem:tag "tracking" ;
-    mem:tag "w3c" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
-    mem:branch "main" ;
-    mem:supersedes mem:fact-01kk1qbna7qqqk6hck165kcjcy ;
-    mem:createdAt "2026-03-06T14:44:36.924914+00:00"^^xsd:dateTime ;
-    mem:factKind "api" .
-
-mem:fact-01kk20kbgep6w9wdw6tvs8tgsn a mem:Fact ;
-    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 225/327 (68.8%)\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%)\n- cast: 6/6 (100%) — PR #83\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
-    mem:tag "compliance" ;
-    mem:tag "issue-55" ;
-    mem:tag "sparql" ;
-    mem:tag "status" ;
-    mem:tag "w3c" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
-    mem:branch "main" ;
-    mem:supersedes mem:fact-01kk1sq2xwmxsqe828pgk28svw ;
-    mem:createdAt "2026-03-06T16:44:54.670405+00:00"^^xsd:dateTime ;
-    mem:factKind "api" .
-
 mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
     mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-09)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 241/327 (73.7%)\n\nSPARQL 1.1 per-category:\n- bind: 10/10 (100%) — FIXED in #51\n- cast: 6/6 (100%) — PR #83\n- negation: 12/12 (100%)\n- bindings: 10/11 (91%) — FIXED in #51 (remaining: graph test needs named graph support)\n- syntax-query: 81/94 (86%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- aggregates: 27/46 (59%)\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
     mem:tag "compliance" ;
@@ -636,6 +604,331 @@ mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
     mem:sensitivity "public" ;
     mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
     mem:branch "main" ;
-    mem:supersedes mem:fact-01kk20kbgep6w9wdw6tvs8tgsn ;
     mem:createdAt "2026-03-09T14:42:16.841273+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+
+mem:decision-01kkm7rvsg9ckza0rssnhd9h7t a mem:Decision ;
+    mem:content "Implemented SPARQL DESCRIBE by lowering it to a CONSTRUCT-style graph expansion that returns outgoing triples for described resources: bind a synthetic `?__describe` (via VALUES for explicit IRIs and/or a subquery over the WHERE clause), then match `?__describe ?p ?o` and output as `QueryOutput::Construct`. This avoids full-graph scans when no targets bind (empty VALUES guard) and is benchmark-friendly (BSBM query 9). Also updated tracked query formatting (view + dataset) and CLI `fluree query` to auto-format CONSTRUCT/DESCRIBE as JSON-LD instead of SPARQL-JSON (which would error)." ;
+    mem:tag "benchmark" ;
+    mem:tag "cli" ;
+    mem:tag "construct" ;
+    mem:tag "describe" ;
+    mem:tag "formatting" ;
+    mem:tag "lowering" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/query/sparql.md" ;
+    mem:artifactRef "docs/reference/compatibility.md" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset_query.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/query.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/describe.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/mod.rs" ;
+    mem:createdAt "2026-03-13T18:36:34.992265+00:00"^^xsd:dateTime ;
+    mem:rationale "DESCRIBE semantics are implementation-defined; outgoing-triple expansion is simple, fast, and matches BSBM usage while preserving modifier semantics via a subquery." ;
+    mem:alternatives "Per-resource secondary queries (slower), include incoming triples too (more expensive output), single-query join without subquery (LIMIT/OFFSET semantics wrong)." .
+
+mem:fact-01kkmfektg8ednzhkrsh09dck4 a mem:Fact ;
+    mem:content "SPARQL Results XML (`application/sparql-results+xml`) is now supported via `FormatterConfig::sparql_xml()` in fluree-db-api. Server ledger-scoped SPARQL endpoint honors `Accept: application/sparql-results+xml` for non-tracked, non-identity, non-proxy SPARQL queries by returning SPARQL Results XML (SELECT/ASK only). CONSTRUCT/DESCRIBE are rejected for this format. Implementation lives in `fluree-db-api/src/format/sparql_xml.rs` and is wired through `format_results_string(_async)`; server wiring in `fluree-db-server/src/routes/query.rs` with header helper `FlureeHeaders::wants_sparql_results_xml()`." ;
+    mem:tag "accept" ;
+    mem:tag "content-negotiation" ;
+    mem:tag "formatting" ;
+    mem:tag "server" ;
+    mem:tag "sparql" ;
+    mem:tag "xml" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/api/headers.md" ;
+    mem:artifactRef "fluree-db-api/src/format/config.rs" ;
+    mem:artifactRef "fluree-db-api/src/format/mod.rs" ;
+    mem:artifactRef "fluree-db-api/src/format/sparql_xml.rs" ;
+    mem:artifactRef "fluree-db-server/src/extract/headers.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/query.rs" ;
+    mem:createdAt "2026-03-13T20:50:47.760546+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:decision-01kkmfs0sktrfn7ny36wzmwv9n a mem:Decision ;
+    mem:content "Added RDF/XML output for SPARQL CONSTRUCT/DESCRIBE via API `FormatterConfig::rdf_xml()` + server `Accept: application/rdf+xml`. Implementation uses construct template instantiation into `fluree_graph_ir::Graph` (shared helper `instantiate_construct_graph`) and a minimal RDF/XML serializer that requires predicate IRIs to be QName-splittable (last '#' or '/' and NCName local). Server rejects RDF/XML for SELECT/ASK, tracked, proxy-mode, and identity-scoped SPARQL paths; supports it for ledger-scoped SPARQL, including dataset-clause queries." ;
+    mem:tag "accept" ;
+    mem:tag "construct" ;
+    mem:tag "describe" ;
+    mem:tag "formatting" ;
+    mem:tag "rdfxml" ;
+    mem:tag "server" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/api/headers.md" ;
+    mem:artifactRef "fluree-db-api/src/format/config.rs" ;
+    mem:artifactRef "fluree-db-api/src/format/construct.rs" ;
+    mem:artifactRef "fluree-db-api/src/format/rdf_xml.rs" ;
+    mem:artifactRef "fluree-db-server/src/extract/headers.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/query.rs" ;
+    mem:createdAt "2026-03-13T20:56:28.723996+00:00"^^xsd:dateTime ;
+    mem:rationale "BSBM testdriver requests RDF/XML for DESCRIBE. Implementing a full general RDF/XML QName mapping is complex; current serializer targets typical benchmark IRIs with safe local names and fails fast otherwise." .
+
+mem:fact-01kkp0yq2pef5qjn1nt8zvb19b a mem:Fact ;
+    mem:content "Explain plans: CLI and HTTP now support SPARQL explain.\n\n- CLI: `fluree query --explain --sparql ...` (and JSON-LD) prints the plan as JSON without executing.\n- Server: added `/v1/fluree/explain/<ledger...>` supporting `application/json` (JSON-LD) and `application/sparql-query` (SPARQL). Root `/v1/fluree/explain` also accepts SPARQL when ledger can be determined via `fluree-ledger` header or a single `FROM <ledger>`.\n- Docs updated to use `/v1/fluree/explain` (no `X-Fluree-Explain` header)." ;
+    mem:tag "cli" ;
+    mem:tag "docs" ;
+    mem:tag "explain" ;
+    mem:tag "jsonld" ;
+    mem:tag "server" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/query/explain.md" ;
+    mem:artifactRef "docs/troubleshooting/debugging-queries.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/query.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/mod.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/query.rs" ;
+    mem:createdAt "2026-03-14T11:15:55.606042+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01kkp1bq52zsgf347sjvah2dt3 a mem:Fact ;
+    mem:content "Query perf gotcha (fixed): in `build_where_operators_seeded_with_needed`, the join-block logic previously forced range-bounded object scans (FILTER-derived object bounds) to the front of a triple block unconditionally. For OPTIONAL blocks like BSBM Product/Offer with `?offer validTo ?date` + FILTER, this could start with a broad predicate scan and then do per-row SPOT lookups for a selective triple (e.g., `?offer bsbm:product <ProductX>`), causing ~20k * per-row open (~50s).\n\nFix: only promote a bounded triple to the front when its estimated row count (via `estimate_triple_row_count` with current bound vars + stats) is <= the current first triple's estimate." ;
+    mem:tag "bounds" ;
+    mem:tag "bsbm" ;
+    mem:tag "filter-pushdown" ;
+    mem:tag "optional" ;
+    mem:tag "performance" ;
+    mem:tag "planner" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:createdAt "2026-03-14T11:23:01.666802+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkp5zrmmdhzrpyzq3s3thncn a mem:Fact ;
+    mem:content "Query perf optimization added in fluree-db-query:\n- New fused fast path `fast_star_const_order_topk::star_const_ordered_limit_operator` for queries shaped like: same-subject star constraints with constant IRI-ref objects (`?s <p> <o>`), a numeric existence filter `?s <p_num> ?v FILTER(?v > K)`, and `?s <p_label> ?label` with `SELECT DISTINCT ?s ?label ORDER BY ?label LIMIT k`.\n- Implementation: intersect subject sets via PSOT scans using `collect_subjects_with_object_in_set`, then scan PSOT(p_num) only over candidate subject ranges to apply numeric threshold (integer/double encoded o_key compare), then fetch string labels via PSOT(p_label), DISTINCT pairs, sort by label, truncate to limit.\n- Wired via `detect_star_const_numeric_label_order_limit` in `execute/operator_tree.rs` (single-ledger, binary-index, HEAD-only; otherwise falls back).\n\nAlso improved SortOperator:\n- `SortOperator::new_topk` + optional `topk` uses `select_nth_unstable_by` to reduce ORDER BY sort cost when safe (ORDER BY + LIMIT with no DISTINCT/OFFSET)." ;
+    mem:tag "bsbm" ;
+    mem:tag "fast-path" ;
+    mem:tag "intersection" ;
+    mem:tag "limit" ;
+    mem:tag "order-by" ;
+    mem:tag "performance" ;
+    mem:tag "psot" ;
+    mem:tag "query" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_star_const_order_topk.rs" ;
+    mem:artifactRef "fluree-db-query/src/sort.rs" ;
+    mem:createdAt "2026-03-14T12:43:52.852889+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkpezcasam1yf0cfeh17mh1g a mem:Fact ;
+    mem:content "Perf fast-path improvement: for constant-object star-join constraints `(?s p oRef)` (e.g., BSBM ProductType/ProductFeature), avoid scanning full PSOT predicate partitions. Instead, seek OPST by fixed `(o_type=IRI_REF, o_key=o_s_id, p_id)` using a tight `RunRecordV2` min/max key range plus a `BinaryFilter`, and project `s_id` to collect subjects quickly. This roughly halved the fused star-const ORDER BY/LIMIT query time on bsbm100m (e.g., ~260ms → ~90–130ms for a query shape with real constants). See `fluree-db-query/src/fast_star_const_order_topk.rs::collect_subjects_for_predicate_object_ref_opst`." ;
+    mem:tag "binary-index" ;
+    mem:tag "bsbm" ;
+    mem:tag "fast-path" ;
+    mem:tag "opst" ;
+    mem:tag "psot" ;
+    mem:tag "query-perf" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/fast_star_const_order_topk.rs" ;
+    mem:createdAt "2026-03-14T15:20:57.433027+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkpffqeax5hr1we10836qtzj a mem:Fact ;
+    mem:content "Query perf optimization in fluree-db-query:\n\n1) Generic scan optimization (not query-specific): `BinaryScanOperator` now prefers the object-leading OPST index when the subject is unbound and the object is a constant that can be safely encoded. This avoids pathological scans like PSOT(p, *, o_const) which cannot narrow leaf ranges by `o_key`. Guard: do not force OPST for plain string constants without a datatype constraint (ambiguous xsd:string vs rdf:langString). See `fluree-db-query/src/binary_scan.rs`.\n\n2) Star-join constant-object fast path: `fast_star_const_order_topk::star_const_ordered_limit_operator` for queries shaped like: same-subject star constraints with constant IRI-ref objects (`?s <p> <o>`), a numeric existence filter `?s <p_num> ?v FILTER(?v > K)`, and `?s <p_label> ?label` with `SELECT DISTINCT ?s ?label ORDER BY ?label LIMIT k`. Implementation: intersect candidate subjects, apply numeric threshold over PSOT(p_num) restricted to candidates, fetch labels via PSOT(p_label), DISTINCT pairs, ORDER+LIMIT.\n\n3) ORDER BY + LIMIT behavior: `SortOperator::new_topk` now uses a streaming top-k heap (O(n log k), O(k) memory) rather than buffering all rows, then sorting. This reduces memory pressure and makes expensive sorts less likely to starve other concurrent queries, while remaining semantically correct (still drains the full child stream).\n\nFiles: `fluree-db-query/src/binary_scan.rs`, `fluree-db-query/src/fast_star_const_order_topk.rs`, `fluree-db-query/src/sort.rs`.\n" ;
+    mem:tag "binary-scan" ;
+    mem:tag "concurrency" ;
+    mem:tag "jsonld" ;
+    mem:tag "opst" ;
+    mem:tag "planner" ;
+    mem:tag "query-perf" ;
+    mem:tag "sort" ;
+    mem:tag "sparql" ;
+    mem:tag "topk" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_star_const_order_topk.rs" ;
+    mem:artifactRef "fluree-db-query/src/sort.rs" ;
+    mem:supersedes mem:fact-01kkp5zrmmdhzrpyzq3s3thncn ;
+    mem:createdAt "2026-03-14T15:29:53.098756+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:decision-01kkpnby15haz8aprhpxjdz4mb a mem:Decision ;
+    mem:content "BSBM explore outliers: Q3/Q4/Q5 shapes identified. Q3 is star + OPTIONAL{ feature2 + label } with FILTER(!bound(?testVar)) which acts like an anti-join (products matching base constraints but NOT having a specific feature). Q4 is UNION of two star-shaped branches with ORDER BY + OFFSET + LIMIT and SELECT DISTINCT, which forces broader materialization/sort when duplicates can arise across branches. Q5 is a similarity query joining ProductXYZ features to other products via shared feature plus numeric range filters; naive execution can spend most time in the shared-feature join and candidate expansion before numeric filters reduce rows." ;
+    mem:tag "benchmark" ;
+    mem:tag "bsbm" ;
+    mem:tag "join" ;
+    mem:tag "performance" ;
+    mem:tag "planner" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "benchmarks/bsbm/bsbmtools-0.2/queries/explore/query3.txt" ;
+    mem:artifactRef "benchmarks/bsbm/bsbmtools-0.2/queries/explore/query4.txt" ;
+    mem:artifactRef "benchmarks/bsbm/bsbmtools-0.2/queries/explore/query5.txt" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:createdAt "2026-03-14T17:12:40.229851+00:00"^^xsd:dateTime ;
+    mem:rationale "Provides concrete starting points for targeted generic optimizations (anti-join rewrite, UNION branch planning, semijoin/candidate generation for shared-feature joins) before deeper implementation work." .
+
+mem:fact-01kkppv3c2rf43xyh3wnr3xnf3 a mem:Fact ;
+    mem:content "SPARQL OPTIONAL lowering bug fixed: `fluree-db-sparql/src/lower/pattern.rs` previously split multi-triple OPTIONAL blocks into multiple `Pattern::Optional(vec![...])` ('partial binding'). This is not SPARQL semantics and breaks patterns like BSBM Explore Q3 (OPTIONAL { A . B } FILTER(!bound(?v))) by making `?v` bound via an unrelated OPTIONAL, yielding 0 rows. Fix: always lower `SparqlGraphPattern::Optional` as a single `Pattern::Optional(inner)` group (conjunctive left-join). After fix, Q3 anti-join count returned expected 54 rows on bsbm100m." ;
+    mem:tag "bsbm" ;
+    mem:tag "correctness" ;
+    mem:tag "lowering" ;
+    mem:tag "optional" ;
+    mem:tag "planner" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "benchmarks/bsbm/bsbmtools-0.2/queries/explore/query3.txt" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/pattern.rs" ;
+    mem:createdAt "2026-03-14T17:38:25.794429+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkq2x3m0g7xk0w4bsdzj2p3p a mem:Fact ;
+    mem:content "SPARQL solution modifier parsing bug fixed: `OFFSET` and `LIMIT` were only parsed in the order `LIMIT` then `OFFSET`. Queries written as `... ORDER BY ... OFFSET n LIMIT m` (BSBM Explore Q4 uses this form) would silently drop the LIMIT, causing the engine to execute and return the full ordered result set instead of slicing. Fix in `fluree-db-sparql/src/parse/query/modifier.rs`: parse LIMIT/OFFSET in a loop so either order is accepted; later clauses override earlier ones. After fix, `ORDER BY ... OFFSET 5 LIMIT 10` returns 10 rows as expected." ;
+    mem:tag "bsbm" ;
+    mem:tag "correctness" ;
+    mem:tag "offset" ;
+    mem:tag "limit" ;
+    mem:tag "sparql" ;
+    mem:tag "parser" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/query/modifier.rs" ;
+    mem:createdAt "2026-03-14T19:45:00.000000+00:00"^^xsd:dateTime ;
+    mem:factKind "bugfix" .
+
+mem:fact-01kkq2y4nqj3b6b7v1k3m2q5y6 a mem:Fact ;
+    mem:content "Query perf micro-optimizations:\n- `DistinctOperator` avoids allocating/cloning a `Vec<Binding>` signature for every row by using hashbrown raw-entry lookups; it only materializes the signature when a row is truly new. This reduces allocation pressure in DISTINCT-heavy queries.\n- `prepare_execution` dedups exact duplicate `Pattern::Triple` entries inside conjunctive blocks (recursively, including UNION branches). This is semantics-preserving and helps with generated queries that accidentally repeat identical triple patterns (seen in BSBM Q4 runs where the same productFeature constraint appears twice).\n\nFiles: `fluree-db-query/src/distinct.rs`, `fluree-db-query/src/execute/runner.rs`." ;
+    mem:tag "distinct" ;
+    mem:tag "perf" ;
+    mem:tag "planner" ;
+    mem:tag "sparql" ;
+    mem:tag "query-perf" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/distinct.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/runner.rs" ;
+    mem:createdAt "2026-03-14T19:45:10.000000+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkq57f5xpx815scy9fsb6jzr a mem:Fact ;
+    mem:content "Bulk import string IDs are lex-order-preserving (Tier-2 import path used by `fluree create <ledger> --from <path>`):\n- Each chunk writes a sorted string vocab file (`chunk_NNNNN.strings.voc`) with entries sorted by UTF-8 byte-lex order and uses **sorted-position IDs**.\n- Phase B assigns global string IDs via a k-way merge over those sorted vocab files; the resulting global `StringId` order matches lexicographic string byte order.\n\nDurable signaling (implemented): FIR6 `IndexRoot` now carries `lex_sorted_string_ids: bool`, encoded as a header flag bit (backwards compatible; default false when absent).\n- Set to true by the bulk import V3 FIR6 root assembly in `fluree-db-api/src/import.rs`.\n- Cleared on the first post-import write by `IncrementalRootBuilder::from_old_root()` in `fluree-db-indexer/src/run_index/build/incremental_root.rs` (incremental dict appends break the invariant).\n\nQuery perf impact: when `SortOperator` can assume lex-sorted string IDs for simple xsd:string literals (o_kind=LEX_ID, dt=STRING, lang_id=0) and skips decoding/materialization for ORDER BY comparisons, the query:\n  `SELECT ?s ?l WHERE { ?s rdfs:label ?l } ORDER BY ?l OFFSET 5 LIMIT 10`\n  improved on bsbm100m from ~11.05s to ~54.3ms (~200x).\n\nNote: `fluree-db-query/src/sort.rs` still has a temporary env override `FLUREE_ASSUME_LEX_STRING_IDS=1` for benchmarking older roots that predate the flag." ;
+    mem:tag "benchmark" ;
+    mem:tag "bsbm" ;
+    mem:tag "import" ;
+    mem:tag "index-root" ;
+    mem:tag "k-way-merge" ;
+    mem:tag "lex-order" ;
+    mem:tag "order-by" ;
+    mem:tag "query-perf" ;
+    mem:tag "sort" ;
+    mem:tag "strings" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/import.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/index_root.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/build/incremental_root.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/resolve/chunk_dict.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/runs/spool.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/vocab/vocab_merge.rs" ;
+    mem:artifactRef "fluree-db-query/src/sort.rs" ;
+    mem:createdAt "2026-03-14T21:49:51.165863+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkrmk7w3gpen60ayv8x2yzqk a mem:Fact ;
+    mem:content "BSBM Q5 profiling (via `--verbose` + `RUST_LOG=fluree_db_query=debug`) showed the dominant cost is the **batched object join** for `?product bsbm:productFeature ?prodFeature`: `join batched object flush complete total_ms≈2.9s matched_rows≈38k` before numeric range filters reduce to 5 rows.\n\nOptimizations applied to `NestedLoopJoinOperator::flush_batched_object_accumulator_binary` (`fluree-db-query/src/join.rs`):\n- Avoid decoding ALL columns on leaflet-cache miss: use `LeafletCache::get_v3_batch()` for hits, otherwise decode only `ColumnSet::CORE` via `load_leaflet_columns` (s_id, o_key, p_id, o_type).\n- Within a decoded leaflet, avoid full row scans when `o_key` is a block column: binary-search `o_key` runs for only the object IDs in the accumulator and scan just those row ranges.\n\nObserved effect on a concrete Q5 instance: ~3.35s → ~2.43s (~27% faster), with Q3/Q4 small improvements and no regressions observed on those instances." ;
+    mem:tag "benchmark" ;
+    mem:tag "bsbm" ;
+    mem:tag "join" ;
+    mem:tag "opst" ;
+    mem:tag "performance" ;
+    mem:tag "query-perf" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/column_loader.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/column_types.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:createdAt "2026-03-15T11:37:39.971253+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kkrqp33bzvzb3kw6d5cy2wzv a mem:Fact ;
+    mem:content "Dynamic FILTER-bound pushdown experiment (arithmetic like `?sim < (?orig + k)` / `?sim > (?orig - k)`) was implemented as `DynamicObjectBounds` + runtime per-row `ObjectBounds` in `NestedLoopJoinOperator`, but enabling it caused severe regressions on BSBM Q5 (minutes) due to disabling batched subject joins and triggering per-row SPOT scans / repeated POST scans. The code is now gated behind env var `FLUREE_ENABLE_DYNAMIC_BOUNDS=1` (default off) to avoid regressions; baseline Q5 returns to ~2.5-2.8s. If revisiting, need a join-aware planner change (avoid binding multi-valued join vars early; or add semijoin/intersection operator for `ProductXYZ productFeature ?pf` + `?product productFeature ?pf`) and/or allow batched joins with bounds in a safe way." ;
+    mem:tag "bsbm" ;
+    mem:tag "dynamic-bounds" ;
+    mem:tag "filter-pushdown" ;
+    mem:tag "performance" ;
+    mem:tag "planner" ;
+    mem:tag "q5" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/execute/pushdown.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:createdAt "2026-03-15T12:31:39.115875+00:00"^^xsd:dateTime .
+
+mem:fact-01kkrv61jhs9wn7aded9bm11d9 a mem:Fact ;
+    mem:content "SPARQL FILTER optimization: for 2-arg `=` / `!=` comparisons where one side is a variable bound as `Binding::EncodedSid { s_id }` and the other side evaluates to `ComparableValue::Sid` or `ComparableValue::Iri` (e.g. lowered from `<IRI>` via `IRI()`), we now avoid `resolve_subject_iri()` by looking up the constant's `s_id` via the reverse subject dict (`find_subject_id_by_parts` / `find_subject_id`) and comparing `s_id` numerically. Implemented in `fluree-db-query/src/expression/compare.rs` (`fast_eq_ne_for_encoded_sid`). This prevents early IRI materialization during filters like `FILTER(<ProductXYZ> != ?product)`." ;
+    mem:tag "compare" ;
+    mem:tag "encodedSid" ;
+    mem:tag "filter" ;
+    mem:tag "materialization" ;
+    mem:tag "performance" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/expression/compare.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/eval.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/expression.rs" ;
+    mem:createdAt "2026-03-15T13:32:47.569804+00:00"^^xsd:dateTime .
+
+mem:fact-01kkrw44zc48y3jvkpefzhzenk a mem:Fact ;
+    mem:content "Verification aids for encoded-id filter fast paths: set `FLUREE_LOG_FILTER_FASTPATH_HIT=1` and run CLI with `--verbose` plus `RUST_LOG=fluree_db_query::expression::compare=debug` to see a one-time log confirming the fast path executed (e.g. \"filter encoded-id fast path hit kind=EncodedSid\"). You can also A/B compare behavior by setting `FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH=1` to force the old path (may be noisy in timings)." ;
+    mem:tag "debugging" ;
+    mem:tag "encodedPid" ;
+    mem:tag "encodedSid" ;
+    mem:tag "filter" ;
+    mem:tag "performance" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/expression/compare.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/rdf.rs" ;
+    mem:createdAt "2026-03-15T13:49:14.092254+00:00"^^xsd:dateTime .
+
+mem:decision-01kkvnqthjzjc1h40rx76gpq99 a mem:Decision ;
+    mem:content "SPARQL OPTIONAL semantics: treat `OPTIONAL { A . B }` as a single conjunctive left-join block (no partial binding when only some triples in the block match). Updated integration test accordingly by renaming `sparql_optional_multi_pattern_allows_partial_binding` to `sparql_optional_multi_pattern_requires_conjunctive_match` and changing expected results to all-unbound optional vars when either triple is missing." ;
+    mem:tag "correctness" ;
+    mem:tag "optional" ;
+    mem:tag "sparql" ;
+    mem:tag "tests" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_sparql.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/pattern.rs" ;
+    mem:createdAt "2026-03-16T15:55:22.034971+00:00"^^xsd:dateTime ;
+    mem:rationale "Align behavior with SPARQL algebra semantics and earlier OPTIONAL lowering fix (keep multi-triple OPTIONAL as one Pattern::Optional group). Prevents incorrect partial bindings that break NOT EXISTS / !bound() patterns (e.g., BSBM Q3)." ;
+    mem:alternatives "Keep old behavior by splitting multi-triple OPTIONAL into multiple independent OPTIONALs (non-standard)" .
+
+mem:fact-01kkvp4tyedrqvbxqfnyhabav7 a mem:Fact ;
+    mem:content "Fixed ledger-info caching + named-graph fields:\n- `LedgerInfoBuilder::execute` cache key now includes the current index root CID (`indexId`) in addition to `(ledger_id, commit_t, index_t, opts, graph, ctx_hash)` so reindex allow-equal (same index_t, new root CID) busts the API-level ledger-info cache.\n- `ledger.named-graphs` entries now include per-graph `flakes` and `size` fields (default graph + named graphs) using `IndexStats.graphs` totals.\n\nThese changes make `it_ledger_info_reindex_cache` and `it_ledger_info_reindex_size` pass." ;
+    mem:tag "cache" ;
+    mem:tag "index-root" ;
+    mem:tag "ledger-info" ;
+    mem:tag "reindex" ;
+    mem:tag "tests" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-api/tests/it_ledger_info_reindex_cache.rs" ;
+    mem:artifactRef "fluree-db-api/tests/it_ledger_info_reindex_size.rs" ;
+    mem:createdAt "2026-03-16T16:02:28.430817+00:00"^^xsd:dateTime .

@@ -407,10 +407,25 @@ fn build_ledger_block(
         .map(|r| r.commit_t)
         .unwrap_or(ledger.t());
 
-    // Build named-graphs list
+    let graph_sizes = stats.graphs.as_deref().unwrap_or_default();
+    let graph_totals = |g_id: GraphId| -> (u64, u64) {
+        graph_sizes
+            .iter()
+            .find(|g| g.g_id == g_id)
+            .map(|g| (g.flakes, g.size))
+            .unwrap_or((0, 0))
+    };
+
+    // Build named-graphs list (include per-graph flakes/size when available).
     let mut named_graphs = Vec::new();
     // Always include default graph
-    named_graphs.push(json!({"iri": "urn:default", "g-id": 0}));
+    let (default_flakes, default_size) = graph_totals(0);
+    named_graphs.push(json!({
+        "iri": "urn:default",
+        "g-id": 0,
+        "flakes": default_flakes,
+        "size": default_size,
+    }));
     // Add named graphs from binary store
     if let Some(store) = store {
         for (g_id, iri) in store.graph_entries() {
@@ -418,7 +433,13 @@ fn build_ledger_block(
             if g_id == 1 {
                 continue;
             }
-            named_graphs.push(json!({"iri": iri, "g-id": g_id}));
+            let (flakes, size) = graph_totals(g_id);
+            named_graphs.push(json!({
+                "iri": iri,
+                "g-id": g_id,
+                "flakes": flakes,
+                "size": size,
+            }));
         }
     }
 
@@ -1437,6 +1458,18 @@ where
         {
             let commit_t = ledger.t();
             let index_t = ledger.snapshot.t;
+            let index_id = ledger
+                .head_index_id
+                .as_ref()
+                .map(|c| c.to_string())
+                .or_else(|| {
+                    ledger
+                        .ns_record
+                        .as_ref()
+                        .and_then(|r| r.index_head_id.as_ref())
+                        .map(|c| c.to_string())
+                })
+                .unwrap_or_default();
 
             let ctx_hash: u64 = match self.context {
                 Some(ctx) => {
@@ -1459,10 +1492,11 @@ where
             };
 
             let key_str = format!(
-                "ledger-info:{}:{}:{}:{}:{}:{}:{}",
+                "ledger-info:{}:{}:{}:{}:{}:{}:{}:{}",
                 self.ledger_id,
                 commit_t,
                 index_t,
+                index_id,
                 self.options.realtime_property_details as u8,
                 self.options.include_property_datatypes as u8,
                 graph_key,

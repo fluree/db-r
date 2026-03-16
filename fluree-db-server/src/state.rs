@@ -294,6 +294,26 @@ impl FlureeInstance {
         }
     }
 
+    /// Load a ledger and explain a SPARQL query plan.
+    pub async fn explain_ledger_sparql(
+        &self,
+        ledger_id: &str,
+        sparql: &str,
+    ) -> fluree_db_api::Result<serde_json::Value> {
+        match self {
+            FlureeInstance::File(f) => {
+                let ledger = f.ledger(ledger_id).await?;
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                f.explain_sparql(&db, sparql).await
+            }
+            FlureeInstance::Proxy(p) => {
+                let ledger = p.ledger(ledger_id).await?;
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                p.explain_sparql(&db, sparql).await
+            }
+        }
+    }
+
     /// Load a ledger directly (for peer mode freshness checking in shared storage mode)
     ///
     /// Returns the ledger state with its index_t for freshness comparison.

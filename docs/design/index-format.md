@@ -29,7 +29,7 @@ Fact indexes exist in up to four sort orders (see `RunSortOrder`):
 - **SPOT**: \((g, s, p, o, dt, t, op)\)
 - **PSOT**: \((g, p, s, o, dt, t, op)\)
 - **POST**: \((g, p, o, dt, s, t, op)\)
-- **OPST**: \((g, o, dt, p, s, t, op)\) (only contains IRI-reference objects)
+- **OPST**: \((g, o, dt, p, s, t, op)\)
 
 ## Design goals
 
@@ -107,6 +107,7 @@ Key properties:
   lexicographic UTF-8 byte order of strings (true for bulk imports). Query execution can use this to avoid
   materializing simple string values during `ORDER BY` comparisons. This flag must be cleared on the first
   post-import write because incremental dictionary appends break the invariant.
+  When the flag is absent (older roots) or false, query execution must assume no lexical ordering.
 
 At a high level the root contains:
 
@@ -272,7 +273,9 @@ Region 1’s uncompressed bytes vary by sort order:
 - **PSOT**: `RLE(p_id:u32)`, `s_id[u64]`, `o_kind[u8]`, `o_key[u64]`
 - **POST**: `RLE(p_id:u32)`, `o_kind[u8]`, `o_key[u64]`, `s_id[u64]`
 - **OPST**: `RLE(o_key:u64)`, `p_id[p_width]`, `s_id[u64]`
-  - `o_kind` is omitted and is implicitly `REF_ID` on decode (OPST contains only IRI refs)
+  - OPST leaflets are **type-homogeneous** (segmented by `o_type`), so the per-row object type
+    column can be omitted and stored as a constant in the leaflet directory entry. When a leaflet
+    contains mixed types in other orders, `o_type` is stored as a per-row column.
 
 RLE encoding is:
 

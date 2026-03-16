@@ -175,7 +175,7 @@ pub fn cursor_projection_sid_only() -> ColumnProjection {
 
 /// Construct min/max `RunRecordV2` keys spanning all rows for a predicate.
 #[inline]
-pub fn predicate_range_keys(p_id: u32, g_id: GraphId) -> (RunRecordV2, RunRecordV2) {
+fn predicate_range_keys(p_id: u32, g_id: GraphId) -> (RunRecordV2, RunRecordV2) {
     let min_key = RunRecordV2 {
         s_id: SubjectId(0),
         o_key: 0,
@@ -338,69 +338,6 @@ pub fn intersect_many_sorted(mut lists: Vec<Vec<u64>>) -> Vec<u64> {
 // ---------------------------------------------------------------------------
 // 6. Merge-count
 // ---------------------------------------------------------------------------
-
-/// Stream PSOT rows for a predicate grouped by subject, merge-filter by a sorted
-/// subject list, and sum the matching row counts.
-pub fn count_rows_psot_for_subjects_sorted(
-    store: &BinaryIndexStore,
-    g_id: GraphId,
-    p_id: u32,
-    subjects_sorted: &[u64],
-) -> Result<u64> {
-    if subjects_sorted.is_empty() {
-        return Ok(0);
-    }
-    let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Psot, p_id);
-    let projection = projection_sid_only();
-
-    let mut count: u64 = 0;
-    let mut subj_idx: usize = 0;
-    let mut cur_s: Option<u64> = None;
-    let mut cur_count: u64 = 0;
-
-    let flush_group = |s_id: u64, n: u64, subj_idx: &mut usize, count: &mut u64| {
-        while *subj_idx < subjects_sorted.len() && subjects_sorted[*subj_idx] < s_id {
-            *subj_idx += 1;
-        }
-        if *subj_idx < subjects_sorted.len() && subjects_sorted[*subj_idx] == s_id {
-            *count += n;
-        }
-    };
-
-    for leaf_entry in leaves {
-        let handle = store
-            .open_leaf_handle(&leaf_entry.leaf_cid, leaf_entry.sidecar_cid.as_ref(), false)
-            .map_err(|e| QueryError::Internal(format!("leaf open: {e}")))?;
-        let dir = handle.dir();
-        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
-            if entry.row_count == 0 || entry.p_const != Some(p_id) {
-                continue;
-            }
-            let batch = handle
-                .load_columns(leaflet_idx, &projection, RunSortOrder::Psot)
-                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
-            for row in 0..batch.row_count {
-                let sid = batch.s_id.get(row);
-                match cur_s {
-                    None => {
-                        cur_s = Some(sid);
-                        cur_count = 1;
-                    }
-                    Some(prev) if prev == sid => cur_count += 1,
-                    Some(prev) => {
-                        flush_group(prev, cur_count, &mut subj_idx, &mut count);
-                        cur_s = Some(sid);
-                        cur_count = 1;
-                    }
-                }
-            }
-        }
-    }
-    if let Some(last) = cur_s {
-        flush_group(last, cur_count, &mut subj_idx, &mut count);
-    }
-    Ok(count)
-}
 
 /// Count total rows for a predicate by summing PSOT leaflet directory `row_count`.
 ///
@@ -1577,13 +1514,13 @@ pub fn build_iri_adjacency_from_cursor(
 /// Tiny helper operator: yields exactly one precomputed batch, then exhausts.
 ///
 /// Starts in `Open` state since the batch is pre-computed at construction time.
-pub struct PrecomputedSingleBatchOperator {
+struct PrecomputedSingleBatchOperator {
     batch: Option<Batch>,
     state: OperatorState,
 }
 
 impl PrecomputedSingleBatchOperator {
-    pub fn new(batch: Batch) -> Self {
+    fn new(batch: Batch) -> Self {
         Self {
             batch: Some(batch),
             state: OperatorState::Open,
@@ -1627,12 +1564,62 @@ pub fn build_count_batch(out_var: VarId, count: i64) -> Result<Batch> {
         .map_err(|e| QueryError::execution(format!("fast-path count batch build: {e}")))
 }
 
+/// Build an empty batch (zero rows) with the given schema.
+pub fn empty_batch(schema: Arc<[VarId]>) -> Result<Batch> {
+    let cols: Vec<Vec<Binding>> = (0..schema.len()).map(|_| Vec::new()).collect();
+    Batch::new(schema, cols).map_err(Into::into)
+}
+
+/// Resolve a bound predicate `Ref` to its binary-index predicate ID (`u32`).
+///
+/// Uses `ExecutionContext` to decode `Sid` variants. Returns an error for `Ref::Var`.
+pub fn ref_to_p_id(ctx: &ExecutionContext<'_>, store: &BinaryIndexStore, r: &Ref) -> Result<u32> {
+    let iri: Arc<str> = match r {
+        Ref::Sid(sid) => ctx
+            .decode_sid(sid)
+            .map(Arc::from)
+            .ok_or_else(|| QueryError::execution("failed to decode predicate SID".to_string()))?,
+        Ref::Iri(i) => Arc::clone(i),
+        Ref::Var(_) => {
+            return Err(QueryError::Internal(
+                "fast-path requires bound predicates".to_string(),
+            ))
+        }
+    };
+    store.find_predicate_id(iri.as_ref()).ok_or_else(|| {
+        QueryError::execution(format!("predicate not found in binary index dict: {}", iri))
+    })
+}
+
+/// Resolve a bound `Term` (IRI or Sid) to its internal subject ID (`u64`).
+///
+/// Uses `ExecutionContext` to decode `Sid` variants. Returns `Ok(None)` for
+/// non-IRI terms or if the subject is not found in the store.
+pub fn term_to_ref_s_id(
+    ctx: &ExecutionContext<'_>,
+    store: &BinaryIndexStore,
+    t: &crate::triple::Term,
+) -> Result<Option<u64>> {
+    let iri: Arc<str> = match t {
+        crate::triple::Term::Sid(sid) => match ctx.decode_sid(sid) {
+            Some(i) => Arc::from(i),
+            None => return Ok(None),
+        },
+        crate::triple::Term::Iri(i) => Arc::clone(i),
+        _ => return Ok(None),
+    };
+    let sid = store.encode_iri(iri.as_ref());
+    store
+        .sid_to_s_id(&sid)
+        .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))
+}
+
 /// Check whether the execution context allows fast-path operators.
 ///
 /// Fast paths are only valid when not in history mode, no `from_t`, no policy
 /// enforcement (or root policy), and no uncommitted overlay.
 #[inline]
-pub fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
+fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
     !ctx.history_mode
         && ctx.from_t.is_none()
         && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())

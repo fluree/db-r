@@ -40,7 +40,7 @@ Organized by object first:
 31 → schema:age → ex:alice → [t=10]
 ```
 
-**Optimized for:** "Find subjects that reference this value"
+**Optimized for:** "Find subjects with this object value"
 
 ### PSOT (Predicate-Subject-Object-Time)
 

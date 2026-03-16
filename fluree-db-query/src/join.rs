@@ -32,13 +32,13 @@ use tracing::Instrument;
 /// on the execution context.
 fn make_right_scan(
     pattern: TriplePattern,
-    object_bounds: &Option<ObjectBounds>,
+    object_bounds: Option<ObjectBounds>,
     emit: EmitMask,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
     Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
         pattern,
-        object_bounds.clone(),
+        object_bounds,
         Vec::new(),
         emit,
         None,
@@ -94,7 +94,7 @@ enum BatchRef {
 fn is_batched_eligible(
     bind_instructions: &[BindInstruction],
     right_pattern: &TriplePattern,
-    object_bounds: &Option<ObjectBounds>,
+    has_object_bounds: bool,
 ) -> bool {
     // Subject must have a BindInstruction (bound from left)
     let has_subject_bind = bind_instructions
@@ -109,13 +109,55 @@ fn is_batched_eligible(
         .iter()
         .any(|b| b.position == PatternPosition::Object);
     // No object bounds (no FILTER range pushdown)
-    let no_bounds = object_bounds.is_none();
+    let no_bounds = !has_object_bounds;
     // No datatype or language constraints
     let no_constraint = right_pattern.dtc.is_none();
 
     has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_bounds && no_constraint
 }
 
+/// Check if the right pattern is eligible for batched object join.
+///
+/// Eligible patterns have shape: `(?s_new, fixed_p, ?o_shared)` where:
+/// - object is bound from the left (BindInstruction for Object)
+/// - predicate is fixed (Ref::Sid)
+/// - subject is a new unbound variable (no BindInstruction for Subject)
+/// - no object bounds or datatype/language constraints
+///
+/// This enables scanning OPST in bulk for a set of bound ref objects rather than
+/// opening one scan per left row.
+fn is_batched_object_eligible(
+    bind_instructions: &[BindInstruction],
+    right_pattern: &TriplePattern,
+    has_object_bounds: bool,
+) -> bool {
+    // Object must have a BindInstruction (bound from left)
+    let has_object_bind = bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Object);
+    // Subject must NOT be bound from left (new variable)
+    let no_subject_bind = !bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Subject);
+    // Predicate must be fixed (Ref::Sid)
+    let pred_fixed = right_pattern.p.is_sid();
+    // Subject must be a variable
+    let subj_is_var = matches!(&right_pattern.s, Ref::Var(_));
+    // Object must be a variable (shared var)
+    let obj_is_var = matches!(&right_pattern.o, Term::Var(_));
+    // No object bounds (no FILTER range pushdown)
+    let no_bounds = !has_object_bounds;
+    // No datatype or language constraints
+    let no_constraint = right_pattern.dtc.is_none();
+
+    has_object_bind
+        && no_subject_bind
+        && pred_fixed
+        && subj_is_var
+        && obj_is_var
+        && no_bounds
+        && no_constraint
+}
 /// Bind-join operator for nested-loop join
 ///
 /// For each row from the left operator, substitutes bound variables into
@@ -166,8 +208,12 @@ pub struct NestedLoopJoinOperator {
     object_bounds: Option<ObjectBounds>,
     /// Whether this join is eligible for batched subject join
     batched_eligible: bool,
+    /// Whether this join is eligible for batched object join
+    batched_object_eligible: bool,
     /// Column index in left batch for the subject binding (batched mode)
     subject_left_col: Option<usize>,
+    /// Column index in left batch for the object binding (batched object mode)
+    object_left_col: Option<usize>,
     /// The fixed predicate SID (batched mode)
     batched_predicate: Option<Sid>,
     /// Accumulated entries for batched processing: (stored_batch_idx, row_idx, subject_s_id)
@@ -326,8 +372,11 @@ impl NestedLoopJoinOperator {
             }
         }
 
-        let batched_eligible =
-            is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
+        let has_bounds = object_bounds.is_some();
+
+        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern, has_bounds);
+        let batched_object_eligible = !batched_eligible
+            && is_batched_object_eligible(&bind_instructions, &right_pattern, has_bounds);
         let subject_left_col = if batched_eligible {
             bind_instructions
                 .iter()
@@ -336,7 +385,15 @@ impl NestedLoopJoinOperator {
         } else {
             None
         };
-        let batched_predicate = if batched_eligible {
+        let object_left_col = if batched_object_eligible {
+            bind_instructions
+                .iter()
+                .find(|b| b.position == PatternPosition::Object)
+                .map(|b| b.left_col)
+        } else {
+            None
+        };
+        let batched_predicate = if batched_eligible || batched_object_eligible {
             match &right_pattern.p {
                 Ref::Sid(sid) => Some(sid.clone()),
                 _ => None,
@@ -361,7 +418,9 @@ impl NestedLoopJoinOperator {
             pending_right_row: 0,
             object_bounds,
             batched_eligible,
+            batched_object_eligible,
             subject_left_col,
+            object_left_col,
             batched_predicate,
             batched_accumulator: Vec::new(),
             stored_left_batches: Vec::new(),
@@ -418,17 +477,6 @@ impl NestedLoopJoinOperator {
 
     /// Substitute left row bindings into right pattern
     ///
-    /// For IriMatch bindings, uses `Ref::Iri` to carry the canonical IRI.
-    /// The scan operator will encode this IRI for each target ledger's namespace
-    /// table, enabling correct cross-ledger joins even when namespace tables differ.
-    ///
-    /// Note: Primarily used via substitute_pattern_with_store; kept for cases
-    /// without binary store context.
-    #[allow(dead_code)]
-    fn substitute_pattern(&self, left_batch: &Batch, left_row: usize) -> TriplePattern {
-        self.substitute_pattern_with_store(left_batch, left_row, None)
-    }
-
     /// Substitute left row bindings into right pattern with optional store for encoded binding resolution.
     fn substitute_pattern_with_store(
         &self,
@@ -636,6 +684,15 @@ impl NestedLoopJoinOperator {
             }))
             .collect()
     }
+
+    fn bounds_for_row(
+        &self,
+        _left_batch: &Batch,
+        _left_row: usize,
+        _ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<ObjectBounds>> {
+        Ok(self.object_bounds.clone())
+    }
 }
 
 #[async_trait]
@@ -677,11 +734,14 @@ impl Operator for NestedLoopJoinOperator {
         // - Binary store must be available (batched path reads leaf files directly)
         // - Single-db mode (ActiveGraphs::Single), subjects are Binding::Sid
         // - Dataset mode with exactly one graph (ActiveGraphs::Many len==1), subjects are Binding::IriMatch
-        let use_batched = self.batched_eligible
+        let use_batched = (self.batched_eligible || self.batched_object_eligible)
             && ctx.binary_store.is_some()
             && match ctx.active_graphs() {
+                // Object-batched path currently emits `Binding::EncodedSid` for the new
+                // subject var. Keep it single-ledger only to avoid dataset-mode IriMatch
+                // requirements.
                 ActiveGraphs::Single => true,
-                ActiveGraphs::Many(graphs) => graphs.len() == 1,
+                ActiveGraphs::Many(graphs) => self.batched_eligible && graphs.len() == 1,
             };
 
         // Process until we have output or exhaust input
@@ -771,39 +831,41 @@ impl Operator for NestedLoopJoinOperator {
             }
 
             if use_batched {
-                // Batched path: extract s_id directly to avoid dictionary round-trips.
-                // - EncodedSid: use s_id directly (no lookup needed)
-                // - Sid: call sid_to_s_id() once (cheap namespace lookup)
-                let subject_col = self.subject_left_col.unwrap();
-                let resolved_s_id: Option<u64> = {
+                // Batched path: extract the bound key directly to avoid dictionary round-trips.
+                // - Subject-batched: key is subject s_id (bound to right subject).
+                // - Object-batched: key is object s_id (bound to right object).
+                let left_col = if self.batched_object_eligible {
+                    self.object_left_col.unwrap()
+                } else {
+                    self.subject_left_col.unwrap()
+                };
+
+                let resolved: Option<u64> = {
                     let left_batch = self.current_left_batch.as_ref().unwrap();
                     let store = ctx.binary_store.as_deref();
-                    match left_batch.get_by_col(left_row, subject_col) {
-                        Binding::EncodedSid { s_id } => {
-                            // Direct s_id - no dictionary lookup needed!
-                            Some(*s_id)
-                        }
-                        Binding::Sid(sid) => {
-                            // Resolve Sid to s_id (single lookup, not a round-trip)
-                            store.and_then(|s| s.sid_to_s_id(sid).ok().flatten())
-                        }
+                    match left_batch.get_by_col(left_row, left_col) {
+                        Binding::EncodedSid { s_id } => Some(*s_id),
+                        Binding::Sid(sid) => store.and_then(|s| s.sid_to_s_id(sid).ok().flatten()),
                         Binding::IriMatch { primary_sid, .. } => {
-                            // Resolve primary_sid to s_id
                             store.and_then(|s| s.sid_to_s_id(primary_sid).ok().flatten())
                         }
-                        _ => None,
+                        Binding::Unbound => None,
+                        _ => {
+                            // For subject/predicate bindings we already screened invalid types.
+                            // For object-batched mode, non-ref objects can't be converted to s_id.
+                            None
+                        }
                     }
                 };
 
-                if let Some(s_id) = resolved_s_id {
+                if let Some(key) = resolved {
                     let batch_idx = self.ensure_current_batch_stored();
-                    self.batched_accumulator.push((batch_idx, left_row, s_id));
-
+                    self.batched_accumulator.push((batch_idx, left_row, key));
                     if self.batched_accumulator.len() >= BATCHED_JOIN_SIZE {
                         self.flush_batched_accumulator_for_ctx(ctx).await?;
                     }
                 } else {
-                    // IriMatch, Unbound, etc. — fall back to per-row scan
+                    // Fall back to per-row scan for unsupported binding types.
                     let batch_idx = self.ensure_current_batch_stored();
                     let batch_ref = BatchRef::Stored(batch_idx);
                     let left_batch = self.stored_left_batches.last().unwrap();
@@ -812,8 +874,9 @@ impl Operator for NestedLoopJoinOperator {
                         left_row,
                         ctx.binary_store.as_deref(),
                     );
+                    let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
                     let mut right_scan =
-                        make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
+                        make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
@@ -834,8 +897,8 @@ impl Operator for NestedLoopJoinOperator {
                     left_row,
                     ctx.binary_store.as_deref(),
                 );
-                let mut right_scan =
-                    make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
+                let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
+                let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
@@ -1005,8 +1068,9 @@ impl NestedLoopJoinOperator {
                     ctx.binary_store.as_deref(),
                 )
             };
-            let mut right_scan =
-                make_right_scan(bound_pattern, &self.object_bounds, self.right_emit, ctx);
+            let left_batch = &self.stored_left_batches[batch_idx];
+            let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
+            let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
             right_scan.open(ctx).await?;
             right_scans += 1;
             while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -1043,14 +1107,25 @@ impl NestedLoopJoinOperator {
         }
 
         let accum_len = self.batched_accumulator.len();
-        self.flush_batched_accumulator_binary(ctx)
-            .instrument(tracing::debug_span!(
-                "join_flush_batched_binary",
-                accum_len,
-                batch_size = ctx.batch_size,
-                to_t = ctx.to_t,
-            ))
-            .await
+        if self.batched_object_eligible {
+            self.flush_batched_object_accumulator_binary(ctx)
+                .instrument(tracing::debug_span!(
+                    "join_flush_batched_object_binary",
+                    accum_len,
+                    batch_size = ctx.batch_size,
+                    to_t = ctx.to_t,
+                ))
+                .await
+        } else {
+            self.flush_batched_accumulator_binary(ctx)
+                .instrument(tracing::debug_span!(
+                    "join_flush_batched_binary",
+                    accum_len,
+                    batch_size = ctx.batch_size,
+                    to_t = ctx.to_t,
+                ))
+                .await
+        }
     }
 
     /// Clear all batched accumulator state after a flush or early return.
@@ -1082,6 +1157,26 @@ impl NestedLoopJoinOperator {
         unique_s_ids.sort_unstable();
         unique_s_ids.dedup();
         (s_id_to_accum, unique_s_ids)
+    }
+
+    /// Group accumulator entries by object ID.
+    ///
+    /// Returns `(o_s_id → accumulator indices, (min_o, max_o))`.
+    fn group_accumulator_by_object(&self) -> (HashMap<u64, Vec<usize>>, u64, u64) {
+        let mut o_to_accum: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut min_o: u64 = u64::MAX;
+        let mut max_o: u64 = 0;
+        for (accum_idx, (_, _, o_s_id)) in self.batched_accumulator.iter().enumerate() {
+            let o = *o_s_id;
+            o_to_accum.entry(o).or_default().push(accum_idx);
+            if o < min_o {
+                min_o = o;
+            }
+            if o > max_o {
+                max_o = o;
+            }
+        }
+        (o_to_accum, min_o, max_o)
     }
 
     /// Phase 3: Compute the PSOT leaf range for a predicate + subject range.
@@ -1611,6 +1706,332 @@ impl NestedLoopJoinOperator {
             "join batched binary flush complete"
         );
 
+        Ok(())
+    }
+
+    /// Binary-index batched scan for object-bound joins.
+    ///
+    /// Scans OPST for `(o_type=IRI_REF, o_key in accumulator set, p_id=fixed)` and
+    /// emits combined rows that bind the right pattern's new subject var.
+    async fn flush_batched_object_accumulator_binary(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<()> {
+        use fluree_db_binary_index::format::leaf::{
+            decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
+        };
+        use fluree_db_binary_index::format::run_record_v2::{
+            cmp_v2_for_order, read_ordered_key_v2, RunRecordV2,
+        };
+        use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+        use fluree_db_binary_index::RunSortOrder;
+        use fluree_db_core::o_type::OType;
+
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let overall_start = Instant::now();
+        let store = ctx.binary_store.as_ref().unwrap().clone();
+
+        // Resolve predicate
+        let p_id = match self.resolve_batched_predicate(&store) {
+            Some(id) => id,
+            None => {
+                self.clear_batched_state();
+                return Ok(());
+            }
+        };
+
+        // Group by object
+        let (o_to_accum, _min_o, _max_o) = self.group_accumulator_by_object();
+        if o_to_accum.is_empty() {
+            self.clear_batched_state();
+            return Ok(());
+        }
+
+        let Some(branch) = store.branch_for_order(ctx.binary_g_id, RunSortOrder::Opst) else {
+            self.clear_batched_state();
+            return Ok(());
+        };
+        let branch = Arc::new(branch.clone());
+
+        let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
+        let mut matched_rows: u64 = 0;
+
+        // Batched object join (leaf-level): scan each relevant OPST leaf at most once.
+        //
+        // We build a set of leaf indices that contain any of our object IDs, then scan
+        // those leaves. This avoids re-opening and re-decoding leaflets once per object
+        // (which is the dominant cost in `BinaryCursor`-per-object approaches).
+        let iri_ref = OType::IRI_REF.as_u16();
+        let cmp = cmp_v2_for_order(RunSortOrder::Opst);
+
+        let mut objs: Vec<u64> = o_to_accum.keys().copied().collect();
+        objs.sort_unstable();
+        objs.dedup();
+        if objs.is_empty() {
+            self.clear_batched_state();
+            return Ok(());
+        }
+
+        // Collect leaf indices for all object keys.
+        let mut leaf_indices: Vec<usize> = Vec::new();
+        for &o_s_id in &objs {
+            let min_key = RunRecordV2 {
+                s_id: SubjectId(0),
+                o_key: o_s_id,
+                p_id,
+                t: 0,
+                o_i: 0,
+                o_type: iri_ref,
+                g_id: ctx.binary_g_id,
+            };
+            let max_key = RunRecordV2 {
+                s_id: SubjectId(u64::MAX),
+                o_key: o_s_id,
+                p_id,
+                t: u32::MAX,
+                o_i: u32::MAX,
+                o_type: iri_ref,
+                g_id: ctx.binary_g_id,
+            };
+            let r = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+            leaf_indices.extend(r);
+        }
+        leaf_indices.sort_unstable();
+        leaf_indices.dedup();
+
+        let cache = store.leaflet_cache();
+        for leaf_idx in leaf_indices {
+            let leaf_entry = &branch.leaves[leaf_idx];
+            let leaf_bytes = store
+                .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
+                .map_err(|e| QueryError::Internal(format!("fetch leaf: {}", e)))?;
+
+            let header = decode_leaf_header_v3(&leaf_bytes)
+                .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+            let dir = decode_leaf_dir_v3_with_base(&leaf_bytes, &header)
+                .map_err(|e| QueryError::Internal(format!("decode leaf dir: {}", e)))?;
+            let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
+
+            for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+                if entry.row_count == 0 {
+                    continue;
+                }
+                if entry.p_const.is_some() && entry.p_const != Some(p_id) {
+                    continue;
+                }
+                if entry.o_type_const.is_some() && entry.o_type_const != Some(iri_ref) {
+                    continue;
+                }
+
+                // Quick reject based on leaflet key range.
+                let first = read_ordered_key_v2(RunSortOrder::Opst, &entry.first_key);
+                let last = read_ordered_key_v2(RunSortOrder::Opst, &entry.last_key);
+                let first_o = first.o_key;
+                let last_o = last.o_key;
+                if last_o < objs[0] || first_o > *objs.last().unwrap() {
+                    continue;
+                }
+                // If no object keys fall within [first_o, last_o], skip.
+                let start = objs.partition_point(|&x| x < first_o);
+                let end = objs.partition_point(|&x| x <= last_o);
+                if start >= end {
+                    continue;
+                }
+
+                // We only need core identity columns for this join. Avoid decoding all
+                // columns on cache miss (the cache stores full batches).
+                let core_proj = fluree_db_binary_index::read::column_types::ColumnProjection {
+                    output: fluree_db_binary_index::read::column_types::ColumnSet::CORE,
+                    internal: fluree_db_binary_index::read::column_types::ColumnSet::EMPTY,
+                };
+                let batch = if let Some(c) = &cache {
+                    let key = fluree_db_binary_index::read::leaflet_cache::V3BatchCacheKey {
+                        leaf_id,
+                        leaflet_idx: leaflet_idx as u8,
+                    };
+                    if let Some(cached) = c.get_v3_batch(&key) {
+                        cached
+                    } else {
+                        load_leaflet_columns(
+                            &leaf_bytes,
+                            entry,
+                            dir.payload_base,
+                            &core_proj,
+                            header.order,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                    }
+                } else {
+                    load_leaflet_columns(
+                        &leaf_bytes,
+                        entry,
+                        dir.payload_base,
+                        &core_proj,
+                        header.order,
+                    )
+                    .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                };
+
+                // OPST leaflets are ordered by (o_type, o_key, p_id, s_id, t...).
+                // Instead of scanning every row in the leaflet, binary-search the
+                // `o_key` column for just the object IDs we care about and only
+                // visit those row ranges. This keeps work proportional to matches
+                // rather than leaflet size.
+                let fluree_db_binary_index::read::column_types::ColumnData::Block(o_keys) =
+                    &batch.o_key
+                else {
+                    // o_key is required; AbsentDefault cannot occur here.
+                    // Const(o_key) would mean the entire leaflet shares one object key,
+                    // which is extremely rare for OPST; fall back to row-scan in that case.
+                    for row in 0..batch.row_count {
+                        let ot = batch.o_type.get_or(row, 0);
+                        if ot != iri_ref {
+                            continue;
+                        }
+                        let pid = batch.p_id.get_or(row, 0);
+                        if pid != p_id {
+                            continue;
+                        }
+                        let o_key = batch.o_key.get_or(row, 0);
+                        let Some(accum_idxs) = o_to_accum.get(&o_key) else {
+                            continue;
+                        };
+                        let s_id = batch.s_id.get_or(row, 0);
+                        for &accum_idx in accum_idxs {
+                            let (batch_idx, row_idx, _) = self.batched_accumulator[accum_idx];
+                            let left_batch =
+                                self.stored_left_batches.get(batch_idx).ok_or_else(|| {
+                                    QueryError::Internal(
+                                        "batched object join: left batch missing".into(),
+                                    )
+                                })?;
+
+                            let mut combined: Vec<Binding> =
+                                Vec::with_capacity(self.combined_schema.len());
+                            for col in 0..self.left_schema.len() {
+                                combined.push(left_batch.get_by_col(row_idx, col).clone());
+                            }
+                            for _ in &self.right_new_vars {
+                                combined.push(Binding::EncodedSid { s_id });
+                            }
+
+                            if !apply_inline(
+                                &self.inline_ops,
+                                &self.combined_schema,
+                                &mut combined,
+                                Some(ctx),
+                            )? {
+                                continue;
+                            }
+
+                            scatter[accum_idx].push(combined);
+                            matched_rows += 1;
+                        }
+                    }
+                    continue;
+                };
+
+                // Only consider the subset of objects that intersect this leaflet's object range.
+                let mut obj_idx = start;
+                let objs_slice = &objs[..];
+                let o_keys_slice: &[u64] = o_keys.as_ref();
+
+                // Fast path: if o_type/p_id are const and already filtered by leaflet
+                // metadata, we can skip per-row checks.
+                let ot_const_ok = batch.o_type.is_const() && batch.o_type.get_or(0, 0) == iri_ref;
+                let pid_const_ok = batch.p_id.is_const() && batch.p_id.get_or(0, 0) == p_id;
+
+                // Start scanning at the first possible match within this leaflet.
+                let mut row = 0usize;
+                while row < batch.row_count && obj_idx < end {
+                    let target = objs_slice[obj_idx];
+
+                    // Seek row to the first o_key >= target.
+                    if o_keys_slice[row] < target {
+                        let next = o_keys_slice[row..].partition_point(|&x| x < target);
+                        row = row.saturating_add(next);
+                        if row >= batch.row_count {
+                            break;
+                        }
+                    }
+
+                    let cur = o_keys_slice[row];
+                    if cur > target {
+                        obj_idx += 1;
+                        continue;
+                    }
+                    // cur == target: process run [row, run_end).
+                    let run_end = row + o_keys_slice[row..].partition_point(|&x| x == target);
+
+                    // accum indices for this object key (bound from left).
+                    let Some(accum_idxs) = o_to_accum.get(&target) else {
+                        row = run_end;
+                        obj_idx += 1;
+                        continue;
+                    };
+
+                    for r in row..run_end {
+                        if !ot_const_ok {
+                            let ot = batch.o_type.get_or(r, 0);
+                            if ot != iri_ref {
+                                continue;
+                            }
+                        }
+                        if !pid_const_ok {
+                            let pid = batch.p_id.get_or(r, 0);
+                            if pid != p_id {
+                                continue;
+                            }
+                        }
+
+                        let s_id = batch.s_id.get_or(r, 0);
+                        for &accum_idx in accum_idxs {
+                            let (batch_idx, row_idx, _) = self.batched_accumulator[accum_idx];
+                            let left_batch =
+                                self.stored_left_batches.get(batch_idx).ok_or_else(|| {
+                                    QueryError::Internal(
+                                        "batched object join: left batch missing".into(),
+                                    )
+                                })?;
+
+                            let mut combined: Vec<Binding> =
+                                Vec::with_capacity(self.combined_schema.len());
+                            for col in 0..self.left_schema.len() {
+                                combined.push(left_batch.get_by_col(row_idx, col).clone());
+                            }
+                            for _ in &self.right_new_vars {
+                                combined.push(Binding::EncodedSid { s_id });
+                            }
+
+                            if !apply_inline(
+                                &self.inline_ops,
+                                &self.combined_schema,
+                                &mut combined,
+                                Some(ctx),
+                            )? {
+                                continue;
+                            }
+
+                            scatter[accum_idx].push(combined);
+                            matched_rows += 1;
+                        }
+                    }
+
+                    row = run_end;
+                    obj_idx += 1;
+                }
+            }
+        }
+
+        self.emit_scatter_to_output(scatter, ctx.batch_size)?;
+        tracing::debug!(
+            total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
+            matched_rows,
+            "join batched object flush complete"
+        );
         Ok(())
     }
 }

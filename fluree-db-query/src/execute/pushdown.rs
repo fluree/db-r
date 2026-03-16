@@ -67,7 +67,6 @@ pub fn extract_bounds_from_filters(
 /// A filter is considered "fully consumed" if:
 /// - It's a range-safe filter (no OR, NOT, complex functions)
 /// - All its constraints apply to object variables in the current triple segment
-#[allow(dead_code)]
 pub fn extract_lookahead_bounds_with_consumption(
     triples: &[TriplePattern],
     remaining: &[Pattern],

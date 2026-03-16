@@ -113,7 +113,7 @@ pub fn format(
                 .collect();
 
             let disaggregated =
-                disaggregate_row(&row_bindings).map_err(|e| FormatError::InvalidBinding(e))?;
+                disaggregate_row(&row_bindings).map_err(FormatError::InvalidBinding)?;
 
             if select_one {
                 if let Some(first) = disaggregated.into_iter().next() {

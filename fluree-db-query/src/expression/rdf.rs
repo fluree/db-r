@@ -6,8 +6,10 @@ use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::DatatypeDictId;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 use super::helpers::{check_arity, format_datatype_sid};
@@ -122,10 +124,118 @@ pub fn eval_same_term<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "SAMETERM")?;
+
+    // Fast path: avoid decoding EncodedSid/EncodedPid to IRI strings.
+    if std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        if let Some(ctx) = ctx {
+            if let Some(store) = ctx.binary_store.as_deref() {
+                if let Some(b) = fast_same_term_encoded_ids(args, row, ctx, store)? {
+                    return Ok(Some(ComparableValue::Bool(b)));
+                }
+            }
+        }
+    }
+
     let v1 = args[0].eval_to_comparable(row, ctx)?;
     let v2 = args[1].eval_to_comparable(row, ctx)?;
     let same = matches!((v1, v2), (Some(a), Some(b)) if a == b);
     Ok(Some(ComparableValue::Bool(same)))
+}
+
+fn fast_same_term_encoded_ids<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: &ExecutionContext<'_>,
+    store: &BinaryIndexStore,
+) -> Result<Option<bool>> {
+    if args.len() != 2 {
+        return Ok(None);
+    }
+
+    let try_side = |var_expr: &Expression, other_expr: &Expression| -> Result<Option<bool>> {
+        let Expression::Var(v) = var_expr else {
+            return Ok(None);
+        };
+        let Some(binding) = row.get(*v) else {
+            return Ok(Some(false));
+        };
+
+        match binding {
+            Binding::EncodedSid { s_id } => {
+                // If both sides are vars and both are EncodedSid, compare directly.
+                if let Expression::Var(v2) = other_expr {
+                    if let Some(Binding::EncodedSid { s_id: s2 }) = row.get(*v2) {
+                        return Ok(Some(*s_id == *s2));
+                    }
+                }
+
+                let Some(other) = other_expr.eval_to_comparable(row, Some(ctx))? else {
+                    return Ok(Some(false));
+                };
+                let rhs_s_id_opt = match other {
+                    ComparableValue::Sid(sid) => store
+                        .find_subject_id_by_parts(sid.namespace_code, sid.name.as_ref())
+                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
+                    ComparableValue::Iri(iri) => store
+                        .find_subject_id(iri.as_ref())
+                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
+                    _ => return Ok(None),
+                };
+                let same = rhs_s_id_opt.is_some_and(|rhs| rhs == *s_id);
+                log_same_term_fastpath_hit_once("EncodedSid");
+                Ok(Some(same))
+            }
+            Binding::EncodedPid { p_id } => {
+                if let Expression::Var(v2) = other_expr {
+                    if let Some(Binding::EncodedPid { p_id: p2 }) = row.get(*v2) {
+                        return Ok(Some(*p_id == *p2));
+                    }
+                }
+
+                let Some(other) = other_expr.eval_to_comparable(row, Some(ctx))? else {
+                    return Ok(Some(false));
+                };
+                let rhs_p_id_opt = match other {
+                    ComparableValue::Sid(sid) => store.sid_to_p_id(&sid),
+                    ComparableValue::Iri(iri) => store.find_predicate_id(iri.as_ref()),
+                    _ => return Ok(None),
+                };
+                let same = rhs_p_id_opt.is_some_and(|rhs| rhs == *p_id);
+                log_same_term_fastpath_hit_once("EncodedPid");
+                Ok(Some(same))
+            }
+            _ => Ok(None),
+        }
+    };
+
+    if let Some(v) = try_side(&args[0], &args[1])? {
+        return Ok(Some(v));
+    }
+    if let Some(v) = try_side(&args[1], &args[0])? {
+        return Ok(Some(v));
+    }
+    Ok(None)
+}
+
+fn log_same_term_fastpath_hit_once(kind: &'static str) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("FLUREE_LOG_FILTER_FASTPATH_HIT")
+            .ok()
+            .as_deref()
+            == Some("1")
+    });
+    if !enabled {
+        return;
+    }
+    static HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !HIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!(kind, "sameterm encoded-id fast path hit");
+    }
 }
 
 pub fn eval_iri<R: RowAccess>(

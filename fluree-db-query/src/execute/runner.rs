@@ -32,6 +32,49 @@ use super::reasoning_prep::{
 };
 use super::rewrite_glue::rewrite_query_patterns;
 
+/// Remove exact duplicate triple patterns inside conjunctive blocks.
+///
+/// Some benchmark query generators (notably BSBM) occasionally emit redundant
+/// triples like:
+/// `?s bsbm:productFeature ex:Feature214 .`
+/// repeated twice in the same UNION branch. This does not change semantics but
+/// can amplify intermediate results and force extra join/distinct work.
+///
+/// We keep first occurrence order and only dedup `Pattern::Triple` nodes.
+fn dedup_exact_triples(patterns: Vec<Pattern>) -> Vec<Pattern> {
+    fn dedup_list(list: Vec<Pattern>) -> Vec<Pattern> {
+        let mut out: Vec<Pattern> = Vec::with_capacity(list.len());
+        let mut seen_triples: Vec<TriplePattern> = Vec::new();
+
+        for p in list {
+            match p {
+                Pattern::Triple(tp) => {
+                    if seen_triples.iter().any(|t| t == &tp) {
+                        continue;
+                    }
+                    seen_triples.push(tp.clone());
+                    out.push(Pattern::Triple(tp));
+                }
+                Pattern::Optional(inner) => out.push(Pattern::Optional(dedup_list(inner))),
+                Pattern::Union(branches) => out.push(Pattern::Union(
+                    branches.into_iter().map(dedup_list).collect(),
+                )),
+                Pattern::Minus(inner) => out.push(Pattern::Minus(dedup_list(inner))),
+                Pattern::Exists(inner) => out.push(Pattern::Exists(dedup_list(inner))),
+                Pattern::NotExists(inner) => out.push(Pattern::NotExists(dedup_list(inner))),
+                Pattern::Graph { name, patterns } => out.push(Pattern::Graph {
+                    name,
+                    patterns: dedup_list(patterns),
+                }),
+                other => out.push(other),
+            }
+        }
+        out
+    }
+
+    dedup_list(patterns)
+}
+
 /// Query with execution options
 ///
 /// Combines a parsed query with solution modifiers for execution.
@@ -254,6 +297,16 @@ pub async fn prepare_execution(
                 crate::geo_rewrite::rewrite_geo_patterns(rewritten_patterns, &|iri: &str| {
                     db.snapshot.encode_iri(iri)
                 });
+
+            let before_dedup = rewritten_patterns.len();
+            let rewritten_patterns = dedup_exact_triples(rewritten_patterns);
+            if rewritten_patterns.len() != before_dedup {
+                tracing::debug!(
+                    before = before_dedup,
+                    after = rewritten_patterns.len(),
+                    "deduped exact duplicate triples"
+                );
+            }
 
             tracing::Span::current().record("patterns_after", rewritten_patterns.len());
 

@@ -141,9 +141,19 @@ pub(crate) fn estimate_triple_row_count(
                 }
                 if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        return (prop.count as f64 / prop.ndv_values as f64)
-                            .ceil()
-                            .max(HIGHLY_SELECTIVE);
+                        // Class count missing from stats.
+                        //
+                        // Using the mean class size (count/ndv_values) can severely
+                        // underestimate common classes (e.g., `bsbm:Product`), which
+                        // leads to bad join ordering when paired with small predicates
+                        // like `rdfs:label`.
+                        //
+                        // Use a more conservative fallback: scale by sqrt(ndv_values)
+                        // (between mean and total) to avoid treating unknown classes
+                        // as extremely selective.
+                        let ndv = prop.ndv_values as f64;
+                        let est = prop.count as f64 / ndv.sqrt().max(1.0);
+                        return est.ceil().max(HIGHLY_SELECTIVE);
                     }
                 }
             }

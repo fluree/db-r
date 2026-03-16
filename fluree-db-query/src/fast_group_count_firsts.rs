@@ -35,7 +35,7 @@ use std::sync::Arc;
 // Shared types
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
+// Used by: V3 leaflet fast-path dead-code cluster below (merge_overlay_deltas, group_key_for_fact).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 struct FactKey {
     s_id: u64,
@@ -44,7 +44,7 @@ struct FactKey {
     o_i: u32,
 }
 
-#[allow(dead_code)]
+// Used by: V3 leaflet fast-path dead-code cluster below (group_key_for_fact, add_count).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 enum GroupKey {
     Ref(u64),
@@ -59,7 +59,6 @@ enum GroupKey {
 // Use when: the V3 fast-path is implemented to replace the current fallback-to-scan path.
 // How: these functions implement overlay delta merging and group-key accumulation
 // that will be needed by any direct-leaflet-scan optimization.
-#[allow(dead_code)]
 fn overlay_ops_for_ctx(ctx: &ExecutionContext<'_>, gv: &BinaryGraphView) -> Vec<OverlayOp> {
     let Some(overlay) = ctx.overlay else {
         return Vec::new();
