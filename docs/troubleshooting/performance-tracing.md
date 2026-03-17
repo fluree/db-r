@@ -6,14 +6,14 @@ Fluree includes deep instrumentation that decomposes every query, transaction, a
 
 | Symptom | Start with | Escalate to |
 |---------|-----------|-------------|
-| Single slow query | `X-Fluree-Explain: true` header | Deep tracing at `debug` level |
+| Single slow query | `/v1/fluree/explain` plan | Deep tracing at `debug` level |
 | Slow queries in general, unclear which phase | Deep tracing at `debug` level | `trace` level for operator detail |
 | Slow transactions / commits | Deep tracing at `debug` level | Check `txn_commit` sub-spans |
 | Indexing taking too long | Deep tracing at `debug` level | Check `build_index` per-order timing |
 | Intermittent latency spikes | Sustained tracing + Jaeger search by duration | Correlate with indexing traces |
 | Production regression | Compare Jaeger traces before/after deploy | Filter by `tracker_time` span attribute |
 
-Deep tracing is complementary to `X-Fluree-Explain`, not a replacement. Explain plans show the *shape* of a query plan; tracing shows *where wall-clock time actually went*.
+Deep tracing is complementary to explain plans, not a replacement. Explain plans show the *shape* of a query plan; tracing shows *where wall-clock time actually went*.
 
 ## Quick Start: Local Investigation
 

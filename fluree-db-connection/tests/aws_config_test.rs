@@ -298,10 +298,10 @@ fn test_sync_connect_fails_for_s3() {
     );
 }
 
-/// Test full Clojure-compatible S3 + DynamoDB config
+/// Test full S3 + DynamoDB config
 #[test]
-fn test_full_clojure_compatible_aws_config() {
-    // This is the config format used by Clojure fluree/db for Lambda deployments
+fn test_full_aws_config() {
+    // This is the config format used by legacy Lambda deployments
     let config = json!({
         "@context": {
             "@base": "https://ns.flur.ee/config/connection/",

@@ -170,7 +170,7 @@ impl<'a> FlakeGenerator<'a> {
             .and_then(|d| d.lang_tag())
             .map(|s| s.to_string());
 
-        // Language-tagged literals use rdf:langString datatype (Clojure parity).
+        // Language-tagged literals use rdf:langString datatype.
         let dt = if template_lang.is_some() || bound_lang.is_some() {
             dt.map(|_| DT_LANG_STRING.clone())
         } else {

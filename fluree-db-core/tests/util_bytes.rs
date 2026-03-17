@@ -1,6 +1,6 @@
-//! Bytes utility tests (Clojure parity)
+//! Bytes utility tests
 //!
-//! Ports from `db-clojure/test/fluree/db/util/bytes_test.clj`.
+//! Byte utilities tests.
 //! Tests byte conversion utilities for IRI encoding/decoding.
 //!
 //! These utilities convert between UTF-8 strings and sequences of i64 values
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn iri_roundtrip_property() {
         // Test roundtrip property for various IRI strings
-        // Equivalent to the property-based testing in Clojure using clojure.test.check
+        // Equivalent to property-based testing via generators
 
         // Test a comprehensive set of IRI examples
         let test_cases = vec![

@@ -15,6 +15,8 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{
     GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker,
 };
+
+use crate::binary_range::BinaryRangeProvider;
 use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use fluree_vocab::{geo_names, xsd_names};
@@ -133,7 +135,13 @@ impl<'a> ExecutionContext<'a> {
     }
 
     /// Create from a `GraphDbRef`, pulling snapshot, graph id, overlay, and `to_t`.
+    ///
+    /// If the snapshot carries a `RangeProvider`, the binary store is extracted
+    /// via a single `TypeId` downcast so that `BinaryScanOperator` can use it.
     pub fn from_graph_db_ref(db: GraphDbRef<'a>, vars: &'a VarRegistry) -> Self {
+        let binary_store = Self::extract_binary_store(db.snapshot);
+        let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+
         Self {
             snapshot: db.snapshot,
             vars,
@@ -152,20 +160,26 @@ impl<'a> ExecutionContext<'a> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            binary_store: None,
+            binary_store,
             binary_g_id: db.g_id,
-            dict_novelty: None,
+            dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
         }
     }
 
     /// Create from a `GraphDbRef` with an explicit `from_t` for history queries.
+    ///
+    /// Like [`from_graph_db_ref`](Self::from_graph_db_ref), auto-populates
+    /// `binary_store` from the snapshot's range provider.
     pub fn from_graph_db_ref_with_from_t(
         db: GraphDbRef<'a>,
         vars: &'a VarRegistry,
         from_t: Option<i64>,
     ) -> Self {
+        let binary_store = Self::extract_binary_store(db.snapshot);
+        let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+
         Self {
             snapshot: db.snapshot,
             vars,
@@ -184,9 +198,9 @@ impl<'a> ExecutionContext<'a> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            binary_store: None,
+            binary_store,
             binary_g_id: db.g_id,
-            dict_novelty: None,
+            dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
         }
@@ -638,6 +652,31 @@ impl<'a> ExecutionContext<'a> {
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
         }
+    }
+
+    /// Extract `BinaryIndexStore` from a snapshot's `RangeProvider` via downcast.
+    ///
+    /// Cost: one `TypeId` comparison. Returns `None` when no range provider is
+    /// attached (e.g. genesis / metadata-only snapshot).
+    fn extract_binary_store(snapshot: &LedgerSnapshot) -> Option<Arc<BinaryIndexStore>> {
+        snapshot
+            .range_provider
+            .as_ref()
+            .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+            .map(|brp| Arc::clone(brp.store()))
+    }
+
+    /// Extract `DictNovelty` from a snapshot's `RangeProvider` via downcast.
+    ///
+    /// This is critical for decoding novelty-only subject/string IDs when executing via
+    /// `BinaryScanOperator`. Without it, decoding falls back to persisted forward packs and
+    /// fails for novelty IDs (e.g. "string id N not found in forward packs").
+    fn extract_dict_novelty(snapshot: &LedgerSnapshot) -> Option<Arc<DictNovelty>> {
+        snapshot
+            .range_provider
+            .as_ref()
+            .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+            .map(|brp| Arc::clone(brp.dict_novelty()))
     }
 
     /// Attach a binary columnar index store for fast local-file scans.

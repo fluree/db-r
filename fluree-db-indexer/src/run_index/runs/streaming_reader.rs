@@ -1,137 +1,201 @@
-//! Buffered, forward-only reader for run files.
+//! V2 streaming run reader — buffered record reading for k-way merge.
 //!
-//! Reads 8192 records at a time (~320 KB per stream) to avoid loading
-//! entire 1 GB run files into memory. Suitable for k-way merge where
-//! 21 concurrent streams would otherwise require 21 GB.
+//! Reads V2 run files (`FRN2`) and implements the `MergeSource` trait
+//! for use with the generic merge engine.
 
-use super::run_file::{deserialize_lang_dict, RunFileHeader, RUN_HEADER_LEN};
-use crate::run_index::resolve::global_dict::LanguageTagDict;
-use fluree_db_binary_index::format::run_record::{RunRecord, RECORD_WIRE_SIZE};
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use super::run_file::{RunFileHeader, RUN_V2_HEADER_LEN, RUN_V2_VERSION_WITH_OP};
+use fluree_db_binary_index::format::run_record_v2::{
+    RunRecordV2, RECORD_V2_WIRE_SIZE, RECORD_V2_WITH_OP_WIRE_SIZE,
+};
+use std::io::{self, BufReader, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
-/// Number of records to buffer per read.
-///
-/// Default 32k records:
-/// - 32_768 × 34 bytes ≈ 1.06 MB raw bytes per stream
-/// - 32_768 × 40 bytes ≈ 1.25 MB decoded `RunRecord`s per stream
-///
-/// This reduces refill frequency and amortizes per-fill overhead (syscalls,
-/// decode loop, optional lang remap) vs the previous 8k (~272 KB) setting.
+/// Records per buffer fill (~960 KB at 30 bytes/record).
 const BUFFER_SIZE: usize = 32_768;
 
-/// Underlying file read buffer size (in bytes).
-///
-/// `BufReader`'s default is small (8 KB). Because we frequently `read_exact()`
-/// hundreds of KB to MB at a time, using a larger internal buffer reduces the
-/// number of underlying read() calls and improves throughput on fast SSDs.
-const FILE_BUF_BYTES: usize = 1024 * 1024; // 1 MiB
+/// File read buffer size.
+const FILE_BUF_BYTES: usize = 1024 * 1024;
 
-/// Run file flags (must match `run_file.rs`).
+/// Flag for zstd-compressed blocks.
 const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
 
-static PERF_READ_BYTES: AtomicU64 = AtomicU64::new(0);
-static PERF_FILL_CALLS: AtomicU64 = AtomicU64::new(0);
-static PERF_FILL_NS: AtomicU64 = AtomicU64::new(0);
+// ============================================================================
+// MergeSource trait
+// ============================================================================
 
-/// Buffered, forward-only reader for run files.
+/// Trait for merge sources producing `RunRecordV2` values.
 ///
-/// Reads records in batches of [`BUFFER_SIZE`] and optionally remaps
-/// `lang_id` values using a per-run remap table (built during lang
-/// tag reconciliation).
+/// Parallel to `MergeSource` (V1) but typed for `RunRecordV2`.
+pub trait MergeSource {
+    fn peek(&self) -> Option<&RunRecordV2>;
+    fn advance(&mut self) -> io::Result<()>;
+    fn is_exhausted(&self) -> bool;
+
+    /// Return the op byte for the current record.
+    ///
+    /// Default is `1` (assert) — correct for import-path readers that carry
+    /// no op information. The `StreamingRunReaderWithOp` override returns
+    /// the actual op byte from the wire format.
+    fn peek_op(&self) -> u8 {
+        1
+    }
+}
+
+// ============================================================================
+// StreamingRunReader
+// ============================================================================
+
+/// Buffered reader for V2 run files.
+///
+/// Auto-detects FRN2 file version: version 1 (no-op, 30-byte records) or
+/// version 2 (with-op, 31-byte records). When ops are present, they're
+/// returned via `peek_op()` in the `MergeSource` impl.
 pub struct StreamingRunReader {
     file: BufReader<std::fs::File>,
-    header: RunFileHeader,
-    /// Per-run language tag dict (kept for diagnostics).
-    // Kept for: diagnosing incorrect language-tag remaps during index builds.
-    // Use when: adding debug logging/metrics that prints local tag sets for a run.
-    #[expect(dead_code)]
-    lang_dict: LanguageTagDict,
-    /// Remap table: `remap[local_lang_id] = global_lang_id`.
-    /// Empty means no remapping needed.
-    lang_remap: Vec<u16>,
-    /// Read buffer.
-    buffer: Vec<RunRecord>,
-    /// Raw byte buffer reused across reads.
-    raw_buf: Vec<u8>,
-    /// Temporary buffer for compressed blocks.
-    zstd_buf: Vec<u8>,
-    /// Decompressed bytes of the current block (compressed run files).
-    block_raw: Vec<u8>,
-    /// Current position within `block_raw` (in bytes).
-    block_pos: usize,
-    /// Current position within buffer.
+    /// Kept for the sort_order accessor.
+    pub header: RunFileHeader,
+    buffer: Vec<RunRecordV2>,
+    /// Parallel op buffer (only populated when `has_op` is true).
+    op_buffer: Vec<u8>,
     buf_pos: usize,
-    /// Number of records still in the file (not yet read into buffer).
     remaining: u64,
-    /// Cached perf flag (avoid env var lookup per refill).
-    perf_enabled: bool,
+    // For compressed blocks:
+    block_raw: Vec<u8>,
+    is_compressed: bool,
+    /// True when the run file is version 2 (31-byte records with op sideband).
+    has_op: bool,
 }
 
 impl StreamingRunReader {
-    /// Open a run file for streaming.
-    ///
-    /// `lang_remap` maps per-run lang_id → global lang_id. Pass empty
-    /// vec if no remapping is needed. Must have `remap[0] = 0`.
-    pub fn open(path: &Path, lang_remap: Vec<u16>) -> io::Result<Self> {
-        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    /// Open a V2 run file for streaming.
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let raw = std::fs::File::open(path)?;
+        let mut file = BufReader::with_capacity(FILE_BUF_BYTES, raw);
 
-        let mut file = BufReader::with_capacity(FILE_BUF_BYTES, std::fs::File::open(path)?);
-
-        // Read header
-        let mut header_buf = [0u8; RUN_HEADER_LEN];
+        // Read header.
+        let mut header_buf = [0u8; RUN_V2_HEADER_LEN];
         file.read_exact(&mut header_buf)?;
         let header = RunFileHeader::read_from(&header_buf)?;
 
-        // Read lang dict
-        let ld_len = header.lang_dict_len as usize;
-        let mut ld_buf = vec![0u8; ld_len];
-        file.seek(SeekFrom::Start(header.lang_dict_offset))?;
-        file.read_exact(&mut ld_buf)?;
-        let lang_dict = deserialize_lang_dict(&ld_buf)?;
-
-        // Position at start of records
-        file.seek(SeekFrom::Start(header.records_offset))?;
+        let is_compressed = (header.flags & RUN_FLAG_ZSTD_BLOCKS) != 0;
+        let has_op = header.version == RUN_V2_VERSION_WITH_OP;
+        let record_count = header.record_count;
 
         let mut reader = Self {
             file,
+            remaining: record_count,
             header,
-            lang_dict,
-            lang_remap,
-            buffer: Vec::with_capacity(BUFFER_SIZE),
-            raw_buf: Vec::with_capacity(BUFFER_SIZE * RECORD_WIRE_SIZE),
-            zstd_buf: Vec::new(),
-            block_raw: Vec::new(),
-            block_pos: 0,
+            buffer: Vec::with_capacity(BUFFER_SIZE.min(record_count as usize)),
+            op_buffer: Vec::with_capacity(if has_op {
+                BUFFER_SIZE.min(record_count as usize)
+            } else {
+                0
+            }),
             buf_pos: 0,
-            remaining: 0,
-            perf_enabled,
+            block_raw: Vec::new(),
+            is_compressed,
+            has_op,
         };
-        reader.remaining = reader.header.record_count;
 
-        // Fill initial buffer
-        reader.fill_buffer()?;
+        if reader.remaining > 0 {
+            reader.fill_buffer()?;
+        }
 
         Ok(reader)
     }
 
-    /// Peek at the current record without advancing.
-    /// Returns `None` if exhausted.
-    #[inline]
-    pub fn peek(&self) -> Option<&RunRecord> {
-        if self.buf_pos < self.buffer.len() {
-            Some(&self.buffer[self.buf_pos])
-        } else {
-            None
+    fn fill_buffer(&mut self) -> io::Result<()> {
+        self.buffer.clear();
+        self.op_buffer.clear();
+        self.buf_pos = 0;
+
+        if self.remaining == 0 {
+            return Ok(());
         }
+
+        let record_size = if self.has_op {
+            RECORD_V2_WITH_OP_WIRE_SIZE
+        } else {
+            RECORD_V2_WIRE_SIZE
+        };
+
+        if !self.is_compressed {
+            let to_read = (self.remaining as usize).min(BUFFER_SIZE);
+            let byte_count = to_read * record_size;
+            let mut raw = vec![0u8; byte_count];
+            self.file.read_exact(&mut raw)?;
+
+            self.buffer.reserve(to_read);
+            if self.has_op {
+                self.op_buffer.reserve(to_read);
+            }
+            for i in 0..to_read {
+                let off = i * record_size;
+                if self.has_op {
+                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = raw
+                        [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
+                    self.buffer.push(rec);
+                    self.op_buffer.push(op);
+                } else {
+                    let buf: &[u8; RECORD_V2_WIRE_SIZE] =
+                        raw[off..off + RECORD_V2_WIRE_SIZE].try_into().unwrap();
+                    self.buffer.push(RunRecordV2::read_run_le(buf));
+                }
+            }
+            self.remaining -= to_read as u64;
+        } else {
+            // Read one compressed block.
+            let mut block_header = [0u8; 12];
+            self.file.read_exact(&mut block_header)?;
+            let n_records = u32::from_le_bytes(block_header[0..4].try_into().unwrap()) as usize;
+            let raw_len = u32::from_le_bytes(block_header[4..8].try_into().unwrap()) as usize;
+            let z_len = u32::from_le_bytes(block_header[8..12].try_into().unwrap()) as usize;
+
+            let mut compressed = vec![0u8; z_len];
+            self.file.read_exact(&mut compressed)?;
+
+            self.block_raw = zstd::bulk::decompress(&compressed, raw_len)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            self.buffer.reserve(n_records);
+            if self.has_op {
+                self.op_buffer.reserve(n_records);
+            }
+            for i in 0..n_records {
+                let off = i * record_size;
+                if self.has_op {
+                    let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = self.block_raw
+                        [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
+                    self.buffer.push(rec);
+                    self.op_buffer.push(op);
+                } else {
+                    let buf: &[u8; RECORD_V2_WIRE_SIZE] = self.block_raw
+                        [off..off + RECORD_V2_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    self.buffer.push(RunRecordV2::read_run_le(buf));
+                }
+            }
+            self.remaining -= n_records as u64;
+        }
+
+        Ok(())
+    }
+}
+
+impl MergeSource for StreamingRunReader {
+    #[inline]
+    fn peek(&self) -> Option<&RunRecordV2> {
+        self.buffer.get(self.buf_pos)
     }
 
-    /// Advance to the next record. Refills buffer from disk if needed.
-    pub fn advance(&mut self) -> io::Result<()> {
+    fn advance(&mut self) -> io::Result<()> {
         self.buf_pos += 1;
         if self.buf_pos >= self.buffer.len() && self.remaining > 0 {
             self.fill_buffer()?;
@@ -139,328 +203,295 @@ impl StreamingRunReader {
         Ok(())
     }
 
-    /// True when all records have been consumed.
     #[inline]
-    pub fn is_exhausted(&self) -> bool {
+    fn is_exhausted(&self) -> bool {
         self.buf_pos >= self.buffer.len() && self.remaining == 0
     }
 
-    /// Number of records in this run file (from the header).
-    pub fn record_count(&self) -> u64 {
-        self.header.record_count
+    #[inline]
+    fn peek_op(&self) -> u8 {
+        if self.has_op {
+            self.op_buffer.get(self.buf_pos).copied().unwrap_or(1)
+        } else {
+            1 // Default: assert (import path)
+        }
+    }
+}
+
+// ============================================================================
+// StreamingRunReaderWithOp
+// ============================================================================
+
+/// Buffered reader for V2 run files that carry an op byte per record.
+///
+/// Reads 31-byte records (version 2 FRN2 files) and maintains parallel
+/// `buffer` and `op_buffer` vectors.
+// Kept for: rebuild path merge input (reads version-2 FRN2 files with op sideband).
+// Use when: incremental rebuild pipeline is wired in.
+// Note: #[expect] will warn when this code is actually used.
+#[expect(dead_code)]
+pub(crate) struct StreamingRunReaderWithOp {
+    file: BufReader<std::fs::File>,
+    /// Kept for the sort_order accessor.
+    pub header: RunFileHeader,
+    buffer: Vec<RunRecordV2>,
+    op_buffer: Vec<u8>,
+    buf_pos: usize,
+    remaining: u64,
+    block_raw: Vec<u8>,
+    is_compressed: bool,
+}
+
+impl StreamingRunReaderWithOp {
+    /// Open a V2 run file with op sideband for streaming.
+    ///
+    /// The file must be version 2 (with-op). Returns an error if the
+    /// file is version 1 (no-op).
+    #[allow(dead_code)] // Used when rebuild pipeline is wired in; #[expect] triggers unfulfilled in test targets.
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        let raw = std::fs::File::open(path)?;
+        let mut file = BufReader::with_capacity(FILE_BUF_BYTES, raw);
+
+        let mut header_buf = [0u8; RUN_V2_HEADER_LEN];
+        file.read_exact(&mut header_buf)?;
+        let header = RunFileHeader::read_from(&header_buf)?;
+
+        if header.version != RUN_V2_VERSION_WITH_OP {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "StreamingRunReaderWithOp requires version {}, got {}",
+                    RUN_V2_VERSION_WITH_OP, header.version
+                ),
+            ));
+        }
+
+        let is_compressed = (header.flags & RUN_FLAG_ZSTD_BLOCKS) != 0;
+        let record_count = header.record_count;
+
+        let mut reader = Self {
+            file,
+            remaining: record_count,
+            header,
+            buffer: Vec::with_capacity(BUFFER_SIZE.min(record_count as usize)),
+            op_buffer: Vec::with_capacity(BUFFER_SIZE.min(record_count as usize)),
+            buf_pos: 0,
+            block_raw: Vec::new(),
+            is_compressed,
+        };
+
+        if reader.remaining > 0 {
+            reader.fill_buffer()?;
+        }
+
+        Ok(reader)
     }
 
-    /// The sort order of this run file.
-    pub fn sort_order(&self) -> fluree_db_binary_index::format::run_record::RunSortOrder {
-        self.header.sort_order
-    }
-
-    /// Fill the buffer with the next batch of records from disk.
     fn fill_buffer(&mut self) -> io::Result<()> {
-        let t0 = self.perf_enabled.then(Instant::now);
+        self.buffer.clear();
+        self.op_buffer.clear();
+        self.buf_pos = 0;
 
-        let to_read = (self.remaining as usize).min(BUFFER_SIZE);
-        if to_read == 0 {
-            self.buffer.clear();
-            self.buf_pos = 0;
+        if self.remaining == 0 {
             return Ok(());
         }
 
-        if (self.header.flags & RUN_FLAG_ZSTD_BLOCKS) == 0 {
-            // Read raw bytes
-            let byte_count = to_read * RECORD_WIRE_SIZE;
-            self.raw_buf.resize(byte_count, 0u8);
-            self.file.read_exact(&mut self.raw_buf)?;
+        if !self.is_compressed {
+            let to_read = (self.remaining as usize).min(BUFFER_SIZE);
+            let byte_count = to_read * RECORD_V2_WITH_OP_WIRE_SIZE;
+            let mut raw = vec![0u8; byte_count];
+            self.file.read_exact(&mut raw)?;
 
-            // Decode records
-            self.buffer.clear();
             self.buffer.reserve(to_read);
+            self.op_buffer.reserve(to_read);
             for i in 0..to_read {
-                let offset = i * RECORD_WIRE_SIZE;
-                let buf: &[u8; RECORD_WIRE_SIZE] = self.raw_buf[offset..offset + RECORD_WIRE_SIZE]
+                let off = i * RECORD_V2_WITH_OP_WIRE_SIZE;
+                let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = raw
+                    [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
                     .try_into()
                     .unwrap();
-                let mut rec = RunRecord::read_le(buf);
-
-                // Apply lang_id remapping
-                if !self.lang_remap.is_empty() && rec.lang_id != 0 {
-                    if let Some(&global_id) = self.lang_remap.get(rec.lang_id as usize) {
-                        rec.lang_id = global_id;
-                    }
-                    // If lang_id exceeds remap table, leave as-is (shouldn't happen)
-                }
-
+                let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
                 self.buffer.push(rec);
+                self.op_buffer.push(op);
             }
+            self.remaining -= to_read as u64;
         } else {
-            // Compressed block stream. Maintain an internal decompressed block buffer.
-            self.buffer.clear();
-            self.buffer.reserve(to_read);
+            // Read one compressed block.
+            let mut block_header = [0u8; 12];
+            self.file.read_exact(&mut block_header)?;
+            let n_records = u32::from_le_bytes(block_header[0..4].try_into().unwrap()) as usize;
+            let raw_len = u32::from_le_bytes(block_header[4..8].try_into().unwrap()) as usize;
+            let z_len = u32::from_le_bytes(block_header[8..12].try_into().unwrap()) as usize;
 
-            while self.buffer.len() < to_read {
-                // If current block is exhausted, read next block.
-                if self.block_pos >= self.block_raw.len() {
-                    self.block_raw.clear();
-                    self.block_pos = 0;
+            let mut compressed = vec![0u8; z_len];
+            self.file.read_exact(&mut compressed)?;
 
-                    let mut hdr = [0u8; 12];
-                    self.file.read_exact(&mut hdr)?;
-                    let n_records = u32::from_le_bytes(hdr[0..4].try_into().unwrap()) as usize;
-                    let raw_len = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
-                    let z_len = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+            self.block_raw = zstd::bulk::decompress(&compressed, raw_len)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-                    if raw_len != n_records * RECORD_WIRE_SIZE {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "run file: invalid compressed block raw_len",
-                        ));
-                    }
-
-                    self.zstd_buf.resize(z_len, 0u8);
-                    self.file.read_exact(&mut self.zstd_buf)?;
-                    self.block_raw = zstd::bulk::decompress(&self.zstd_buf, raw_len)?;
-                    if self.block_raw.len() != raw_len {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "run file: decompressed length mismatch",
-                        ));
-                    }
-                }
-
-                // Decode as many records as we can from the current block.
-                while self.buffer.len() < to_read
-                    && self.block_pos + RECORD_WIRE_SIZE <= self.block_raw.len()
-                {
-                    let buf: &[u8; RECORD_WIRE_SIZE] = self.block_raw
-                        [self.block_pos..self.block_pos + RECORD_WIRE_SIZE]
-                        .try_into()
-                        .unwrap();
-                    self.block_pos += RECORD_WIRE_SIZE;
-                    let mut rec = RunRecord::read_le(buf);
-
-                    // Apply lang_id remapping
-                    if !self.lang_remap.is_empty() && rec.lang_id != 0 {
-                        if let Some(&global_id) = self.lang_remap.get(rec.lang_id as usize) {
-                            rec.lang_id = global_id;
-                        }
-                    }
-                    self.buffer.push(rec);
-                }
+            self.buffer.reserve(n_records);
+            self.op_buffer.reserve(n_records);
+            for i in 0..n_records {
+                let off = i * RECORD_V2_WITH_OP_WIRE_SIZE;
+                let buf: &[u8; RECORD_V2_WITH_OP_WIRE_SIZE] = self.block_raw
+                    [off..off + RECORD_V2_WITH_OP_WIRE_SIZE]
+                    .try_into()
+                    .unwrap();
+                let (rec, op) = RunRecordV2::read_run_le_with_op(buf);
+                self.buffer.push(rec);
+                self.op_buffer.push(op);
             }
+            self.remaining -= n_records as u64;
         }
 
-        self.remaining -= to_read as u64;
-        self.buf_pos = 0;
-
-        if let Some(t) = t0 {
-            PERF_FILL_CALLS.fetch_add(1, Ordering::Relaxed);
-            // We don't track compressed bytes here; this is best-effort perf logging.
-            let approx_bytes = (to_read * RECORD_WIRE_SIZE) as u64;
-            PERF_READ_BYTES.fetch_add(approx_bytes, Ordering::Relaxed);
-            PERF_FILL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        }
         Ok(())
     }
 }
 
-impl Drop for StreamingRunReader {
-    fn drop(&mut self) {
-        if !self.perf_enabled {
-            return;
+impl MergeSource for StreamingRunReaderWithOp {
+    #[inline]
+    fn peek(&self) -> Option<&RunRecordV2> {
+        self.buffer.get(self.buf_pos)
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        self.buf_pos += 1;
+        if self.buf_pos >= self.buffer.len() && self.remaining > 0 {
+            self.fill_buffer()?;
         }
-        // Aggregate across all reader instances; only emit once when the last one drops
-        // is non-trivial to detect, so we emit at drop with totals (dup logs are OK).
-        let calls = PERF_FILL_CALLS.load(std::sync::atomic::Ordering::Relaxed);
-        let bytes = PERF_READ_BYTES.load(std::sync::atomic::Ordering::Relaxed);
-        let ns = PERF_FILL_NS.load(std::sync::atomic::Ordering::Relaxed);
-        tracing::debug!(
-            fill_calls = calls,
-            read_mb = (bytes as f64) / (1024.0 * 1024.0),
-            fill_s = (ns as f64) / 1e9,
-            "streaming run reader perf (aggregate)"
-        );
+        Ok(())
+    }
+
+    #[inline]
+    fn is_exhausted(&self) -> bool {
+        self.buf_pos >= self.buffer.len() && self.remaining == 0
+    }
+
+    #[inline]
+    fn peek_op(&self) -> u8 {
+        self.op_buffer.get(self.buf_pos).copied().unwrap_or(1)
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::runs::run_file::write_run_file;
-    use fluree_db_binary_index::format::run_record::{cmp_spot, RunSortOrder};
+    use crate::run_index::runs::run_file::{write_run_file, write_run_file_with_op};
+    use fluree_db_binary_index::format::run_record::RunSortOrder;
+    use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+    use fluree_db_binary_index::format::run_record_v2::cmp_v2_spot;
+    use fluree_db_core::o_type::OType;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::DatatypeDictId;
-    use std::cmp::Ordering;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
-        RunRecord::new(
-            0,
-            SubjectId::from_u64(s_id),
+    fn make_rec(s_id: u64, p_id: u32, o_type: u16, o_key: u64, t: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key,
             p_id,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(val),
             t,
-            true,
-            DatatypeDictId::INTEGER.as_u16(),
-            0,
-            None,
-        )
-    }
-
-    #[test]
-    fn test_streaming_reader_basic() {
-        let dir = std::env::temp_dir().join("fluree_test_streaming_basic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.frn");
-
-        let lang_dict = LanguageTagDict::new();
-        let mut records: Vec<RunRecord> =
-            (0..100).map(|i| make_record(i, 1, i as i64, 1)).collect();
-        records.sort_unstable_by(cmp_spot);
-
-        write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();
-
-        let mut reader = StreamingRunReader::open(&path, vec![]).unwrap();
-        assert_eq!(reader.record_count(), 100);
-
-        let mut count = 0;
-        let mut prev: Option<RunRecord> = None;
-        while let Some(rec) = reader.peek() {
-            if let Some(p) = prev {
-                assert_ne!(cmp_spot(&p, rec), Ordering::Greater, "records not sorted");
-            }
-            prev = Some(*rec);
-            count += 1;
-            reader.advance().unwrap();
+            o_i: LIST_INDEX_NONE,
+            o_type,
+            g_id: 0,
         }
-
-        assert_eq!(count, 100);
-        assert!(reader.is_exhausted());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_streaming_reader_large() {
-        let dir = std::env::temp_dir().join("fluree_test_streaming_large");
+    fn streaming_read_roundtrip() {
+        let dir = std::env::temp_dir().join("fluree_test_streaming_v2");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.frn");
 
-        // More records than BUFFER_SIZE to test buffer refill
-        let n = BUFFER_SIZE * 2 + 500;
-        let lang_dict = LanguageTagDict::new();
-        let mut records: Vec<RunRecord> = (0..n as u64)
-            .map(|i| make_record(i, 1, i as i64, 1))
-            .collect();
-        records.sort_unstable_by(cmp_spot);
-
-        write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();
-
-        let mut reader = StreamingRunReader::open(&path, vec![]).unwrap();
-        let mut count = 0u64;
-        while reader.peek().is_some() {
-            count += 1;
-            reader.advance().unwrap();
-        }
-
-        assert_eq!(count, n as u64);
-        assert!(reader.is_exhausted());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_streaming_reader_lang_remap() {
-        let dir = std::env::temp_dir().join("fluree_test_streaming_lang");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.frn");
-
-        let mut lang_dict = LanguageTagDict::new();
-        lang_dict.get_or_insert(Some("en")); // local id 1
-        lang_dict.get_or_insert(Some("fr")); // local id 2
-
-        let records = vec![
-            RunRecord::new(
-                0,
-                SubjectId::from_u64(1),
-                1,
-                ObjKind::LEX_ID,
-                ObjKey::encode_u32_id(0),
-                1,
-                true,
-                DatatypeDictId::LANG_STRING.as_u16(),
-                1,
-                None,
-            ),
-            RunRecord::new(
-                0,
-                SubjectId::from_u64(1),
-                2,
-                ObjKind::LEX_ID,
-                ObjKey::encode_u32_id(1),
-                1,
-                true,
-                DatatypeDictId::LANG_STRING.as_u16(),
-                2,
-                None,
-            ),
-            RunRecord::new(
-                0,
-                SubjectId::from_u64(2),
-                1,
-                ObjKind::LEX_ID,
-                ObjKey::encode_u32_id(2),
-                1,
-                true,
-                DatatypeDictId::STRING.as_u16(),
-                0,
-                None,
-            ),
+        let mut records = vec![
+            make_rec(3, 1, OType::XSD_INTEGER.as_u16(), 30, 3),
+            make_rec(1, 1, OType::XSD_INTEGER.as_u16(), 10, 1),
+            make_rec(2, 1, OType::XSD_STRING.as_u16(), 20, 2),
         ];
+        records.sort_by(cmp_v2_spot);
 
-        write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();
+        write_run_file(&path, &records, RunSortOrder::Spot, 1, 3).unwrap();
 
-        // Remap: local 0→0 (sentinel), local 1→5, local 2→3
-        let remap = vec![0u16, 5, 3];
-        let mut reader = StreamingRunReader::open(&path, remap).unwrap();
-
-        let r0 = *reader.peek().unwrap();
-        assert_eq!(r0.lang_id, 5); // was 1, remapped to 5
-        reader.advance().unwrap();
-
-        let r1 = *reader.peek().unwrap();
-        assert_eq!(r1.lang_id, 3); // was 2, remapped to 3
-        reader.advance().unwrap();
-
-        let r2 = *reader.peek().unwrap();
-        assert_eq!(r2.lang_id, 0); // was 0, stays 0 (no remap for sentinel)
-        reader.advance().unwrap();
-
+        // Stream read.
+        let mut reader = StreamingRunReader::open(&path).unwrap();
+        let mut read_back = Vec::new();
+        while let Some(rec) = reader.peek() {
+            read_back.push(*rec);
+            reader.advance().unwrap();
+        }
         assert!(reader.is_exhausted());
+        assert_eq!(read_back.len(), 3);
+
+        // Verify sort order preserved.
+        assert_eq!(read_back[0].s_id.as_u64(), 1);
+        assert_eq!(read_back[1].s_id.as_u64(), 2);
+        assert_eq!(read_back[2].s_id.as_u64(), 3);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_streaming_reader_empty() {
-        let dir = std::env::temp_dir().join("fluree_test_streaming_empty");
+    fn streaming_read_with_op_roundtrip() {
+        let dir = std::env::temp_dir().join("fluree_test_streaming_v2_with_op");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.frn");
+        let path = dir.join("test_op.frn");
 
-        let lang_dict = LanguageTagDict::new();
-        write_run_file(&path, &[], &lang_dict, RunSortOrder::Spot, 0, 0).unwrap();
+        let mut records = vec![
+            make_rec(3, 1, OType::XSD_INTEGER.as_u16(), 30, 3),
+            make_rec(1, 1, OType::XSD_INTEGER.as_u16(), 10, 1),
+            make_rec(2, 1, OType::XSD_STRING.as_u16(), 20, 2),
+        ];
+        let mut ops = vec![1u8, 0u8, 1u8];
 
-        let reader = StreamingRunReader::open(&path, vec![]).unwrap();
+        // Sort records and ops together by SPOT order.
+        let mut indices: Vec<usize> = (0..records.len()).collect();
+        indices.sort_unstable_by(|&a, &b| cmp_v2_spot(&records[a], &records[b]));
+        let sorted_recs: Vec<_> = indices.iter().map(|&i| records[i]).collect();
+        let sorted_ops: Vec<_> = indices.iter().map(|&i| ops[i]).collect();
+        records = sorted_recs;
+        ops = sorted_ops;
+
+        write_run_file_with_op(&path, &records, &ops, RunSortOrder::Spot, 1, 3).unwrap();
+
+        // Stream read with op.
+        let mut reader = StreamingRunReaderWithOp::open(&path).unwrap();
+        let mut read_back = Vec::new();
+        let mut read_ops = Vec::new();
+        while let Some(rec) = reader.peek() {
+            read_back.push(*rec);
+            read_ops.push(reader.peek_op());
+            reader.advance().unwrap();
+        }
         assert!(reader.is_exhausted());
-        assert!(reader.peek().is_none());
+        assert_eq!(read_back.len(), 3);
+
+        // Verify sort order preserved.
+        assert_eq!(read_back[0].s_id.as_u64(), 1);
+        assert_eq!(read_back[1].s_id.as_u64(), 2);
+        assert_eq!(read_back[2].s_id.as_u64(), 3);
+
+        // Verify ops survived the roundtrip.
+        // After sorting: s=1 had op=0, s=2 had op=1, s=3 had op=1
+        assert_eq!(read_ops[0], 0); // s=1 was retract
+        assert_eq!(read_ops[1], 1); // s=2 was assert
+        assert_eq!(read_ops[2], 1); // s=3 was assert
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_peek_op_is_one() {
+        // StreamingRunReader (no-op) should return peek_op() == 1 by default.
+        let dir = std::env::temp_dir().join("fluree_test_peek_op_default");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.frn");
+
+        let records = vec![make_rec(1, 1, OType::XSD_INTEGER.as_u16(), 10, 1)];
+        write_run_file(&path, &records, RunSortOrder::Spot, 1, 1).unwrap();
+
+        let reader = StreamingRunReader::open(&path).unwrap();
+        assert_eq!(reader.peek_op(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

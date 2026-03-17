@@ -7,7 +7,7 @@
 //!
 //! - Class policies are indexed INTO `by_property`, not a separate index
 //! - Implicit properties (@id, rdf:type) are always included for class policies
-//! - Insertion order is preserved within each bucket (like Clojure's conjv)
+//! - Insertion order is preserved within each bucket
 //! - Each policy is indexed once per property (no duplicates)
 
 use crate::types::{PolicyAction, PolicyRestriction, PolicySet, PropertyPolicyEntry, TargetMode};

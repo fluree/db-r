@@ -12,6 +12,7 @@
 use crate::binary_scan::EmitMask;
 use crate::bind::BindOperator;
 use crate::bm25::Bm25SearchOperator;
+use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
 use crate::filter::{contains_exists, FilterOperator};
@@ -25,6 +26,7 @@ use crate::planner::{is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
+use crate::semijoin::SemijoinOperator;
 use crate::subquery::SubqueryOperator;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::union::UnionOperator;
@@ -35,6 +37,31 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::pushdown::extract_bounds_from_filters;
+
+#[inline]
+fn filter_not_bound_var(expr: &Expression) -> Option<VarId> {
+    match expr {
+        Expression::Call { func, args } if *func == crate::ir::Function::Not && args.len() == 1 => {
+            match &args[0] {
+                Expression::Call { func, args }
+                    if *func == crate::ir::Function::Bound && args.len() == 1 =>
+                {
+                    match &args[0] {
+                        Expression::Var(v) => Some(*v),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+#[inline]
+fn pattern_list_contains_var(patterns: &[Pattern], v: VarId) -> bool {
+    patterns.iter().any(|p| p.variables().contains(&v))
+}
 
 // ============================================================================
 // Variable statistics (needed-vars + join participation)
@@ -305,6 +332,43 @@ fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> 
         .unwrap_or_default()
 }
 
+/// Collect variables that a pattern **produces** (binds), excluding variables that
+/// are only consumed (e.g., referenced in FILTER expressions but not bound by any
+/// triple/bind/values pattern). Used to determine which correlation vars can serve
+/// as semijoin keys for EXISTS.
+fn produced_variables(pattern: &Pattern) -> Vec<VarId> {
+    match pattern {
+        Pattern::Triple(tp) => tp.variables(),
+        Pattern::Bind { var, .. } => vec![*var],
+        Pattern::Values { vars, .. } => vars.clone(),
+        Pattern::Optional(inner)
+        | Pattern::Minus(inner)
+        | Pattern::Exists(inner)
+        | Pattern::NotExists(inner) => inner.iter().flat_map(produced_variables).collect(),
+        Pattern::Union(branches) => branches
+            .iter()
+            .flat_map(|branch| branch.iter().flat_map(produced_variables))
+            .collect(),
+        Pattern::PropertyPath(pp) => pp.variables(),
+        Pattern::Subquery(sq) => sq.variables(),
+        Pattern::IndexSearch(isp) => isp.variables(),
+        Pattern::VectorSearch(vsp) => vsp.variables(),
+        Pattern::R2rml(r2rml) => r2rml.variables(),
+        Pattern::GeoSearch(gsp) => gsp.variables(),
+        Pattern::S2Search(s2p) => s2p.variables(),
+        Pattern::Graph { name, patterns } => {
+            let mut vars: Vec<VarId> = patterns.iter().flat_map(produced_variables).collect();
+            if let crate::ir::GraphName::Var(v) = name {
+                vars.push(*v);
+            }
+            vars
+        }
+        Pattern::Service(sp) => sp.variables(),
+        // FILTER only consumes variables, never produces them.
+        Pattern::Filter(_) => vec![],
+    }
+}
+
 /// Apply VALUES patterns on top of an existing operator.
 ///
 /// Each VALUES pattern wraps the current operator with a `ValuesOperator`,
@@ -494,18 +558,21 @@ fn build_property_join_block(
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
     pushdown: &FilterPushdown,
+    required_where_vars: Option<&[VarId]>,
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
     group_by: &[VarId],
+    distinct_query: bool,
 ) -> Result<Option<BoxedOperator>> {
     let mut operator = Some(build_triple_operators(
         operator,
         triples,
         &pushdown.object_bounds,
-        None,
+        required_where_vars,
         var_counts,
         protected_vars,
         group_by,
+        distinct_query,
     )?);
 
     if !block_values.is_empty() {
@@ -633,6 +700,7 @@ fn build_sequential_join_block(
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
     group_by: &[VarId],
+    distinct_query: bool,
 ) -> Result<Option<BoxedOperator>> {
     let mut operator = operator;
 
@@ -678,6 +746,19 @@ fn build_sequential_join_block(
             live.into_iter().collect::<Vec<VarId>>()
         });
 
+        let pruned_vars: Option<HashSet<VarId>> = if distinct_query {
+            live_vars.as_ref().map(|live| {
+                let live_set: HashSet<VarId> = live.iter().copied().collect();
+                vars_after
+                    .iter()
+                    .copied()
+                    .filter(|v| !live_set.contains(v))
+                    .collect()
+            })
+        } else {
+            None
+        };
+
         let emit = emit_mask_for_triple(tp, var_counts, protected_vars);
         let op = build_scan_or_join(
             operator,
@@ -701,7 +782,11 @@ fn build_sequential_join_block(
             );
             pending_binds = new_binds;
             pending_filters = new_filters;
-            operator = Some(child);
+            operator = if distinct_query && pruned_vars.as_ref().is_some_and(|s| !s.is_empty()) {
+                Some(Box::new(DistinctOperator::new(child)))
+            } else {
+                Some(child)
+            };
         }
     }
 
@@ -731,7 +816,7 @@ pub fn build_where_operators(
     let mut counts: HashMap<VarId, usize> = HashMap::new();
     collect_var_stats(patterns, &mut counts, &mut needed);
     needed.extend(counts.keys().copied());
-    build_where_operators_with_needed(patterns, stats, &needed, &[], required_where_vars)
+    build_where_operators_with_needed(patterns, stats, &needed, &[], false, required_where_vars)
 }
 
 /// Build WHERE operators with explicit needed-vars and GROUP BY keys.
@@ -743,6 +828,7 @@ pub fn build_where_operators_with_needed(
     stats: Option<Arc<StatsView>>,
     needed_vars: &HashSet<VarId>,
     group_by: &[VarId],
+    distinct_query: bool,
     required_where_vars: Option<&[VarId]>,
 ) -> Result<BoxedOperator> {
     build_where_operators_seeded_with_needed(
@@ -751,6 +837,7 @@ pub fn build_where_operators_with_needed(
         stats,
         needed_vars,
         group_by,
+        distinct_query,
         required_where_vars,
     )
 }
@@ -846,6 +933,7 @@ pub fn build_where_operators_seeded(
         stats,
         &needed,
         &[],
+        false,
         required_where_vars,
     )
 }
@@ -872,6 +960,7 @@ pub fn build_where_operators_seeded_with_needed(
     stats: Option<Arc<StatsView>>,
     needed_vars: &HashSet<VarId>,
     group_by: &[VarId],
+    distinct_query: bool,
     required_where_vars: Option<&[VarId]>,
 ) -> Result<BoxedOperator> {
     if patterns.is_empty() {
@@ -970,6 +1059,7 @@ pub fn build_where_operators_seeded_with_needed(
                         &var_counts,
                         &protected_vars,
                         group_by,
+                        distinct_query,
                     )?);
                     continue;
                 }
@@ -987,31 +1077,82 @@ pub fn build_where_operators_seeded_with_needed(
                     consumed_indices,
                 };
 
+                // Prefer starting from a range-bounded triple *only when it is not
+                // materially less selective than the current first triple*.
+                //
+                // `reorder_patterns(...)` runs before bounds extraction, so it cannot
+                // account for FILTER-derived object bounds (e.g. `?year <= 1940`).
+                // When such bounds exist, starting from the bounded triple can reduce
+                // the join domain by orders of magnitude and prevent ORDER BY from
+                // buffering a huge intermediate.
+                //
+                // However, naively forcing a bounded triple to the front can be
+                // catastrophic when the bounded triple is still a broad predicate scan
+                // and another triple is already highly selective (e.g. a bound-object
+                // lookup that would bind the join domain first).
+                let mut triples_for_exec: Vec<TriplePattern> = block.triples.clone();
+
+                if !pushdown.object_bounds.is_empty() && triples_for_exec.len() >= 2 {
+                    // Existing static-bounds nudge: promote bounded triple to the front only
+                    // when it is not less selective than the current first triple.
+                    let first_has_bounds = triples_for_exec[0]
+                        .o
+                        .as_var()
+                        .is_some_and(|v| pushdown.object_bounds.contains_key(&v));
+
+                    if !first_has_bounds {
+                        let bound_vars: HashSet<VarId> = operator
+                            .as_ref()
+                            .map(|op| op.schema().iter().copied().collect())
+                            .unwrap_or_default();
+                        let stats_ref = stats.as_deref();
+                        let first_est = crate::planner::estimate_triple_row_count(
+                            &triples_for_exec[0],
+                            &bound_vars,
+                            stats_ref,
+                        );
+
+                        let mut best_idx: Option<usize> = None;
+                        let mut best_est: f64 = f64::INFINITY;
+                        for (idx, tp) in triples_for_exec.iter().enumerate().skip(1) {
+                            let has_bounds =
+                                tp.o.as_var()
+                                    .is_some_and(|v| pushdown.object_bounds.contains_key(&v));
+                            if !has_bounds {
+                                continue;
+                            }
+                            let est = crate::planner::estimate_triple_row_count(
+                                tp,
+                                &bound_vars,
+                                stats_ref,
+                            );
+                            if est < best_est {
+                                best_est = est;
+                                best_idx = Some(idx);
+                            }
+                        }
+
+                        if let Some(i) = best_idx {
+                            if best_est <= first_est {
+                                triples_for_exec.swap(0, i);
+                            }
+                        }
+                    }
+                }
+
                 // Ensure a concrete seed when only BIND/FILTER remain (no triples, no upstream).
                 if block.triples.is_empty() && operator.is_none() {
                     operator = Some(Box::new(EmptyOperator::new()));
                 }
 
                 let can_property_join = operator.is_none()
-                    && block.triples.len() >= 2
-                    && is_property_join(&block.triples);
+                    && triples_for_exec.len() >= 2
+                    && is_property_join(&triples_for_exec);
 
                 if can_property_join {
                     operator = build_property_join_block(
                         operator,
-                        &block.triples,
-                        block.values,
-                        pending_binds,
-                        pending_filters,
-                        &pushdown,
-                        &var_counts,
-                        &protected_vars,
-                        group_by,
-                    )?;
-                } else {
-                    operator = build_sequential_join_block(
-                        operator,
-                        &block.triples,
+                        &triples_for_exec,
                         block.values,
                         pending_binds,
                         pending_filters,
@@ -1020,6 +1161,21 @@ pub fn build_where_operators_seeded_with_needed(
                         &var_counts,
                         &protected_vars,
                         group_by,
+                        distinct_query,
+                    )?;
+                } else {
+                    operator = build_sequential_join_block(
+                        operator,
+                        &triples_for_exec,
+                        block.values,
+                        pending_binds,
+                        pending_filters,
+                        &pushdown,
+                        augmented_ref,
+                        &var_counts,
+                        &protected_vars,
+                        group_by,
+                        distinct_query,
                     )?;
                 }
             }
@@ -1047,6 +1203,31 @@ pub fn build_where_operators_seeded_with_needed(
                 let augmented_ref = augmented_rwv.as_deref();
 
                 if let Pattern::Optional(inner_patterns) = &patterns[i] {
+                    // Optimization: OPTIONAL { ... binds ?v ... } FILTER(!bound(?v))
+                    // behaves like NOT EXISTS { ... } for the inner conjunctive block.
+                    //
+                    // We implement this as a correlated NOT EXISTS (ExistsOperator with negation),
+                    // not as a Semijoin build/probe, because the inner-side key set can be huge
+                    // for common predicates (e.g., bsbm:productFeature), while the outer stream is
+                    // typically already selective.
+                    if let Some(Pattern::Filter(next_filter)) = patterns.get(i + 1) {
+                        if let Some(v) = filter_not_bound_var(next_filter) {
+                            let v_bound_in_outer = child.schema().contains(&v);
+                            let v_appears_later = pattern_list_contains_var(&patterns[i + 2..], v);
+                            let v_bound_by_inner = pattern_list_contains_var(inner_patterns, v);
+                            if !v_bound_in_outer && !v_appears_later && v_bound_by_inner {
+                                operator = Some(Box::new(ExistsOperator::new(
+                                    child,
+                                    inner_patterns.clone(),
+                                    true,
+                                    stats.clone(),
+                                )));
+                                i += 2;
+                                continue;
+                            }
+                        }
+                    }
+
                     let required_schema = Arc::from(child.schema().to_vec().into_boxed_slice());
 
                     // Fast path: single triple pattern
@@ -1109,16 +1290,58 @@ pub fn build_where_operators_seeded_with_needed(
                 i += 1;
             }
 
-            // EXISTS and NOT EXISTS share the same operator, differing only by a boolean flag
+            // EXISTS / NOT EXISTS: use SemijoinOperator when correlated (shared vars
+            // between outer and inner), ExistsOperator when uncorrelated.
             Pattern::Exists(inner_patterns) | Pattern::NotExists(inner_patterns) => {
                 let child = require_child(operator, "EXISTS pattern")?;
                 let negated = matches!(&patterns[i], Pattern::NotExists(_));
-                operator = Some(Box::new(ExistsOperator::new(
-                    child,
-                    inner_patterns.clone(),
-                    negated,
-                    stats.clone(),
-                )));
+
+                // Collect only vars PRODUCED by inner patterns (Triple, Bind, Values, etc.).
+                // Vars only consumed (e.g., in FILTER expressions) require per-row seeding
+                // and cannot serve as semijoin keys.
+                let inner_produced_vars: std::collections::HashSet<VarId> =
+                    inner_patterns.iter().flat_map(produced_variables).collect();
+
+                // Key vars in child schema order (stable, matches column layout).
+                let key_vars: Vec<VarId> = child
+                    .schema()
+                    .iter()
+                    .copied()
+                    .filter(|v| inner_produced_vars.contains(v))
+                    .collect();
+
+                // Check if inner patterns reference outer vars that they don't produce
+                // (e.g., FILTER(?p = ?q) where ?p is outer-only). If so, the inner
+                // patterns can't be executed standalone — fall back to ExistsOperator.
+                let inner_all_vars: std::collections::HashSet<VarId> =
+                    inner_patterns.iter().flat_map(|p| p.variables()).collect();
+                let outer_schema: std::collections::HashSet<VarId> =
+                    child.schema().iter().copied().collect();
+                let outer_only_consumed: bool = inner_all_vars
+                    .iter()
+                    .any(|v| outer_schema.contains(v) && !inner_produced_vars.contains(v));
+
+                if key_vars.is_empty() || outer_only_consumed {
+                    // Uncorrelated, or inner depends on outer-only vars (e.g., FILTER
+                    // referencing outer vars): use ExistsOperator for correct per-row
+                    // seeding of all outer bindings.
+                    operator = Some(Box::new(ExistsOperator::new(
+                        child,
+                        inner_patterns.clone(),
+                        negated,
+                        stats.clone(),
+                    )));
+                } else {
+                    // Correlated via produced vars only: SemijoinOperator builds inner
+                    // set once, probes per row.
+                    operator = Some(Box::new(SemijoinOperator::new(
+                        child,
+                        inner_patterns.clone(),
+                        key_vars,
+                        negated,
+                        stats.clone(),
+                    )));
+                }
                 i += 1;
             }
 
@@ -1287,7 +1510,7 @@ pub fn build_scan_or_join(
         None => make_first_scan(tp, object_bounds, inline_ops, emit, group_by),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
-            let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
+            let left_schema: Arc<[VarId]> = Arc::from(left.schema().to_vec().into_boxed_slice());
 
             // Extract object bounds if available for this pattern's object variable
             let bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
@@ -1313,19 +1536,27 @@ fn emit_mask_for_triple(
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
 ) -> EmitMask {
-    // For now, only prune object vars. Subject and predicate vars are kept because
-    // they often participate in joins and/or are used for result identity.
+    let emit_var = |v: VarId| {
+        let count = var_counts.get(&v).copied().unwrap_or(0);
+        count > 1 || protected_vars.contains(&v)
+    };
+
+    let emit_s = match &tp.s {
+        Ref::Var(v) => emit_var(*v),
+        _ => true,
+    };
+    let emit_p = match &tp.p {
+        Ref::Var(v) => emit_var(*v),
+        _ => true,
+    };
     let emit_o = match &tp.o {
-        Term::Var(v) => {
-            let count = var_counts.get(v).copied().unwrap_or(0);
-            count > 1 || protected_vars.contains(v)
-        }
+        Term::Var(v) => emit_var(*v),
         _ => true,
     };
 
     EmitMask {
-        s: true,
-        p: true,
+        s: emit_s,
+        p: emit_p,
         o: emit_o,
     }
 }
@@ -1363,6 +1594,7 @@ fn scan_index_hint_for_triple(tp: &TriplePattern, group_by: &[VarId]) -> Option<
 /// Uses property join optimization when applicable.
 /// When `object_bounds` is provided, range constraints are pushed down to ScanOperator
 /// for the first pattern, enabling index-level filtering.
+#[allow(clippy::too_many_arguments)]
 pub fn build_triple_operators(
     existing: Option<BoxedOperator>,
     triples: &[TriplePattern],
@@ -1371,6 +1603,7 @@ pub fn build_triple_operators(
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
     group_by: &[VarId],
+    distinct_query: bool,
 ) -> Result<BoxedOperator> {
     if triples.is_empty() {
         return existing
@@ -1378,25 +1611,46 @@ pub fn build_triple_operators(
     }
 
     let mut operator = existing;
+    let triples_for_exec: Vec<TriplePattern> = triples.to_vec();
 
     // Check for property join optimization
     //
     // PropertyJoinOperator scans each predicate independently and applies per-predicate
     // object bounds during its scan phase, then intersects subjects. This is far cheaper
     // than falling back to NestedLoopJoin which does correlated novelty traversals.
-    if operator.is_none() && triples.len() >= 2 && is_property_join(triples) {
-        // Use PropertyJoinOperator for multi-property patterns
-        let pj = PropertyJoinOperator::new(triples, object_bounds.clone());
+    if operator.is_none() && triples_for_exec.len() >= 2 && is_property_join(&triples_for_exec) {
+        // Use PropertyJoinOperator for multi-property patterns.
+        //
+        // If an object var is not needed downstream (not in required_where_vars and not
+        // otherwise protected), treat that predicate as existence-only (semijoin) to avoid
+        // cartesian-product blowups.
+        let mut needed: HashSet<VarId> = HashSet::new();
+        if let Some(rwv) = required_where_vars {
+            needed.extend(rwv.iter().copied());
+        }
+        for (v, c) in var_counts {
+            if *c > 1 || protected_vars.contains(v) {
+                needed.insert(*v);
+            }
+        }
+
+        let pj = PropertyJoinOperator::new_with_needed_vars(
+            &triples_for_exec,
+            object_bounds.clone(),
+            Some(&needed),
+        )?;
         return Ok(Box::new(pj));
     }
 
     // Build chain of scan/join operators using the shared helper
     let rwv_set: Option<HashSet<VarId>> = required_where_vars.map(|v| v.iter().copied().collect());
 
-    for (k, pattern) in triples.iter().enumerate() {
+    let mut seen_vars: HashSet<VarId> = HashSet::new();
+    for (k, pattern) in triples_for_exec.iter().enumerate() {
+        seen_vars.extend(pattern.variables());
         // Compute live vars: required_where_vars ∪ vars from subsequent triples
         let live_vars = rwv_set.as_ref().map(|base| {
-            let suffix_vars: HashSet<VarId> = triples[k + 1..]
+            let suffix_vars: HashSet<VarId> = triples_for_exec[k + 1..]
                 .iter()
                 .flat_map(|t| t.variables())
                 .collect();
@@ -1413,6 +1667,24 @@ pub fn build_triple_operators(
             emit,
             group_by,
         ));
+
+        // DISTINCT query optimization: if any variables seen so far are no longer live,
+        // collapse duplicates early to avoid downstream join blowups.
+        if distinct_query {
+            if let Some(live) = live_vars.as_ref() {
+                let live_set: HashSet<VarId> = live.iter().copied().collect();
+                let dead = seen_vars
+                    .iter()
+                    .copied()
+                    .filter(|v| !live_set.contains(v))
+                    .count();
+                if dead > 0 {
+                    if let Some(op) = operator.take() {
+                        operator = Some(Box::new(DistinctOperator::new(op)));
+                    }
+                }
+            }
+        }
     }
 
     Ok(operator.unwrap())
@@ -1439,7 +1711,7 @@ mod tests {
         let mut counts: HashMap<VarId, usize> = HashMap::new();
         collect_var_stats(patterns, &mut counts, &mut needed);
         needed.extend(counts.keys().copied());
-        super::build_where_operators_with_needed(patterns, stats, &needed, &[], None)
+        super::build_where_operators_with_needed(patterns, stats, &needed, &[], false, None)
     }
 
     fn build_triple_operators(
@@ -1465,6 +1737,7 @@ mod tests {
             &counts,
             &protected,
             &[],
+            false,
         )
     }
 

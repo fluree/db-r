@@ -2747,6 +2747,7 @@ dependencies = [
  "futures",
  "geo",
  "geo-types",
+ "hashbrown 0.16.1",
  "lru 0.12.5",
  "md-5",
  "memmap2",

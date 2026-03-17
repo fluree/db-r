@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// A JSON-LD ConfigurationValue node (envVar/javaProp/defaultVal)
 ///
-/// This matches the pattern used by Fluree's Clojure configuration system where
+/// This matches the pattern used by the legacy configuration system where
 /// leaf values can be indirected through environment variables and defaults.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigValue {
@@ -57,7 +57,7 @@ pub struct S3StorageConfig {
     pub max_retries: Option<u64>,
     pub retry_base_delay_ms: Option<u64>,
     pub retry_max_delay_ms: Option<u64>,
-    /// Optional address identifier (Clojure parity)
+    /// Optional address identifier
     pub address_identifier: Option<Arc<str>>,
 }
 
@@ -130,7 +130,7 @@ pub struct StorageConfig {
     pub path: Option<Arc<str>>,
     /// Optional AES-256 encryption key (works with any storage backend: file, S3, memory)
     pub aes256_key: Option<Arc<str>>,
-    /// Optional address identifier (Clojure parity)
+    /// Optional address identifier
     pub address_identifier: Option<Arc<str>>,
 }
 
@@ -260,7 +260,7 @@ impl ConnectionConfig {
                 "commitStorage" | "commit_storage" => {
                     config.commit_storage = Some(StorageConfig::from_json(value)?);
                 }
-                // We parse publisher config for parity with the Clojure JSON-LD config,
+                // We parse publisher config for parity with the legacy JSON-LD config,
                 // but the query connection does not use it yet.
                 "primaryPublisher" | "primary_publisher" => {
                     // Best-effort: store unsupported publisher in flat JSON mode.
@@ -287,9 +287,9 @@ impl ConnectionConfig {
         Ok(config)
     }
 
-    /// Parse from Clojure-style JSON-LD config
+    /// Parse from legacy JSON-LD config
     ///
-    /// This handles the JSON-LD format used by Clojure's connection config:
+    /// This handles the JSON-LD format used by the legacy connection config:
     /// - @context with @base and @vocab
     /// - @graph array with nodes
     /// - @id references between nodes
@@ -461,7 +461,7 @@ fn parse_defaults_node(graph: &ConfigGraph, node: &JsonValue) -> Result<Defaults
 
 /// Parse publisher config from a resolved JSON-LD node
 fn parse_publisher_node(graph: &ConfigGraph, node: &JsonValue) -> Result<PublisherConfig> {
-    // DynamoDB nameservice (Clojure parity)
+    // DynamoDB nameservice
     if node.get(vocab::FIELD_DYNAMODB_TABLE).is_some() {
         let table = resolve_string(graph, node, vocab::FIELD_DYNAMODB_TABLE).ok_or_else(|| {
             ConnectionError::invalid_config("DynamoDB publisher requires dynamodbTable")
@@ -996,5 +996,291 @@ mod tests {
             }
             _ => panic!("Expected Unsupported storage type"),
         }
+    }
+
+    #[test]
+    fn test_jsonld_config_with_unsupported_components_parses() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "fileStorage", "@type": "Storage", "filePath": "/tmp/test"},
+                {
+                    "@id": "publisher",
+                    "@type": "Publisher",
+                    "storage": {"@id": "fileStorage"}
+                },
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "fileStorage"},
+                    "primaryPublisher": {"@id": "publisher"}
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse JSON-LD config");
+        assert!(matches!(
+            parsed.index_storage.storage_type,
+            StorageType::File
+        ));
+        assert_eq!(parsed.index_storage.path.as_deref(), Some("/tmp/test"));
+    }
+
+    #[test]
+    fn test_jsonld_config_index_storage_only() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "fileStorage", "@type": "Storage", "filePath": "/data/fluree"},
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "parallelism": 8,
+                    "indexStorage": {"@id": "fileStorage"}
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse config");
+        assert_eq!(parsed.parallelism, 8);
+        assert!(parsed.commit_storage.is_none());
+    }
+
+    #[test]
+    fn test_jsonld_memory_storage_config() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "memStorage", "@type": "Storage"},
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "memStorage"}
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse memory config");
+        assert!(matches!(
+            parsed.index_storage.storage_type,
+            StorageType::Memory
+        ));
+    }
+
+    #[test]
+    fn test_jsonld_expansion_array_wrapped_values() {
+        // After JSON-LD expansion, scalar values are wrapped in arrays like [{"@value": 4}].
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "fs", "@type": "Storage", "filePath": "/path/to/data"},
+                {
+                    "@id": "conn",
+                    "@type": "Connection",
+                    "parallelism": 16,
+                    "cacheMaxMb": 2000,
+                    "indexStorage": {"@id": "fs"}
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
+        assert_eq!(parsed.parallelism, 16);
+        assert_eq!(parsed.cache.max_mb, 2000);
+        assert_eq!(parsed.index_storage.path.as_deref(), Some("/path/to/data"));
+    }
+
+    #[test]
+    fn test_jsonld_error_no_connection_node() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "fileStorage", "@type": "Storage", "filePath": "/tmp/test"}
+            ]
+        });
+
+        let result = ConnectionConfig::from_json_ld(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No Connection node"));
+    }
+
+    #[test]
+    fn test_jsonld_error_no_index_storage() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "parallelism": 4
+                }
+            ]
+        });
+
+        let result = ConnectionConfig::from_json_ld(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("indexStorage required"));
+    }
+
+    #[test]
+    fn test_jsonld_error_multiple_connection_nodes() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "fs", "@type": "Storage", "filePath": "/tmp/test"},
+                {
+                    "@id": "conn1",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "fs"}
+                },
+                {
+                    "@id": "conn2",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "fs"}
+                }
+            ]
+        });
+
+        let result = ConnectionConfig::from_json_ld(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Multiple Connection nodes"));
+    }
+
+    #[test]
+    fn test_jsonld_address_identifiers_parsing() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "memStorage", "@type": "Storage"},
+                {"@id": "fileStorage", "@type": "Storage", "filePath": "/data/commits"},
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "memStorage"},
+                    "addressIdentifiers": {
+                        "commit-storage": {"@id": "fileStorage"},
+                        "index-storage": {"@id": "memStorage"}
+                    }
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
+        let addr_ids = parsed
+            .address_identifiers
+            .as_ref()
+            .expect("addressIdentifiers should be present");
+        assert_eq!(addr_ids.len(), 2);
+
+        let commit_storage = addr_ids
+            .get("commit-storage")
+            .expect("commit-storage should exist");
+        assert!(matches!(commit_storage.storage_type, StorageType::File));
+        assert_eq!(commit_storage.path.as_deref(), Some("/data/commits"));
+
+        let index_storage = addr_ids
+            .get("index-storage")
+            .expect("index-storage should exist");
+        assert!(matches!(index_storage.storage_type, StorageType::Memory));
+    }
+
+    #[test]
+    fn test_jsonld_no_address_identifiers_backward_compat() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "storage", "@type": "Storage"},
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "storage"}
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
+        assert!(parsed.address_identifiers.is_none());
+    }
+
+    #[test]
+    fn test_jsonld_multiple_address_identifiers() {
+        let config = json!({
+            "@context": {
+                "@base": "https://ns.flur.ee/config/connection/",
+                "@vocab": "https://ns.flur.ee/system#"
+            },
+            "@graph": [
+                {"@id": "storage1", "@type": "Storage", "filePath": "/data/store1"},
+                {"@id": "storage2", "@type": "Storage", "filePath": "/data/store2"},
+                {"@id": "storage3", "@type": "Storage", "filePath": "/data/store3"},
+                {"@id": "memStorage", "@type": "Storage"},
+                {
+                    "@id": "connection",
+                    "@type": "Connection",
+                    "indexStorage": {"@id": "memStorage"},
+                    "addressIdentifiers": {
+                        "store-1": {"@id": "storage1"},
+                        "store-2": {"@id": "storage2"},
+                        "store-3": {"@id": "storage3"}
+                    }
+                }
+            ]
+        });
+
+        let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
+        let addr_ids = parsed
+            .address_identifiers
+            .as_ref()
+            .expect("addressIdentifiers should be present");
+        assert_eq!(addr_ids.len(), 3);
+
+        assert_eq!(
+            addr_ids.get("store-1").unwrap().path.as_deref(),
+            Some("/data/store1")
+        );
+        assert_eq!(
+            addr_ids.get("store-2").unwrap().path.as_deref(),
+            Some("/data/store2")
+        );
+        assert_eq!(
+            addr_ids.get("store-3").unwrap().path.as_deref(),
+            Some("/data/store3")
+        );
     }
 }

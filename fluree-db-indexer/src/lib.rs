@@ -14,7 +14,7 @@
 //! 1. **Embedded**: Background indexing within the main process
 //! 2. **External**: Standalone Lambda-style indexer
 //!
-//! The binary index pipeline (`run_index::index_build`) is the sole indexing path.
+//! The binary index pipeline produces FIR6/FBR3/FLI3 columnar index artifacts.
 //!
 //! ## Build Pipeline Modules
 //!
@@ -61,6 +61,12 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 // Re-export build pipeline types
 pub use build::types::{UploadedDicts, UploadedIndexes};
 
+// Re-export build pipeline types
+pub use run_index::build::build_from_commits::{
+    build_indexes_from_commits, build_indexes_from_remapped_commits, BuildConfig, BuildResult,
+    CommitInput,
+};
+
 use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 use tracing::Instrument;
@@ -69,9 +75,6 @@ use tracing::Instrument;
 #[derive(Debug, Clone)]
 pub struct IndexResult {
     /// Content identifier of the index root (derived from SHA-256 of root bytes).
-    ///
-    /// Always present — derived from the content hash of the index root during build,
-    /// or from the persisted CID / address hash during early-return.
     pub root_id: fluree_db_core::ContentId,
     /// Transaction time the index is current through
     pub index_t: i64,
@@ -102,7 +105,7 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 /// Builds a binary columnar index from the commit chain. The pipeline:
 /// 1. Walks the commit chain and generates sorted run files
 /// 2. Builds per-graph leaf/branch indexes for all sort orders
-/// 3. Creates an `IndexRootV5` (IRB1) descriptor and writes it to storage
+/// 3. Creates an FIR6 root descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
 /// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
@@ -137,7 +140,7 @@ where
             }
         }
 
-        // Try incremental indexing if conditions are met
+        // Try incremental indexing if conditions are met.
         let commit_gap = record.commit_t - record.index_t;
         let can_incremental = config.incremental_enabled
             && record.index_head_id.is_some()
@@ -151,7 +154,8 @@ where
                 commit_gap = commit_gap,
                 "attempting incremental index"
             );
-            match incremental_index_from_root(storage, ledger_id, &record, config.clone()).await {
+
+            match incremental_index(storage, ledger_id, &record, config.clone()).await {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -196,15 +200,11 @@ where
     build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config).await
 }
 
-/// Build an incremental index from an existing root, resolving only new commits.
+/// Incremental index from an existing FIR6 root.
 ///
-/// This is the fast path: instead of rebuilding from genesis, it loads the
-/// existing `IndexRootV5`, resolves only commits `(root.index_t .. record.commit_t]`,
-/// merges novelty into affected leaves, updates dictionaries incrementally,
-/// and publishes a new root that references mostly-unchanged CAS artifacts.
-///
-/// Falls back to full rebuild on any error — correctness is never at risk.
-pub async fn incremental_index_from_root<S>(
+/// Loads the existing `IndexRoot`, resolves only new commits, merges
+/// novelty into affected FLI3 leaves, and publishes a new FIR6 root.
+async fn incremental_index<S>(
     storage: &S,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
@@ -213,29 +213,19 @@ pub async fn incremental_index_from_root<S>(
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
-    build::incremental::incremental_index_from_root(storage, ledger_id, record, config).await
+    build::incremental::incremental_index(storage, ledger_id, record, config).await
 }
 
-/// Upload all index artifacts (branches + leaves) to CAS.
-///
-/// For the default graph (g_id=0), leaves are uploaded but the branch is NOT —
-/// leaf routing is embedded inline in the root. For named graphs, both branches
-/// and leaves are uploaded.
+/// Upload index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
 pub async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
-    build_results: &[(
-        fluree_db_binary_index::RunSortOrder,
-        run_index::IndexBuildResult,
-    )],
+    build_result: &BuildResult,
 ) -> Result<UploadedIndexes> {
-    build::upload::upload_indexes_to_cas(storage, ledger_id, build_results).await
+    build::upload::upload_indexes_to_cas(storage, ledger_id, build_result).await
 }
 
 /// Upload dictionary artifacts from persisted flat files to CAS.
-///
-/// Reads flat files written by `GlobalDicts::persist()` and builds CoW trees
-/// for subject/string dicts. Does NOT require `GlobalDicts` in memory.
 pub async fn upload_dicts_from_disk<S: Storage>(
     storage: &S,
     ledger_id: &str,

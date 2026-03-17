@@ -65,7 +65,7 @@ impl std::fmt::Debug for QueryResult {
     }
 }
 
-/// Query response with optional tracking (Clojure parity: top-level siblings).
+/// Query response with optional tracking (top-level siblings).
 #[derive(Debug, serde::Serialize)]
 pub struct TrackedQueryResponse {
     pub status: u16,
@@ -101,7 +101,7 @@ impl TrackedQueryResponse {
     }
 }
 
-/// Error response with optional tracking (Clojure parity: top-level siblings).
+/// Error response with optional tracking (top-level siblings).
 #[derive(Debug, serde::Serialize)]
 pub struct TrackedErrorResponse {
     pub status: u16,
@@ -153,7 +153,7 @@ impl QueryResult {
         self.batches.is_empty() || self.row_count() == 0
     }
 
-    /// Format as JSON-LD Query JSON (default - array rows, Clojure parity)
+    /// Format as JSON-LD Query JSON (default - array rows)
     ///
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.

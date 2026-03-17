@@ -23,7 +23,7 @@ use fluree_db_query::rewrite::ReasoningModes;
 pub enum ReasoningModePrecedence {
     /// Use wrapper modes only if query doesn't specify reasoning.
     ///
-    /// This is the default, matching Clojure's ergonomic defaults:
+    /// This is the default:
     /// the wrapper provides convenient defaults, but power users can
     /// override via query JSON.
     #[default]
@@ -47,7 +47,7 @@ pub enum ReasoningModePrecedence {
 ///
 /// # Composition
 ///
-/// Views support Clojure-style wrapper composition via builder methods:
+/// Views support wrapper composition via builder methods:
 ///
 /// ```ignore
 /// let view = GraphDb::from_ledger_state(&ledger)
@@ -126,7 +126,7 @@ pub struct GraphDb {
     reasoning_precedence: ReasoningModePrecedence,
 
     // ========================================================================
-    // Binary index store (optional, v2 only)
+    // Binary index store (optional)
     // ========================================================================
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
@@ -334,6 +334,11 @@ impl GraphDb {
             base.ledger_id(),
         );
         gdb.dict_novelty = Some(base.dict_novelty.clone());
+        // Carry binary store from the base ledger state
+        gdb.binary_store = base
+            .binary_store
+            .as_ref()
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
         Ok(gdb)
     }
 
@@ -353,13 +358,19 @@ impl GraphDb {
     pub fn from_staged_base(staged: &crate::tx_builder::Staged) -> Self {
         let base = staged.view.base();
         let novelty = base.novelty.clone();
-        Self::new(
+        let mut gdb = Self::new(
             Arc::new(base.snapshot.clone()),
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             base.t(),
             base.ledger_id(),
-        )
+        );
+        // Carry binary store from the base ledger state
+        gdb.binary_store = base
+            .binary_store
+            .as_ref()
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+        gdb
     }
 }
 
@@ -515,7 +526,7 @@ impl GraphDb {
     /// Attach a policy context to the view.
     ///
     /// Policy is enforced during query execution and result formatting.
-    /// This mirrors Clojure's `wrap-policy` / `policy-enforce-db`.
+    /// Wrap with policy enforcement.
     ///
     /// # Example
     ///
@@ -574,7 +585,7 @@ impl GraphDb {
 impl GraphDb {
     /// Apply default reasoning modes to queries on this view.
     ///
-    /// This mirrors Clojure's `wrap-reasoning`. The reasoning modes apply
+    /// Wrap with reasoning. The reasoning modes apply
     /// to all queries executed against this view, subject to precedence rules.
     ///
     /// Uses `DefaultUnlessQueryOverrides` precedence by default.

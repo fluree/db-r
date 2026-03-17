@@ -430,8 +430,13 @@ impl Materializer {
                 o_kind,
                 o_key,
                 p_id,
+                dt_id,
+                lang_id,
                 ..
-            } => match self.graph_view.decode_value(*o_kind, *o_key, *p_id) {
+            } => match self
+                .graph_view
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+            {
                 Ok(val) => flake_value_to_comparable(&val),
                 Err(_) => None,
             },
@@ -476,10 +481,12 @@ impl Materializer {
                 o_kind,
                 o_key,
                 p_id,
+                dt_id,
+                lang_id,
                 ..
             } => self
                 .graph_view
-                .decode_value(*o_kind, *o_key, *p_id)
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                 .ok()
                 .map(|v| Arc::from(v.to_string())),
 
@@ -527,7 +534,10 @@ impl Materializer {
                 lang_id,
                 i_val,
                 t,
-            } => match self.graph_view.decode_value(*o_kind, *o_key, *p_id) {
+            } => match self
+                .graph_view
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+            {
                 Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
                     let dt_sid = self

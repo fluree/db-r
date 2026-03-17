@@ -8,9 +8,9 @@
 //! - GraphOperator is a **correlated operator** (like EXISTS/Subquery)
 //! - For each parent row, inner patterns are executed in the appropriate graph context
 //! - ?g is bound as `Binding::Lit { val: FlakeValue::String(...), dtc: Explicit(xsd:string) }`
-//! - Graph-not-found produces empty result (Clojure parity), not an error
+//! - Graph-not-found produces empty result (not an error)
 //!
-//! # Single-DB Mode (Clojure Parity)
+//! # Single-DB Mode
 //!
 //! When there is no dataset (single-db mode), the db's alias acts as its "graph name":
 //! - `GRAPH <iri> { ... }`: Only executes if `iri == db.alias`; else empty result
@@ -299,7 +299,7 @@ impl Operator for GraphOperator {
                 match &graph_name {
                     GraphName::Iri(iri) => {
                         // Concrete graph: run inner patterns in that graph
-                        // If graph doesn't exist in dataset → empty result (Clojure parity)
+                        // If graph doesn't exist in dataset → empty result
                         if let Some(ds) = &ctx.dataset {
                             if ds.has_named_graph(iri) {
                                 self.execute_in_graph(
@@ -320,7 +320,7 @@ impl Operator for GraphOperator {
                                 false
                             };
 
-                            // Execute if R2RML graph source or if graph name matches db's alias (Clojure parity)
+                            // Execute if R2RML graph source or if graph name matches db's alias
                             if is_r2rml_gs || iri.as_ref() == ctx.snapshot.ledger_id {
                                 self.execute_in_graph(
                                     ctx,
@@ -359,7 +359,7 @@ impl Operator for GraphOperator {
                                         false
                                     };
 
-                                    // Execute if R2RML graph source or alias match (Clojure parity)
+                                    // Execute if R2RML graph source or alias match
                                     if is_r2rml_gs || bound_iri.as_ref() == ctx.snapshot.ledger_id {
                                         self.execute_in_graph(
                                             ctx,
@@ -388,7 +388,7 @@ impl Operator for GraphOperator {
                                     .await?;
                                 }
                             } else {
-                                // No dataset - single-db mode (Clojure parity):
+                                // No dataset - single-db mode:
                                 // Bind ?g to db's alias and execute
                                 let alias_iri: Arc<str> =
                                     Arc::from(ctx.snapshot.ledger_id.as_str());

@@ -104,6 +104,103 @@ pub struct StatsRecord {
     pub lang_id: u16,
 }
 
+/// Construct a `StatsRecord` from a V2 `RunRecordV2` + op byte.
+///
+/// Maps `OType` to the legacy fields needed by `IdStatsHook::on_record`:
+/// - `o_kind`: 0x05 (REF_ID) for `OType::IRI_REF`, 0 otherwise (only REF detection matters)
+/// - `dt`: derived from `OType` category (approximate but consistent)
+/// - `o_hash`: uses `value_hash_v2(o_type, o_key)` (V2-compatible domain separation)
+/// - `lang_id`: extracted from `OType` if langString, 0 otherwise
+pub fn stats_record_from_v2(
+    rec: &fluree_db_binary_index::format::run_record_v2::RunRecordV2,
+    op: u8,
+) -> StatsRecord {
+    use fluree_db_core::o_type::OType;
+
+    let ot = OType::from_u16(rec.o_type);
+
+    // Map OType to legacy o_kind (only REF_ID detection matters for class tracking).
+    let o_kind = if ot == OType::IRI_REF {
+        0x05 // ObjKind::REF_ID
+    } else {
+        0 // doesn't matter for stats — only REF_ID is special-cased
+    };
+
+    // Map OType to approximate ValueTypeTag for datatype counting.
+    let dt = otype_to_value_type_tag(ot);
+
+    // Extract lang_id from OType (0 if not langString).
+    let lang_id = if ot.is_lang_string() {
+        ot.as_u16() & 0x3FFF // payload = lang_id
+    } else {
+        0
+    };
+
+    StatsRecord {
+        g_id: rec.g_id,
+        p_id: rec.p_id,
+        s_id: rec.s_id.as_u64(),
+        dt,
+        o_hash: super::hashing::value_hash_v2(rec.o_type, rec.o_key),
+        o_kind,
+        o_key: rec.o_key,
+        t: rec.t as i64,
+        op: op != 0,
+        lang_id,
+    }
+}
+
+/// Map an `OType` to a `ValueTypeTag` for stats datatype counting.
+///
+/// The mapping doesn't need to be perfectly granular — it just needs to be
+/// consistent so HLL datatype buckets are stable across rebuild/incremental.
+fn otype_to_value_type_tag(ot: fluree_db_core::o_type::OType) -> ValueTypeTag {
+    use fluree_db_core::o_type::OType;
+
+    if ot.is_lang_string() {
+        return ValueTypeTag::LANG_STRING;
+    }
+
+    match ot {
+        OType::XSD_BOOLEAN => ValueTypeTag::BOOLEAN,
+        OType::XSD_INTEGER => ValueTypeTag::INTEGER,
+        OType::XSD_LONG => ValueTypeTag::LONG,
+        OType::XSD_INT => ValueTypeTag::INT,
+        OType::XSD_SHORT => ValueTypeTag::SHORT,
+        OType::XSD_BYTE => ValueTypeTag::BYTE,
+        OType::XSD_UNSIGNED_LONG => ValueTypeTag::UNSIGNED_LONG,
+        OType::XSD_UNSIGNED_INT => ValueTypeTag::UNSIGNED_INT,
+        OType::XSD_UNSIGNED_SHORT => ValueTypeTag::UNSIGNED_SHORT,
+        OType::XSD_UNSIGNED_BYTE => ValueTypeTag::UNSIGNED_BYTE,
+        OType::XSD_NON_NEGATIVE_INTEGER => ValueTypeTag::NON_NEGATIVE_INTEGER,
+        OType::XSD_POSITIVE_INTEGER => ValueTypeTag::POSITIVE_INTEGER,
+        OType::XSD_NON_POSITIVE_INTEGER => ValueTypeTag::NON_POSITIVE_INTEGER,
+        OType::XSD_NEGATIVE_INTEGER => ValueTypeTag::NEGATIVE_INTEGER,
+        OType::XSD_DOUBLE => ValueTypeTag::DOUBLE,
+        OType::XSD_FLOAT => ValueTypeTag::FLOAT,
+        OType::XSD_DECIMAL => ValueTypeTag::DECIMAL,
+        OType::XSD_DATE => ValueTypeTag::DATE,
+        OType::XSD_TIME => ValueTypeTag::TIME,
+        OType::XSD_DATE_TIME => ValueTypeTag::DATE_TIME,
+        OType::XSD_G_YEAR => ValueTypeTag::G_YEAR,
+        OType::XSD_G_MONTH => ValueTypeTag::G_MONTH,
+        OType::XSD_G_DAY => ValueTypeTag::G_DAY,
+        OType::XSD_STRING => ValueTypeTag::STRING,
+        OType::XSD_ANY_URI => ValueTypeTag::ANY_URI,
+        OType::XSD_NORMALIZED_STRING => ValueTypeTag::NORMALIZED_STRING,
+        OType::XSD_TOKEN => ValueTypeTag::TOKEN,
+        OType::XSD_LANGUAGE => ValueTypeTag::LANGUAGE,
+        OType::XSD_BASE64_BINARY => ValueTypeTag::BASE64_BINARY,
+        OType::XSD_HEX_BINARY => ValueTypeTag::HEX_BINARY,
+        OType::IRI_REF => ValueTypeTag::JSON_LD_ID,
+        OType::RDF_JSON => ValueTypeTag::RDF_JSON,
+        OType::XSD_DURATION => ValueTypeTag::DURATION,
+        OType::XSD_DAY_TIME_DURATION => ValueTypeTag::DAY_TIME_DURATION,
+        OType::XSD_YEAR_MONTH_DURATION => ValueTypeTag::YEAR_MONTH_DURATION,
+        _ => ValueTypeTag::UNKNOWN,
+    }
+}
+
 /// Result from `IdStatsHook::finalize()`.
 pub struct IdStatsResult {
     /// Per-graph stats entries (authoritative, ID-keyed).

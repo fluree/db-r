@@ -1,7 +1,6 @@
 #![cfg(feature = "vector")]
-//! Vector flatrank integration tests (Clojure parity)
+//! Vector flatrank integration tests
 //
-//! Ports from `db-clojure/test/fluree/db/vector/flatrank_test.clj`.
 //! Tests vector search functionality with dot product, cosine similarity,
 //! and euclidean distance scoring functions.
 //!

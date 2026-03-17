@@ -167,7 +167,7 @@ pub struct Bm25SearchOperator {
     cached_search_result: Option<Bm25SearchResult>,
     /// Whether we're using search provider mode (true) or index provider mode (false)
     use_search_provider: bool,
-    /// Analyzer used for query analysis (Clojure-parity) - only used in legacy mode
+    /// Analyzer used for query analysis - only used in legacy mode
     analyzer: Analyzer,
     /// Datatypes for typed literal bindings
     datatypes: WellKnownDatatypes,
@@ -244,16 +244,20 @@ impl Bm25SearchOperator {
                     o_kind,
                     o_key,
                     p_id,
+                    dt_id,
+                    lang_id,
                     ..
                 }) => {
                     // Late materialization: decode only when BM25 needs the target string.
                     if let Some(gv) = ctx.graph_view() {
-                        let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
-                            crate::error::QueryError::Internal(format!(
-                                "decode EncodedLit for BM25: {}",
-                                e
-                            ))
-                        })?;
+                        let val = gv
+                            .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                            .map_err(|e| {
+                                crate::error::QueryError::Internal(format!(
+                                    "decode EncodedLit for BM25: {}",
+                                    e
+                                ))
+                            })?;
                         Ok(Some(val.to_string()))
                     } else {
                         Ok(None)

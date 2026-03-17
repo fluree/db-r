@@ -368,8 +368,7 @@ Limit results from graph sources:
 Profile queries combining graph sources:
 
 ```bash
-curl -X POST http://localhost:8090/v1/fluree/query \
-  -H "X-Fluree-Explain: true" \
+curl -X POST http://localhost:8090/v1/fluree/explain \
   -d '{...}'
 ```
 

@@ -38,8 +38,7 @@
 use crate::aggregate::AggregateFn;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::error::Result;
-use fluree_db_core::DatatypeConstraint;
+use crate::error::{QueryError, Result};
 // Note: JoinKey and Materializer would be used for multi-ledger/dataset mode
 // but for now we use GroupKeyOwned for single-ledger simplicity
 use crate::operator::{
@@ -48,7 +47,7 @@ use crate::operator::{
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryGraphView;
-use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_core::{DatatypeConstraint, FlakeValue, Sid};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -85,6 +84,8 @@ enum AggState {
     Min { min: Option<Binding> },
     /// MAX - current maximum (stores materialized binding for correct comparison)
     Max { max: Option<Binding> },
+    /// SAMPLE - arbitrary value (we choose first observed value)
+    Sample { sample: Option<Binding> },
     /// Fallback: collect all values (for GROUP_CONCAT, MEDIAN, etc.)
     Collect { values: Vec<Binding> },
 }
@@ -94,6 +95,62 @@ enum AggState {
 /// EncodedSid/EncodedPid raw IDs don't have semantic ordering (s_id=100 for "zebra"
 /// would incorrectly compare > s_id=50 for "apple"). We must decode to get correct
 /// term ordering via namespace/name comparison.
+fn compare_for_minmax(
+    a: &Binding,
+    b: &Binding,
+    gv: Option<&BinaryGraphView>,
+) -> std::cmp::Ordering {
+    let Some(gv) = gv else {
+        return crate::sort::compare_bindings(a, b);
+    };
+    let store = gv.store();
+
+    // Fast path 1: subject IDs (IRIs) — compare lexicographically without allocation.
+    if let (Binding::EncodedSid { s_id: a_id }, Binding::EncodedSid { s_id: b_id }) = (a, b) {
+        if let Ok(ord) = store.compare_subject_iri_lex(*a_id, *b_id) {
+            return ord;
+        }
+        // Fall back to materialize+compare if dictionary lookup fails unexpectedly.
+    }
+
+    // Fast path 2: string-like encoded literals with identical type identity —
+    // compare their string dictionary values without allocating.
+    if let (
+        Binding::EncodedLit {
+            o_kind: a_kind,
+            o_key: a_key,
+            dt_id: a_dt,
+            lang_id: a_lang,
+            ..
+        },
+        Binding::EncodedLit {
+            o_kind: b_kind,
+            o_key: b_key,
+            dt_id: b_dt,
+            lang_id: b_lang,
+            ..
+        },
+    ) = (a, b)
+    {
+        let string_kinds = [
+            fluree_db_core::ObjKind::LEX_ID.as_u8(),
+            fluree_db_core::ObjKind::JSON_ID.as_u8(),
+        ];
+        if *a_kind == *b_kind && string_kinds.contains(a_kind) && a_dt == b_dt && a_lang == b_lang {
+            if let (Ok(ak), Ok(bk)) = (u32::try_from(*a_key), u32::try_from(*b_key)) {
+                if let Ok(ord) = store.compare_string_lex(ak, bk) {
+                    return ord;
+                }
+            }
+        }
+    }
+
+    // General path: materialize then use SPARQL ordering comparator.
+    let am = materialize_for_minmax(a, Some(gv));
+    let bm = materialize_for_minmax(b, Some(gv));
+    crate::sort::compare_bindings(&am, &bm)
+}
+
 fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Binding {
     let Some(gv) = gv else {
         // No store available - return as-is (will use raw ID comparison as fallback)
@@ -111,7 +168,7 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
             i_val,
             t,
         } => {
-            match gv.decode_value(*o_kind, *o_key, *p_id) {
+            match gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id) {
                 Ok(fluree_db_core::FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
                     let dt_sid = store
@@ -120,10 +177,11 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
                         .cloned()
                         .unwrap_or_else(|| Sid::new(0, ""));
                     let meta = store.decode_meta(*lang_id, *i_val);
-                    let dtc = match meta.and_then(|m| m.lang.map(Arc::from)) {
-                        Some(lang) => DatatypeConstraint::LangTag(lang),
-                        None => DatatypeConstraint::Explicit(dt_sid),
-                    };
+                    let dtc = meta
+                        .as_ref()
+                        .and_then(|m| m.lang.as_ref())
+                        .map(|s| DatatypeConstraint::LangTag(Arc::<str>::from(s.as_str())))
+                        .unwrap_or_else(|| DatatypeConstraint::Explicit(dt_sid));
                     Binding::Lit {
                         val,
                         dtc,
@@ -169,8 +227,9 @@ impl AggState {
             AggregateFn::Median
             | AggregateFn::Variance
             | AggregateFn::Stddev
-            | AggregateFn::GroupConcat { .. }
-            | AggregateFn::Sample => AggState::Collect { values: Vec::new() },
+            | AggregateFn::GroupConcat { .. } => AggState::Collect { values: Vec::new() },
+            // SAMPLE is explicitly arbitrary in SPARQL; we pick the first observed value.
+            AggregateFn::Sample => AggState::Sample { sample: None },
         }
     }
 
@@ -217,17 +276,12 @@ impl AggState {
                     binding,
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
-                    // Materialize encoded bindings for correct semantic comparison.
-                    // Raw s_id comparison would give wrong ordering (s_id=100 for "zebra"
-                    // would incorrectly be > s_id=50 for "apple").
-                    let materialized = materialize_for_minmax(binding, gv);
                     match min {
-                        None => *min = Some(materialized),
+                        None => *min = Some(binding.clone()),
                         Some(current) => {
-                            if crate::sort::compare_bindings(&materialized, current)
-                                == std::cmp::Ordering::Less
+                            if compare_for_minmax(binding, current, gv) == std::cmp::Ordering::Less
                             {
-                                *min = Some(materialized);
+                                *min = Some(binding.clone());
                             }
                         }
                     }
@@ -238,18 +292,26 @@ impl AggState {
                     binding,
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
-                    // Materialize encoded bindings for correct semantic comparison.
-                    let materialized = materialize_for_minmax(binding, gv);
                     match max {
-                        None => *max = Some(materialized),
+                        None => *max = Some(binding.clone()),
                         Some(current) => {
-                            if crate::sort::compare_bindings(&materialized, current)
+                            if compare_for_minmax(binding, current, gv)
                                 == std::cmp::Ordering::Greater
                             {
-                                *max = Some(materialized);
+                                *max = Some(binding.clone());
                             }
                         }
                     }
+                }
+            }
+            AggState::Sample { sample } => {
+                if sample.is_none()
+                    && !matches!(
+                        binding,
+                        Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+                    )
+                {
+                    *sample = Some(binding.clone());
                 }
             }
             AggState::Collect { values } => {
@@ -291,6 +353,7 @@ impl AggState {
             }
             AggState::Min { min } => min.unwrap_or(Binding::Unbound),
             AggState::Max { max } => max.unwrap_or(Binding::Unbound),
+            AggState::Sample { sample } => sample.unwrap_or(Binding::Unbound),
             AggState::Collect { values } => {
                 // Non-streamable aggregates collect all values, then delegate.
                 // DISTINCT SUM/AVG never reach this path — the planner routes
@@ -303,10 +366,11 @@ impl AggState {
     }
 }
 
-/// Owned group key for HashMap storage
-/// Uses the same semantics as JoinKey but owns its data
+/// Owned group key for HashMap storage.
+/// Uses the same semantics as JoinKey but owns its data.
+/// Also used by SemijoinOperator for EXISTS hash probing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum GroupKeyOwned {
+pub(crate) enum GroupKeyOwned {
     /// Single-ledger: raw s_id
     Sid(u64),
     /// Single-ledger: raw p_id
@@ -329,11 +393,11 @@ enum GroupKeyOwned {
     Absent,
 }
 
-/// Hashable key for materialized literals
-/// Includes datatype constraint for correct GROUP BY / COUNT(DISTINCT) semantics.
+/// Hashable key for materialized literals.
+/// Includes datatype and language for correct GROUP BY / COUNT(DISTINCT) semantics.
 /// Without these, "1"^^xsd:string and "1"^^xsd:integer would incorrectly merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MaterializedLitKey {
+pub(crate) struct MaterializedLitKey {
     discriminant: u8,
     // For strings/json: the string value
     string_val: Option<Arc<str>>,
@@ -357,8 +421,9 @@ impl Hash for MaterializedLitKey {
     }
 }
 
-/// Convert a binding to an owned group key
-fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
+/// Convert a binding to an owned group key.
+/// Also used by SemijoinOperator for EXISTS hash probing.
+pub(crate) fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
     match binding {
         Binding::EncodedSid { s_id } => GroupKeyOwned::Sid(*s_id),
         Binding::EncodedPid { p_id } => GroupKeyOwned::Pid(*p_id),
@@ -398,50 +463,49 @@ fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
 }
 
 fn flake_value_to_key(val: &FlakeValue, dtc: &DatatypeConstraint) -> MaterializedLitKey {
-    let dtc = dtc.clone();
-
     match val {
         FlakeValue::String(s) => MaterializedLitKey {
             discriminant: 1,
             string_val: Some(Arc::from(s.as_str())),
             number_bits: None,
             bool_val: None,
-            dtc,
+            dtc: dtc.clone(),
         },
         FlakeValue::Long(n) => MaterializedLitKey {
             discriminant: 2,
             string_val: None,
             number_bits: Some(*n as u64),
             bool_val: None,
-            dtc,
+            dtc: dtc.clone(),
         },
         FlakeValue::Double(d) => MaterializedLitKey {
             discriminant: 3,
             string_val: None,
             number_bits: Some(d.to_bits()),
             bool_val: None,
-            dtc,
+            dtc: dtc.clone(),
         },
         FlakeValue::Boolean(b) => MaterializedLitKey {
             discriminant: 4,
             string_val: None,
             number_bits: None,
             bool_val: Some(*b),
-            dtc,
+            dtc: dtc.clone(),
         },
         _ => MaterializedLitKey {
             discriminant: 0,
             string_val: Some(Arc::from(format!("{:?}", val))),
             number_bits: None,
             bool_val: None,
-            dtc,
+            dtc: dtc.clone(),
         },
     }
 }
 
-/// Composite group key (multiple columns)
+/// Composite group key (multiple columns).
+/// Also used by SemijoinOperator for multi-var EXISTS hash probing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CompositeGroupKey(Vec<GroupKeyOwned>);
+pub(crate) struct CompositeGroupKey(pub(crate) Vec<GroupKeyOwned>);
 
 /// Per-group state: the key bindings and aggregate states
 struct GroupState {
@@ -560,6 +624,7 @@ impl GroupAggregateOperator {
                     | AggregateFn::Avg
                     | AggregateFn::Min
                     | AggregateFn::Max
+                    | AggregateFn::Sample
             );
             // DISTINCT SUM/AVG need to collect all values for dedup — not streamable
             let distinct_blocks =
@@ -613,6 +678,27 @@ impl Operator for GroupAggregateOperator {
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
+        }
+
+        // COUNT(*) pushdown: if the child supports drain_count and we're
+        // doing a simple ungrouped COUNT(*), skip row-by-row accumulation.
+        if self.emit_iter.is_none()
+            && self.group_key_indices.is_empty()
+            && self.agg_specs.len() == 1
+            && matches!(self.agg_specs[0].function, AggregateFn::CountAll)
+            && !self.agg_specs[0].distinct
+        {
+            if let Some(count) = self.child.drain_count(ctx).await? {
+                let count_i64 = i64::try_from(count).map_err(|_| {
+                    QueryError::execution("COUNT(*) exceeds i64::MAX in drain_count")
+                })?;
+                let count_binding = Binding::lit(FlakeValue::Long(count_i64), Sid::xsd_integer());
+                let out_var = self.agg_specs[0].output_var;
+                let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
+                let batch = Batch::new(schema, vec![vec![count_binding]])?;
+                self.state = OperatorState::Exhausted;
+                return Ok(Some(batch));
+            }
         }
 
         // If we haven't consumed all input yet, do so now (streaming aggregation)
@@ -761,6 +847,22 @@ impl Operator for GroupAggregateOperator {
                             }
                         }
                     }
+                }
+
+                // SPARQL semantics: with no GROUP BY keys, aggregates are computed over a single
+                // implicit group. Even if the input has zero rows, we must emit exactly one row
+                // of aggregate results (e.g., COUNT(*) = 0).
+                if self.group_key_indices.is_empty() && input_rows == 0 {
+                    let agg_specs_ref = &self.agg_specs;
+                    self.groups
+                        .entry(CompositeGroupKey(Vec::new()))
+                        .or_insert_with(|| GroupState {
+                            key_bindings: Vec::new(),
+                            agg_states: agg_specs_ref
+                                .iter()
+                                .map(|spec| AggState::new(&spec.function))
+                                .collect(),
+                        });
                 }
 
                 span.record("input_batches", input_batches);
@@ -1118,238 +1220,6 @@ mod tests {
         assert_eq!(results.get("catB"), Some(&(20, 10.0)));
 
         op.close();
-    }
-
-    #[tokio::test]
-    async fn test_streaming_min_materializes_encoded_sid_with_store() {
-        use crate::context::ExecutionContext;
-        use crate::var_registry::VarRegistry;
-        use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_binary_index::BinaryIndexStore;
-        use fluree_db_core::subject_id::SubjectId;
-        use fluree_db_core::value_id::{ObjKey, ObjKind};
-        use fluree_db_core::DatatypeDictId;
-        use fluree_db_indexer::run_index::dict_io::{
-            write_language_dict, write_predicate_dict, write_subject_index,
-        };
-        use fluree_db_indexer::run_index::global_dict::{
-            LanguageTagDict, PredicateDict, SubjectDict,
-        };
-        use fluree_db_indexer::run_index::index_build::build_all_indexes;
-        use fluree_db_indexer::run_index::run_file::write_run_file;
-
-        // Build a tiny on-disk BinaryIndexStore so we can materialize EncodedSid.
-        // We intentionally insert subjects so that s_id order disagrees with lex order:
-        // insert "zebra" first (smaller s_id), then "apple" (larger s_id).
-        let base = std::env::temp_dir().join(format!(
-            "fluree_test_group_agg_minmax_{}",
-            uuid::Uuid::new_v4()
-        ));
-        let run_dir = base.join("tmp_import");
-        let spot_dir = run_dir.join("spot");
-        let index_dir = base.join("index");
-        std::fs::create_dir_all(&spot_dir).unwrap();
-        std::fs::create_dir_all(&index_dir).unwrap();
-
-        // --- Dictionaries ---
-        let p_iri = "http://example.com/p";
-        let mut pred_dict = PredicateDict::new();
-        let p_id = pred_dict.get_or_insert(p_iri);
-        let preds_by_id: Vec<&str> = (0..pred_dict.len())
-            .map(|p_id| pred_dict.resolve(p_id).unwrap_or(""))
-            .collect();
-        std::fs::write(
-            run_dir.join("predicates.json"),
-            serde_json::to_vec(&preds_by_id).unwrap(),
-        )
-        .unwrap();
-
-        // Datatypes.dict with reserved IDs up through DOUBLE (id=6).
-        let mut dt_dict = PredicateDict::new();
-        dt_dict.get_or_insert("@id"); // 0
-        dt_dict.get_or_insert(fluree_vocab::xsd::STRING); // 1
-        dt_dict.get_or_insert(fluree_vocab::xsd::BOOLEAN); // 2
-        dt_dict.get_or_insert(fluree_vocab::xsd::INTEGER); // 3
-        dt_dict.get_or_insert(fluree_vocab::xsd::LONG); // 4
-        dt_dict.get_or_insert(fluree_vocab::xsd::DECIMAL); // 5
-        dt_dict.get_or_insert(fluree_vocab::xsd::DOUBLE); // 6
-        write_predicate_dict(&run_dir.join("datatypes.dict"), &dt_dict).unwrap();
-
-        // Subjects forward + index + reverse.
-        let subjects_fwd = run_dir.join("subjects.fwd");
-        let mut subjects = SubjectDict::new(&subjects_fwd).unwrap();
-        let ns: u16 = 100; // test namespace
-        let zebra_iri = "http://example.com/zebra";
-        let apple_iri = "http://example.com/apple";
-        let s_id_zebra = subjects.get_or_insert(zebra_iri, ns).unwrap();
-        let s_id_apple = subjects.get_or_insert(apple_iri, ns).unwrap();
-        assert!(
-            s_id_zebra < s_id_apple,
-            "expected insertion order to yield zebra s_id < apple s_id"
-        );
-
-        subjects.flush().unwrap();
-        write_subject_index(
-            &run_dir.join("subjects.idx"),
-            subjects.forward_offsets(),
-            subjects.forward_lens(),
-        )
-        .unwrap();
-        fluree_db_indexer::run_index::dict_io::write_subject_sid_map(
-            &run_dir.join("subjects.sids"),
-            subjects.forward_sids(),
-        )
-        .unwrap();
-        subjects
-            .write_reverse_index(&run_dir.join("subjects.rev"))
-            .unwrap();
-
-        // Minimal languages dict (empty).
-        write_language_dict(&run_dir.join("languages.dict"), &LanguageTagDict::new()).unwrap();
-
-        // namespaces.json so encode_iri uses ns=100 for http://example.com/*
-        {
-            let default_ns = fluree_db_core::default_namespace_codes();
-            let mut ns_entries: Vec<serde_json::Value> = default_ns
-                .iter()
-                .map(|(&code, prefix)| serde_json::json!({"code": code, "prefix": prefix}))
-                .collect();
-            ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
-            std::fs::write(
-                run_dir.join("namespaces.json"),
-                serde_json::to_vec(&ns_entries).unwrap(),
-            )
-            .unwrap();
-        }
-
-        // --- Run records (SPOT only) ---
-        let g_id: u16 = 0;
-        let t: u32 = 1;
-        let records = vec![
-            RunRecord::new(
-                g_id,
-                SubjectId::from_u64(s_id_zebra),
-                p_id,
-                ObjKind::NUM_INT,
-                ObjKey::encode_i64(1),
-                t,
-                true,
-                DatatypeDictId::INTEGER.as_u16(),
-                0,
-                None,
-            ),
-            RunRecord::new(
-                g_id,
-                SubjectId::from_u64(s_id_apple),
-                p_id,
-                ObjKind::NUM_INT,
-                ObjKey::encode_i64(2),
-                t,
-                true,
-                DatatypeDictId::INTEGER.as_u16(),
-                0,
-                None,
-            ),
-        ];
-        let lang = LanguageTagDict::new();
-        let mut spot_records = records.clone();
-        spot_records.sort_unstable_by(|a, b| cmp_for_order(RunSortOrder::Spot)(a, b));
-        write_run_file(
-            &spot_dir.join("run_00000.frn"),
-            &spot_records,
-            &lang,
-            RunSortOrder::Spot,
-            t,
-            t,
-        )
-        .unwrap();
-
-        // Build SPOT index + load store.
-        build_all_indexes(
-            &run_dir,
-            &index_dir,
-            &[RunSortOrder::Spot],
-            64,
-            2,
-            0,
-            None,
-            false,
-            false,
-        )
-        .unwrap();
-        let cache = Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(64));
-        let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir, cache).unwrap());
-
-        // --- Build GroupAggregateOperator over encoded subject IDs ---
-        let snapshot = make_test_snapshot();
-        let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&snapshot, &vars).with_binary_store(store.clone(), 0);
-
-        // Input column: EncodedSid(zebra), EncodedSid(apple)
-        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice()); // ?x
-        let batch = Batch::new(
-            schema.clone(),
-            vec![vec![
-                Binding::EncodedSid { s_id: s_id_zebra },
-                Binding::EncodedSid { s_id: s_id_apple },
-            ]],
-        )
-        .unwrap();
-
-        struct BatchOperator {
-            schema: Arc<[VarId]>,
-            batch: Option<Batch>,
-        }
-        #[async_trait]
-        impl Operator for BatchOperator {
-            fn schema(&self) -> &[VarId] {
-                &self.schema
-            }
-            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
-                Ok(())
-            }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-                Ok(self.batch.take())
-            }
-            fn close(&mut self) {}
-        }
-
-        let child: BoxedOperator = Box::new(BatchOperator {
-            schema: schema.clone(),
-            batch: Some(batch),
-        });
-
-        // No GROUP BY keys (single global group), MIN(?x) as ?min
-        let agg_specs = vec![StreamingAggSpec {
-            function: AggregateFn::Min,
-            input_col: Some(0),
-            output_var: VarId(1),
-            distinct: false,
-        }];
-
-        let mut op = GroupAggregateOperator::new(child, vec![], agg_specs, None, false);
-        op.open(&ctx).await.unwrap();
-        let out = op
-            .next_batch(&ctx)
-            .await
-            .unwrap()
-            .expect("expected output batch");
-        assert_eq!(out.len(), 1);
-        assert_eq!(out.schema().len(), 1);
-
-        // Correct semantic MIN is "apple" (lex order), even though zebra has smaller s_id.
-        match out.get_by_col(0, 0) {
-            Binding::Sid(sid) => {
-                let iri = store.sid_to_iri(sid);
-                assert_eq!(iri, apple_iri);
-            }
-            other => panic!("expected materialized Sid for MIN output, got {:?}", other),
-        }
-
-        op.close();
-
-        // Best-effort cleanup
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

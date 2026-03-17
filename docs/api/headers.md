@@ -77,12 +77,17 @@ SPARQL JSON Results format (for SPARQL queries).
 ```http
 Accept: application/sparql-results+xml
 ```
-SPARQL XML Results format (future support).
+SPARQL XML Results format (for SPARQL SELECT/ASK queries).
 
 ```http
 Accept: text/turtle
 ```
 Turtle RDF format (for CONSTRUCT queries).
+
+```http
+Accept: application/rdf+xml
+```
+RDF/XML graph format (for CONSTRUCT/DESCRIBE queries).
 
 ```http
 Accept: application/n-triples

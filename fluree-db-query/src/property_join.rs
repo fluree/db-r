@@ -25,7 +25,7 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::join::NestedLoopJoinOperator;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::EmptyOperator;
@@ -52,8 +52,18 @@ use crate::binary_scan::{EmitMask, ScanOperator};
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
-fn make_property_join_scan(pattern: TriplePattern, bounds: Option<ObjectBounds>) -> BoxedOperator {
-    Box::new(ScanOperator::new(pattern, bounds, Vec::new()))
+fn make_property_join_scan(
+    pattern: TriplePattern,
+    bounds: Option<ObjectBounds>,
+    emit: EmitMask,
+) -> BoxedOperator {
+    Box::new(ScanOperator::new_with_emit_and_index(
+        pattern,
+        bounds,
+        Vec::new(),
+        emit,
+        None,
+    ))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns
@@ -77,9 +87,10 @@ pub struct PropertyJoinOperator {
     /// The shared subject variable
     subject_var: VarId,
     /// Predicates and their corresponding object variables
-    /// Each entry is (predicate_ref, object_var, optional datatype constraint)
+    /// Each entry is (predicate_ref, object_var, optional datatype constraint, emit_object).
     /// predicate_ref can be Ref::Sid or Ref::Iri depending on how the query was lowered.
-    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)>,
+    /// emit_object is false for existence-only (semijoin) predicates.
+    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>, bool)>,
     /// Output schema: [subject_var, obj_var_1, obj_var_2, ...]
     output_schema: Arc<[VarId]>,
     /// Operator state
@@ -98,6 +109,9 @@ pub struct PropertyJoinOperator {
     subject_idx: usize,
     /// Optional object bounds for range filter pushdown (VarId -> ObjectBounds)
     object_bounds: HashMap<VarId, ObjectBounds>,
+    /// For each predicate index, the position in `subject_values`'s values vec if emitted.
+    /// Existence-only predicates are `None`.
+    emit_positions: Vec<Option<usize>>,
 }
 
 /// Join-safe subject key for PropertyJoinOperator.
@@ -156,47 +170,93 @@ impl PropertyJoinOperator {
     /// * `patterns` - Triple patterns forming a property-join shape
     /// * `object_bounds` - Optional range bounds for object variables (filter pushdown)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if patterns don't form a valid property-join shape
-    /// (use `is_property_join_shape` to check first).
-    pub fn new(patterns: &[TriplePattern], object_bounds: HashMap<VarId, ObjectBounds>) -> Self {
-        assert!(
-            crate::planner::is_property_join(patterns),
-            "Patterns must form a property-join shape"
-        );
+    /// Returns `QueryError::Internal` if patterns don't form a valid property-join shape.
+    pub fn new(
+        patterns: &[TriplePattern],
+        object_bounds: HashMap<VarId, ObjectBounds>,
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(patterns) {
+            return Err(QueryError::Internal(
+                "Patterns must form a property-join shape".into(),
+            ));
+        }
+
+        Self::new_with_needed_vars(patterns, object_bounds, None)
+    }
+
+    /// Create a new property-join operator, optionally treating some predicate patterns
+    /// as existence-only (semijoin) when their object vars are not needed downstream.
+    pub fn new_with_needed_vars(
+        patterns: &[TriplePattern],
+        object_bounds: HashMap<VarId, ObjectBounds>,
+        needed_vars: Option<&std::collections::HashSet<VarId>>,
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(patterns) {
+            return Err(QueryError::Internal(
+                "Patterns must form a property-join shape".into(),
+            ));
+        }
 
         // Extract subject var (guaranteed same for all by is_property_join)
         let subject_var = match &patterns[0].s {
             Ref::Var(v) => *v,
-            _ => panic!("Property-join requires variable subject"),
+            _ => {
+                return Err(QueryError::Internal(
+                    "Property-join requires variable subject".into(),
+                ))
+            }
         };
 
-        // Extract (predicate_ref, object_var, dt) triples
+        // Extract (predicate_ref, object_var, dt, emit_object) tuples.
         // Predicate can be Ref::Sid or Ref::Iri depending on lowering
-        let predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)> = patterns
-            .iter()
-            .map(|p| {
-                let pred_ref = match &p.p {
-                    Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
-                    _ => panic!("Property-join requires bound predicates (Sid or Iri)"),
-                };
-                let obj_var = match &p.o {
-                    Term::Var(v) => *v,
-                    _ => panic!("Property-join requires variable objects"),
-                };
-                (pred_ref, obj_var, p.dtc.clone())
-            })
-            .collect();
+        let mut predicates = Vec::with_capacity(patterns.len());
+        for p in patterns {
+            let pred_ref = match &p.p {
+                Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
+                _ => {
+                    return Err(QueryError::Internal(
+                        "Property-join requires bound predicates (Sid or Iri)".into(),
+                    ))
+                }
+            };
+            let obj_var = match &p.o {
+                Term::Var(v) => *v,
+                _ => {
+                    return Err(QueryError::Internal(
+                        "Property-join requires variable objects".into(),
+                    ))
+                }
+            };
+            let emit_object = needed_vars.is_none_or(|n| n.contains(&obj_var));
+            predicates.push((pred_ref, obj_var, p.dtc.clone(), emit_object));
+        }
 
-        // Build output schema: [subject_var, obj_var_1, obj_var_2, ...]
+        // Build output schema: [subject_var, obj_var_1, obj_var_2, ...] but only for emitted vars.
         let mut schema_vec = vec![subject_var];
-        for (_, obj_var, _) in &predicates {
-            schema_vec.push(*obj_var);
+        for (_, obj_var, _, emit) in &predicates {
+            if *emit {
+                schema_vec.push(*obj_var);
+            }
         }
         let output_schema: Arc<[VarId]> = Arc::from(schema_vec.into_boxed_slice());
 
-        Self {
+        let emit_positions = {
+            let mut out = Vec::with_capacity(predicates.len());
+            let mut next = 0usize;
+            for (_, _ov, _dt, emit) in &predicates {
+                if *emit {
+                    out.push(Some(next));
+                    next += 1;
+                } else {
+                    out.push(None);
+                }
+            }
+            out
+        };
+
+        Ok(Self {
             subject_var,
             predicates,
             output_schema,
@@ -205,17 +265,13 @@ impl PropertyJoinOperator {
             pending_subjects: Vec::new(),
             subject_idx: 0,
             object_bounds,
-        }
+            emit_positions,
+        })
     }
 
     /// Get the subject variable
     pub fn subject_var(&self) -> VarId {
         self.subject_var
-    }
-
-    /// Get the predicates with their object variables
-    pub fn predicates(&self) -> &[(Ref, VarId, Option<DatatypeConstraint>)] {
-        &self.predicates
     }
 
     /// Get the output schema (non-trait method for tests)
@@ -274,7 +330,17 @@ impl PropertyJoinOperator {
         subject_binding: &Binding,
         values_per_pred: &[Vec<Binding>],
     ) -> Vec<Vec<Binding>> {
-        if values_per_pred.is_empty() || values_per_pred.iter().any(|v| v.is_empty()) {
+        // If no object vars are emitted (existence-only predicates), then each matching
+        // subject produces exactly one output row.
+        if values_per_pred.is_empty() {
+            return vec![{
+                let mut row = Vec::with_capacity(output_schema_len);
+                row.push(subject_binding.clone());
+                row
+            }];
+        }
+
+        if values_per_pred.iter().any(|v| v.is_empty()) {
             return Vec::new();
         }
 
@@ -357,14 +423,23 @@ impl Operator for PropertyJoinOperator {
             // - single-ledger (no dataset)
             // - binary_store present
             // - no datatype constraint on the probed predicate (dt=None)
-            let mut all_subject_values: FxHashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)> =
+            // Map: subject -> (subject_binding, presence_mask, emitted_values)
+            // presence_mask has one bit per predicate index, regardless of emit flag.
+            let mut all_subject_values: FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)> =
                 FxHashMap::default();
+            let required_mask: u64 = if self.predicates.len() >= 64 {
+                // Extremely unlikely; fall back to generic join behavior rather than miscount.
+                // (PropertyJoinOperator isn't intended for 64+ predicate stars.)
+                u64::MAX
+            } else {
+                (1u64 << self.predicates.len()) - 1
+            };
 
             let driver_pred_idx = self
                 .predicates
                 .iter()
                 .enumerate()
-                .find(|(_idx, (_p, obj_var, _dt))| self.object_bounds.contains_key(obj_var))
+                .find(|(_idx, (_p, obj_var, _dt, _emit))| self.object_bounds.contains_key(obj_var))
                 .map(|(idx, _)| idx);
             tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
 
@@ -378,15 +453,17 @@ impl Operator for PropertyJoinOperator {
             let mut probe_chunks: u64 = 0;
             let mut probe_subjects_total: u64 = 0;
             let mut scan_rows_total: u64 = 0;
+            let emit_count = self.emit_positions.iter().flatten().count();
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, dtc) = &self.predicates[pred_idx];
+                let (pred_term, obj_var, dtc, _emit) = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
+                // Batched probe requires binary store with batched_lookup support.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
-                    && ctx.has_binary_store()
+                    && ctx.binary_store.is_some()
                     && dtc.is_none();
 
                 if can_batched_probe {
@@ -406,13 +483,33 @@ impl Operator for PropertyJoinOperator {
                             // nearly the entire predicate partition.
                             //
                             // To improve locality, chunk the subject IDs into smaller sorted ranges
-                            // and probe each chunk independently.
+                            // and probe each chunk independently. We split both by count and by
+                            // span to avoid scanning large gaps.
                             const PROBE_CHUNK_SIZE: usize = 256;
+                            const PROBE_MAX_SPAN: u64 = 100_000;
 
                             let mut ids = subject_ids.clone();
                             ids.sort_unstable();
 
-                            for chunk in ids.chunks(PROBE_CHUNK_SIZE) {
+                            let mut chunk_start: usize = 0;
+                            for i in 1..=ids.len() {
+                                let is_end = i == ids.len();
+                                let size = i - chunk_start;
+                                let span = if size == 0 {
+                                    0
+                                } else {
+                                    ids[i - 1].saturating_sub(ids[chunk_start])
+                                };
+                                let should_split =
+                                    is_end || size >= PROBE_CHUNK_SIZE || span > PROBE_MAX_SPAN;
+                                if !should_split {
+                                    continue;
+                                }
+
+                                let chunk = &ids[chunk_start..i];
+                                if chunk.is_empty() {
+                                    continue;
+                                }
                                 used_batched_probe = true;
                                 probe_chunks += 1;
                                 probe_subjects_total += chunk.len() as u64;
@@ -460,13 +557,19 @@ impl Operator for PropertyJoinOperator {
                                                 if let Some(entry) =
                                                     all_subject_values.get_mut(&key)
                                                 {
-                                                    entry.1[pred_idx].push(object.clone());
+                                                    entry.1 |= 1u64 << pred_idx;
+                                                    if let Some(epos) =
+                                                        self.emit_positions[pred_idx]
+                                                    {
+                                                        entry.2[epos].push(object.clone());
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                                 join.close();
+                                chunk_start = i;
                             }
 
                             continue;
@@ -488,33 +591,80 @@ impl Operator for PropertyJoinOperator {
                 // `ScanOperator` selects between binary cursor and range fallback
                 // at open() time based on the execution context.
                 let bounds = self.object_bounds.get(obj_var).cloned();
-                let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds);
+                let emit = if self.predicates[pred_idx].3 {
+                    // Subject + object (no predicate column) for emitted predicates.
+                    EmitMask {
+                        s: true,
+                        p: false,
+                        o: true,
+                    }
+                } else {
+                    // Existence-only: only need the subject column.
+                    EmitMask {
+                        s: true,
+                        p: false,
+                        o: false,
+                    }
+                };
+                let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds, emit);
                 scan.open(ctx).await?;
 
                 while let Some(batch) = scan.next_batch(ctx).await? {
-                    // Schema for this scan is [subject_var, temp_obj_var]
+                    // Schema for this scan is either:
+                    // - emitted predicate: [subject_var, temp_obj_var]
+                    // - existence-only:   [subject_var]
                     let subject_col = batch.column_by_idx(0);
                     let object_col = batch.column_by_idx(1);
 
-                    if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
+                    if let Some(subjects) = subject_col {
                         scan_rows_total += batch.len() as u64;
-                        for (subject, object) in subjects.iter().zip(objects.iter()) {
-                            // Extract join-safe subject key for keying, preserving original binding for output.
-                            if let Some(key) = Self::subject_key(ctx, subject) {
-                                // If we've already built a driver subject set, don't insert new subjects.
-                                // This prevents the unbounded predicate scan from ballooning the map.
-                                if order_pos > 0 && !all_subject_values.is_empty() {
-                                    if let Some(entry) = all_subject_values.get_mut(&key) {
-                                        entry.1[pred_idx].push(object.clone());
-                                    }
-                                    continue;
-                                }
+                        let emit_obj = self.emit_positions[pred_idx].is_some();
+                        if emit_obj {
+                            if let Some(objects) = object_col {
+                                for (subject, object) in subjects.iter().zip(objects.iter()) {
+                                    if let Some(key) = Self::subject_key(ctx, subject) {
+                                        if order_pos > 0 && !all_subject_values.is_empty() {
+                                            if let Some(entry) = all_subject_values.get_mut(&key) {
+                                                entry.1 |= 1u64 << pred_idx;
+                                                if let Some(epos) = self.emit_positions[pred_idx] {
+                                                    entry.2[epos].push(object.clone());
+                                                }
+                                            }
+                                            continue;
+                                        }
 
-                                let entry = all_subject_values.entry(key).or_insert_with(|| {
-                                    // Initialize with the subject binding and empty vecs for each predicate
-                                    (subject.clone(), vec![Vec::new(); self.predicates.len()])
-                                });
-                                entry.1[pred_idx].push(object.clone());
+                                        let entry =
+                                            all_subject_values.entry(key).or_insert_with(|| {
+                                                (
+                                                    subject.clone(),
+                                                    0u64,
+                                                    vec![Vec::new(); emit_count],
+                                                )
+                                            });
+                                        entry.1 |= 1u64 << pred_idx;
+                                        if let Some(epos) = self.emit_positions[pred_idx] {
+                                            entry.2[epos].push(object.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Existence-only: only update presence bit for subjects already tracked,
+                            // unless this is the first scan (map empty) where we can seed subjects.
+                            for subject in subjects.iter() {
+                                if let Some(key) = Self::subject_key(ctx, subject) {
+                                    if order_pos > 0 && !all_subject_values.is_empty() {
+                                        if let Some(entry) = all_subject_values.get_mut(&key) {
+                                            entry.1 |= 1u64 << pred_idx;
+                                        }
+                                        continue;
+                                    }
+                                    let entry =
+                                        all_subject_values.entry(key).or_insert_with(|| {
+                                            (subject.clone(), 0u64, vec![Vec::new(); emit_count])
+                                        });
+                                    entry.1 |= 1u64 << pred_idx;
+                                }
                             }
                         }
                     }
@@ -523,7 +673,7 @@ impl Operator for PropertyJoinOperator {
                 scan.close();
 
                 // After the first scan (driver), capture the subject IDs for batched probing.
-                if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
+                if order_pos == 0 && driver_pred_idx.is_some() && ctx.binary_store.is_some() {
                     let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
                     for k in all_subject_values.keys() {
                         if let SubjectKey::Id(s_id) = k {
@@ -542,7 +692,11 @@ impl Operator for PropertyJoinOperator {
             // Filter to only subjects that have values for ALL predicates
             self.subject_values = all_subject_values
                 .into_iter()
-                .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
+                .filter(|(_, (_sb, mask, values))| {
+                    *mask == required_mask
+                        && (emit_count == 0 || values.iter().all(|v| !v.is_empty()))
+                })
+                .map(|(k, (sb, _mask, values))| (k, (sb, values)))
                 .collect();
 
             // Collect subjects for iteration
@@ -637,17 +791,17 @@ mod tests {
     #[test]
     fn test_property_join_creation() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         assert_eq!(op.subject_var(), VarId(0));
-        assert_eq!(op.predicates().len(), 2);
+        assert_eq!(op.predicates.len(), 2);
         assert_eq!(op.output_schema().len(), 3); // subject + 2 object vars
     }
 
     #[test]
     fn test_property_join_schema() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let schema = op.output_schema();
         assert_eq!(schema[0], VarId(0)); // subject
@@ -665,7 +819,7 @@ mod tests {
     #[test]
     fn test_generate_rows_single_values() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_sid = Sid::new(1, "alice");
         let subject_binding = Binding::Sid(subject_sid.clone());
@@ -687,7 +841,7 @@ mod tests {
     #[test]
     fn test_generate_rows_cartesian_product() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_binding = Binding::Sid(Sid::new(1, "alice"));
         let values = vec![
@@ -714,7 +868,7 @@ mod tests {
     #[test]
     fn test_generate_rows_empty_pred() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_binding = Binding::Sid(Sid::new(1, "alice"));
         let values = vec![
@@ -732,7 +886,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "property-join shape")]
     fn test_property_join_rejects_invalid_patterns() {
         // Different subjects - not a valid property-join
         let patterns = vec![
@@ -747,6 +900,10 @@ mod tests {
                 Term::Var(VarId(3)),
             ),
         ];
-        let _op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let result = PropertyJoinOperator::new(&patterns, HashMap::new());
+        assert!(
+            result.is_err(),
+            "should reject invalid property-join patterns"
+        );
     }
 }

@@ -13,15 +13,108 @@
 //! - `!=` yields `true` (different types are not equal)
 //! - `<`, `<=`, `>`, `>=` yield a `ComparisonError::TypeMismatch` error
 
+use crate::binding::Binding;
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::ir::{CompareOp, Expression};
 use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
 
 use super::helpers::check_min_arity;
 use super::value::{ComparableValue, ComparisonError};
+
+fn log_fastpath_hit_once(kind: &'static str) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
+    static HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !HIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!(
+            kind,
+            "FILTER: used encoded-id equality fast path (logged once)"
+        );
+    }
+}
+
+fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
+    op: CompareOp,
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<bool>> {
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) || args.len() != 2 {
+        return Ok(None);
+    }
+    let Some(ctx) = ctx else {
+        return Ok(None);
+    };
+    let Some(store) = ctx.binary_store.as_deref() else {
+        return Ok(None);
+    };
+
+    let try_side = |var_expr: &Expression, other_expr: &Expression| -> Result<Option<bool>> {
+        let Expression::Var(v) = var_expr else {
+            return Ok(None);
+        };
+        let Some(binding) = row.get(*v) else {
+            return Ok(Some(false));
+        };
+
+        let Some(other) = other_expr.eval_to_comparable(row, Some(ctx))? else {
+            return Ok(Some(false));
+        };
+
+        match binding {
+            Binding::EncodedSid { s_id } => {
+                let rhs_s_id_opt = match other {
+                    ComparableValue::Sid(sid) => store
+                        .find_subject_id_by_parts(sid.namespace_code, sid.name.as_ref())
+                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
+                    ComparableValue::Iri(iri) => store
+                        .find_subject_id(iri.as_ref())
+                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
+                    _ => return Ok(None),
+                };
+
+                let eq = rhs_s_id_opt.is_some_and(|rhs_s_id| rhs_s_id == *s_id);
+                let out = match op {
+                    CompareOp::Eq => eq,
+                    CompareOp::Ne => !eq,
+                    _ => unreachable!(),
+                };
+                log_fastpath_hit_once("EncodedSid");
+                Ok(Some(out))
+            }
+            Binding::EncodedPid { p_id } => {
+                let rhs_p_id_opt = match other {
+                    ComparableValue::Sid(sid) => store.sid_to_p_id(&sid),
+                    ComparableValue::Iri(iri) => store.find_predicate_id(iri.as_ref()),
+                    _ => return Ok(None),
+                };
+
+                let eq = rhs_p_id_opt.is_some_and(|rhs| rhs == *p_id);
+                let out = match op {
+                    CompareOp::Eq => eq,
+                    CompareOp::Ne => !eq,
+                    _ => unreachable!(),
+                };
+                log_fastpath_hit_once("EncodedPid");
+                Ok(Some(out))
+            }
+            _ => Ok(None),
+        }
+    };
+
+    // Try both orientations: (?var EncodedSid) op (const IRI/Sid) OR swapped.
+    if let Some(v) = try_side(&args[0], &args[1])? {
+        return Ok(Some(v));
+    }
+    if let Some(v) = try_side(&args[1], &args[0])? {
+        return Ok(Some(v));
+    }
+    Ok(None)
+}
 
 impl CompareOp {
     /// Whether the given ordering satisfies this comparison operator.
@@ -47,6 +140,10 @@ impl CompareOp {
         ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<Option<ComparableValue>> {
         check_min_arity(args, 1, &self.to_string())?;
+
+        if let Some(b) = fast_eq_ne_for_encoded_sid(*self, args, row, ctx)? {
+            return Ok(Some(ComparableValue::Bool(b)));
+        }
 
         // 1 arg → vacuously true
         if args.len() == 1 {

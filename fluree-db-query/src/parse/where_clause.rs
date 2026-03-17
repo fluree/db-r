@@ -185,7 +185,7 @@ pub fn parse_where_array_element(
                 ));
             }
             // Reuse filter parsing so BIND has the same expression language as FILTER.
-            // Clojure parity: allow multiple bindings in a single bind form.
+            // Allow multiple bindings in a single bind form.
             let mut i = 1;
             while i < arr.len() {
                 let var = arr[i].as_str().ok_or_else(|| {

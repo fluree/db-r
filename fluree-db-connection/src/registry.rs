@@ -1,7 +1,7 @@
 //! Storage registry for sharing storage instances across connection components
 //!
 //! The `StorageRegistry` provides instance sharing when the same storage is referenced
-//! multiple times in a JSON-LD config (via @id). This matches Clojure's Storage Catalog
+//! multiple times in a JSON-LD config (via @id). This matches the legacy storage catalog
 //! pattern where storage backends are created once and shared across commit storage,
 //! index storage, and nameservice.
 //!

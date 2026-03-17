@@ -412,6 +412,8 @@ fn write_binding_cell(
             o_kind,
             o_key,
             p_id,
+            dt_id,
+            lang_id,
             ..
         } => {
             let gv = require_graph_view(gv)?;
@@ -435,12 +437,14 @@ fn write_binding_cell(
                 let compacted = compactor.compact_vocab_iri(&iri);
                 cell.extend_from_slice(compacted.as_bytes());
             } else {
-                let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
-                    FormatError::InvalidBinding(format!(
-                        "Failed to decode value (kind={}, key={}, p_id={}): {}",
-                        o_kind, o_key, p_id, e
-                    ))
-                })?;
+                let val = gv
+                    .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                    .map_err(|e| {
+                        FormatError::InvalidBinding(format!(
+                            "Failed to decode value (kind={}, key={}, p_id={}): {}",
+                            o_kind, o_key, p_id, e
+                        ))
+                    })?;
                 write_flake_value(cell, &val, compactor);
             }
         }

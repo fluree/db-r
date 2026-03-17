@@ -1,6 +1,6 @@
 //! File storage integration test: insert then JSON-LD query.
 //!
-//! Mirrors a minimal Clojure-parity pattern:
+//! Mirrors a minimal end-to-end pattern:
 //! - connect-file (here: `FlureeBuilder::file`)
 //! - create empty ledger (genesis)
 //! - insert JSON-LD data

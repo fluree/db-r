@@ -91,6 +91,8 @@ PREFIX ex: <http://example.org/ns/>
 DESCRIBE ex:alice
 ```
 
+Fluree’s DESCRIBE returns **outgoing triples** for each described resource (equivalent to `CONSTRUCT { ?r ?p ?o } WHERE { VALUES ?r { ... } . ?r ?p ?o }`).
+
 ## Basic Graph Patterns
 
 ### Triple Patterns

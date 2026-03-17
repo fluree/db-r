@@ -1,6 +1,6 @@
-//! Text Extraction with Clojure Parity
+//! Text extraction
 //!
-//! Extracts text from JSON-LD values matching the Clojure `extract-text` behavior:
+//! Extracts text from JSON-LD values:
 //! - Concatenates all string values with space separators
 //! - Stringifies non-nil scalars (numbers, bools) and includes them
 //! - Handles nested maps (referred nodes) and sequences recursively
@@ -18,7 +18,7 @@ use serde_json::Value;
 /// - Arrays: all elements extracted
 /// - Null: skipped
 ///
-/// This matches the Clojure `extract-text` implementation.
+/// This matches the legacy `extract-text` behavior.
 pub fn extract_text(item: &Value) -> String {
     let mut result = String::new();
     extract_text_recursive(item, &mut result);
@@ -34,14 +34,14 @@ fn extract_text_recursive(value: &Value, result: &mut String) {
             result.push_str(s);
         }
         Value::Number(n) => {
-            // Clojure stringifies numbers and includes them
+            // Stringify numbers and include them
             if !result.is_empty() {
                 result.push(' ');
             }
             result.push_str(&n.to_string());
         }
         Value::Bool(b) => {
-            // Clojure stringifies bools and includes them
+            // Stringify bools and include them
             if !result.is_empty() {
                 result.push(' ');
             }

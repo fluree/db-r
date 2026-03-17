@@ -4,7 +4,7 @@ This document is for implementers building a custom server (for example in `../s
 
 The CLI supports two broad categories of remote operations:
 
-- **Data API**: query/transact/insert/upsert/info/exists (normal ledger operations).
+- **Data API**: query/update/insert/upsert/info/exists (normal ledger operations).
 - **Replication / sync**: clone/pull/fetch (content-addressed replication by CID, via pack + storage proxy).
 
 ## Base URL And Discovery

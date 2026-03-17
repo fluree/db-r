@@ -1,4 +1,4 @@
-//! Integration tests that mirror the Clojure JSON-LD test suite
+//! Integration tests for JSON-LD expansion behavior
 
 use fluree_graph_json_ld::{
     compact_fn_with_tracking, compact_iri, expand, normalize_data, parse_context, Container,

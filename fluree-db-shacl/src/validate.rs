@@ -202,13 +202,13 @@ impl ShaclEngine {
     // ========================================================================
     // Optimization: Early exit when no shapes
     // ========================================================================
-    // Following the Clojure pattern: `(if (empty? shapes) :valid ...)`
+    // Pattern: `(if (empty? shapes) :valid ...)`
     // This elides all validation work when no SHACL shapes are defined.
 
     /// Check if there are any shapes to validate against
     ///
     /// Use this for early exit: if no shapes exist, validation is a no-op.
-    /// This follows the Clojure SHACL implementation optimization.
+    /// This follows the SHACL implementation optimization.
     #[inline]
     pub fn has_shapes(&self) -> bool {
         !self.cache.is_empty()
@@ -245,7 +245,7 @@ impl ShaclEngine {
         modified_subjects: &HashSet<Sid>,
     ) -> Result<ValidationReport> {
         // Early exit: no shapes means automatic conformance
-        // This is the key optimization from Clojure: (if (empty? shapes) :valid ...)
+        // This is the key optimization: (if (empty? shapes) :valid ...)
         if self.cache.is_empty() {
             return Ok(ValidationReport::conforming());
         }

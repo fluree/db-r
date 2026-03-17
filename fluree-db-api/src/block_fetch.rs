@@ -28,14 +28,16 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::policy_builder;
-use fluree_db_binary_index::format::leaflet::decode_leaflet;
-use fluree_db_binary_index::read_leaf_header;
-use fluree_db_binary_index::{decode_leaflet_region1, DecodedRow, LeafletHeader};
-use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, RunSortOrder};
+use fluree_db_binary_index::format::leaf::{decode_leaf_dir_v3_with_base, decode_leaf_header_v3};
+use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+use fluree_db_binary_index::read::column_types::ColumnProjection;
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::storage::content_address;
-use fluree_db_core::{ContentId, LedgerSnapshot, NoOverlay, OverlayProvider, Storage, Tracker};
+use fluree_db_core::{
+    ContentId, LedgerSnapshot, NoOverlay, OType, OverlayProvider, Storage, Tracker,
+};
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -60,7 +62,7 @@ pub enum BlockFetchError {
     #[error("No database context provided for policy filtering")]
     MissingDbContext,
 
-    /// FLI2 leaf parsing failed
+    /// FLI3 leaf parsing failed
     #[error("Leaf decode error: {0}")]
     LeafDecode(std::io::Error),
 
@@ -212,125 +214,124 @@ pub struct FetchedBlock {
 // Leaf Detection
 // ============================================================================
 
-/// Check if bytes appear to be an FLI2 leaf block.
+/// Check if bytes appear to be an FLI3 leaf block.
 ///
 /// Conservative: checks both the 4-byte magic prefix AND that the full
 /// header parses successfully. A `false` here is definitive (not a leaf);
 /// a `true` means the header is structurally valid but `decode_leaf_block`
 /// may still fail on corrupt leaflet data.
 pub fn is_binary_leaf(bytes: &[u8]) -> bool {
-    bytes.len() >= 4 && bytes[0..4] == *b"FLI2" && read_leaf_header(bytes).is_ok()
+    bytes.len() >= 4 && bytes[0..4] == *b"FLI3" && decode_leaf_header_v3(bytes).is_ok()
 }
 
 // ============================================================================
 // Leaf Decoding
 // ============================================================================
 
-/// Decode an FLI2 binary leaf block into flakes.
+/// Decode an FLI3 binary leaf block into flakes.
 ///
-/// Returns the decoded flakes. Fails if the block is not a valid FLI2 leaf
+/// Returns the decoded flakes. Fails if the block is not a valid FLI3 leaf
 /// or if row-to-flake conversion fails (e.g., missing dictionary entries).
 pub fn decode_leaf_block(
     bytes: &[u8],
     gv: &BinaryGraphView,
+    snapshot: &LedgerSnapshot,
 ) -> Result<Vec<Flake>, BlockFetchError> {
-    let header = read_leaf_header(bytes).map_err(BlockFetchError::LeafDecode)?;
-    if header.leaflet_dir.is_empty() {
-        return Ok(vec![]);
-    }
+    let store = gv.store();
+    let header = decode_leaf_header_v3(bytes).map_err(BlockFetchError::LeafDecode)?;
+    let dir = decode_leaf_dir_v3_with_base(bytes, &header).map_err(BlockFetchError::LeafDecode)?;
 
-    let order = detect_leaf_sort_order(bytes, &header)?;
+    let projection = ColumnProjection::all();
+    let mut flakes: Vec<Flake> = Vec::with_capacity(header.total_rows as usize);
 
-    let mut out = Vec::with_capacity(header.total_rows as usize);
-
-    for dir_entry in &header.leaflet_dir {
-        let start = dir_entry.offset as usize;
-        let end = start + dir_entry.compressed_len as usize;
-        if end > bytes.len() {
-            return Err(BlockFetchError::LeafDecode(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "leaf file: leaflet extends past end",
-            )));
+    for entry in &dir.entries {
+        if entry.row_count == 0 {
+            continue;
         }
-
-        let leaflet_bytes = &bytes[start..end];
-        let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, order)
+        let batch = load_leaflet_columns(bytes, entry, dir.payload_base, &projection, header.order)
             .map_err(BlockFetchError::LeafDecode)?;
 
-        for idx in 0..decoded.row_count {
-            let row = DecodedRow {
-                s_id: decoded.s_ids[idx],
-                p_id: decoded.p_ids[idx],
-                o_kind: decoded.o_kinds[idx],
-                o_key: decoded.o_keys[idx],
-                dt: decoded.dt_values[idx],
-                t: decoded.t_values[idx] as i64,
-                lang_id: decoded.lang.as_ref().map_or(0, |c| c.get(idx as u16)),
-                i: decoded
-                    .i_col
-                    .as_ref()
-                    .map_or(fluree_db_core::ListIndex::none().as_i32(), |c| {
-                        c.get(idx as u16)
-                    }),
-            };
-            out.push(gv.row_to_flake(&row).map_err(BlockFetchError::LeafDecode)?);
-        }
-    }
+        for i in 0..batch.row_count {
+            let s_id = batch.s_id.get(i);
+            let p_id = batch.p_id.get_or(i, 0);
+            let o_type = batch.o_type.get_or(i, 0);
+            let o_key = batch.o_key.get(i);
+            let t_u32 = batch.t.get_or(i, 0);
+            let o_i = batch.o_i.get_or(i, u32::MAX);
 
-    Ok(out)
-}
+            // Subject: resolve to IRI then encode to Sid.
+            let s_iri = store
+                .resolve_subject_iri(s_id)
+                .map_err(BlockFetchError::LeafDecode)?;
+            let s = snapshot
+                .encode_iri(&s_iri)
+                .unwrap_or_else(|| fluree_db_core::Sid::new(0, s_iri));
 
-/// Detect sort order of a leaf block by trying all four orders against the
-/// first leaflet's header markers.
-fn detect_leaf_sort_order(
-    leaf_bytes: &[u8],
-    header: &fluree_db_binary_index::format::leaf::LeafFileHeader,
-) -> Result<RunSortOrder, BlockFetchError> {
-    let first = header.leaflet_dir.first().ok_or_else(|| {
-        BlockFetchError::LeafDecode(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "leaf has no leaflets",
-        ))
-    })?;
+            // Predicate: resolve IRI then encode to Sid.
+            let p_iri = store.resolve_predicate_iri(p_id).ok_or_else(|| {
+                BlockFetchError::LeafDecode(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("predicate id {p_id} not found"),
+                ))
+            })?;
+            let p = snapshot
+                .encode_iri(p_iri)
+                .unwrap_or_else(|| fluree_db_core::Sid::new(0, p_iri));
 
-    let start = first.offset as usize;
-    let end = start + first.compressed_len as usize;
-    if end > leaf_bytes.len() {
-        return Err(BlockFetchError::LeafDecode(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "leaf file: first leaflet extends past end",
-        )));
-    }
-    let leaflet_bytes = &leaf_bytes[start..end];
-
-    let lh = LeafletHeader::read_from(leaflet_bytes).map_err(BlockFetchError::LeafDecode)?;
-
-    // Try all orders; accept the first that round-trips the first row markers.
-    // The Region 1 byte layout is order-dependent, so "wrong order" decoding
-    // should almost always fail this check.
-    for order in [
-        RunSortOrder::Spot,
-        RunSortOrder::Psot,
-        RunSortOrder::Post,
-        RunSortOrder::Opst,
-    ] {
-        if let Ok((_hdr, s_ids, p_ids, o_kinds, o_keys)) =
-            decode_leaflet_region1(leaflet_bytes, header.p_width, order)
-        {
-            if s_ids.first().copied() == Some(lh.first_s_id)
-                && p_ids.first().copied() == Some(lh.first_p_id)
-                && o_kinds.first().copied() == Some(lh.first_o_kind)
-                && o_keys.first().copied() == Some(lh.first_o_key)
-            {
-                return Ok(order);
+            // Object: graph-scoped decode (routes specialty kinds through arenas).
+            let mut o = gv
+                .decode_value(o_type, o_key, p_id)
+                .map_err(BlockFetchError::LeafDecode)?;
+            if let fluree_db_core::FlakeValue::Ref(sid) = &o {
+                let iri = store.sid_to_iri(sid);
+                o = fluree_db_core::FlakeValue::Ref(
+                    snapshot
+                        .encode_iri(&iri)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri)),
+                );
             }
+
+            let dt = store.resolve_datatype_sid(o_type).map_or_else(
+                || fluree_db_core::Sid::new(0, ""),
+                |sid| {
+                    let iri = store.sid_to_iri(&sid);
+                    snapshot
+                        .encode_iri(&iri)
+                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri))
+                },
+            );
+
+            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let meta = if lang.is_some() || o_i != u32::MAX {
+                Some(fluree_db_core::FlakeMeta {
+                    lang,
+                    i: if o_i != u32::MAX {
+                        Some(o_i as i32)
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+
+            // Basic sanity: o_type should always be valid.
+            let _ = OType::from_u16(o_type);
+
+            flakes.push(Flake {
+                g: None,
+                s,
+                p,
+                o,
+                dt,
+                t: t_u32 as i64,
+                op: true,
+                m: meta,
+            });
         }
     }
 
-    Err(BlockFetchError::LeafDecode(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "leaf file: could not detect sort order for leaflet decoding",
-    )))
+    Ok(flakes)
 }
 
 // ============================================================================
@@ -392,7 +393,7 @@ pub async fn apply_policy_filter(
 /// 1. Checks the CID's content kind against the allowlist
 /// 2. Derives the storage address internally from `(storage_method, kind, ledger_id, digest)`
 /// 3. Reads raw bytes from storage
-/// 4. Detects whether the block is an FLI2 leaf (defense-in-depth, even when kind is `IndexLeaf`)
+/// 4. Detects whether the block is an FLI3 leaf (defense-in-depth, even when kind is `IndexLeaf`)
 /// 5. Under `PolicyEnforced`: leaf blocks are always decoded+filtered (never raw)
 /// 6. Under `TrustedInternal`: all blocks returned as raw bytes
 /// 7. Non-leaf blocks always returned as raw bytes (structural pointers)
@@ -436,7 +437,7 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
     })?;
 
     // 5. Non-leaf blocks are structural pointers — return as-is regardless of mode
-    //    (FLI2 sniffing is defense-in-depth even when kind == IndexLeaf)
+    //    (FLI3 sniffing is defense-in-depth even when kind == IndexLeaf)
     if !is_binary_leaf(&bytes) {
         return Ok(FetchedBlock {
             content: BlockContent::RawBytes(bytes),
@@ -465,7 +466,7 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
             // Block fetch decodes leaves for replication / policy filtering;
             // specialty kinds (BigInt, Vector) route through per-graph arenas.
             let gv = BinaryGraphView::new(Arc::clone(store), 0);
-            let flakes = decode_leaf_block(&bytes, &gv)?;
+            let flakes = decode_leaf_block(&bytes, &gv, lctx.snapshot)?;
 
             let (filtered, policy_applied) = apply_policy_filter(
                 lctx.snapshot,
@@ -561,28 +562,29 @@ mod tests {
 
     #[test]
     fn test_is_binary_leaf_magic_but_invalid_header() {
-        // Has FLI2 magic but header is too short / invalid
-        assert!(!is_binary_leaf(b"FLI2short"));
+        // Has FLI3 magic but header is too short / invalid
+        assert!(!is_binary_leaf(b"FLI3short"));
     }
 
-    /// Build a minimal valid FLI2 leaf header (72 bytes, 0 leaflets).
+    /// Build a minimal valid FLI3 leaf header (72 bytes, 0 leaflets).
     /// This passes `is_binary_leaf()` and `read_leaf_header()` but has no actual
     /// leaflet data.
     fn make_minimal_leaf_header() -> Vec<u8> {
         let mut buf = vec![0u8; 72];
-        // Magic: FLI2
-        buf[0..4].copy_from_slice(b"FLI2");
-        // Version: 2
-        buf[4] = 2;
-        // leaflet_count: 0
+        // Magic: FLI3
+        buf[0..4].copy_from_slice(b"FLI3");
+        // Version: 1
+        buf[4] = 1;
+        // Order: 0 (SPOT)
         buf[5] = 0;
-        // dt_width: 1 (u8)
-        buf[6] = 1;
-        // p_width: 2 (u16)
-        buf[7] = 2;
+        // padding: 2 bytes
+        buf[6] = 0;
+        buf[7] = 0;
+        // leaflet_count: 0 (u32 LE)
+        buf[8..12].copy_from_slice(&0u32.to_le_bytes());
         // total_rows: 0 (u64 LE)
-        buf[8..16].copy_from_slice(&0u64.to_le_bytes());
-        // first_key and last_key: 28 bytes each, all zeros is fine
+        buf[12..20].copy_from_slice(&0u64.to_le_bytes());
+        // first_key and last_key: 26 bytes each, all zeros is fine
         buf
     }
 
@@ -647,16 +649,14 @@ mod tests {
 
     #[test]
     fn test_decode_leaf_block_empty_leaf() {
-        // A valid FLI2 header with 0 leaflets should decode to empty flakes.
-        // This doesn't need a BinaryIndexStore since there are no rows.
-        // However, decode_leaf_block still needs a store parameter.
+        // A valid FLI3 header with 0 leaflets should decode to empty flakes.
         // We just verify is_binary_leaf succeeds and the header is valid.
         let leaf_bytes = make_minimal_leaf_header();
         assert!(is_binary_leaf(&leaf_bytes));
 
         // Verify the header parses with no leaflets
-        let header = read_leaf_header(&leaf_bytes).unwrap();
-        assert!(header.leaflet_dir.is_empty());
+        let header = decode_leaf_header_v3(&leaf_bytes).unwrap();
+        assert_eq!(header.leaflet_count, 0);
         assert_eq!(header.total_rows, 0);
     }
 }

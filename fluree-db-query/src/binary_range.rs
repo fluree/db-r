@@ -1,102 +1,473 @@
-//! Binary index range query shim.
+//! V3 range provider — implements `RangeProvider` for V6 indexes.
 //!
-//! Provides `range()` semantics using `BinaryCursor` against the binary
-//! columnar index.  This is the binary equivalent of
-//! `fluree_db_core::range::range_with_overlay()`.
-//!
-//! ## Design
-//!
-//! - Sync (local mmap reads via `BinaryCursor`)
-//! - Converts `RangeMatch` → integer-ID bounds via `BinaryIndexStore::translate_range`
-//! - Iterates `DecodedBatch` leaves and reconstructs `Vec<Flake>`
-//! - Supports overlay via `DictOverlay` (ephemeral IDs for uncommitted entities)
-//!
-//! ## Supported tests
-//!
-//! Currently supports `RangeTest::Eq` (the only variant used by the reasoner
-//! and the majority of callers).  Inequality tests (Lt, Le, Gt, Ge) and
-//! bounded-range queries can be added as new callers require them.
+//! Plugs into `range_with_overlay()` so all 25+ callers (policy, SHACL,
+//! reasoner, property paths, API) transparently query V3 indexes.
 
-use crate::binary_scan::index_type_to_sort_order;
-use crate::dict_overlay::DictOverlay;
-use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
-    RunRecord, RunSortOrder,
-};
-use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider, RangeProvider, Sid};
 use std::collections::{HashMap, HashSet};
-use std::io;
 use std::sync::Arc;
 
-// ============================================================================
-// Public API
-// ============================================================================
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
+use fluree_db_binary_index::{
+    BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnProjection, RunSortOrder,
+};
+use fluree_db_core::dict_novelty::DictNovelty;
+use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::{
+    Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions,
+    RangeProvider, RangeTest, Sid,
+};
 
-/// Execute a range query against the binary columnar index.
+use crate::binary_scan::index_type_to_sort_order;
+
+/// V3 range provider: wraps `BinaryIndexStore` to serve `range_with_overlay()` callers.
 ///
-/// This is the binary equivalent of `fluree_db_core::range_with_overlay()`.
-/// Returns `Vec<Flake>` in index order, matching the same contract as the
-/// `RangeProvider` trait used by `range_with_overlay()`.
-///
-/// # Arguments
-///
-/// * `store` — loaded `BinaryIndexStore` (shared, immutable)
-/// * `g_id` — graph ID (typically 0 for default graph)
-/// * `index` — which index order to scan
-/// * `test` — comparison operator (currently only `Eq` is supported)
-/// * `match_val` — components to match
-/// * `opts` — query options (limit, time bounds)
-/// * `overlay` — optional overlay provider + DictOverlay for novelty merge
-///
-/// # Errors
-///
-/// Returns `io::Error` on I/O failures or if the match components cannot be
-/// translated to integer IDs (e.g., unknown subject/predicate).
-pub fn binary_range(
-    store: &Arc<BinaryIndexStore>,
-    g_id: GraphId,
-    index: IndexType,
-    test: RangeTest,
-    match_val: &RangeMatch,
-    opts: &RangeOptions,
-    overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
-) -> io::Result<Vec<Flake>> {
-    match test {
-        RangeTest::Eq => binary_range_eq(store, g_id, index, match_val, opts, overlay),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("binary_range: RangeTest::{test:?} not yet supported (only Eq)"),
-        )),
+/// Graph ID is passed per-call (not embedded), so one provider serves all graphs.
+pub struct BinaryRangeProvider {
+    store: Arc<BinaryIndexStore>,
+    dict_novelty: Arc<DictNovelty>,
+}
+
+impl BinaryRangeProvider {
+    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>) -> Self {
+        Self {
+            store,
+            dict_novelty,
+        }
+    }
+
+    /// Access the underlying `BinaryIndexStore`.
+    pub fn store(&self) -> &Arc<BinaryIndexStore> {
+        &self.store
+    }
+
+    /// Access the `DictNovelty` used for overlay decoding.
+    pub fn dict_novelty(&self) -> &Arc<DictNovelty> {
+        &self.dict_novelty
     }
 }
 
-// ============================================================================
-// Internals
-// ============================================================================
+impl RangeProvider for BinaryRangeProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-/// Batched lookup for ref-valued predicate objects across many subjects.
-///
-/// This is primarily used for fast `rdf:type` lookups in policy enforcement and
-/// for class→property stats refresh.
-#[allow(clippy::too_many_arguments)]
-fn binary_lookup_subject_predicate_refs_batched(
+    fn range(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        test: RangeTest,
+        match_val: &RangeMatch,
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<Vec<Flake>> {
+        match test {
+            RangeTest::Eq => binary_range_eq_v3(
+                &self.store,
+                &self.dict_novelty,
+                g_id,
+                index,
+                match_val,
+                opts,
+                overlay,
+            ),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("V3 range provider: unsupported RangeTest {:?}", test),
+            )),
+        }
+    }
+
+    fn range_bounded(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        start_bound: &Flake,
+        end_bound: &Flake,
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<Vec<Flake>> {
+        binary_range_bounded_v3(
+            &self.store,
+            &self.dict_novelty,
+            g_id,
+            index,
+            start_bound,
+            end_bound,
+            opts,
+            overlay,
+        )
+    }
+
+    fn lookup_subject_predicate_refs_batched(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        predicate: &Sid,
+        subjects: &[Sid],
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<HashMap<Sid, Vec<Sid>>> {
+        binary_lookup_subject_predicate_refs_batched_v3(
+            &self.store,
+            &self.dict_novelty,
+            g_id,
+            index,
+            predicate,
+            subjects,
+            opts,
+            overlay,
+        )
+    }
+}
+
+/// V3 equality range query: scan the appropriate index order with filters,
+/// decode each row to a `Flake`, apply overlay merge.
+fn binary_range_eq_v3(
     store: &Arc<BinaryIndexStore>,
+    dict_novelty: &Arc<DictNovelty>,
+    g_id: GraphId,
+    index: IndexType,
+    match_val: &RangeMatch,
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
+) -> std::io::Result<Vec<fluree_db_core::Flake>> {
+    let order = index_type_to_sort_order(index);
+    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+
+    // Build filter from bound match components.
+    let mut filter = BinaryFilter::default();
+
+    if let Some(s_sid) = &match_val.s {
+        // Prefer persisted reverse dict, then DictNovelty. If neither can map this subject
+        // to an s_id, there are no base rows to scan; return overlay-only matches.
+        match store.sid_to_s_id(s_sid)? {
+            Some(id) => filter.s_id = Some(id),
+            None => {
+                if dict_novelty.is_initialized() {
+                    if let Some(id) = dict_novelty
+                        .subjects
+                        .find_subject(s_sid.namespace_code, &s_sid.name)
+                    {
+                        filter.s_id = Some(id);
+                    } else {
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                    }
+                } else {
+                    return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                }
+            }
+        }
+    }
+    if let Some(p_sid) = &match_val.p {
+        match store.sid_to_p_id(p_sid) {
+            Some(id) => filter.p_id = Some(id),
+            None => {
+                // Unknown predicate in persisted dict: base scan cannot match.
+                // Overlay may still contain this predicate (novelty), so return overlay-only.
+                return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+            }
+        }
+    }
+    if let Some(o_val) = &match_val.o {
+        match o_val {
+            fluree_db_core::FlakeValue::Ref(sid) => {
+                // Resolve ref object to an s_id (persisted → DictNovelty).
+                let o_id = match store.sid_to_s_id(sid)? {
+                    Some(id) => id,
+                    None => {
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty
+                                .subjects
+                                .find_subject(sid.namespace_code, &sid.name)
+                            {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
+                    }
+                };
+                filter.o_type = Some(OType::IRI_REF.as_u16());
+                filter.o_key = Some(o_id);
+            }
+            fluree_db_core::FlakeValue::String(s) => {
+                // Resolve string dict id (persisted → DictNovelty).
+                let str_id = match store.find_string_id(s)? {
+                    Some(id) => id,
+                    None => {
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty.strings.find_string(s) {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
+                    }
+                };
+                filter.o_type = Some(OType::XSD_STRING.as_u16());
+                filter.o_key = Some(str_id as u64);
+            }
+            _ => {
+                // Best-effort: encode basic inline types for equality filtering.
+                if let Ok((ot, key)) = crate::binary_scan::value_to_otype_okey_simple(o_val, store)
+                {
+                    filter.o_type = Some(ot.as_u16());
+                    filter.o_key = Some(key);
+                }
+            }
+        }
+    }
+
+    // Get branch manifest.
+    let branch = match store.branch_for_order(g_id, order) {
+        Some(b) => Arc::new(b.clone()),
+        None => {
+            // No branch for this order — return overlay-only results if any.
+            return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+        }
+    };
+
+    // Create cursor: full scan with filter.
+    let projection = ColumnProjection::all();
+    let mut cursor = BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection);
+
+    // Apply overlay.
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    cursor.set_to_t(effective_to_t);
+
+    // Always attempt overlay translation — for_each_overlay_flake is a no-op
+    // when the overlay is empty (NoOverlay returns immediately).
+    let mut ephemeral_preds = std::collections::HashMap::new();
+    let mut next_ep = store.predicate_count();
+    {
+        let mut ops = Vec::new();
+
+        overlay.for_each_overlay_flake(
+            g_id,
+            index,
+            None,
+            None,
+            true,
+            effective_to_t,
+            &mut |flake| match crate::binary_scan::translate_one_flake_v3_pub(
+                flake,
+                store,
+                Some(dict_novelty),
+                &mut ephemeral_preds,
+                &mut next_ep,
+            ) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    tracing::warn!(error = %e, "V3 range: failed to translate overlay flake");
+                }
+            },
+        );
+
+        if !ops.is_empty() {
+            fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, order);
+            let epoch = overlay.epoch();
+            cursor.set_overlay_ops(ops);
+            cursor.set_epoch(epoch);
+        }
+    }
+
+    // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
+    // These predicates don't exist in the persisted index dictionary and need
+    // this map to be decoded back to IRIs when cursor rows are materialized.
+    let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
+        .into_iter()
+        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .collect();
+
+    // Iterate and decode to Flakes.
+    let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let offset = opts.offset.unwrap_or(0);
+    let mut flakes = Vec::new();
+    let mut skipped = 0usize;
+
+    while let Some(batch) = cursor.next_batch()? {
+        for i in 0..batch.row_count {
+            let s_id = batch.s_id.get(i);
+            let p_id = batch.p_id.get_or(i, 0);
+            let o_type = batch.o_type.get_or(i, 0);
+            let o_key = batch.o_key.get(i);
+            let t = batch.t.get_or(i, 0) as i64;
+            let o_i = batch.o_i.get_or(i, u32::MAX);
+
+            // Resolve subject.
+            let s_sid = resolve_sid(s_id, store, dict_novelty)?;
+            // Resolve predicate: persisted dict first, then ephemeral overlay map.
+            let p_sid = match store.resolve_predicate_iri(p_id) {
+                Some(iri) => store.encode_iri(iri),
+                None => match ephemeral_p_id_to_sid.get(&p_id) {
+                    Some(sid) => sid.clone(),
+                    None => continue, // truly unknown — shouldn't happen
+                },
+            };
+            // Decode object.
+            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
+            // Resolve datatype.
+            let dt = store
+                .resolve_datatype_sid(o_type)
+                .unwrap_or_else(|| Sid::new(0, ""));
+            // Language tag.
+            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            // List index.
+            let meta = if lang.is_some() || o_i != u32::MAX {
+                Some(fluree_db_core::FlakeMeta {
+                    lang,
+                    i: if o_i != u32::MAX {
+                        Some(o_i as i32)
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+
+            // Apply object bounds if present.
+            if let Some(bounds) = &opts.object_bounds {
+                if !bounds.matches(&o_val) {
+                    continue;
+                }
+            }
+
+            // Offset.
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+
+            flakes.push(fluree_db_core::Flake {
+                g: None,
+                s: s_sid,
+                p: p_sid,
+                o: o_val,
+                dt,
+                t,
+                op: true,
+                m: meta,
+            });
+
+            if flakes.len() >= limit {
+                return Ok(flakes);
+            }
+        }
+    }
+
+    Ok(flakes)
+}
+
+/// Resolve a subject integer ID to Sid using persisted dict then DictNovelty.
+fn resolve_sid(
+    s_id: u64,
+    store: &BinaryIndexStore,
+    dict_novelty: &Arc<DictNovelty>,
+) -> std::io::Result<Sid> {
+    // Try persisted first.
+    match store.resolve_subject_iri(s_id) {
+        Ok(iri) => Ok(store.encode_iri(&iri)),
+        Err(_) => {
+            // Try DictNovelty forward lookup: returns (ns_code, suffix).
+            if dict_novelty.is_initialized() {
+                if let Some((ns_code, suffix)) = dict_novelty.subjects.resolve_subject(s_id) {
+                    return Ok(Sid::new(ns_code, suffix));
+                }
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("subject s_id={s_id} not found in persisted or novelty dict"),
+            ))
+        }
+    }
+}
+
+/// Decode an encoded object `(o_type, o_key)` with DictNovelty fallback.
+///
+/// This is required for overlay-only rows where IDs are assigned by `DictNovelty`
+/// (starting at watermark+1) and do not exist in persisted forward packs yet.
+///
+/// Applies to:
+/// - subject refs / blank nodes (`OType::IRI_REF`): resolve via subject dict → novelty
+/// - string-dict-backed types (`DecodeKind::StringDict` and `DecodeKind::JsonArena`):
+///   resolve via string dict → novelty
+/// - all other types: delegate to `BinaryGraphView::decode_value()`
+fn decode_value_with_novelty(
+    o_type: u16,
+    o_key: u64,
+    p_id: u32,
+    view: &BinaryGraphView,
+    store: &BinaryIndexStore,
+    dict_novelty: &Arc<DictNovelty>,
+) -> std::io::Result<FlakeValue> {
+    let ot = OType::from_u16(o_type);
+    if ot.is_iri_ref() || ot.is_blank_node() {
+        return Ok(FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?));
+    }
+
+    match ot.decode_kind() {
+        fluree_db_core::DecodeKind::StringDict | fluree_db_core::DecodeKind::JsonArena => {
+            let str_id = o_key as u32;
+            let wrap = |s: String| {
+                if matches!(ot.decode_kind(), fluree_db_core::DecodeKind::JsonArena) {
+                    FlakeValue::Json(s)
+                } else {
+                    FlakeValue::String(s)
+                }
+            };
+
+            match store.resolve_string_value(str_id) {
+                Ok(s) => Ok(wrap(s)),
+                Err(e) => {
+                    if dict_novelty.is_initialized() {
+                        if let Some(s) = dict_novelty.strings.resolve_string(str_id) {
+                            Ok(wrap(s.to_string()))
+                        } else {
+                            Err(e)
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+            }
+        }
+        _ => view.decode_value(o_type, o_key, p_id),
+    }
+}
+
+/// Batched lookup for ref-valued predicate objects across many subjects (V3).
+///
+/// For a fixed predicate, scans PSOT within the `[min_s_id, max_s_id]` range,
+/// filters to the requested subject set, and returns only IRI-ref-typed objects.
+/// Used by policy (`rdf:type` lookups) and stats refresh.
+#[allow(clippy::too_many_arguments)]
+fn binary_lookup_subject_predicate_refs_batched_v3(
+    store: &Arc<BinaryIndexStore>,
+    dict_novelty: &Arc<DictNovelty>,
     g_id: GraphId,
     index: IndexType,
     predicate: &Sid,
     subjects: &[Sid],
     opts: &RangeOptions,
     overlay: &dyn OverlayProvider,
-    dict_novelty: &Arc<DictNovelty>,
-) -> io::Result<HashMap<Sid, Vec<Sid>>> {
+) -> std::io::Result<HashMap<Sid, Vec<Sid>>> {
     if index != IndexType::Psot {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "batched predicate+subject lookup currently supports PSOT only",
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "V3 batched predicate+subject lookup currently supports PSOT only",
         ));
     }
 
@@ -104,21 +475,29 @@ fn binary_lookup_subject_predicate_refs_batched(
         return Ok(HashMap::new());
     }
 
-    // Per-call DictOverlay for ephemeral subject handling + overlay translation.
-    let gv = BinaryGraphView::new(store.clone(), g_id);
-    let mut dict_ov = DictOverlay::new(gv, dict_novelty.clone());
+    // Resolve predicate.
+    let p_id = match store.sid_to_p_id(predicate) {
+        Some(id) => id,
+        None => return Ok(HashMap::new()), // unknown predicate → no results
+    };
 
-    // Predicate ID (supports ephemeral predicates, though rdf:type is always persisted).
-    let p_id = dict_ov.assign_predicate_id_from_sid(predicate);
-
-    // Translate subjects to s_id and build s_id -> Sid map.
+    // Translate subjects to s_id and build s_id → Sid map.
     let mut s_ids: Vec<u64> = Vec::with_capacity(subjects.len());
     let mut s_id_to_sid: HashMap<u64, Sid> = HashMap::with_capacity(subjects.len());
     for sid in subjects {
-        let s_id = dict_ov.assign_subject_id_from_sid(sid)?;
-        s_ids.push(s_id);
-        // Preserve the original Sid to avoid resolve cost and to keep exact identity.
-        s_id_to_sid.entry(s_id).or_insert_with(|| sid.clone());
+        if let Ok(Some(s_id)) = store.sid_to_s_id(sid) {
+            s_id_to_sid.entry(s_id).or_insert_with(|| sid.clone());
+            s_ids.push(s_id);
+        } else if dict_novelty.is_initialized() {
+            // Try DictNovelty for uncommitted subjects.
+            if let Some(s_id) = dict_novelty
+                .subjects
+                .find_subject(sid.namespace_code, &sid.name)
+            {
+                s_id_to_sid.entry(s_id).or_insert_with(|| sid.clone());
+                s_ids.push(s_id);
+            }
+        }
     }
     if s_ids.is_empty() {
         return Ok(HashMap::new());
@@ -129,90 +508,136 @@ fn binary_lookup_subject_predicate_refs_batched(
     let min_s_id = s_ids[0];
     let max_s_id = *s_ids.last().unwrap();
 
-    // Cursor bounds: PSOT key interval restricted to [min_s_id, max_s_id] within this predicate.
-    let min_key = RunRecord {
-        g_id,
+    // PSOT key bounds: restrict to [min_s_id, max_s_id] within this predicate.
+    let min_key = RunRecordV2 {
         s_id: SubjectId::from_u64(min_s_id),
-        p_id,
-        dt: 0,
-        o_kind: 0,
-        op: 0,
         o_key: 0,
-        t: 0,
-        lang_id: 0,
-        i: 0,
-    };
-    let max_key = RunRecord {
-        g_id,
-        s_id: SubjectId::from_u64(max_s_id),
         p_id,
-        dt: u16::MAX,
-        o_kind: u8::MAX,
-        op: u8::MAX,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(max_s_id),
         o_key: u64::MAX,
-        t: u32::MAX,
-        lang_id: u16::MAX,
-        i: u32::MAX,
+        p_id,
+        t: 0,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id,
     };
 
-    // Filter: keep the predicate fixed. Subject set filtering happens post-decode.
-    let mut filter = BinaryFilter::new();
-    filter.p_id = Some(p_id);
+    // Get branch manifest.
+    let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
+        Some(b) => Arc::new(b.clone()),
+        None => {
+            // No PSOT branch — try overlay only.
+            return batched_refs_overlay_only(
+                store,
+                dict_novelty,
+                g_id,
+                predicate,
+                subjects,
+                opts,
+                overlay,
+            );
+        }
+    };
 
-    // Region 2 is needed for time filtering / stale removal at `to_t`.
-    let need_region2 = true;
-    let order = RunSortOrder::Psot;
+    let filter = BinaryFilter {
+        p_id: Some(p_id),
+        ..Default::default()
+    };
 
+    let projection = ColumnProjection::all();
     let mut cursor = BinaryCursor::new(
-        store.clone(),
-        order,
-        g_id,
+        Arc::clone(store),
+        RunSortOrder::Psot,
+        branch,
         &min_key,
         &max_key,
         filter,
-        need_region2,
+        projection,
     );
 
-    // Time-travel: constrain to_t if set, otherwise use store max.
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
     cursor.set_to_t(effective_to_t);
 
-    // Overlay merge: translate overlay flakes to integer-ID overlay ops, sort to PSOT, attach.
-    let overlay_ops =
-        crate::binary_scan::translate_overlay_flakes(overlay, &mut dict_ov, effective_to_t, g_id);
-    if !overlay_ops.is_empty() {
-        cursor.set_epoch(overlay.epoch());
-        let mut sorted = overlay_ops;
-        sort_overlay_ops(&mut sorted, order);
-        cursor.set_overlay_ops(sorted);
+    // Overlay merge — pre-filter to avoid translating irrelevant flakes.
+    // Only translate flakes that match the target predicate and subject set.
+    {
+        let subject_sid_set: HashSet<&Sid> = subjects.iter().collect();
+        let mut ephemeral_preds = HashMap::new();
+        let mut next_ep = store.predicate_count();
+        let mut ops = Vec::new();
+
+        overlay.for_each_overlay_flake(
+            g_id,
+            IndexType::Psot,
+            None,
+            None,
+            true,
+            effective_to_t,
+            &mut |flake| {
+                // Pre-filter: skip flakes for other predicates or other subjects.
+                if flake.p != *predicate {
+                    return;
+                }
+                if !subject_sid_set.contains(&flake.s) {
+                    return;
+                }
+
+                match crate::binary_scan::translate_one_flake_v3_pub(
+                    flake,
+                    store,
+                    Some(dict_novelty),
+                    &mut ephemeral_preds,
+                    &mut next_ep,
+                ) {
+                    Ok(op) => ops.push(op),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "V3 batched refs: failed to translate overlay flake");
+                    }
+                }
+            },
+        );
+
+        if !ops.is_empty() {
+            fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            cursor.set_overlay_ops(ops);
+            cursor.set_epoch(overlay.epoch());
+        }
     }
 
     // Membership filter for s_id (fast O(1)).
     let s_id_set: HashSet<u64> = s_ids.into_iter().collect();
+    let iri_ref_o_type = OType::IRI_REF.as_u16();
 
-    // Collect results.
     let mut out: HashMap<Sid, Vec<Sid>> = HashMap::new();
 
-    while let Some(batch) = cursor.next_leaf()? {
-        // NOTE: DecodedBatch rows are already filtered to `to_t` and have overlay merged.
+    while let Some(batch) = cursor.next_batch()? {
         for i in 0..batch.row_count {
-            let s_id = batch.s_ids[i];
+            let s_id = batch.s_id.get(i);
             if !s_id_set.contains(&s_id) {
                 continue;
             }
-            if batch.p_ids[i] != p_id {
-                continue;
-            }
-            if batch.o_kinds[i] != ObjKind::REF_ID.as_u8() {
+
+            let o_type = batch.o_type.get_or(i, 0);
+            if o_type != iri_ref_o_type {
                 continue;
             }
 
-            // Subject Sid: prefer original, otherwise resolve via DictOverlay.
+            let o_key = batch.o_key.get(i);
+
+            // Subject Sid: prefer the original input Sid.
             let subj_sid = match s_id_to_sid.get(&s_id) {
                 Some(s) => s.clone(),
-                None => dict_ov.resolve_subject_sid(s_id)?,
+                None => resolve_sid(s_id, store, dict_novelty)?,
             };
-            let class_sid = dict_ov.resolve_subject_sid(batch.o_keys[i])?;
+
+            // Resolve object (IRI ref) to Sid.
+            let class_sid = resolve_sid(o_key, store, dict_novelty)?;
 
             out.entry(subj_sid).or_default().push(class_sid);
         }
@@ -227,387 +652,449 @@ fn binary_lookup_subject_predicate_refs_batched(
     Ok(out)
 }
 
-/// Equality range query: all flakes matching the bound components exactly.
-fn binary_range_eq(
+/// Overlay-only fallback for batched ref lookup when no PSOT branch exists.
+#[allow(clippy::too_many_arguments)]
+fn batched_refs_overlay_only(
     store: &Arc<BinaryIndexStore>,
+    dict_novelty: &Arc<DictNovelty>,
+    g_id: GraphId,
+    predicate: &Sid,
+    subjects: &[Sid],
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
+) -> std::io::Result<HashMap<Sid, Vec<Sid>>> {
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    let subject_set: HashSet<&Sid> = subjects.iter().collect();
+    let iri_ref_o_type = OType::IRI_REF.as_u16();
+
+    let mut out: HashMap<Sid, Vec<Sid>> = HashMap::new();
+
+    let mut ephemeral_preds = HashMap::new();
+    let mut next_ep = store.predicate_count();
+
+    overlay.for_each_overlay_flake(
+        g_id,
+        IndexType::Psot,
+        None,
+        None,
+        true,
+        effective_to_t,
+        &mut |flake| {
+            if !flake.op {
+                return;
+            }
+            if !subject_set.contains(&flake.s) {
+                return;
+            }
+            if flake.p != *predicate {
+                return;
+            }
+
+            // Translate to check o_type.
+            if let Ok(op) = crate::binary_scan::translate_one_flake_v3_pub(
+                flake,
+                store,
+                Some(dict_novelty),
+                &mut ephemeral_preds,
+                &mut next_ep,
+            ) {
+                if op.o_type != iri_ref_o_type {
+                    return;
+                }
+                // Resolve the class Sid.
+                if let Ok(class_sid) = resolve_sid(op.o_key, store, dict_novelty) {
+                    out.entry(flake.s.clone()).or_default().push(class_sid);
+                }
+            }
+        },
+    );
+
+    for classes in out.values_mut() {
+        classes.sort();
+        classes.dedup();
+    }
+
+    Ok(out)
+}
+
+/// Bounded range query: scan between `start_bound` and `end_bound` in index order.
+///
+/// Used for subject-range queries (e.g., SHA prefix scans in `time_resolve`).
+/// Currently only supports SPOT index order.
+///
+/// Since subject s_ids are NOT in IRI lexicographic order (they're assigned in
+/// first-seen/insertion order), we cannot simply create a bounded SPOT cursor
+/// between two s_ids. Instead, we:
+/// 1. Use the reverse subject tree to find all persisted subjects whose suffix
+///    falls in the [start_name, end_name) range within the namespace.
+/// 2. Also collect overlay subjects matching the prefix (so novelty-only subjects
+///    are not dropped when persisted matches exist).
+/// 3. Build a HashSet of matching s_ids, create a SPOT cursor bounded to
+///    [min_s_id, max_s_id] for leaf selection, then post-filter rows.
+#[allow(clippy::too_many_arguments)]
+fn binary_range_bounded_v3(
+    store: &Arc<BinaryIndexStore>,
+    dict_novelty: &Arc<DictNovelty>,
     g_id: GraphId,
     index: IndexType,
-    match_val: &RangeMatch,
+    start_bound: &Flake,
+    end_bound: &Flake,
     opts: &RangeOptions,
-    mut overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
-) -> io::Result<Vec<Flake>> {
-    let gv = BinaryGraphView::new(Arc::clone(store), g_id);
+    overlay: &dyn OverlayProvider,
+) -> std::io::Result<Vec<Flake>> {
+    // Guard: range_bounded is designed for SPOT subject-prefix scans.
+    if index != IndexType::Spot {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("V3 range_bounded: only SPOT is supported, got {:?}", index),
+        ));
+    }
+
     let order = index_type_to_sort_order(index);
+    let ns_code = start_bound.s.namespace_code;
+    let start_name: &str = &start_bound.s.name;
+    let end_name: &str = &end_bound.s.name;
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
 
-    // Translate match components to integer-ID bounds.
-    let bounds = store.translate_range(
-        match_val.s.as_ref(),
-        match_val.p.as_ref(),
-        match_val.o.as_ref(),
-        order,
+    // Step 1: Find persisted subjects in the IRI prefix range via reverse tree.
+    let matching_s_ids = store.find_subjects_by_prefix(ns_code, start_name)?;
+    let mut s_id_set: HashSet<u64> = matching_s_ids.into_iter().collect();
+
+    // Step 2: Translate overlay flakes and collect novelty-only subject s_ids
+    // that match the prefix range. This ensures uncommitted subjects aren't
+    // dropped when persisted matches also exist.
+    let mut ephemeral_preds = HashMap::new();
+    let mut next_ep = store.predicate_count();
+    let mut overlay_ops = Vec::new();
+
+    overlay.for_each_overlay_flake(
         g_id,
-    )?;
-
-    // Build filter for exact-match post-filtering within leaves.
-    // This is computed early so the overlay-only fallback can populate it too.
-    let mut filter = BinaryFilter::new();
-
-    let (min_key, max_key) = match bounds {
-        Some(b) => {
-            // Populate filter from persisted IDs.
-            if let Some(ref s) = match_val.s {
-                if let Some(s_id) = store.sid_to_s_id(s)? {
-                    filter.s_id = Some(s_id);
+        index,
+        None,
+        None,
+        true,
+        effective_to_t,
+        &mut |flake| {
+            // Check if overlay subject matches the prefix range.
+            if flake.s.namespace_code == ns_code {
+                let name: &str = &flake.s.name;
+                if name < start_name || name >= end_name {
+                    return;
                 }
-            }
-            if let Some(ref p) = match_val.p {
-                if let Some(p_id) = store.sid_to_p_id(p) {
-                    filter.p_id = Some(p_id);
-                }
-            }
-            if let Some(ref o) = match_val.o {
-                if let Ok(Some((ok, okey))) = store.value_to_obj_pair(o) {
-                    filter.o_kind = Some(ok.as_u8());
-                    filter.o_key = Some(okey.as_u64());
-                }
-            }
-            b
-        }
-        None => {
-            // translate_range returned None — a bound component (subject,
-            // predicate, or object) could not be found in the persisted index.
-            // If we have an overlay (novelty), the data may exist there.
-            // Create fallback bounds using DictOverlay.
-            if let Some((_, ref mut dict_ov)) = overlay {
-                // Resolve subject via DictOverlay (handles novelty-only subjects)
-                let s_id = match &match_val.s {
-                    Some(sid) => match dict_ov.assign_subject_id_from_sid(sid) {
-                        Ok(id) => Some(id),
-                        Err(_) => return Ok(Vec::new()),
-                    },
-                    None => None,
-                };
-                // Resolve predicate via DictOverlay (handles novelty-only predicates)
-                let p_id = match_val
-                    .p
-                    .as_ref()
-                    .map(|p| dict_ov.assign_predicate_id_from_sid(p));
-
-                if let Some(s_id) = s_id {
-                    filter.s_id = Some(s_id);
-                }
-                if let Some(p_id) = p_id {
-                    filter.p_id = Some(p_id);
-                }
-                // Resolve object via DictOverlay to narrow the BinaryFilter for
-                // exact-match queries on novelty-only values. Note: this narrows
-                // the overlay-flake filter, not the B-tree cursor range (min/max
-                // keys still span the full o range). For string/ref values,
-                // value_to_obj_pair may allocate an ephemeral dict entry, which
-                // is harmless but worth noting.
-                if let Some(ref o) = match_val.o {
-                    if let Ok((o_kind, o_key)) = dict_ov.value_to_obj_pair(o) {
-                        filter.o_kind = Some(o_kind.as_u8());
-                        filter.o_key = Some(o_key.as_u64());
-                    }
-                }
-
-                let min_key = RunRecord {
-                    g_id,
-                    s_id: SubjectId::from_u64(s_id.unwrap_or(0)),
-                    p_id: p_id.unwrap_or(0),
-                    dt: 0,
-                    o_kind: ObjKind::MIN.as_u8(),
-                    op: 0,
-                    o_key: 0,
-                    t: 0,
-                    lang_id: 0,
-                    i: 0,
-                };
-                let max_key = RunRecord {
-                    g_id,
-                    s_id: SubjectId::from_u64(s_id.unwrap_or(u64::MAX)),
-                    p_id: p_id.unwrap_or(u32::MAX),
-                    dt: u16::MAX,
-                    o_kind: ObjKind::MAX.as_u8(),
-                    op: 1,
-                    o_key: u64::MAX,
-                    t: u32::MAX,
-                    lang_id: u16::MAX,
-                    i: u32::MAX,
-                };
-                (min_key, max_key)
             } else {
-                return Ok(Vec::new()); // no overlay → genuinely no results
+                return;
             }
+
+            match crate::binary_scan::translate_one_flake_v3_pub(
+                flake,
+                store,
+                Some(dict_novelty),
+                &mut ephemeral_preds,
+                &mut next_ep,
+            ) {
+                Ok(op) => {
+                    // Add novelty-only subject s_ids to the filter set.
+                    s_id_set.insert(op.s_id);
+                    overlay_ops.push(op);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "V3 range_bounded: failed to translate overlay flake");
+                }
+            }
+        },
+    );
+
+    // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
+    let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
+        .into_iter()
+        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .collect();
+
+    if s_id_set.is_empty() {
+        // No matching subjects at all (persisted or overlay).
+        return Ok(Vec::new());
+    }
+
+    let branch = match store.branch_for_order(g_id, order) {
+        Some(b) => Arc::new(b.clone()),
+        None => {
+            // No SPOT branch — return overlay-only results (already translated above).
+            return overlay_only_flakes_bounded(
+                store,
+                g_id,
+                index,
+                start_bound,
+                end_bound,
+                opts,
+                overlay,
+            );
         }
     };
 
-    // Region 2 is needed for Flake reconstruction (t, dt, lang, list_index).
-    let need_region2 = true;
+    // Compute s_id bounds for leaf selection (narrows the leaf range).
+    let min_s_id = *s_id_set.iter().min().unwrap();
+    let max_s_id = *s_id_set.iter().max().unwrap();
 
-    let mut cursor = BinaryCursor::new(
-        store.clone(),
-        order,
+    let min_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(min_s_id),
+        o_key: 0,
+        p_id: 0,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
         g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(max_s_id),
+        o_key: u64::MAX,
+        p_id: u32::MAX,
+        t: 0,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id,
+    };
+
+    let filter = BinaryFilter::default();
+    let projection = ColumnProjection::all();
+    let mut cursor = BinaryCursor::new(
+        Arc::clone(store),
+        order,
+        branch,
         &min_key,
         &max_key,
         filter,
-        need_region2,
+        projection,
     );
 
-    // Time-travel: if opts.to_t is set, constrain the cursor.
-    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
-    if opts.to_t.is_some() {
-        cursor.set_to_t(effective_to_t);
+    cursor.set_to_t(effective_to_t);
+
+    // Attach pre-translated overlay ops.
+    if !overlay_ops.is_empty() {
+        fluree_db_binary_index::read::types::sort_overlay_ops(&mut overlay_ops, order);
+        cursor.set_overlay_ops(overlay_ops);
+        cursor.set_epoch(overlay.epoch());
     }
 
-    // Overlay merge. Keep a reference to the DictOverlay for decode-time fallback.
-    let dict_ov_ref: Option<&DictOverlay> = if let Some((ovl, ref mut dict_ov)) = overlay {
-        let overlay_ops =
-            crate::binary_scan::translate_overlay_flakes(ovl, dict_ov, effective_to_t, g_id);
-        if !overlay_ops.is_empty() {
-            cursor.set_epoch(ovl.epoch());
-
-            // Sort overlay ops to match the cursor's sort order.
-            let mut sorted = overlay_ops;
-            sort_overlay_ops(&mut sorted, order);
-            cursor.set_overlay_ops(sorted);
-        }
-        Some(dict_ov)
-    } else {
-        None
-    };
-
-    // Iterate leaves and collect Flakes.
-    //
-    // NOTE: `RangeOptions` has both `limit` (subject limit) and `flake_limit`.
-    // Historically, the binary shim treated `limit` as a flake cap. To preserve
-    // existing behavior while supporting callers that correctly use `flake_limit`
-    // (e.g., ISO time resolution), we apply:
-    //   effective_flake_limit = flake_limit.or(limit).unwrap_or(usize::MAX)
-    let effective_flake_limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
-    let bounds = opts.object_bounds.as_ref();
-    let mut offset_remaining = opts.offset.unwrap_or(0);
+    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+    let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let offset = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();
+    let mut skipped = 0usize;
 
-    while let Some(batch) = cursor.next_leaf()? {
-        decode_batch_to_flakes_filtered(
-            &gv,
-            &batch,
-            &mut flakes,
-            bounds,
-            &mut offset_remaining,
-            effective_flake_limit,
-            dict_ov_ref,
-        )?;
-        if flakes.len() >= effective_flake_limit {
-            flakes.truncate(effective_flake_limit);
-            break;
+    while let Some(batch) = cursor.next_batch()? {
+        for i in 0..batch.row_count {
+            let s_id = batch.s_id.get(i);
+
+            // Post-filter: only accept rows for subjects in our prefix range.
+            if !s_id_set.contains(&s_id) {
+                continue;
+            }
+
+            let p_id = batch.p_id.get_or(i, 0);
+            let o_type = batch.o_type.get_or(i, 0);
+            let o_key = batch.o_key.get(i);
+            let t = batch.t.get_or(i, 0) as i64;
+            let o_i = batch.o_i.get_or(i, u32::MAX);
+
+            let s_sid = resolve_sid(s_id, store, dict_novelty)?;
+
+            // Double-check the subject name is in [start_name, end_name).
+            if s_sid.namespace_code == ns_code {
+                let name: &str = &s_sid.name;
+                if name < start_name || name >= end_name {
+                    continue;
+                }
+            }
+
+            // Resolve predicate: persisted dict first, then ephemeral overlay map.
+            let p_sid = match store.resolve_predicate_iri(p_id) {
+                Some(iri) => store.encode_iri(iri),
+                None => match ephemeral_p_id_to_sid.get(&p_id) {
+                    Some(sid) => sid.clone(),
+                    None => continue, // truly unknown — shouldn't happen
+                },
+            };
+            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
+            let dt = store
+                .resolve_datatype_sid(o_type)
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let meta = if lang.is_some() || o_i != u32::MAX {
+                Some(fluree_db_core::FlakeMeta {
+                    lang,
+                    i: if o_i != u32::MAX {
+                        Some(o_i as i32)
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+
+            if let Some(bounds) = &opts.object_bounds {
+                if !bounds.matches(&o_val) {
+                    continue;
+                }
+            }
+
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+
+            flakes.push(Flake {
+                g: None,
+                s: s_sid,
+                p: p_sid,
+                o: o_val,
+                dt,
+                t,
+                op: true,
+                m: meta,
+            });
+
+            if flakes.len() >= limit {
+                return Ok(flakes);
+            }
         }
     }
 
     Ok(flakes)
 }
 
-/// Convert a `DecodedBatch` into `Vec<Flake>` by resolving integer IDs back
-/// to Sid/FlakeValue.
-///
-/// Uses `BinaryGraphView` for graph-scoped value decoding (handles specialty arenas
-/// like NumBig/Vector that are per-graph).
-///
-/// When `dict_ov` is provided, subject and predicate resolution falls back to
-/// `DictOverlay` for novelty-only IDs that aren't in the persisted index.
-fn decode_batch_to_flakes_filtered(
-    gv: &BinaryGraphView,
-    batch: &DecodedBatch,
-    out: &mut Vec<Flake>,
-    bounds: Option<&ObjectBounds>,
-    offset_remaining: &mut usize,
-    flake_limit: usize,
-    dict_ov: Option<&DictOverlay>,
-) -> io::Result<()> {
-    let store = gv.store();
-    let dt_sids = store.dt_sids();
+/// Overlay-only path for range_bounded when no branch exists.
+#[allow(clippy::too_many_arguments)]
+fn overlay_only_flakes_bounded(
+    store: &Arc<BinaryIndexStore>,
+    g_id: GraphId,
+    index: IndexType,
+    start_bound: &Flake,
+    end_bound: &Flake,
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
+) -> std::io::Result<Vec<Flake>> {
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let offset = opts.offset.unwrap_or(0);
 
-    for i in 0..batch.row_count {
-        let s_id = batch.s_ids[i];
-        let p_id = batch.p_ids[i];
-        let o_kind = batch.o_kinds[i];
-        let o_key = batch.o_keys[i];
-        let dt_id = batch.dt_values[i];
-        let t = batch.t_values[i];
-        let lang_id = batch.lang_ids[i];
-        let i_val = batch.i_values[i];
+    let mut skipped = 0usize;
+    let mut collected = 0usize;
+    let mut flakes = Vec::new();
 
-        // s_id → Sid (try persisted store first, fallback to DictOverlay)
-        let s_sid = match store.resolve_subject_iri(s_id) {
-            Ok(s_iri) => store.encode_iri(&s_iri),
-            Err(_) => {
-                if let Some(ov) = dict_ov {
-                    ov.resolve_subject_sid(s_id).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("resolve s_id {s_id}: {e}"),
-                        )
-                    })?
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("s_id {s_id} not found in persisted index and no DictOverlay"),
-                    ));
+    overlay.for_each_overlay_flake(
+        g_id,
+        index,
+        None,
+        None,
+        true,
+        effective_to_t,
+        &mut |flake| {
+            if collected >= limit {
+                return;
+            }
+            if !flake.op {
+                return;
+            }
+
+            // Check subject bounds: start_bound.s <= flake.s < end_bound.s.
+            if flake.s < start_bound.s || flake.s >= end_bound.s {
+                return;
+            }
+
+            if let Some(ref bounds) = opts.object_bounds {
+                if !bounds.matches(&flake.o) {
+                    return;
                 }
             }
-        };
 
-        // p_id → Sid (try persisted store first, fallback to DictOverlay)
-        let p_sid = match store.resolve_predicate_iri(p_id) {
-            Some(p_iri) => store.encode_iri(p_iri),
-            None => {
-                if let Some(ov) = dict_ov {
-                    ov.resolve_predicate_sid(p_id).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown predicate ID {p_id}"),
-                        )
-                    })?
-                } else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown predicate ID {p_id}"),
-                    ));
+            if skipped < offset {
+                skipped += 1;
+                return;
+            }
+
+            flakes.push(flake.clone());
+            collected += 1;
+        },
+    );
+
+    Ok(flakes)
+}
+
+/// Overlay-only results when no branch exists for the requested order.
+///
+/// Collects flakes directly from the overlay provider, applies match filtering
+/// and options (offset/limit). Used at genesis or before first indexing when
+/// no persisted branch exists for the requested sort order.
+fn overlay_only_flakes(
+    store: &Arc<BinaryIndexStore>,
+    g_id: GraphId,
+    index: IndexType,
+    match_val: &RangeMatch,
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
+) -> std::io::Result<Vec<fluree_db_core::Flake>> {
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let offset = opts.offset.unwrap_or(0);
+
+    // Use Cell for early-exit: once we've collected offset+limit, stop cloning.
+    let mut skipped = 0usize;
+    let mut collected = 0usize;
+    let mut flakes = Vec::new();
+
+    overlay.for_each_overlay_flake(
+        g_id,
+        index,
+        None,
+        None,
+        true,
+        effective_to_t,
+        &mut |flake| {
+            // Early exit: already have enough results.
+            if collected >= limit {
+                return;
+            }
+
+            // Only include asserts (op=true).
+            if !flake.op {
+                return;
+            }
+
+            // Filter by match components.
+            if let Some(ref s_sid) = match_val.s {
+                if flake.s != *s_sid {
+                    return;
                 }
             }
-        };
-
-        // (o_kind, o_key) → FlakeValue
-        // Try DictOverlay first when available — it handles both novel
-        // and persisted IDs (falls through to the store for persisted).
-        // Only fall back to gv.decode_value when no DictOverlay.
-        let o_val = if let Some(ov) = dict_ov {
-            ov.decode_value(o_kind, o_key, p_id)?
-        } else {
-            gv.decode_value(o_kind, o_key, p_id)?
-        };
-
-        // Optional post-filter for object bounds (RangeOptions semantics).
-        if let Some(b) = bounds {
-            if !b.matches(&o_val) {
-                continue;
+            if let Some(ref p_sid) = match_val.p {
+                if flake.p != *p_sid {
+                    return;
+                }
             }
-        }
+            if let Some(ref o_val) = match_val.o {
+                if flake.o != *o_val {
+                    return;
+                }
+            }
 
-        // dt_id → Sid for datatype
-        // Use DictOverlay when available (handles novel dt_ids).
-        let dt = if let Some(ov) = dict_ov {
-            ov.decode_dt_sid(dt_id as u16)
-        } else {
-            dt_sids
-                .get(dt_id as usize)
-                .cloned()
-                .unwrap_or_else(Sid::min)
-        };
+            // Apply object bounds (same as persisted path).
+            if let Some(ref bounds) = opts.object_bounds {
+                if !bounds.matches(&flake.o) {
+                    return;
+                }
+            }
 
-        // Language tag + list index → FlakeMeta
-        // Use DictOverlay when available (handles novel lang_ids).
-        let meta = if let Some(ov) = dict_ov {
-            ov.decode_meta(lang_id, i_val)
-        } else {
-            store.decode_meta(lang_id, i_val)
-        };
+            // Apply offset.
+            if skipped < offset {
+                skipped += 1;
+                return;
+            }
 
-        // Offset applies to the filtered stream (RangeOptions semantics).
-        if *offset_remaining > 0 {
-            *offset_remaining -= 1;
-            continue;
-        }
+            flakes.push(flake.clone());
+            collected += 1;
+        },
+    );
 
-        out.push(Flake::new(s_sid, p_sid, o_val, dt, t, true, meta));
-
-        // Stop early once we've reached the caller's flake limit.
-        if out.len() >= flake_limit {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-// ============================================================================
-// RangeProvider implementation
-// ============================================================================
-
-/// Binary columnar index implementation of `RangeProvider`.
-///
-/// Wraps a `BinaryIndexStore` to serve range queries from the binary index.
-/// Graph identity is passed per-call (not embedded in the provider), so a
-/// single provider instance can serve queries for any graph in the ledger.
-///
-/// When attached to a `Db` via `db.with_range_provider()`, all callers of
-/// `range_with_overlay()` — including the reasoner, API, policy, and SHACL
-/// crates — automatically use the binary index.
-pub struct BinaryRangeProvider {
-    store: Arc<BinaryIndexStore>,
-    dict_novelty: Arc<DictNovelty>,
-}
-
-impl BinaryRangeProvider {
-    /// Create a new provider for the given store and dict novelty.
-    ///
-    /// Graph identity is not embedded — it is passed to each query method.
-    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>) -> Self {
-        Self {
-            store,
-            dict_novelty,
-        }
-    }
-}
-
-impl RangeProvider for BinaryRangeProvider {
-    fn range(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        test: RangeTest,
-        match_val: &RangeMatch,
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-    ) -> io::Result<Vec<Flake>> {
-        let gv = BinaryGraphView::new(Arc::clone(&self.store), g_id);
-        // Create a per-call DictOverlay for ephemeral ID handling.
-        let mut dict_ov = DictOverlay::new(gv, self.dict_novelty.clone());
-
-        // Always pass the overlay — translate_overlay_flakes handles empty
-        // overlays by returning an empty vec, which is a no-op.
-        binary_range(
-            &self.store,
-            g_id,
-            index,
-            test,
-            match_val,
-            opts,
-            Some((overlay, &mut dict_ov)),
-        )
-    }
-
-    fn lookup_subject_predicate_refs_batched(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        predicate: &Sid,
-        subjects: &[Sid],
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-    ) -> io::Result<HashMap<Sid, Vec<Sid>>> {
-        binary_lookup_subject_predicate_refs_batched(
-            &self.store,
-            g_id,
-            index,
-            predicate,
-            subjects,
-            opts,
-            overlay,
-            &self.dict_novelty,
-        )
-    }
+    Ok(flakes)
 }

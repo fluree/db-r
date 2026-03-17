@@ -244,7 +244,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut graph_ids,
         )?;
         if templates.is_empty() {
-            // Clojure parity: an explicit empty delete (e.g. `"delete": []`) is a no-op.
+            // An explicit empty delete (e.g. `"delete": []`) is a no-op.
             // Still reject structurally-empty deletes like `{ "@id": "ex:foo" }`.
             if matches!(delete_val, Value::Array(arr) if arr.is_empty()) {
                 Vec::new()
@@ -326,7 +326,7 @@ fn normalize_context_value(context_val: &Value) -> Value {
 ///
 /// JSON-LD allows `@type` values only as strings (or arrays). If an object/literal is used
 /// (e.g., `{"@value": ...}`), some JSON-LD expansion implementations may silently drop it.
-/// We enforce this early for better API errors (Clojure parity).
+/// We enforce this early for better API errors.
 fn validate_type_fields(v: &Value) -> Result<()> {
     match v {
         Value::Array(arr) => {
@@ -946,7 +946,7 @@ fn parse_expanded_value(
                 let var_id = vars.get_or_insert(s);
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
-                // Fluree extension / Clojure parity: treat compact IRIs and absolute IRIs
+                // Fluree extension: treat compact IRIs and absolute IRIs
                 // as references in templates, even when JSON-LD expansion didn't coerce
                 // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
                 let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
@@ -1053,7 +1053,7 @@ fn parse_literal_value_with_meta(
                 }
             }
 
-            // Fluree extension / Clojure parity: treat compact IRIs and absolute IRIs
+            // Fluree extension: treat compact IRIs and absolute IRIs
             // as references in templates, even when JSON-LD expansion didn't coerce
             // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
             let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);

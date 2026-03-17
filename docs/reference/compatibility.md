@@ -41,8 +41,8 @@ Fluree supports JSON-LD 1.1:
 Supported SPARQL features:
 - SELECT queries
 - CONSTRUCT queries
-- ASK queries (planned)
-- DESCRIBE queries (planned)
+- ASK queries
+- DESCRIBE queries
 - FROM and FROM NAMED clauses
 - GRAPH patterns
 - OPTIONAL patterns

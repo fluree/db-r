@@ -55,7 +55,7 @@ pub enum QueryError {
     #[error("Resource limit exceeded: {0}")]
     ResourceLimit(String),
 
-    /// Fuel limit exceeded (Clojure parity)
+    /// Fuel limit exceeded
     #[error(transparent)]
     FuelLimitExceeded(#[from] fluree_db_core::FuelExceededError),
 

@@ -372,18 +372,18 @@ impl LedgerHandle {
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
-        // Build metadata-only LedgerSnapshot from IRB1 root.
-        let v5 = fluree_db_binary_index::IndexRootV5::decode(&bytes)
-            .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
+        // Build metadata-only LedgerSnapshot from FIR6 root.
+        let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
+            .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
         let meta = LedgerSnapshotMetadata {
-            ledger_id: v5.ledger_id,
-            t: v5.index_t,
-            namespace_codes: v5.namespace_codes.into_iter().collect(),
-            stats: v5.stats,
-            schema: v5.schema,
-            subject_watermarks: v5.subject_watermarks,
-            string_watermark: v5.string_watermark,
-            graph_iris: v5.graph_iris,
+            ledger_id: root.ledger_id,
+            t: root.index_t,
+            namespace_codes: root.namespace_codes.into_iter().collect(),
+            stats: root.stats,
+            schema: root.schema,
+            subject_watermarks: root.subject_watermarks,
+            string_watermark: root.string_watermark,
+            graph_iris: root.graph_iris,
         };
         let mut db = LedgerSnapshot::new_meta(meta)
             .map_err(|e| ApiError::internal(format!("graph registry from root: {e}")))?;
@@ -535,6 +535,28 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
+    // Decode FIR6 root metadata to populate snapshot watermarks.
+    // `LedgerSnapshot::from_root_bytes` only parses the header; watermarks are needed for
+    // DictNovelty/DictOverlay correctness (especially bound-object filters and overlay merges).
+    let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
+        .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
+    state.snapshot.subject_watermarks = root.subject_watermarks;
+    state.snapshot.string_watermark = root.string_watermark;
+    state.dict_novelty = Arc::new(DictNovelty::with_watermarks(
+        state.snapshot.subject_watermarks.clone(),
+        state.snapshot.string_watermark,
+    ));
+    // Re-populate DictNovelty with any already-loaded novelty flakes so overlay
+    // translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+    if !state.novelty.is_empty() {
+        let novelty = state.novelty.as_ref();
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+            novelty
+                .iter_index(fluree_db_core::IndexType::Post)
+                .map(|id| novelty.get_flake(id)),
+        );
+    }
+
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
         &state.snapshot.ledger_id,
@@ -546,9 +568,20 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // Augment namespace codes with entries from novelty commits (see loading.rs).
     store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
+    // Copy store's namespace codes back to the snapshot so result
+    // formatting can decode all namespace codes (e.g., custom prefixes
+    // from the index root that the commit-chain snapshot doesn't have).
+    for (code, prefix) in store.namespace_codes() {
+        state
+            .snapshot
+            .namespace_codes
+            .entry(*code)
+            .or_insert_with(|| prefix.clone());
+    }
+
     let arc_store = Arc::new(store);
-    let dn = Arc::new(DictNovelty::new_uninitialized());
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
+    let provider =
+        BinaryRangeProvider::new(Arc::clone(&arc_store), Arc::clone(&state.dict_novelty));
     state.snapshot.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct
@@ -1039,12 +1072,12 @@ where
 }
 
 // ============================================================================
-// Notify Types - Update Plan (Clojure parity)
+// Notify Types - Update Plan
 // ============================================================================
 
 /// Decision from comparing cached state to nameservice record
 ///
-/// Based on Clojure's `plan-ns-update` in `fluree.db.connection`:
+/// Based on the legacy `plan-ns-update` behavior:
 /// - Compare local `t()` (max of index + novelty) against nameservice `commit_t`
 /// - Determine minimal action needed to bring cache up to date
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1083,7 +1116,7 @@ pub enum UpdatePlan {
 impl UpdatePlan {
     /// Plan the update action based on local state vs nameservice record
     ///
-    /// This mirrors Clojure's `plan-ns-update` logic:
+    /// This mirrors the legacy `plan-ns-update` logic:
     /// - If commit_t matches local t(), check if index advanced
     /// - If commit_t is exactly local t() + 1, we can apply just that commit
     /// - If commit_t is further ahead, we're stale and need full reload
@@ -1185,7 +1218,7 @@ where
 {
     /// Handle nameservice update notification
     ///
-    /// Uses Clojure-style update planning to determine minimal action:
+    /// Uses update planning to determine minimal action:
     /// - Noop: nothing to do
     /// - IndexOnly: index advanced, trim novelty (v1: falls back to Reload)
     /// - CommitNext: apply single commit (v1: falls back to Reload)
@@ -1326,7 +1359,7 @@ mod tests {
     }
 
     // ========================================================================
-    // UpdatePlan::plan() tests - Clojure parity scenarios
+    // UpdatePlan::plan() tests - compatibility scenarios
     // ========================================================================
 
     fn make_cid(label: &str) -> ContentId {

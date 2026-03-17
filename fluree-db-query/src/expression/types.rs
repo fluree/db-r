@@ -9,6 +9,8 @@ use crate::ir::Expression;
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
+use fluree_db_core::subject_id::SubjectId;
+use fluree_vocab::namespaces;
 
 pub fn eval_bound<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "BOUND")?;
@@ -43,13 +45,9 @@ pub fn eval_is_literal<R: RowAccess>(
     check_arity(args, 1, "isLiteral")?;
     let val = args[0].eval_to_comparable(row, ctx)?;
     Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
-        matches!(
-            v,
-            ComparableValue::Long(_)
-                | ComparableValue::Double(_)
-                | ComparableValue::String(_)
-                | ComparableValue::Bool(_)
-        )
+        // In SPARQL, a term is a literal iff it is not an IRI and not a blank node.
+        // At this layer, non-literals are represented as `Sid` (node ref) or `Iri`.
+        !matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
     }))))
 }
 
@@ -71,8 +69,34 @@ pub fn eval_is_numeric<R: RowAccess>(
     }))))
 }
 
-pub fn eval_is_blank() -> Result<Option<ComparableValue>> {
-    Ok(Some(ComparableValue::Bool(false)))
+pub fn eval_is_blank<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    _ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 1, "isBlank")?;
+    match &args[0] {
+        Expression::Var(v) => {
+            let is_blank = match row.get(*v) {
+                Some(Binding::Sid(s)) => s.namespace_code == namespaces::BLANK_NODE,
+                Some(Binding::IriMatch {
+                    iri, primary_sid, ..
+                }) => {
+                    primary_sid.namespace_code == namespaces::BLANK_NODE
+                        || iri.as_ref().starts_with("_:")
+                }
+                Some(Binding::Iri(iri)) => iri.as_ref().starts_with("_:"),
+                Some(Binding::EncodedSid { s_id }) => {
+                    SubjectId::from_u64(*s_id).ns_code() == namespaces::BLANK_NODE
+                }
+                _ => false,
+            };
+            Ok(Some(ComparableValue::Bool(is_blank)))
+        }
+        _ => Err(QueryError::InvalidFilter(
+            "isBlank argument must be a variable".to_string(),
+        )),
+    }
 }
 
 #[cfg(test)]

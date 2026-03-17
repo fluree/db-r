@@ -207,13 +207,13 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             let root2 = res2.root_id.clone().expect("root id after second index");
             assert_ne!(root1, root2, "root CID should change after update");
 
-            // Sanity: both roots decode as IndexRootV5 and the second root remains queryable.
+            // Sanity: both roots decode as IndexRoot and the second root remains queryable.
             let cs = content_store_for(fluree.storage().clone(), ledger_id);
             let bytes1 = cs.get(&root1).await.expect("root1 bytes");
             let bytes2 = cs.get(&root2).await.expect("root2 bytes");
-            let v1 = fluree_db_binary_index::format::index_root::IndexRootV5::decode(&bytes1)
+            let v1 = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes1)
                 .expect("decode root1");
-            let v2 = fluree_db_binary_index::format::index_root::IndexRootV5::decode(&bytes2)
+            let v2 = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes2)
                 .expect("decode root2");
             assert!(
                 !v1.default_graph_orders.is_empty() && !v2.default_graph_orders.is_empty(),
@@ -222,7 +222,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
 
             // NumBig arena predicate scoping: updating only `ex:amountA` should only
             // rewrite that predicate's numbig arena CID (and reuse `ex:amountB`).
-            let find_p_id = |root: &fluree_db_binary_index::format::index_root::IndexRootV5,
+            let find_p_id = |root: &fluree_db_binary_index::format::index_root::IndexRoot,
                              target_iri: &str|
              -> u32 {
                 for (p_id, (ns_code, suffix)) in root.predicate_sids.iter().enumerate() {
@@ -244,7 +244,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             let p_amount_a = find_p_id(&v1, amount_a_iri);
             let p_amount_b = find_p_id(&v1, amount_b_iri);
 
-            let numbig_cid = |root: &fluree_db_binary_index::format::index_root::IndexRootV5,
+            let numbig_cid = |root: &fluree_db_binary_index::format::index_root::IndexRoot,
                               g_id: u16,
                               p_id: u32|
              -> fluree_db_core::ContentId {
@@ -277,7 +277,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             );
 
             // CID stability: only a small number of leaf blobs should change per order.
-            let leaves_by_order = |root: &fluree_db_binary_index::format::index_root::IndexRootV5| {
+            let leaves_by_order = |root: &fluree_db_binary_index::format::index_root::IndexRoot| {
                 let mut m: HashMap<
                     fluree_db_binary_index::format::run_record::RunSortOrder,
                     Vec<fluree_db_core::ContentId>,

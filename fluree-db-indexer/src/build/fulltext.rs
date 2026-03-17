@@ -8,7 +8,7 @@
 
 use fluree_db_binary_index::analyzer::analyze_to_term_freqs;
 use fluree_db_binary_index::arena::fulltext::FulltextArena;
-use fluree_db_binary_index::FulltextArenaRefV5;
+use fluree_db_binary_index::FulltextArenaRef;
 use fluree_db_core::{ContentId, ContentKind, GraphId, Storage};
 use std::collections::HashMap;
 
@@ -25,13 +25,17 @@ use crate::fulltext_hook::FulltextEntry;
 /// (resolving string text from the string dict for analysis), and uploads
 /// FTA1 blobs to CAS.
 ///
-/// Returns per-graph fulltext arena refs for inclusion in `IndexRootV5`.
+/// Returns per-graph fulltext arena refs for inclusion in `IndexRoot`.
+// Kept for: full-rebuild fulltext upload pipeline (rebuild.rs collects entries
+// but does not yet call this; wiring deferred to rebuild-fulltext milestone).
+// Use when: rebuild.rs is extended to upload fulltext arenas after Phase C remap.
+#[expect(dead_code)]
 pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
     entries: &[FulltextEntry],
     string_dict: &dyn StringLookup,
     ledger_id: &str,
     storage: &S,
-) -> Result<Vec<(GraphId, Vec<FulltextArenaRefV5>)>> {
+) -> Result<Vec<(GraphId, Vec<FulltextArenaRef>)>> {
     use std::collections::BTreeMap;
 
     // Group entries by (g_id, p_id).
@@ -43,7 +47,7 @@ pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
             .push(entry);
     }
 
-    let mut per_graph: BTreeMap<GraphId, Vec<FulltextArenaRefV5>> = BTreeMap::new();
+    let mut per_graph: BTreeMap<GraphId, Vec<FulltextArenaRef>> = BTreeMap::new();
 
     for ((g_id, p_id), group_entries) in grouped {
         // Two-pass build to avoid term_id shifting.
@@ -135,7 +139,7 @@ pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
         per_graph
             .entry(g_id)
             .or_default()
-            .push(FulltextArenaRefV5 { p_id, arena_cid });
+            .push(FulltextArenaRef { p_id, arena_cid });
 
         tracing::info!(
             g_id,

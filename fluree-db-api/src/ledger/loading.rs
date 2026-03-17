@@ -6,8 +6,8 @@ use crate::{
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
+use fluree_db_core::DictNovelty;
 use fluree_db_nameservice::{BranchPoint, NameServiceError, NsRecord, Publisher};
-use fluree_db_query::BinaryRangeProvider;
 
 impl<S, N> Fluree<S, N>
 where
@@ -53,8 +53,11 @@ where
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(cs);
-                let mut store = BinaryIndexStore::load_from_root_bytes(
-                    cs,
+
+                // Load BinaryIndexStore from FIR6 root.
+                let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
+                let mut binary_index_store = BinaryIndexStore::load_from_root_bytes(
+                    cs_dyn,
                     &bytes,
                     &cache_dir,
                     Some(Arc::clone(&self.leaflet_cache)),
@@ -67,25 +70,69 @@ where
                     ))
                 })?;
 
-                // Vector shards are truly lazy — loaded on demand per-shard
-                // when decode_value hits a VECTOR_ID, using the same sync→async
-                // bridge as index leaflets (thread + block_on).
+                binary_index_store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
-                // Augment namespace codes with entries from novelty commits.
-                // The index root only contains namespaces known at index time, but
-                // subsequent transactions may introduce new namespace prefixes.
-                // LedgerSnapshot.namespace_codes already has the merged set (index + novelty).
-                store.augment_namespace_codes(&state.snapshot.namespace_codes);
+                // Augment the snapshot's namespace table with codes from
+                // the root. After a rebuild, the root may have namespace
+                // codes that the snapshot (loaded from the commit chain)
+                // doesn't have. Without this, SPARQL result formatting
+                // fails with UnknownNamespace errors.
+                for (code, prefix) in binary_index_store.namespace_codes() {
+                    state
+                        .snapshot
+                        .namespace_codes
+                        .entry(*code)
+                        .or_insert_with(|| prefix.clone());
+                }
 
-                let arc_store = Arc::new(store);
+                // Extract stats from the FIR6 root if present.
+                // Decode FIR6 root metadata once and apply:
+                // - watermarks (needed for DictNovelty/DictOverlay correctness)
+                // - optional stats + schema (for formatting/reasoning)
+                let root = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes)
+                    .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {e}")))?;
+
+                // Watermarks + dict novelty.
+                state.snapshot.subject_watermarks = root.subject_watermarks.clone();
+                state.snapshot.string_watermark = root.string_watermark;
+                state.dict_novelty = Arc::new(DictNovelty::with_watermarks(
+                    state.snapshot.subject_watermarks.clone(),
+                    state.snapshot.string_watermark,
+                ));
+                // Re-populate DictNovelty with any already-loaded novelty flakes so
+                // overlay translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+                if !state.novelty.is_empty() {
+                    let novelty = state.novelty.as_ref();
+                    Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+                        novelty
+                            .iter_index(fluree_db_core::IndexType::Post)
+                            .map(|id| novelty.get_flake(id)),
+                    );
+                }
+
+                // Stats + schema.
+                if root.stats.is_some() && state.snapshot.stats.is_none() {
+                    state.snapshot.stats = root.stats;
+                    tracing::debug!("loaded stats from FIR6 root");
+                }
+                if root.schema.is_some() && state.snapshot.schema.is_none() {
+                    state.snapshot.schema = root.schema;
+                    tracing::debug!("loaded schema from FIR6 root");
+                }
+
+                let arc_store = Arc::new(binary_index_store);
+
+                // Attach range provider for policy/SHACL/reasoner/property paths.
                 if state.snapshot.range_provider.is_none() {
-                    let provider = BinaryRangeProvider::new(
+                    let provider = fluree_db_query::BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
                     );
                     state.snapshot.range_provider = Some(Arc::new(provider));
                 }
+
                 state.binary_store = Some(TypeErasedStore(arc_store));
+                tracing::info!("loaded binary index store");
             }
         }
 

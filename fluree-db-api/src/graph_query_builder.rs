@@ -173,10 +173,11 @@ where
             .await
             .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
         let format_config = self.core.format.take();
+        let tracking = self.core.tracking.take();
         let input = self.core.input.unwrap();
         self.graph
             .fluree
-            .query_tracked(&db, input, format_config)
+            .query_tracked(&db, input, format_config, tracking)
             .await
     }
 }
@@ -318,9 +319,10 @@ where
         }
 
         let format_config = self.core.format.take();
+        let tracking = self.core.tracking.take();
         let input = self.core.input.unwrap();
         self.fluree
-            .query_tracked(self.view, input, format_config)
+            .query_tracked(self.view, input, format_config, tracking)
             .await
     }
 }

@@ -95,6 +95,10 @@ pub enum TransactError {
     #[error("{0}")]
     ShaclViolation(String),
 
+    /// Transaction exceeded the configured max-fuel limit
+    #[error("{0}")]
+    FuelExceeded(#[from] fluree_db_core::FuelExceededError),
+
     /// Unique constraint violation (`f:enforceUnique`).
     ///
     /// A property annotated with `f:enforceUnique true` has duplicate values

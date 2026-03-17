@@ -63,7 +63,7 @@ pub enum CredentialError {
 }
 
 impl CredentialError {
-    /// HTTP status code for this error (Clojure parity)
+    /// HTTP status code for this error
     ///
     /// - 400: Invalid format, signature, algorithm, etc.
     /// - 401: Could not verify identity

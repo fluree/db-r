@@ -1,6 +1,6 @@
 //! Policy evaluation logic
 //!
-//! This module implements the core policy evaluation with full Clojure parity:
+//! This module implements the core policy evaluation:
 //! - **Deny Overrides** combining: if any matching policy denies, access is denied
 //! - Required subset filtering AFTER class-applicability filter
 //! - Schema flake bypass (schema flakes always allowed)
@@ -265,7 +265,7 @@ impl PolicyContext {
     /// treated as "continue to next policy". Use the async methods
     /// (allow_view_flake_async, allow_modify_flake_async) for full f:query support.
     ///
-    /// Implements Clojure parity evaluation semantics:
+    /// Implements policy evaluation semantics:
     /// 1. Schema bypass first
     /// 2. Collect candidates in order (property -> subject -> default)
     /// 3. Filter by class applicability
@@ -660,7 +660,7 @@ impl PolicyContext {
             applicable_entries
         };
 
-        // If no policies apply, fall back to default_allow (Clojure parity).
+        // If no policies apply, fall back to default_allow.
         if filtered_entries.is_empty() {
             return Ok((self.wrapper.default_allow(), vec![]));
         }
@@ -751,7 +751,7 @@ pub fn build_policy_values_clause(
 ) -> std::collections::HashMap<String, Sid> {
     // Start with wrapper's policy values (user-provided bindings)
     let mut values = wrapper_policy_values.clone();
-    // ?$this and ?$identity always override/supplement wrapper values (Clojure parity)
+    // ?$this and ?$identity always override/supplement wrapper values
     values.insert("?$this".to_string(), subject.clone());
     values.insert("?$identity".to_string(), identity.clone()); // ALWAYS ground
     values

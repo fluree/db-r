@@ -1452,3 +1452,236 @@ fn create_from_unsupported_files_only_fails() {
         .failure()
         .stderr(predicate::str::contains("no supported data files"));
 }
+
+// ============================================================================
+// Update (WHERE/DELETE/INSERT) tests
+// ============================================================================
+
+#[test]
+fn update_where_delete_insert_json_ld() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "txdb"]).assert().success();
+
+    // Seed data
+    fluree_cmd(&tmp)
+        .args([
+            "insert",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:alice", "ex:name": "Alice", "ex:age": 30}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=1"));
+
+    // Use update to change Alice's age: WHERE old age, DELETE old, INSERT new
+    fluree_cmd(&tmp)
+        .args([
+            "update",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "where": [{"@id": "ex:alice", "ex:age": "?oldAge"}], "delete": [{"@id": "ex:alice", "ex:age": "?oldAge"}], "insert": [{"@id": "ex:alice", "ex:age": 31}]}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=2"));
+
+    // Verify the update with a query
+    fluree_cmd(&tmp)
+        .args([
+            "query",
+            "-e",
+            r#"SELECT ?age WHERE { <http://example.org/alice> <http://example.org/age> ?age }"#,
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("31"));
+}
+
+#[test]
+fn update_delete_only() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "deldb"])
+        .assert()
+        .success();
+
+    // Seed data
+    fluree_cmd(&tmp)
+        .args([
+            "insert",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:bob", "ex:name": "Bob", "ex:email": "bob@example.org"}"#,
+        ])
+        .assert()
+        .success();
+
+    // Delete email using where + delete (no insert)
+    fluree_cmd(&tmp)
+        .args([
+            "update",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "where": [{"@id": "ex:bob", "ex:email": "?email"}], "delete": [{"@id": "ex:bob", "ex:email": "?email"}]}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=2"));
+}
+
+#[test]
+fn update_insert_only_via_update() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "insdb"])
+        .assert()
+        .success();
+
+    // Use update with insert-only (no where/delete)
+    fluree_cmd(&tmp)
+        .args([
+            "update",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:charlie", "ex:name": "Charlie"}]}"#,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=1"));
+}
+
+#[test]
+fn update_with_commit_message() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "msgdb2"])
+        .assert()
+        .success();
+
+    fluree_cmd(&tmp)
+        .args([
+            "update",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:x", "ex:val": "test"}]}"#,
+            "-m",
+            "initial update",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=1"));
+}
+
+#[test]
+fn update_from_json_file() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "filedb2"])
+        .assert()
+        .success();
+
+    // Seed data
+    fluree_cmd(&tmp)
+        .args([
+            "insert",
+            "-e",
+            r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:alice", "ex:status": "pending"}"#,
+        ])
+        .assert()
+        .success();
+
+    // Write an update body to a file
+    let json_path = tmp.path().join("update.json");
+    std::fs::write(
+        &json_path,
+        r#"{"@context": {"ex": "http://example.org/"}, "where": [{"@id": "ex:alice", "ex:status": "pending"}], "delete": [{"@id": "ex:alice", "ex:status": "pending"}], "insert": [{"@id": "ex:alice", "ex:status": "active"}]}"#,
+    )
+    .unwrap();
+
+    fluree_cmd(&tmp)
+        .args(["update", "-f", json_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=2"));
+}
+
+#[test]
+fn update_sparql_update_in_direct_mode_fails() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp).args(["create", "spdb"]).assert().success();
+
+    // SPARQL UPDATE in direct local mode should give a helpful error
+    fluree_cmd(&tmp)
+        .args([
+            "--direct",
+            "update",
+            "-e",
+            "PREFIX ex: <http://example.org/> INSERT DATA { ex:x ex:val \"hello\" }",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "SPARQL UPDATE is not supported in direct local mode",
+        ));
+}
+
+#[test]
+fn update_without_active_ledger_errors() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["update", "-e", "{}"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no active ledger set"));
+}
+
+#[test]
+fn update_without_init_errors() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp)
+        .args(["update", "-e", "{}"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no .fluree/ directory found"));
+}
+
+#[test]
+fn help_shows_update_command() {
+    cargo_bin_cmd!("fluree")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("update"));
+}
+
+#[test]
+fn update_help_shows_description() {
+    cargo_bin_cmd!("fluree")
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WHERE/DELETE/INSERT"));
+}
+
+#[test]
+fn update_via_stdin() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "stdindb"])
+        .assert()
+        .success();
+
+    // Pipe JSON-LD update body via stdin (no -e, -f, or positional data)
+    fluree_cmd(&tmp)
+        .arg("update")
+        .write_stdin(r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:alice", "ex:name": "Alice"}]}"#)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=1"));
+}

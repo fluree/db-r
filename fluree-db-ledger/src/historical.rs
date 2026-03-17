@@ -29,11 +29,13 @@ use crate::error::{LedgerError, Result};
 use crate::LedgerState;
 use fluree_db_core::{
     content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
-    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
+    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::NameService;
 
-use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
+use fluree_db_novelty::{
+    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Novelty,
+};
 use fluree_vocab::namespaces::{FLUREE_COMMIT, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
@@ -277,8 +279,20 @@ impl HistoricalLedgerView {
         let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
         let txn_meta_graph_sid = snapshot.encode_iri(&txn_meta_iri);
 
+        // Stamp commit metadata flakes with txn-meta graph SID
+        if let Some(ref g_sid) = txn_meta_graph_sid {
+            for (flakes, _, _) in &mut commit_batches {
+                stamp_graph_on_commit_flakes(flakes, g_sid);
+            }
+        }
+
         // Build reverse_graph now that namespace_codes and graph_registry are complete
-        let reverse_graph = snapshot.build_reverse_graph()?;
+        let mut reverse_graph = snapshot.build_reverse_graph()?;
+        // Ensure txn-meta graph is always routable for commit metadata flakes.
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+        if let Some(g_sid) = snapshot.encode_iri(&txn_meta_iri) {
+            reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+        }
 
         // Replay oldest→newest (walk was HEAD→oldest)
         commit_batches.reverse();

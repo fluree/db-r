@@ -1,7 +1,7 @@
 //! Composable view abstraction for ledger queries
 //!
 //! This module provides `GraphDb`, a first-class, composable view of a ledger
-//! snapshot. It mirrors Clojure's "db is a value" pattern where you create a view
+//! snapshot. It follows a "db is a value" pattern where you create a view
 //! once and query it repeatedly.
 //!
 //! # Design Philosophy
@@ -13,7 +13,7 @@
 //!
 //! # Composition
 //!
-//! Views support Clojure-style wrapper composition:
+//! Views support wrapper composition:
 //!
 //! ```ignore
 //! use fluree_db_api::{Fluree, GraphDb};

@@ -1,6 +1,6 @@
 //! BM25 Full-Text Search Module
 //!
-//! This module implements BM25 full-text search with Clojure parity for
+//! This module implements BM25 full-text search.
 //! Fluree's graph source system.
 //!
 //! # Components

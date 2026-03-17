@@ -8,7 +8,7 @@
 //!
 //! # File Layout
 //!
-//! Uses the ns@v2 format compatible with Clojure Fluree:
+//! Uses the ns@v2 format compatible with legacy implementations:
 //! - `{prefix}/ns@v2/{ledger-name}/{branch}.json` - Main record (commit info)
 //! - `{prefix}/ns@v2/{ledger-name}/{branch}.index.json` - Index record (separate for indexer)
 //!

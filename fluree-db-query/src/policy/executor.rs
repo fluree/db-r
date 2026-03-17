@@ -83,7 +83,7 @@ impl<'a> QueryPolicyExecutor<'a> {
         // We intentionally do NOT implement a bespoke parser here; this ensures full
         // feature parity (e.g., FILTER patterns) and avoids divergence.
         //
-        // Clojure parity: policy queries behave like existence checks, with:
+        // Policy queries behave like existence checks, with:
         // - select forced to ["?$this"]
         // - limit forced to 1
         // - VALUES injected into WHERE for special variables (?$this, ?$identity, etc.)
@@ -99,7 +99,7 @@ impl<'a> QueryPolicyExecutor<'a> {
             }
         })?;
 
-        // Force select + limit for policy queries (Clojure semantics)
+        // Force select + limit for policy queries
         obj.insert(
             "select".to_string(),
             serde_json::Value::Array(vec![serde_json::Value::String("?$this".to_string())]),
@@ -107,7 +107,7 @@ impl<'a> QueryPolicyExecutor<'a> {
         obj.insert("limit".to_string(), serde_json::Value::from(1));
 
         // Build VALUES clause JSON for special variables.
-        // Clojure parity: inject VALUES into WHERE clause BEFORE parsing.
+        // Inject VALUES into WHERE clause BEFORE parsing.
         // This ensures even empty queries (no WHERE) work - the VALUES provides the pattern.
         //
         // Format: ["values", [["?$this", "?$identity", ...], [[iri1, iri2, ...]]]]
@@ -153,7 +153,7 @@ impl<'a> QueryPolicyExecutor<'a> {
             }
             Some(_) | None => {
                 // No WHERE or invalid - create with just VALUES
-                // This handles empty queries like {} which Clojure allows
+                // This handles empty queries like {}
                 obj.insert("where".to_string(), serde_json::json!([values_clause]));
             }
         }
@@ -162,7 +162,7 @@ impl<'a> QueryPolicyExecutor<'a> {
         let mut vars = VarRegistry::new();
 
         // Pre-register special variables so they are present even if not referenced.
-        // This matches the "always ground" behavior from Clojure.
+        // This matches the "always ground" behavior.
         for var_name in &var_names {
             vars.get_or_insert(var_name);
         }

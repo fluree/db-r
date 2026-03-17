@@ -1,10 +1,6 @@
-//! Policy/fuel tracking integration tests (Clojure parity)
+//! Policy/fuel tracking integration tests
 //!
-//! Targets policy + fuel tracking assertions from:
-//! - `db-clojure/test/fluree/db/policy/target_test.clj` (wishlist-scenario)
-//!
-//! These tests focus on the *tracking* surfaces (policy stats + fuel), not on full
-//! port parity of the entire scenario.
+//! These tests focus on the *tracking* surfaces (policy stats + fuel).
 
 mod support;
 
@@ -34,7 +30,7 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
     let ledger = fluree.insert(ledger0, &seed).await.expect("seed").ledger;
 
     // Inline policy (query-based): identity can only modify itself.
-    // This mirrors the shape used by Clojure f:query policies (stored as JSON string).
+    // This mirrors the shape used by stored f:query policies (stored as JSON string).
     let policy = json!([{
         "@id": "http://a.co/wishlistCreatePolicy",
         "f:action": "f:modify",
@@ -124,6 +120,6 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
         0
     );
 
-    // Fuel should be tracked when opts.meta=true. We assert the Clojure-parity expectation (3).
+    // Fuel should be tracked when opts.meta=true. We assert the expected value (3).
     assert_eq!(err.fuel, Some(3));
 }

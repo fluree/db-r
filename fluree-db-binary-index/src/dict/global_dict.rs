@@ -85,7 +85,7 @@ impl PredicateDict {
             .collect()
     }
 
-    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRoot`).
     ///
     /// Entry at index `i` gets ID `i`. This is the safe way to seed a dict
     /// from persisted data -- it guarantees ID stability.
@@ -146,6 +146,12 @@ impl LanguageTagDict {
         self.inner.resolve(id)
     }
 
+    /// Reverse lookup: find the u16 ID for a given language tag string.
+    /// Returns None if the tag is not in the dictionary.
+    pub fn find(&self, tag: &str) -> Option<u16> {
+        self.inner.find(tag)
+    }
+
     /// Number of distinct language tags (excluding the "none" sentinel).
     pub fn len(&self) -> u16 {
         self.inner.len() as u16
@@ -172,7 +178,7 @@ impl LanguageTagDict {
         self.inner = VecBiDict::new(1);
     }
 
-    /// Reconstruct from an ordered list of tags (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of tags (e.g., from `IndexRoot`).
     ///
     /// Tag at index `i` gets ID `i + 1` (base_id=1; 0 = "no tag").
     pub fn from_ordered_tags(tags: Vec<Arc<str>>) -> Self {

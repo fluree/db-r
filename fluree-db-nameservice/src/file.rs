@@ -545,7 +545,7 @@ impl NameService for FileNameService {
         let mut records = Vec::new();
 
         // Walk the ns@v2 directory recursively so ledger names that contain '/'
-        // (e.g., "tenant1/customers") are discovered (Clojure parity).
+        // (e.g., "tenant1/customers") are discovered.
         let mut stack = vec![ns_dir];
         let ns_dir_base = self.storage.base_path().join(NS_VERSION);
 

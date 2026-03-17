@@ -135,6 +135,139 @@ async fn typed_json_graph_crawl_json_datatype_preserved() {
     assert_eq!(inner["n"], 42);
 }
 
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn typed_json_graph_crawl_novelty_json_value_decodes_via_binary_range_provider() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_core::comparator::IndexType;
+    use fluree_db_core::range::{RangeMatch, RangeTest};
+    use fluree_db_core::value::FlakeValue;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/typed-json-novelty:main";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Seed base data and build an index (persisted forward packs exist).
+    let base_tx = json!({
+        "@context": ctx(),
+        "@graph": [
+            { "@id": "ex:config", "ex:data": {"@value": {"seed": true}, "@type": "@json"} }
+        ]
+    });
+    let mut ledger = fluree
+        .insert(ledger0, &base_tx)
+        .await
+        .expect("insert base")
+        .ledger;
+
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex to create persisted index");
+
+    // Add novelty JSON value with a new string ID (above watermark) and DO NOT index it.
+    let novelty_tx = json!({
+        "@context": ctx(),
+        "@graph": [
+            {
+                "@id": "ex:config",
+                "ex:data": {"@value": {"novel": true, "id": "novel-json-1"}, "@type": "@json"}
+            }
+        ]
+    });
+    ledger = fluree
+        .insert_with_opts(
+            ledger,
+            &novelty_tx,
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &fluree_db_api::IndexConfig {
+                // Avoid triggering background indexing; we want novelty-only values.
+                reindex_min_bytes: 1_000_000_000,
+                reindex_max_bytes: 1_000_000_000,
+            },
+        )
+        .await
+        .expect("insert novelty (no index)")
+        .ledger;
+    let _novelty_commit_t = ledger.t();
+
+    // Load a view so the snapshot uses the binary index + overlay (BinaryRangeProvider path).
+    let db = fluree.db(ledger_id).await.expect("load db");
+
+    // 1) Direct range path: decode novelty @json via BinaryRangeProvider.
+    let config_sid = db
+        .snapshot
+        .encode_iri("http://example.org/ns/config")
+        .expect("encode ex:config");
+    let data_pid = db
+        .snapshot
+        .encode_iri("http://example.org/ns/data")
+        .expect("encode ex:data");
+
+    let dbref = db.as_graph_db_ref();
+    let flakes = dbref
+        .range(
+            IndexType::Spot,
+            RangeTest::Eq,
+            RangeMatch::subject_predicate(config_sid.clone(), data_pid.clone()),
+        )
+        .await
+        .expect("range query should decode novelty @json");
+
+    assert!(
+        flakes
+            .iter()
+            .any(|f| matches!(&f.o, FlakeValue::Json(s) if s.contains("novel-json-1"))),
+        "expected novelty @json value decoded via range provider, got: {flakes:?}"
+    );
+
+    // 2) Typed-json graph crawl: should format without failing to resolve novelty string IDs.
+    let query = json!({
+        "@context": ctx(),
+        "select": {"ex:config": ["*"]},
+        "from": ledger_id
+    });
+
+    let config = FormatterConfig::typed_json();
+    let result = fluree
+        .query(&db, &query)
+        .await
+        .expect("query")
+        .format_async(dbref, &config)
+        .await
+        .expect("typed json graph crawl should succeed");
+
+    let arr = result.as_array().expect("result array");
+    let cfg = &arr[0];
+    let data = cfg.get("ex:data").expect("has ex:data");
+
+    // ex:data may be single value or array (if both seed+novel exist); normalize to array.
+    let values: Vec<&JsonValue> = if let Some(a) = data.as_array() {
+        a.iter().collect()
+    } else {
+        vec![data]
+    };
+
+    let is_json_dt = |dt: &str| dt == "@json" || dt.contains("JSON") || dt.contains("json");
+    let inner = values
+        .into_iter()
+        .find_map(|v| {
+            let dt = v.get("@type")?.as_str()?;
+            if !is_json_dt(dt) {
+                return None;
+            }
+            let inner = v.get("@value")?;
+            (inner.get("id")?.as_str()? == "novel-json-1").then_some(inner)
+        })
+        .unwrap_or_else(|| panic!("find novelty @json value in: {data}"));
+
+    assert!(inner.is_object(), "@json inner should be object: {inner}");
+    assert_eq!(inner["id"], "novel-json-1");
+    assert_eq!(inner["novel"], true);
+}
+
 #[tokio::test]
 async fn typed_json_graph_crawl_nested_entities_are_typed() {
     let (fluree, ledger) = seed_typed_graph().await;

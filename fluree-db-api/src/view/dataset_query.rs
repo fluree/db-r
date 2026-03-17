@@ -132,14 +132,20 @@ where
         dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
         format_config: Option<crate::format::FormatterConfig>,
+        tracking_override: Option<TrackingOptions>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let input = q.into();
 
-        // Get tracker - use tracked endpoint helpers that default to all tracking enabled
-        let tracker = match &input {
-            QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
-            QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+        // Get tracker: use caller-provided options if given, otherwise fall back
+        // to defaults (all-enabled for SPARQL, opts-derived for JSON-LD).
+        let tracker = if let Some(opts) = tracking_override {
+            Tracker::new(opts)
+        } else {
+            match &input {
+                QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+                QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+            }
         };
 
         // Determine output format: caller override > input-type default
@@ -147,7 +153,7 @@ where
             QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
             _ => crate::format::FormatterConfig::jsonld(),
         };
-        let format_config = format_config.unwrap_or(default_format);
+        let mut format_config = format_config.unwrap_or(default_format);
 
         // Require primary
         let primary = dataset.primary().ok_or_else(|| {
@@ -195,6 +201,13 @@ where
             None,
             primary.binary_graph(),
         );
+
+        // CONSTRUCT/DESCRIBE graph results must be formatted as JSON-LD.
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
 
         // Format with tracking
         let result_json = match primary.policy() {
@@ -289,14 +302,39 @@ where
             None => (None, primary.t, false),
         };
 
-        let spatial_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.spatial_provider_map());
-        let fulltext_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.fulltext_provider_map());
+        // Binary scans rely on a ledger-specific binary index store. For datasets that span
+        // multiple ledgers, using only the primary view's store will silently drop results.
+        //
+        // In multi-ledger mode we disable binary scans (and associated provider maps) so
+        // execution falls back to per-snapshot range scans which are correctly ledger-scoped.
+        let primary_ledger_id: &str = primary.ledger_id.as_ref();
+        let is_single_ledger_dataset = dataset
+            .default
+            .iter()
+            .all(|v| v.ledger_id.as_ref() == primary_ledger_id)
+            && dataset
+                .named
+                .values()
+                .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
+
+        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
+            let spatial_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.spatial_provider_map());
+            let fulltext_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.fulltext_provider_map());
+            (
+                primary.binary_store.clone(),
+                primary.dict_novelty.clone(),
+                spatial_map,
+                fulltext_map,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
@@ -306,9 +344,9 @@ where
             },
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
-            binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
-            dict_novelty: primary.dict_novelty.clone(),
+            binary_store,
+            dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
             history_mode,
@@ -348,22 +386,42 @@ where
             None => (None, primary.t, false),
         };
 
-        let spatial_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.spatial_provider_map());
-        let fulltext_map = primary
-            .binary_store
-            .as_ref()
-            .map(|s| s.fulltext_provider_map());
+        let primary_ledger_id: &str = primary.ledger_id.as_ref();
+        let is_single_ledger_dataset = dataset
+            .default
+            .iter()
+            .all(|v| v.ledger_id.as_ref() == primary_ledger_id)
+            && dataset
+                .named
+                .values()
+                .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
+
+        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
+            let spatial_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.spatial_provider_map());
+            let fulltext_map = primary
+                .binary_store
+                .as_ref()
+                .map(|s| s.fulltext_provider_map());
+            (
+                primary.binary_store.clone(),
+                primary.dict_novelty.clone(),
+                spatial_map,
+                fulltext_map,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
         let config = ContextConfig {
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
-            binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
-            dict_novelty: primary.dict_novelty.clone(),
+            binary_store,
+            dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
             history_mode,

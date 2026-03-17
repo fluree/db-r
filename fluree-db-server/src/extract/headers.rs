@@ -149,9 +149,22 @@ impl FlureeHeaders {
         Ok(fluree_headers)
     }
 
-    /// Check if tracking is enabled (any tracking header)
+    /// Check if tracking is enabled (any tracking header or max-fuel limit)
     pub fn has_tracking(&self) -> bool {
-        self.track_meta || self.track_fuel || self.track_time
+        self.track_meta || self.track_fuel || self.track_time || self.max_fuel.is_some()
+    }
+
+    /// Build `TrackingOptions` from header values.
+    ///
+    /// Used for SPARQL queries where tracking options can't come from a JSON
+    /// body — they must come from HTTP headers instead.
+    pub fn to_tracking_options(&self) -> fluree_db_core::tracking::TrackingOptions {
+        fluree_db_core::tracking::TrackingOptions {
+            track_time: self.track_meta || self.track_time,
+            track_fuel: self.track_meta || self.track_fuel || self.max_fuel.is_some(),
+            track_policy: self.track_meta,
+            max_fuel: self.max_fuel.map(|v| v as u64),
+        }
     }
 
     /// Check if this is a SPARQL query based on Content-Type
@@ -192,6 +205,31 @@ impl FlureeHeaders {
         self.accept
             .as_ref()
             .map(|a| a.to_ascii_lowercase().contains("text/csv"))
+            .unwrap_or(false)
+    }
+
+    /// Check if the client explicitly requests SPARQL Results XML output via Accept header.
+    ///
+    /// Matches `application/sparql-results+xml` (case-insensitive).
+    /// Does NOT match `*/*` — XML must be explicitly requested.
+    pub fn wants_sparql_results_xml(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| {
+                a.to_ascii_lowercase()
+                    .contains("application/sparql-results+xml")
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check if the client explicitly requests RDF/XML output via Accept header.
+    ///
+    /// Matches `application/rdf+xml` (case-insensitive).
+    /// Does NOT match `*/*` — RDF/XML must be explicitly requested.
+    pub fn wants_rdf_xml(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| a.to_ascii_lowercase().contains("application/rdf+xml"))
             .unwrap_or(false)
     }
 

@@ -6,7 +6,7 @@
 //! - Configuration types for storage, cache, and connections
 //! - Factory functions for creating storage and cache instances
 //! - The `Connection` struct for loading databases
-//! - JSON-LD configuration parsing compatible with Clojure Fluree
+//! - JSON-LD configuration parsing compatible with legacy configs
 //!
 //! ## Quick Start
 //!
@@ -201,7 +201,7 @@ pub enum DynDb {
 /// Create connection from JSON config (auto-detects format)
 ///
 /// Accepts either:
-/// - Clojure-style JSON-LD with @graph and @context
+/// - JSON-LD with @graph and @context
 /// - Simple flat JSON format
 ///
 /// # Example
@@ -210,7 +210,7 @@ pub enum DynDb {
 /// use fluree_db_connection::connect;
 /// use serde_json::json;
 ///
-/// // JSON-LD format (Clojure-compatible)
+/// // JSON-LD format
 /// let config = json!({
 ///     "@context": {
 ///         "@base": "https://ns.flur.ee/config/connection/",

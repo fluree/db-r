@@ -1,6 +1,4 @@
-//! Subclass query integration tests (Clojure parity)
-//!
-//! Mirrors `db-clojure/test/fluree/db/query/subclass_test.clj` using JSON inputs only.
+//! Subclass query integration tests
 //!
 //! These tests depend on subclass reasoning (`rdfs:subClassOf` hierarchy) being applied
 //! during `@type` matching.
@@ -84,7 +82,7 @@ async fn seed_schema_creative_work(fluree: &MemoryFluree, ledger_id: &str) -> Me
 
 #[tokio::test]
 async fn subclass_creative_work_returns_book_and_movie_instances() {
-    // Clojure: subclass-test
+    // Scenario: subclass-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_schema_creative_work(&fluree, "query/subclass:main").await;
 
@@ -199,7 +197,7 @@ async fn seed_humanoid(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
 
 #[tokio::test]
 async fn subclass_inferencing_issue_core_48() {
-    // Clojure: subclass-inferencing-test
+    // Scenario: subclass-inferencing-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_humanoid(&fluree, "query/subclass:infer").await;
 
@@ -232,7 +230,7 @@ async fn subclass_inferencing_issue_core_48() {
 
 #[tokio::test]
 async fn subclass_inferencing_after_load_issue_core_48() {
-    // Clojure: subclass-inferencing-after-load-test
+    // Scenario: subclass-inferencing-after-load-test
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_str().unwrap();
 
@@ -300,7 +298,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
 
 #[tokio::test]
 async fn subclass_nested_stages() {
-    // Clojure: subclass-nested-stages
+    // Scenario: subclass-nested-stages
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "query/subclass:nested-stages");
 

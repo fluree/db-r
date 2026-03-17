@@ -473,6 +473,7 @@ pub fn eval_fulltext<R: RowAccess>(
             o_key,
             p_id,
             dt_id,
+            lang_id,
             ..
         } => {
             // Only score @fulltext-typed values
@@ -507,7 +508,7 @@ pub fn eval_fulltext<R: RowAccess>(
                         // Decode string, analyze, score with unified BM25.
                         if let Some(gv) = ctx.graph_view() {
                             if let Ok(FlakeValue::String(text)) =
-                                gv.decode_value(*o_kind, *o_key, *p_id)
+                                gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             {
                                 let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(&text);
                                 let doc_len = doc_term_freqs.values().sum::<u32>();
@@ -531,9 +532,11 @@ pub fn eval_fulltext<R: RowAccess>(
                 None => return Ok(None),
             };
 
-            let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
-                crate::error::QueryError::Internal(format!("fulltext decode_value: {}", e))
-            })?;
+            let val = gv
+                .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                .map_err(|e| {
+                    crate::error::QueryError::Internal(format!("fulltext decode_value: {}", e))
+                })?;
 
             let text = match &val {
                 FlakeValue::String(s) => s.as_str(),

@@ -5,7 +5,7 @@
 //! 2. Verifies credentials and extracts the DID (identity) and unwrapped payload
 //! 3. Detects content-type for routing (SPARQL, Turtle, TriG, JSON-LD)
 //!
-//! Similar to Clojure server's `unwrap-credential` middleware.
+//! Similar to the legacy `unwrap-credential` middleware.
 //!
 //! ## Content-Type Routing
 //!

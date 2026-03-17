@@ -1,6 +1,4 @@
-//! Time travel integration tests (Clojure parity)
-//!
-//! Parity reference: `db-clojure/test/fluree/db/query/time_travel_test.clj`
+//! Time travel integration tests
 //!
 //! Focus:
 //! - `query_connection` `"from"` entries containing `@t:`, `@iso:`, `@commit:`
@@ -104,7 +102,7 @@ async fn query_names_at(
         .expect("to_jsonld_async");
 
     // JSON-LD formatter returns single-column results as a flat array.
-    // Normalize to array-of-rows for easy comparison with Clojure expectations.
+    // Normalize to array-of-rows for easy comparison with expectations.
     let names: Vec<Vec<JsonValue>> = jsonld
         .as_array()
         .expect("result array")

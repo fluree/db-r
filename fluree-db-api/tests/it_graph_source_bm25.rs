@@ -309,7 +309,7 @@ async fn bm25_drop_full_text_index_cleans_up() {
 
 /// Test BM25 recreate index after drop: can create a new index with the same name after dropping
 ///
-/// This is Clojure parity for `bm25_drop_test.clj` scenario where you drop a graph source
+/// Scenario: drop a graph source
 /// and then recreate it with the same name.
 #[tokio::test]
 async fn bm25_recreate_after_drop() {
@@ -511,7 +511,7 @@ async fn bm25_federated_query_via_provider() {
 
 /// Test BM25 with file-backed storage: index persists to disk and search works
 ///
-/// This is Clojure parity for `bm25_filesystem_test.clj` which verifies:
+/// Scenario: filesystem BM25 which verifies:
 /// - Index creation works with file storage
 /// - Graph source directory exists on disk
 /// - Search works with persisted index
@@ -728,7 +728,7 @@ async fn bm25_query_connection_with_idx_pattern() {
 
 /// Test BM25 federated query with aggregation: search + join + groupBy/count
 ///
-/// This is Clojure parity for `bm25_federated_test.clj` aggregation scenarios.
+/// Scenario: federated BM25 aggregation scenarios.
 /// Tests that BM25 results can be combined with ledger data for aggregation.
 #[tokio::test]
 async fn bm25_federated_query_with_aggregation() {

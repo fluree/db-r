@@ -1,7 +1,7 @@
 //! Binary wire format decoders for index stats and schema sections.
 //!
-//! These decode the binary stats/schema sections embedded in `IndexRootV5`
-//! (IRB1). The encode functions live in `fluree-db-indexer`.
+//! These decode the binary stats/schema sections embedded in `IndexRoot`
+//! (FIR6). The encode functions live in `fluree-db-indexer`.
 
 use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 use crate::index_stats::{

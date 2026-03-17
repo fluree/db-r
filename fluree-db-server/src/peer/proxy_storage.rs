@@ -8,7 +8,7 @@
 //!
 //! Under `PolicyEnforced` mode (the only mode currently available via the storage
 //! proxy), the server **always** returns decoded, policy-filtered flakes (FLKB format)
-//! for leaf blocks — even if the client requests `application/octet-stream`. Raw FLI2
+//! for leaf blocks — even if the client requests `application/octet-stream`. Raw FLI3
 //! leaf bytes are never returned to end users.
 //!
 //! Both `read_bytes()` and `read_bytes_hint()` use flakes-first content negotiation:
@@ -21,7 +21,7 @@
 //!
 //! The `ReadHint` distinction is preserved for forward-compatibility: if a
 //! `TrustedInternal` enforcement mode is added later, `AnyBytes` could return
-//! raw FLI2 leaves while `PreferLeafFlakes` would still prefer FLKB.
+//! raw FLI3 leaves while `PreferLeafFlakes` would still prefer FLKB.
 
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
@@ -290,12 +290,16 @@ impl ProxyStorage {
 #[async_trait]
 impl StorageRead for ProxyStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
-        // Under PolicyEnforced, leaf blocks always return FLKB (not raw FLI2).
+        // Under PolicyEnforced, leaf blocks always return FLKB (not raw FLI3).
         // Use flakes-first negotiation for deterministic behavior across block types:
         // - Leaves → FLKB (policy-filtered flakes)
         // - Non-leaves → raw bytes (via 406 fallback to octet-stream)
         self.fetch_prefer_flakes(address).await
     }
+
+    // read_byte_range: uses default (full read + slice). ProxyStorage's HTTP
+    // protocol doesn't support Range headers yet — the default fallback is
+    // correct and safe. Future optimization: pass Range header through proxy.
 
     async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
         // Under PolicyEnforced, both AnyBytes and PreferLeafFlakes produce the same

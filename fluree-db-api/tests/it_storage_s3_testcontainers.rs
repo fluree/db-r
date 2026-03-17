@@ -1,7 +1,4 @@
-//! S3 storage integration tests using testcontainers + LocalStack (Clojure parity).
-//!
-//! Ports from:
-//! - `db/test/fluree/db/storage/s3_testcontainers_test.clj`
+//! S3 storage integration tests using testcontainers + LocalStack.
 //!
 //! Run (requires Docker):
 //!   cargo test -p fluree-db-api --features aws-testcontainers --test it_storage_s3_testcontainers -- --nocapture
@@ -199,7 +196,7 @@ async fn s3_testcontainers_basic_test() {
         .expect("to_jsonld_async");
     assert_eq!(results, reload_results);
 
-    // Verify no double slashes in stored S3 keys (Clojure parity)
+    // Verify no double slashes in stored S3 keys
     let keys = list_object_keys(&sdk_config, bucket).await;
     assert!(!keys.is_empty(), "expected objects in bucket after commit");
     assert!(

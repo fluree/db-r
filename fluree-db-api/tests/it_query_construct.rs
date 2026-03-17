@@ -1,6 +1,5 @@
-//! CONSTRUCT integration tests (Clojure parity)
+//! CONSTRUCT integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/query/construct_test.clj`.
 
 mod support;
 
@@ -30,7 +29,7 @@ fn people_data() -> JsonValue {
         {"@id":"ex:fran",
          "name":{"@value":"Francois","@language":"fr"},
          // Rust transact currently supports @json values only when @value is a string.
-         // Clojure's expected CONSTRUCT output also stringifies the JSON.
+         // Expected CONSTRUCT output also stringifies the JSON.
          "config":{"@type":"@json","@value":"{\"paths\":[\"dev\",\"src\"]}"},
          "date":{"@value":"2020-10-20","@type":"http://www.w3.org/2001/XMLSchema#date"}}
     ])
@@ -113,7 +112,7 @@ async fn construct_basic() {
 
 #[tokio::test]
 async fn construct_no_prefix_context_full_iris() {
-    // Clojure has a "nil context" test; Rust prefers explicit contexts.
+    // We prefer explicit contexts.
     // This variant uses an empty @context and full IRIs in WHERE/CONSTRUCT.
     let (fluree, ledger) = seed_people().await;
 
@@ -145,7 +144,7 @@ async fn construct_no_prefix_context_full_iris() {
 async fn construct_multiple_clauses() {
     let (fluree, ledger) = seed_people().await;
 
-    // Include "id" aliasing for @id (Clojure parity)
+    // Include "id" aliasing for @id
     let mut ctx_map: Map<String, JsonValue> = context_people()
         .as_object()
         .expect("context object")
@@ -338,7 +337,7 @@ async fn construct_unbound_vars_are_not_included() {
 
 #[tokio::test]
 async fn construct_value_metadata_displays() {
-    // Clojure: "value metadata displays" (language tags + xsd:date + @json)
+    // Scenario: "value metadata displays" (language tags + xsd:date + @json)
     let (fluree, ledger) = seed_people().await;
     let ctx = context_people();
 
@@ -361,7 +360,7 @@ async fn construct_value_metadata_displays() {
         .expect("query");
     let actual = normalize_construct(result.to_construct(&ledger.snapshot).expect("to_construct"));
 
-    // Note: Clojure shows a native date object; Rust formats as a typed string.
+    // Note: Rust formats dates as typed strings.
     let expected = normalize_construct(json!({
         "@context": ctx,
         "@graph": [{

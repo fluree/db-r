@@ -1,7 +1,7 @@
 //! JSON-LD Query format
 //!
 //! Simple JSON format with compact IRIs. Supports two row shapes:
-//! - **Array** (default, Clojure parity): `[["ex:alice", "Alice", 30], ...]`
+//! - **Array** (default): `[["ex:alice", "Alice", 30], ...]`
 //! - **Object** (API-friendly): `[{"?s": "ex:alice", "?name": "Alice"}, ...]`
 
 use super::config::{FormatterConfig, JsonLdRowShape};
@@ -59,7 +59,7 @@ pub fn format(
         }
     }
 
-    // Clojure parity: for a 1-column SELECT in array-row mode, return a flat array of values
+    // For a 1-column SELECT in array-row mode, return a flat array of values.
     // (not `[ [v1], [v2] ]`).
     if config.jsonld_row_shape == JsonLdRowShape::Array
         && !result.output.is_wildcard()
@@ -103,7 +103,7 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
             let dt = dtc.datatype();
             // Full datatype IRI string (e.g., "http://www.w3.org/2001/XMLSchema#string" or "@json")
             let dt_full = compactor.decode_sid(dt)?;
-            // Compact datatype for presentation in JSON-LD Query format (Clojure parity)
+            // Compact datatype for presentation in JSON-LD Query format.
             let dt_compact = compactor.compact_sid(dt)?;
 
             // Special handling for @json datatype: deserialize the JSON string.
@@ -143,7 +143,7 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                 };
             }
 
-            // Inferable datatypes can omit @type annotation (Clojure parity).
+            // Inferable datatypes can omit @type annotation.
             if is_inferable_datatype(&dt_full) {
                 return match val {
                     FlakeValue::String(s) => Ok(JsonValue::String(s.clone())),
@@ -285,7 +285,7 @@ pub(crate) fn format_binding_with_result(
 
 // NOTE: encoded binding materialization is centralized in `format::materialize`.
 
-/// Format row as array (Clojure parity)
+/// Format row as array.
 fn format_row_array(
     result: &QueryResult,
     batch: &fluree_db_query::Batch,
@@ -293,7 +293,7 @@ fn format_row_array(
     select: &[fluree_db_query::VarId],
     compactor: &IriCompactor,
 ) -> Result<JsonValue> {
-    // Clojure parity: if only one variable is selected, return a flat array of values
+    // If only one variable is selected, return a flat array of values.
     // (not an array of 1-element rows).
     if select.len() == 1 {
         let var_id = select[0];

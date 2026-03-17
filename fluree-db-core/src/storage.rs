@@ -139,6 +139,28 @@ pub trait StorageRead: Debug + Send + Sync {
         let _ = address;
         None
     }
+
+    /// Read a byte range from the object at the given address.
+    ///
+    /// The range is `[start, end)` in bytes. Returns the bytes within
+    /// the range, which may be shorter than requested if the object is
+    /// smaller than `range.end`.
+    ///
+    /// The default implementation fetches the full object and slices.
+    /// Backends that support native range reads (S3, HTTP) should override
+    /// for efficiency.
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
+        let full = self.read_bytes(address).await?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
+    }
 }
 
 /// Mutating storage operations
@@ -298,6 +320,25 @@ pub trait ContentStore: Debug + Send + Sync {
         let _ = id;
         None
     }
+
+    /// Retrieve a byte range from an object by CID.
+    ///
+    /// The range is `[start, end)` in bytes. Returns the bytes within
+    /// the range, which may be shorter than requested if the object is
+    /// smaller than `range.end`.
+    ///
+    /// The default implementation fetches the full object and slices.
+    /// Backends that support native range reads (S3, HTTP) should override
+    /// for efficiency.
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let full = self.get(id).await?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
+    }
 }
 
 // ============================================================================
@@ -363,6 +404,19 @@ impl ContentStore for MemoryContentStore {
             .expect("RwLock poisoned")
             .insert(id.clone(), bytes.to_vec());
         Ok(())
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let data = self.data.read().expect("RwLock poisoned");
+        let full = data
+            .get(id)
+            .ok_or_else(|| crate::error::Error::not_found(id.to_string()))?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
     }
 }
 
@@ -481,6 +535,11 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
         // Fallback: dicts moved from per-branch to @shared namespace
         let legacy = self.legacy_dict_address(id)?;
         self.storage.resolve_local_path(&legacy)
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let address = self.cid_to_address(id)?;
+        self.storage.read_byte_range(&address, range).await
     }
 }
 
@@ -640,7 +699,9 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
             let ext = dict_kind_extension(dict);
             format!("{}/dicts/{}.{}", shared, hash_hex, ext)
         }
-        ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
+        ContentKind::IndexBranch => {
+            format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex)
+        }
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
         ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
         ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
@@ -648,6 +709,9 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
             format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
         }
         ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
+        ContentKind::HistorySidecar => {
+            format!("{}/index/objects/history/{}.fhs1", prefix, hash_hex)
+        }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),
@@ -758,6 +822,22 @@ impl StorageRead for MemoryStorage {
             .filter(|k| k.starts_with(prefix))
             .cloned()
             .collect())
+    }
+
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
+        let data = self.data.read().expect("RwLock poisoned");
+        let full = data
+            .get(address)
+            .ok_or_else(|| crate::error::Error::not_found(address))?;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(full.len());
+        if start >= full.len() {
+            return Ok(Vec::new());
+        }
+        Ok(full[start..end].to_vec())
     }
 }
 
@@ -939,6 +1019,73 @@ impl StorageRead for FileStorage {
         } else {
             None
         }
+    }
+
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let path = self.resolve_path(address)?;
+        if range.end <= range.start {
+            return Ok(Vec::new());
+        }
+        let len = (range.end - range.start) as usize;
+        let offset = range.start;
+        let address = address.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; len];
+            let file = std::fs::File::open(&path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    crate::error::Error::not_found(format!("{}: {}", address, path.display()))
+                } else {
+                    crate::error::Error::io(format!("Failed to open {}: {}", path.display(), e))
+                }
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                let mut total = 0;
+                while total < len {
+                    let n = file
+                        .read_at(&mut buf[total..], offset + total as u64)
+                        .map_err(|e| {
+                            crate::error::Error::io(format!(
+                                "Failed to read range from {}: {}",
+                                path.display(),
+                                e
+                            ))
+                        })?;
+                    if n == 0 {
+                        break; // EOF
+                    }
+                    total += n;
+                }
+                buf.truncate(total);
+            }
+            #[cfg(not(unix))]
+            {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = file;
+                file.seek(SeekFrom::Start(offset)).map_err(|e| {
+                    crate::error::Error::io(format!("Failed to seek {}: {}", path.display(), e))
+                })?;
+                let mut total = 0;
+                while total < len {
+                    let n = file.read(&mut buf[total..]).map_err(|e| {
+                        crate::error::Error::io(format!(
+                            "Failed to read range from {}: {}",
+                            path.display(),
+                            e
+                        ))
+                    })?;
+                    if n == 0 {
+                        break; // EOF
+                    }
+                    total += n;
+                }
+                buf.truncate(total);
+            }
+            Ok(buf)
+        })
+        .await
+        .map_err(|e| crate::error::Error::io(format!("spawn_blocking failed: {e}")))?
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {

@@ -243,7 +243,7 @@ pub fn deserialize_meta(value: &serde_json::Value) -> Result<Option<FlakeMeta>> 
 
 // NOTE: Legacy JSON leaf-node parsing/serialization was removed.
 //
-// The current index format stores leaf files as binary `FLI2` (leaflets inside),
+// The current index format stores leaf files as binary `FLI3` (leaflets inside),
 // and proxy transport uses `fluree-db-core::serde::flakes_transport` (FLKB).
 
 #[cfg(test)]

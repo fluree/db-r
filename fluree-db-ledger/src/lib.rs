@@ -35,10 +35,12 @@ pub use staged::LedgerView;
 
 use fluree_db_core::{
     content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
-    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, Storage,
+    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, Storage, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
-use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
+use fluree_db_novelty::{
+    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Novelty,
+};
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -68,7 +70,7 @@ pub struct IndexConfig {
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
-            // Clojure parity defaults (see fluree/db `add-reindex-thresholds`):
+            // Compatibility defaults:
             // - reindex-min-bytes: 100000  (100 kb, decimal)
             // - reindex-max-bytes: 1000000 (1 mb, decimal)
             reindex_min_bytes: 100_000,
@@ -190,7 +192,7 @@ impl LedgerState {
         record: NsRecord,
     ) -> Result<Self> {
         // Handle missing index (genesis fallback)
-        let (mut snapshot, dict_novelty) = match &record.index_head_id {
+        let (mut snapshot, mut dict_novelty) = match &record.index_head_id {
             Some(index_cid) => {
                 let root_bytes = store.get(index_cid).await?;
                 let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
@@ -215,6 +217,7 @@ impl LedgerState {
                     snapshot.t,
                     &record.ledger_id,
                     &mut snapshot,
+                    &mut dict_novelty,
                 )
                 .await?;
                 let head_index_id = record.index_head_id.clone();
@@ -263,6 +266,7 @@ impl LedgerState {
         index_t: i64,
         ledger_id: &str,
         snapshot: &mut LedgerSnapshot,
+        dict_novelty: &mut DictNovelty,
     ) -> Result<(Novelty, Option<ContentId>)> {
         use std::collections::{HashMap, HashSet};
 
@@ -306,12 +310,31 @@ impl LedgerState {
         // Apply all accumulated deltas to the snapshot in one shot.
         snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
 
+        // Stamp commit metadata flakes with txn-meta graph SID now that
+        // namespace_codes are complete.
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+        if let Some(g_sid) = snapshot.encode_iri(&txn_meta_iri) {
+            for (flakes, _) in &mut commit_batches {
+                stamp_graph_on_commit_flakes(flakes, &g_sid);
+            }
+        }
+
         // Build reverse_graph now that namespace_codes and graph_registry are complete.
-        let reverse_graph = snapshot.build_reverse_graph()?;
+        let mut reverse_graph = snapshot.build_reverse_graph()?;
+        // Ensure txn-meta graph is always routable for commit metadata flakes.
+        {
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+            if let Some(g_sid) = snapshot.encode_iri(&txn_meta_iri) {
+                reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+            }
+        }
 
         // Replay oldest→newest (walk was HEAD→oldest, so reverse)
         commit_batches.reverse();
         for (flakes, commit_t) in commit_batches {
+            // Populate dict_novelty with subjects/strings from replayed commits so
+            // overlay translation can resolve IDs for unindexed commits.
+            dict_novelty.populate_from_flakes(&flakes);
             novelty.apply_commit(flakes, commit_t, &reverse_graph)?;
         }
 
@@ -444,10 +467,19 @@ impl LedgerState {
         new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
-        let new_dict_novelty = DictNovelty::with_watermarks(
+        let mut new_dict_novelty = DictNovelty::with_watermarks(
             new_snapshot.subject_watermarks.clone(),
             new_snapshot.string_watermark,
         );
+        // Re-populate dict_novelty with any remaining novelty flakes (t > index_t)
+        // so overlay translation can resolve newly-introduced subject/string IDs.
+        if !new_novelty.is_empty() {
+            new_dict_novelty.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
 
         // Update state
         self.snapshot = new_snapshot;
@@ -501,10 +533,19 @@ impl LedgerState {
         new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
-        let new_dict_novelty = DictNovelty::with_watermarks(
+        let mut new_dict_novelty = DictNovelty::with_watermarks(
             new_snapshot.subject_watermarks.clone(),
             new_snapshot.string_watermark,
         );
+        // Re-populate dict_novelty with any remaining novelty flakes (t > index_t)
+        // so overlay translation can resolve newly-introduced subject/string IDs.
+        if !new_novelty.is_empty() {
+            new_dict_novelty.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
 
         // Update state
         self.snapshot = new_snapshot;
@@ -621,89 +662,76 @@ mod tests {
         )
     }
 
-    /// Helper: build minimal IRB1 root bytes for testing.
+    /// Helper: build minimal FIR6 root bytes for testing.
     ///
-    /// Only populates ledger_id, index_t, and namespace_codes.
-    /// All other sections are empty/zero.
-    fn build_test_irb1(ledger_id: &str, index_t: i64, ns_codes: &[(u16, &str)]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"IRB1"); // magic
-        buf.push(3); // version (v3: per-graph arenas)
+    /// This must be decodable by `fluree_db_core::LedgerSnapshot::from_root_bytes()`,
+    /// which parses FIR6 metadata beyond the header (namespace table, dict refs,
+    /// watermarks, routing tables, etc.). We therefore include the full required
+    /// FIR6 metadata *skeleton* with empty counts for all variable-length sections.
+    fn build_test_fir6(ledger_id: &str, index_t: i64) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64);
+        buf.extend_from_slice(b"FIR6"); // magic
+        buf.push(1); // version
         buf.push(0); // flags (no optional sections)
         buf.extend_from_slice(&0u16.to_le_bytes()); // pad
         buf.extend_from_slice(&index_t.to_le_bytes()); // index_t
         buf.extend_from_slice(&0i64.to_le_bytes()); // base_t
-
-        // Ledger ID
+                                                    // Ledger ID (u16 length prefix + UTF-8 bytes)
         let lid = ledger_id.as_bytes();
         buf.extend_from_slice(&(lid.len() as u16).to_le_bytes());
         buf.extend_from_slice(lid);
 
-        buf.push(0); // subject_id_encoding = Narrow
+        // ---- FIR6 metadata skeleton (all empty) ----
+        buf.push(0); // subject_id_encoding (u8)
 
-        // Namespace codes
-        buf.extend_from_slice(&(ns_codes.len() as u16).to_le_bytes());
-        for &(code, prefix) in ns_codes {
-            buf.extend_from_slice(&code.to_le_bytes());
-            let pb = prefix.as_bytes();
-            buf.extend_from_slice(&(pb.len() as u16).to_le_bytes());
-            buf.extend_from_slice(pb);
-        }
+        buf.extend_from_slice(&0u16.to_le_bytes()); // ns_count (u16) = 0
 
-        // Predicate SIDs (empty)
-        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // pred_count (u32) = 0
 
-        // Small dict inlines: graph_iris, datatype_iris, language_tags (all empty)
-        for _ in 0..3 {
-            buf.extend_from_slice(&0u16.to_le_bytes());
-        }
+        // graph_iris / datatype_iris / language_tags: string arrays (u16 count + strings)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // graph_iris count = 0
+        buf.extend_from_slice(&0u16.to_le_bytes()); // datatype_iris count = 0
+        buf.extend_from_slice(&0u16.to_le_bytes()); // language_tags count = 0
 
-        // Dict refs (v3 format): forward packs + 2 reverse trees (no flat numbig/vectors)
-        let dummy_cid = ContentId::new(ContentKind::IndexRoot, b"dummy");
-        let cid_bytes = dummy_cid.to_bytes();
-        // String forward packs (0 packs)
+        // dict pack refs: ns_count (u16) + packs; empty
         buf.extend_from_slice(&0u16.to_le_bytes());
-        // Subject forward packs (0 namespaces)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        // Subject reverse tree: branch CID + 0 leaves
-        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&cid_bytes);
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        // String reverse tree: branch CID + 0 leaves
-        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&cid_bytes);
-        buf.extend_from_slice(&0u32.to_le_bytes());
+        // dict tree refs: subject reverse, string reverse; each starts with u16 count
+        buf.extend_from_slice(&0u16.to_le_bytes()); // subject reverse sp_count = 0
+        buf.extend_from_slice(&0u16.to_le_bytes()); // string reverse sp_count = 0
 
-        // Per-graph arenas (v3: 0 graphs with arenas)
+        // per-graph specialty arenas: arena_count (u16) = 0
         buf.extend_from_slice(&0u16.to_le_bytes());
 
-        // Watermarks (empty)
-        buf.extend_from_slice(&0u16.to_le_bytes()); // 0 subject watermarks
+        // watermarks
+        buf.extend_from_slice(&0u16.to_le_bytes()); // wm_count = 0
         buf.extend_from_slice(&0u32.to_le_bytes()); // string_watermark = 0
 
-        // Cumulative commit stats (3x u64 = 0)
-        for _ in 0..3 {
-            buf.extend_from_slice(&0u64.to_le_bytes());
-        }
+        // cumulative commit stats (3 * u64)
+        buf.extend_from_slice(&0u64.to_le_bytes()); // total_commit_size
+        buf.extend_from_slice(&0u64.to_le_bytes()); // total_asserts
+        buf.extend_from_slice(&0u64.to_le_bytes()); // total_retracts
 
-        // Default graph routing (0 orders)
-        buf.push(0);
+        // o_type table
+        buf.extend_from_slice(&0u32.to_le_bytes()); // otype_count = 0
 
-        // Named graph routing (0 graphs)
-        buf.extend_from_slice(&0u16.to_le_bytes());
+        // default graph routing
+        buf.push(0); // default_order_count = 0
+
+        // named graph routing
+        buf.extend_from_slice(&0u16.to_le_bytes()); // named_count = 0
+
+        // Defensive padding: keeps this test helper resilient to small FIR6
+        // metadata decode changes (additional trailing fields). All padding
+        // bytes are zero so any newly-read counts default to empty.
+        buf.extend(std::iter::repeat_n(0u8, 64));
 
         buf
     }
 
-    /// Helper: store IRB1 root bytes via the content store and return the CID.
-    async fn store_index_root(
-        storage: &MemoryStorage,
-        ledger_id: &str,
-        index_t: i64,
-        ns_codes: &[(u16, &str)],
-    ) -> ContentId {
+    /// Helper: store FIR6 root bytes via the content store and return the CID.
+    async fn store_index_root(storage: &MemoryStorage, ledger_id: &str, index_t: i64) -> ContentId {
         let store = content_store_for(storage.clone(), ledger_id);
-        let bytes = build_test_irb1(ledger_id, index_t, ns_codes);
+        let bytes = build_test_fir6(ledger_id, index_t);
         store.put(ContentKind::IndexRoot, &bytes).await.unwrap()
     }
 
@@ -804,8 +832,8 @@ mod tests {
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
 
-        // Create an IRB1 index root at t=1 and store via CAS
-        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, ""), (1, "@")]).await;
+        // Create an FIR6 index root at t=1 and store via CAS
+        let index_cid = store_index_root(&storage, "test:main", 1).await;
         let store = content_store_for(storage.clone(), "test:main");
 
         // Apply the index
@@ -818,6 +846,77 @@ mod tests {
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 1);
     }
 
+    #[test]
+    fn test_apply_loaded_db_repopulates_dict_novelty_for_remaining_overlay_strings() {
+        use fluree_db_core::IndexType;
+
+        // Scenario:
+        // - Index exists at t=1 with string watermark=1
+        // - Two commits happen: t=2 adds string "a" (becomes id=2), t=3 adds string "b" (id=3)
+        // - A newer index arrives at t=2 (string watermark=2) but commit t=3 remains in novelty
+        // - apply_loaded_db must reset watermarks AND repopulate DictNovelty from remaining novelty
+        //   so string id 3 is still resolvable (otherwise decode fails with "string id 3 not found").
+
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot.t = 1;
+        snapshot.string_watermark = 1;
+
+        let mut state = LedgerState::new(snapshot, Novelty::new(1));
+        let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
+
+        let s = Sid::new(0, "ex:s");
+        let p = Sid::new(0, "ex:p");
+        let dt = Sid::new(2, "string"); // xsd:string (default namespace codes)
+
+        let flakes_t2 = vec![Flake::new(
+            s.clone(),
+            p.clone(),
+            FlakeValue::String("a".to_string()),
+            dt.clone(),
+            2,
+            true,
+            None,
+        )];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t2);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t2, 2, &reverse_graph)
+            .unwrap();
+
+        let flakes_t3 = vec![Flake::new(
+            s,
+            p,
+            FlakeValue::String("b".to_string()),
+            dt,
+            3,
+            true,
+            None,
+        )];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t3);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t3, 3, &reverse_graph)
+            .unwrap();
+
+        // Sanity: both novelty strings exist before applying the new index.
+        assert_eq!(state.dict_novelty.strings.find_string("a"), Some(2));
+        assert_eq!(state.dict_novelty.strings.find_string("b"), Some(3));
+        assert_eq!(state.dict_novelty.strings.resolve_string(3), Some("b"));
+
+        // Apply a newer index snapshot at t=2 (string watermark=2), leaving commit t=3 in novelty.
+        let mut new_snapshot = LedgerSnapshot::genesis("test:main");
+        new_snapshot.t = 2;
+        new_snapshot.string_watermark = 2;
+        state.apply_loaded_db(new_snapshot, None).unwrap();
+
+        // Novelty at t<=2 cleared; t=3 remains active.
+        assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 1);
+
+        // Regression assertion:
+        // With watermark=2, the remaining novelty string must still resolve at id=3.
+        // Before the fix, apply_loaded_db reset dict_novelty and lost this mapping.
+        assert_eq!(state.dict_novelty.strings.watermark(), 2);
+        assert_eq!(state.dict_novelty.strings.resolve_string(3), Some("b"));
+    }
+
     #[tokio::test]
     async fn test_apply_index_address_mismatch() {
         let storage = MemoryStorage::new();
@@ -826,8 +925,8 @@ mod tests {
 
         let mut state = LedgerState::new(snapshot, novelty);
 
-        // Create an IRB1 root for a different ledger, but store under test:main's CAS space
-        let bytes = build_test_irb1("other:ledger", 1, &[(0, "")]);
+        // Create an FIR6 root for a different ledger, but store under test:main's CAS space
+        let bytes = build_test_fir6("other:ledger", 1);
         let store = content_store_for(storage.clone(), "test:main");
         let index_cid = store.put(ContentKind::IndexRoot, &bytes).await.unwrap();
 
@@ -840,8 +939,8 @@ mod tests {
     async fn test_apply_index_stale() {
         let storage = MemoryStorage::new();
 
-        // Create an IRB1 root at t=2
-        let index_cid_t2 = store_index_root(&storage, "test:main", 2, &[(0, "")]).await;
+        // Create an FIR6 root at t=2
+        let index_cid_t2 = store_index_root(&storage, "test:main", 2).await;
 
         // Load the LedgerSnapshot from CAS for current state
         let store = content_store_for(storage.clone(), "test:main");
@@ -851,8 +950,8 @@ mod tests {
         let mut state = LedgerState::new(snapshot, novelty);
         assert_eq!(state.index_t(), 2);
 
-        // Create an older IRB1 root at t=1
-        let index_cid_t1 = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
+        // Create an older FIR6 root at t=1
+        let index_cid_t1 = store_index_root(&storage, "test:main", 1).await;
 
         // Should fail with stale index error
         let cs = content_store_for(storage.clone(), "test:main");
@@ -864,8 +963,8 @@ mod tests {
     async fn test_apply_index_equal_t_noop() {
         let storage = MemoryStorage::new();
 
-        // Create an IRB1 root at t=1
-        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
+        // Create an FIR6 root at t=1
+        let index_cid = store_index_root(&storage, "test:main", 1).await;
 
         // Load LedgerSnapshot from CAS
         let store = content_store_for(storage.clone(), "test:main");
@@ -874,9 +973,11 @@ mod tests {
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(snapshot, novelty);
 
-        // Create another IRB1 root at same t (different bytes produce different CID)
-        let index_cid_same =
-            store_index_root(&storage, "test:main", 1, &[(0, ""), (99, "extra")]).await;
+        // Create another FIR6 root at same t (append extra bytes to produce different CID)
+        let store2 = content_store_for(storage.clone(), "test:main");
+        let mut bytes2 = build_test_fir6("test:main", 1);
+        bytes2.extend_from_slice(b"extra-padding");
+        let index_cid_same = store2.put(ContentKind::IndexRoot, &bytes2).await.unwrap();
 
         // Should succeed as no-op (equal t)
         let cs = content_store_for(storage.clone(), "test:main");

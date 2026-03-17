@@ -1,6 +1,6 @@
-//! Query/transaction execution tracking (Clojure parity)
+//! Query/transaction execution tracking
 //!
-//! This module implements the db-clojure tracking behavior:
+//! This module implements the legacy tracking behavior:
 //! - Enablement via opts.meta (bool or object) and/or opts.max-fuel
 //! - Time returned as formatted string like "12.34ms"
 //! - Fuel counted per emitted item; limit errors when total == limit + 1
@@ -27,7 +27,7 @@ pub struct TrackingOptions {
 impl TrackingOptions {
     /// Parse tracking options from a JSON `opts` object value.
     ///
-    /// Expected shapes (Clojure parity):
+    /// Expected shapes:
     /// - `"opts": {"meta": true}` enables all tracking
     /// - `"opts": {"meta": {"time": true, "fuel": true, "policy": true}}` selective
     /// - `"opts": {"max-fuel": 1000}` implicitly enables fuel tracking
@@ -82,14 +82,14 @@ impl TrackingOptions {
     }
 }
 
-/// Policy execution statistics (Clojure parity: `{:executed N :allowed M}`)
+/// Policy execution statistics: `{:executed N :allowed M}`
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PolicyStats {
     pub executed: u64,
     pub allowed: u64,
 }
 
-/// Fuel limit exceeded (Clojure parity message: "Fuel limit exceeded")
+/// Fuel limit exceeded message: "Fuel limit exceeded"
 #[derive(Debug, Clone, Error)]
 #[error("Fuel limit exceeded")]
 pub struct FuelExceededError {
@@ -162,7 +162,7 @@ impl Tracker {
 
     /// Consume one unit of fuel (per emitted flake/item).
     ///
-    /// Clojure parity: allows exactly `limit` items, errors when total becomes `limit + 1`.
+    /// Allows exactly `limit` items, errors when total becomes `limit + 1`.
     #[inline]
     pub fn consume_fuel_one(&self) -> Result<(), FuelExceededError> {
         let Some(inner) = &self.0 else {
@@ -231,7 +231,7 @@ impl Tracker {
     }
 }
 
-/// Tracking tally returned on completion (Clojure parity keys).
+/// Tracking tally returned on completion.
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackingTally {
     /// Formatted time string like `"12.34ms"`
