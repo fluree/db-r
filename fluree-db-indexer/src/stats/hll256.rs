@@ -5,7 +5,7 @@
 //! - Register-wise merge for incremental updates
 //! - Monotone NDV estimation (never decreases)
 //!
-//! This implementation matches Clojure's approach: persist raw registers,
+//! This implementation persists raw registers,
 //! load and merge during refresh, no hasher generics or serde complexity.
 
 /// HLL precision: p=8 means 2^8 = 256 registers
@@ -29,7 +29,7 @@ const ALPHA_M: f64 = 0.7213 / (1.0 + 1.079 / 256.0);
 /// # Serialization
 ///
 /// Serializes as exactly 256 bytes (raw registers) via `to_bytes()`/`from_bytes()`.
-/// This matches Clojure's approach and enables trivial persistence/loading.
+/// This enables trivial persistence/loading.
 /// No serde derive needed - we serialize raw bytes directly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HllSketch256 {

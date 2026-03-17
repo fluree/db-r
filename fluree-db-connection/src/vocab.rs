@@ -60,7 +60,7 @@ pub const FIELD_S3_RETRY_MAX_DELAY_MS: &str = "https://ns.flur.ee/system#s3Retry
 
 /// Optional address identifier for a storage backend
 ///
-/// Used in Clojure configs to embed a storage identifier into Fluree addresses, e.g.
+/// Used in legacy configs to embed a storage identifier into Fluree addresses, e.g.
 /// `fluree:{addressIdentifier}:s3://...`.
 pub const FIELD_ADDRESS_IDENTIFIER: &str = "https://ns.flur.ee/system#addressIdentifier";
 

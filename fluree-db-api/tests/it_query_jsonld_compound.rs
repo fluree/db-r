@@ -1,6 +1,5 @@
-//! JSON-LD compound query integration tests (Clojure parity)
+//! JSON-LD compound query integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/json_ld_compound_test.clj` using JSON inputs only.
 
 mod support;
 
@@ -10,11 +9,11 @@ use support::{normalize_rows, seed_people_compound_dataset};
 
 #[tokio::test]
 async fn compound_two_tuple_select_with_crawl_and_values() {
-    // Clojure: two-tuple-select-with-crawl + values variant
+    // Scenario: two-tuple-select-with-crawl + values variant
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:main").await;
 
-    // NOTE: Clojure returns tuple rows mixing scalars + a crawled object.
+    // NOTE: Some clients return tuple rows mixing scalars + a crawled object.
     // Rust currently formats graph crawl selections as **objects only** (graph crawl output),
     // so we assert the crawled friends and keep a separate ignored parity test below.
     let q = json!({
@@ -60,7 +59,7 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
 
 #[tokio::test]
 async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
-    // Clojure: two-tuple-select-with-crawl + values variant
+    // Scenario: two-tuple-select-with-crawl + values variant
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:tuple-crawl").await;
 
@@ -106,7 +105,7 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
 
 #[tokio::test]
 async fn compound_passthrough_variables_and_select_one() {
-    // Clojure: pass-through vars + selectOne
+    // Scenario: pass-through vars + selectOne
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:passthrough").await;
 
@@ -153,7 +152,7 @@ async fn compound_passthrough_variables_and_select_one() {
 
 #[tokio::test]
 async fn compound_multicard_duplicates_and_ordering() {
-    // Clojure: multi-card results duplicate single-card values; ordering tests
+    // Scenario: multi-card results duplicate single-card values; ordering tests
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:multicard").await;
 
@@ -251,7 +250,7 @@ async fn compound_multicard_duplicates_and_ordering() {
 
 #[tokio::test]
 async fn compound_group_by_multicard_without_aggregate() {
-    // Clojure: group-by with a multicardinality value (no aggregate)
+    // Scenario: group-by with a multicardinality value (no aggregate)
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:groupby").await;
 
@@ -276,7 +275,7 @@ async fn compound_group_by_multicard_without_aggregate() {
 
 #[tokio::test]
 async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
-    // Clojure: s/p/o check + object-subject joins
+    // Scenario: s/p/o check + object-subject joins
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people_compound_dataset(&fluree, "query/compound:spo").await;
 

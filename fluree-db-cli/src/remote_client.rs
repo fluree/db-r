@@ -539,6 +539,72 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
+    // Explain
+    // =========================================================================
+
+    /// Explain a JSON-LD query plan against a ledger.
+    pub async fn explain_jsonld(
+        &self,
+        ledger: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url("explain", ledger);
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
+
+    /// Explain a SPARQL query plan against a ledger.
+    pub async fn explain_sparql(
+        &self,
+        ledger: &str,
+        sparql: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url("explain", ledger);
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-query",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
+    }
+
+    /// Explain a JSON-LD connection query plan (ledger specified via `from` in body).
+    pub async fn explain_connection_jsonld(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("explain");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
+
+    /// Explain a SPARQL connection query plan (ledger specified via `FROM` clause).
+    pub async fn explain_connection_sparql(
+        &self,
+        sparql: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("explain");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-query",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
+    }
+
+    // =========================================================================
     // Insert
     // =========================================================================
 

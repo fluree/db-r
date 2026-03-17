@@ -653,7 +653,7 @@ fn parse_property(
 
     // Check if predicate is a variable (e.g., "?p")
     let (predicate, context_entry, is_reverse) = if is_variable(key) {
-        // Clojure parity: variable predicates must bind to references (variables or @id),
+        // Variable predicates must bind to references (variables or @id),
         // not literal constants. In history mode, allow value objects with @value (variable)
         // plus metadata bindings like @t/@op.
         let is_valid_object = match value {

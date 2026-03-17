@@ -110,7 +110,7 @@ async fn create_ledger_then_ledger_info() {
     let (_tmp, state) = test_state();
     let app = build_router(state.clone());
 
-    // Create empty ledger - should return 201 with Clojure-compatible format
+    // Create empty ledger - should return 201 with expected response shape
     let create_body = serde_json::json!({ "ledger": "test:main" });
     let resp = app
         .clone()
@@ -136,7 +136,7 @@ async fn create_ledger_then_ledger_info() {
     );
     // Empty ledger has t=0
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(0));
-    // Should have tx-id and commit fields (Clojure parity)
+    // Should have tx-id and commit fields
     assert!(
         json.get("tx-id").is_some(),
         "Response should have tx-id field"
@@ -188,7 +188,7 @@ async fn insert_then_query_finds_value() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Insert - should return Clojure-compatible response format
+    // Insert - should return expected response shape
     let insert_body = serde_json::json!({
       "@context": { "ex": "http://example.org/" },
       "@id": "ex:alice",
@@ -209,7 +209,7 @@ async fn insert_then_query_finds_value() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    // Verify Clojure-compatible response format
+    // Verify response shape
     assert_eq!(
         json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:main")
@@ -1099,7 +1099,7 @@ async fn query_with_tracking_returns_headers() {
         .await
         .unwrap();
 
-    // Check tracking headers are present (Clojure parity)
+    // Check tracking headers are present
     assert!(
         resp.headers().get("x-fdb-time").is_some(),
         "Response should have x-fdb-time header when tracking is enabled"

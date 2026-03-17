@@ -966,11 +966,15 @@ pub struct SharedResolverState {
     /// Optional fulltext collection hook. When set, `on_op()` is called for
     /// every resolved user-data op to collect `@fulltext`-typed string entries.
     pub fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
+    /// Optional schema hierarchy extractor hook. When set, `on_flake()` is called
+    /// for every `rdfs:subClassOf` / `rdfs:subPropertyOf` user-data op so rebuild
+    /// can populate `IndexSchema` in the FIR6 root.
+    pub schema_hook: Option<crate::stats::SchemaExtractor>,
 }
 
 impl SharedResolverState {
     /// Create a new shared state seeded with default namespace prefixes
-    /// and pre-reserved txn-meta graph (g_id=1).
+    /// and pre-reserved system graphs (txn-meta + config).
     ///
     /// The ledger_id is used to construct the ledger-scoped txn-meta IRI
     /// (`urn:fluree:{ledger_id}#txn-meta`).
@@ -978,9 +982,13 @@ impl SharedResolverState {
         use fluree_db_core::value_id::ValueTypeTag;
 
         let mut graphs = super::global_dict::PredicateDict::new();
-        // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
+        // Reserve system graph IDs in stable order:
+        // - dict_id=0 → g_id=1 txn-meta
+        // - dict_id=1 → g_id=2 config
         let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        let config_iri = fluree_db_core::graph_registry::config_graph_iri(ledger_id);
         graphs.get_or_insert(&txn_meta_iri);
+        graphs.get_or_insert(&config_iri);
 
         let datatypes = super::global_dict::new_datatype_dict();
 
@@ -1005,6 +1013,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            schema_hook: None,
         }
     }
 
@@ -1016,19 +1025,17 @@ impl SharedResolverState {
     /// - First 14 datatypes match `new_datatype_dict()` reserved order
     /// - `graph_iris[0]` is the txn-meta graph IRI
     pub fn from_index_root(
-        root: &fluree_db_binary_index::format::index_root::IndexRootV5,
+        root: &fluree_db_binary_index::format::index_root::IndexRoot,
     ) -> Result<Self, ResolverError> {
         use fluree_db_core::value_id::ValueTypeTag;
         use std::sync::Arc;
 
-        // 1. Namespace codes → ns_prefixes (direct copy)
         let ns_prefixes: HashMap<u16, String> = root
             .namespace_codes
             .iter()
             .map(|(&code, prefix)| (code, prefix.clone()))
             .collect();
 
-        // 2. Predicates from predicate_sids: reconstruct full IRIs
         let pred_iris: Vec<Arc<str>> = root
             .predicate_sids
             .iter()
@@ -1042,8 +1049,6 @@ impl SharedResolverState {
             .collect();
         let predicates = super::global_dict::PredicateDict::from_ordered_iris(pred_iris);
 
-        // 3. Graphs from graph_iris
-        //    graph_iris[0] must be the ledger-scoped txn-meta IRI (g_id=1 pre-reserved)
         let expected_txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri(&root.ledger_id);
         if root.graph_iris.is_empty() || root.graph_iris[0] != expected_txn_meta {
             return Err(ResolverError::Resolve(format!(
@@ -1052,15 +1057,23 @@ impl SharedResolverState {
                 root.graph_iris.first()
             )));
         }
-        let graph_iris: Vec<Arc<str>> = root
+        // Upgrade legacy roots that only contain txn-meta by inserting the config graph IRI
+        // into slot 1 (g_id=2). This aligns indexed graph IDs with in-memory graph ID
+        // allocation (`GraphRegistry::apply_delta` starts user graphs at g_id=3).
+        //
+        // Safe because legacy roots with `graph_iris.len() == 1` cannot have any user
+        // named graphs yet — inserting config does not shift existing user graphs.
+        let mut graph_iris: Vec<Arc<str>> = root
             .graph_iris
             .iter()
             .map(|s| Arc::from(s.as_str()))
             .collect();
+        if graph_iris.len() == 1 {
+            let config_iri = fluree_db_core::graph_registry::config_graph_iri(&root.ledger_id);
+            graph_iris.push(Arc::from(config_iri.as_str()));
+        }
         let graphs = super::global_dict::PredicateDict::from_ordered_iris(graph_iris);
 
-        // 4. Datatypes from datatype_iris
-        //    Validate first 14 match new_datatype_dict() reserved order
         let reference = super::global_dict::new_datatype_dict();
         if root.datatype_iris.len() < 14 {
             return Err(ResolverError::Resolve(format!(
@@ -1086,7 +1099,6 @@ impl SharedResolverState {
             .collect();
         let datatypes = super::global_dict::PredicateDict::from_ordered_iris(dt_iris);
 
-        // 5. Languages from language_tags (1-based IDs; 0 = "no tag")
         let lang_tags: Vec<Arc<str>> = root
             .language_tags
             .iter()
@@ -1094,17 +1106,12 @@ impl SharedResolverState {
             .collect();
         let languages = super::global_dict::LanguageTagDict::from_ordered_tags(lang_tags);
 
-        // 6. Populate dt_tags for ALL datatypes
-        //    First 14: use DatatypeDictId for guaranteed correctness
-        //    Remaining: split IRI against ns_prefixes → (ns_code, name) → from_ns_name
-        let mut dt_tags = Vec::with_capacity(root.datatype_iris.len());
-
-        // Build reverse prefix lookup for IRI splitting
         let prefix_to_code: Vec<(&str, u16)> = ns_prefixes
             .iter()
             .map(|(&code, prefix)| (prefix.as_str(), code))
             .collect();
 
+        let mut dt_tags = Vec::with_capacity(root.datatype_iris.len());
         for (i, iri) in root.datatype_iris.iter().enumerate() {
             if i < 14 {
                 let tag = fluree_db_core::DatatypeDictId(i as u16)
@@ -1112,7 +1119,6 @@ impl SharedResolverState {
                     .unwrap_or(ValueTypeTag::UNKNOWN);
                 dt_tags.push(tag);
             } else {
-                // Split IRI against known namespace prefixes
                 let tag = split_iri_to_value_type_tag(iri, &prefix_to_code);
                 dt_tags.push(tag);
             }
@@ -1129,6 +1135,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            schema_hook: None,
         })
     }
 
@@ -1182,6 +1189,29 @@ impl SharedResolverState {
 
         // Resolve user-data ops into chunk-local records.
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
+            // Schema extraction (rebuild only): capture class/property hierarchy
+            // directly from commit ops before dict remap.
+            if let Some(ref mut schema) = self.schema_hook {
+                if raw_op.p_ns_code == fluree_vocab::namespaces::RDFS
+                    && (raw_op.p_name == "subClassOf" || raw_op.p_name == "subPropertyOf")
+                {
+                    if let RawObject::Ref { ns_code, name } = raw_op.o {
+                        let flake = fluree_db_core::Flake::new(
+                            fluree_db_core::Sid::new(raw_op.s_ns_code, raw_op.s_name),
+                            fluree_db_core::Sid::new(raw_op.p_ns_code, raw_op.p_name),
+                            fluree_db_core::FlakeValue::Ref(fluree_db_core::Sid::new(
+                                ns_code, name,
+                            )),
+                            fluree_db_core::Sid::new(0, ""),
+                            t as i64,
+                            raw_op.op,
+                            None,
+                        );
+                        schema.on_flake(&flake);
+                    }
+                }
+            }
+
             let record = self.resolve_op_chunk(&raw_op, t, chunk)?;
 
             // Feed raw op to spatial hook (needs raw WKT string + resolved IDs).
@@ -1911,8 +1941,8 @@ fn split_iri_to_value_type_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::runs::run_writer::{RunWriter, RunWriterConfig};
-    use fluree_db_binary_index::format::run_record::RunSortOrder;
+    use crate::run_index::runs::run_writer::RecordSink;
+    use fluree_db_binary_index::format::run_record::RunRecord;
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
     use fluree_db_novelty::commit_v2::format::{
@@ -1921,6 +1951,33 @@ mod tests {
     use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
     use fluree_db_novelty::commit_v2::raw_reader::load_commit_ops;
     use sha2::{Digest, Sha256};
+
+    /// In-memory V1 record collector for tests.
+    ///
+    /// Implements `RecordSink` to capture V1 `RunRecord` values emitted by the
+    /// resolver without converting to V2 or writing to disk.
+    struct RecordCollector {
+        records: Vec<RunRecord>,
+    }
+
+    impl RecordCollector {
+        fn new() -> Self {
+            Self {
+                records: Vec::new(),
+            }
+        }
+    }
+
+    impl RecordSink for RecordCollector {
+        fn push(
+            &mut self,
+            record: RunRecord,
+            _lang_dict: &mut crate::run_index::resolve::global_dict::LanguageTagDict,
+        ) -> std::io::Result<()> {
+            self.records.push(record);
+            Ok(())
+        }
+    }
 
     /// Build a minimal commit blob from flakes (reused from raw_reader tests).
     fn build_test_blob(flakes: &[Flake], t: i64) -> Vec<u8> {
@@ -2005,10 +2062,6 @@ mod tests {
 
     #[test]
     fn test_resolve_basic_ops() {
-        let dir = std::env::temp_dir().join("fluree_test_resolver_basic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
         let flakes = vec![
             Flake::new(
                 Sid::new(101, "Alice"),
@@ -2050,15 +2103,10 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://example.org/".to_string());
 
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         let (asserts, retracts) = resolver
-            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut collector)
             .unwrap();
         assert_eq!(asserts + retracts, 3);
 
@@ -2067,11 +2115,8 @@ mod tests {
         assert_eq!(dicts.predicates.len(), 2); // age, name
         assert_eq!(dicts.strings.len(), 1); // "Alice" (the string value)
 
-        // Finish and read back
-        let result = writer.finish(&mut dicts.languages).unwrap();
-        assert_eq!(result.total_records, 3);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        // Verify records collected
+        assert_eq!(collector.records.len(), 3);
     }
 
     #[test]
@@ -2108,25 +2153,14 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://example.org/".to_string());
 
-        let dir = std::env::temp_dir().join("fluree_test_resolver_ref");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         resolver
-            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut collector)
             .unwrap();
 
         assert_eq!(dicts.subjects.len(), 2); // Alice, Bob
         assert_eq!(dicts.predicates.len(), 2); // knows, age
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2150,31 +2184,18 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://example.org/".to_string());
 
-        let dir = std::env::temp_dir().join("fluree_test_resolver_dt");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         let (asserts, retracts) = resolver
-            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut collector)
             .unwrap();
         assert_eq!(asserts + retracts, 1);
 
-        let result = writer.finish(&mut dicts.languages).unwrap();
-        let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
-        assert_eq!(records.len(), 1);
+        assert_eq!(collector.records.len(), 1);
         // Verify the ObjKind is DATE_TIME (0x9)
-        assert_eq!(records[0].o_kind, ObjKind::DATE_TIME.as_u8());
+        assert_eq!(collector.records[0].o_kind, ObjKind::DATE_TIME.as_u8());
         // Verify dt is DATE_TIME
-        assert_eq!(records[0].dt, DatatypeDictId::DATE_TIME.as_u16());
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(collector.records[0].dt, DatatypeDictId::DATE_TIME.as_u16());
     }
 
     #[test]
@@ -2209,29 +2230,19 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://example.org/".to_string());
 
-        let dir = std::env::temp_dir().join("fluree_test_resolver_bool");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         resolver
-            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut collector)
             .unwrap();
 
-        let result = writer.finish(&mut dicts.languages).unwrap();
-        let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
-        assert_eq!(records[0].o_kind, ObjKind::BOOL.as_u8());
-        assert_eq!(records[0].o_key, ObjKey::encode_bool(true).as_u64());
-        assert_eq!(records[1].o_kind, ObjKind::NULL.as_u8());
-        assert_eq!(records[1].o_key, 0);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(collector.records[0].o_kind, ObjKind::BOOL.as_u8());
+        assert_eq!(
+            collector.records[0].o_key,
+            ObjKey::encode_bool(true).as_u64()
+        );
+        assert_eq!(collector.records[1].o_kind, ObjKind::NULL.as_u8());
+        assert_eq!(collector.records[1].o_key, 0);
     }
 
     #[test]
@@ -2266,27 +2277,16 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://example.org/".to_string());
 
-        let dir = std::env::temp_dir().join("fluree_test_resolver_lang");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         resolver
-            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut collector)
             .unwrap();
 
         // Should have 2 language tags
         assert_eq!(dicts.languages.len(), 2);
         assert_eq!(dicts.languages.resolve(1), Some("en"));
         assert_eq!(dicts.languages.resolve(2), Some("fr"));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- Txn-meta tests ----
@@ -2308,19 +2308,10 @@ mod tests {
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::CommitRef;
 
-        let dir = std::env::temp_dir().join("fluree_test_emit_txn_meta");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
         let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
 
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -2341,7 +2332,7 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(hex, &envelope, 1024, 8, 2, &mut dicts, &mut writer)
+            .emit_txn_meta(hex, &envelope, 1024, 8, 2, &mut dicts, &mut collector)
             .unwrap();
 
         // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
@@ -2358,17 +2349,11 @@ mod tests {
         // Verify subjects created
         assert!(dicts.subjects.len() >= 2);
 
-        // Flush and read back records
-        let result = writer.finish(&mut dicts.languages).unwrap();
-        assert_eq!(result.total_records, 7);
-
-        let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
+        // Verify records collected
+        let records = &collector.records;
         assert_eq!(records.len(), 7);
 
-        // g_id is not stored in the 34-byte run wire format (only in spool files),
-        // so round-tripped records always have g_id=0.  The g_id=1 reservation is
-        // verified via the graph dict check above.
-        for rec in &records {
+        for rec in records {
             assert_eq!(rec.op, 1, "txn-meta records must be asserts");
         }
 
@@ -2426,27 +2411,16 @@ mod tests {
             ObjKind::REF_ID.as_u8(),
             "ledger:previous must be REF_ID"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_emit_txn_meta_minimal() {
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 
-        let dir = std::env::temp_dir().join("fluree_test_emit_txn_meta_min");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
         let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
 
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
 
@@ -2462,23 +2436,17 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(hex, &envelope, 512, 4, 1, &mut dicts, &mut writer)
+            .emit_txn_meta(hex, &envelope, 512, 4, 1, &mut dicts, &mut collector)
             .unwrap();
 
         // 5 records: address, t, size, asserts, retracts (no time, no previous)
         assert_eq!(count, 5);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_emit_txn_meta_user_entries() {
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue};
-
-        let dir = std::env::temp_dir().join("fluree_test_emit_txn_meta_user");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
 
         let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
@@ -2490,12 +2458,7 @@ mod tests {
             .ns_prefixes
             .insert(101, "http://refs.example.org/".to_string());
 
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-        let mut writer = RunWriter::new(config);
+        let mut collector = RecordCollector::new();
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
 
@@ -2541,24 +2504,16 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(hex, &envelope, 2048, 15, 5, &mut dicts, &mut writer)
+            .emit_txn_meta(hex, &envelope, 2048, 15, 5, &mut dicts, &mut collector)
             .unwrap();
 
         // 5 built-in records (address, t, size, asserts, retracts) + 7 user entries = 12
         assert_eq!(count, 12);
 
-        // Flush and read back records
-        let result = writer.finish(&mut dicts.languages).unwrap();
-        assert_eq!(result.total_records, 12);
-
-        let (_, lang_dict, records) =
-            crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
+        let records = &collector.records;
         assert_eq!(records.len(), 12);
 
-        // g_id is not stored in the 34-byte run wire format, so round-tripped
-        // records always have g_id=0.  The emit path sets g_id=1 on the in-memory
-        // records; verify the content is otherwise correct.
-        for rec in &records {
+        for rec in records {
             assert_eq!(rec.op, 1, "txn-meta records must be asserts");
         }
 
@@ -2617,10 +2572,8 @@ mod tests {
         let desc_rec = records.iter().find(|r| r.p_id == desc_pid).unwrap();
         assert_eq!(desc_rec.dt, DatatypeDictId::LANG_STRING.as_u16());
         assert!(desc_rec.lang_id > 0, "description should have lang_id");
-        // Use the language dict from the run file
-        assert_eq!(lang_dict.resolve(desc_rec.lang_id), Some("fr"));
-
-        let _ = std::fs::remove_dir_all(&dir);
+        // Use the language dict from the resolver's dicts
+        assert_eq!(dicts.languages.resolve(desc_rec.lang_id), Some("fr"));
     }
 
     #[test]

@@ -151,7 +151,7 @@ fn parse_query_ast_internal(
 
     // Determine select mode based on which key is present.
     //
-    // Clojure parity:
+    // Compatibility notes:
     // - Support both camelCase and kebab-case variants:
     //   - `selectOne` / `select-one`
     //   - `selectDistinct` / `select-distinct`
@@ -188,7 +188,7 @@ fn parse_query_ast_internal(
         gs.depth = options::parse_depth(obj)?;
     }
 
-    // Parse top-level VALUES (optional) - mirrors Clojure's `:values` initial solution seed.
+    // Parse top-level VALUES (optional) - mirrors the `:values` initial solution seed.
     if let Some(values_val) = obj.get("values") {
         if !values_val.is_null() {
             let values_pat = values::parse_values_clause(values_val, &context)?;
@@ -199,7 +199,7 @@ fn parse_query_ast_internal(
 
     // Parse where clause.
     //
-    // Clojure parity: graph crawl queries like {"select": {"ex:dan": ["*"]}} are allowed
+    // Graph crawl queries like {"select": {"ex:dan": ["*"]}} are allowed.
     // without an explicit WHERE clause (root may be an IRI constant).
     let object_var_parsing = options::parse_object_var_parsing(obj);
     if let Some(where_clause) = obj.get("where") {
@@ -215,7 +215,7 @@ fn parse_query_ast_internal(
     } else if query.graph_select.is_some() {
         // Allowed: graph crawl-only query with no WHERE.
         // Execution will produce an empty solution set, and graph crawl formatting will use the root
-        // (constant root emits one row; variable root yields no rows, matching Clojure behavior).
+        // (constant root emits one row; variable root yields no rows).
     } else if !query
         .patterns
         .iter()
@@ -233,7 +233,7 @@ fn parse_query_ast_internal(
     opts.aggregates.extend(aggregates_from_select);
     query.options = opts;
 
-    // Clojure parity: GROUP BY without explicit ORDER BY defaults to ordering by the group key(s).
+    // GROUP BY without explicit ORDER BY defaults to ordering by the group key(s).
     if query.options.order_by.is_empty() && !query.options.group_by.is_empty() {
         let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
         query.options.order_by = query
@@ -254,7 +254,7 @@ fn parse_query_ast_internal(
     }
     if implied_distinct {
         query.options.distinct = true;
-        // Clojure parity: select-distinct without explicit order defaults to sorting
+        // select-distinct without explicit order defaults to sorting
         // by the selected variables (ascending) for deterministic paging.
         if query.options.order_by.is_empty() {
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -528,11 +528,11 @@ fn parse_construct_template(
 /// Parse the select clause
 ///
 /// Supports five forms:
-/// 1. Single string: `"?x"` - single variable selection (Clojure parity unwrap)
+/// 1. Single string: `"?x"` - single variable selection (unwrap)
 /// 2. Simple array: `["?x", "?y"]` - flat variable selection
 /// 3. Mixed array: `["?age", {"?person": ["*"]}]` - scalar vars + graph crawl
 /// 4. Single object: `{"?person": ["*"]}` - graph crawl only
-/// 5. S-expression aggregates: `["?name", "(count ?favNums as ?cnt)"]` - Clojure-style
+/// 5. S-expression aggregates: `["?name", "(count ?favNums as ?cnt)"]`
 fn parse_select(
     select: &JsonValue,
     context: &ParsedContext,
@@ -615,7 +615,7 @@ fn parse_select_string(s: &str, query: &mut UnresolvedQuery) -> Result<()> {
 
 /// Parse an S-expression aggregate function call
 ///
-/// Supports Clojure-style syntax:
+/// Supports legacy syntax:
 /// - `(count ?x)` - COUNT with auto-generated output var (?count)
 /// - `(as (count ?x) ?cnt)` - COUNT with explicit alias
 /// - `(count *)` - COUNT(*) for all rows
@@ -750,7 +750,7 @@ fn parse_aggregate_fn_and_input(
 
     // Parse function + validate arity.
     //
-    // IMPORTANT: don't silently ignore extra args (Clojure parity & user feedback).
+    // IMPORTANT: don't silently ignore extra args (user feedback).
     //
     // Most aggregates take exactly 1 argument; special cases handled separately.
     let function = match fn_name {
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn test_parse_order_by_db_clojure_compatible_forms() {
-        // db-clojure supports:
+        // Legacy surface supports:
         // - orderBy: "?x" (defaults asc)
         // - orderBy: ["?x", "(desc ?y)", ["asc","?z"]] (mixed forms)
         let json = json!({
@@ -1793,7 +1793,7 @@ mod tests {
     }
 
     // ==========================================
-    // Tests ported from Clojure db tests
+    // Tests ported from legacy tests
     // ==========================================
 
     #[test]

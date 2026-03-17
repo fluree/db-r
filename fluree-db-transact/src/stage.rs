@@ -232,7 +232,7 @@ pub async fn stage(
             let mut retractions =
                 generator.generate_retractions(&txn.delete_templates, &bindings)?;
 
-            // Clojure parity: DELETE templates often omit list indices even when
+            // DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
             // list-index meta from the currently asserted flake (if present).
             hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph)
@@ -264,7 +264,7 @@ pub async fn stage(
         );
         let assertions = {
             let _guard = insert_span.enter();
-            // Clojure parity: For UPDATE transactions, it's common to write:
+            // For UPDATE transactions, it's common to write:
             //   WHERE { ... maybe matches ... }
             //   DELETE { ... bound vars ... }
             //   INSERT { ... constant assertions ... }
@@ -299,6 +299,18 @@ pub async fn stage(
             }
             flakes
         };
+
+        // Count fuel per staged non-schema flake (mirrors query-side fuel counting).
+        // NOTE: fuel exhaustion now returns an error (previously silently ignored).
+        // This is intentional — transactions exceeding fuel limits should fail
+        // before policy enforcement runs.
+        if let Some(tracker) = options.tracker {
+            for flake in &flakes {
+                if !is_schema_flake(&flake.p, &flake.o) {
+                    tracker.consume_fuel_one()?;
+                }
+            }
+        }
 
         // Enforce modify policies (if policy context provided and not root)
         if let Some(policy) = options.policy_ctx {
@@ -390,7 +402,17 @@ pub async fn stage_flakes(
             }
         };
 
-        // 3. Policy enforcement
+        // 3. Count fuel per staged non-schema flake.
+        // NOTE: fuel exhaustion now returns an error (previously silently ignored).
+        if let Some(tracker) = options.tracker {
+            for flake in &flakes {
+                if !is_schema_flake(&flake.p, &flake.o) {
+                    tracker.consume_fuel_one()?;
+                }
+            }
+        }
+
+        // 4. Policy enforcement
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 tracing::debug!("enforcing modify policies on pre-built flakes");
@@ -514,21 +536,8 @@ async fn enforce_modify_policy_per_flake(
     // the correct graph. Cache executors to avoid rebuilding for every flake.
     let mut executors: HashMap<GraphId, QueryPolicyExecutor<'_>> = HashMap::new();
 
-    // Clojure parity: fuel is counted for work performed. For transactions, we count
-    // one unit of fuel per staged (non-schema) flake, regardless of whether the
-    // transaction ultimately fails policy enforcement.
-    if let Some(tracker) = tracker {
-        for flake in flakes {
-            if is_schema_flake(&flake.p, &flake.o) {
-                continue;
-            }
-            // Ignore fuel errors here; upstream can choose to set max-fuel.
-            let _ = tracker.consume_fuel_one();
-        }
-    }
-
-    // Use the provided tracker for async calls. We already consumed fuel above,
-    // so policy execution tracking is additive.
+    // Fuel is now counted upstream in stage() after flake generation,
+    // so we only use the tracker here for async policy query calls.
     let async_tracker = tracker.cloned().unwrap_or_else(Tracker::disabled);
 
     for flake in flakes {
@@ -546,7 +555,7 @@ async fn enforce_modify_policy_per_flake(
         // Resolve the graph for this flake and get/create a cached executor.
         let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
         let executor = executors.entry(g_id).or_insert_with(|| {
-            // Clojure parity: modify policy queries see the state *before* this transaction.
+            // Modify policy queries see the state *before* this transaction.
             QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t())
                 .with_graph_id(g_id)
         });
@@ -609,7 +618,135 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     .map_err(TransactError::Query)?;
 
     // Merge batches into one
-    merge_batches(batches, &txn.vars)
+    let merged = merge_batches(batches, &txn.vars)?;
+
+    // Transaction flake generation requires concrete (materialized) bindings.
+    // Query execution may return late-materialized `Binding::Encoded*` values
+    // when the binary index store is available.
+    materialize_encoded_bindings_for_txn(ledger, merged)
+}
+
+/// Materialize any late-materialized (`Binding::Encoded*`) values in a WHERE-result batch.
+///
+/// Transaction flake generation (`FlakeGenerator`) expects concrete `Binding::Sid` and
+/// `Binding::Lit` values, and will error on encoded bindings.
+fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> Result<Batch> {
+    if batch.is_empty() {
+        return Ok(batch);
+    }
+
+    // If no binary store is present, encoded bindings should not appear.
+    let Some(te) = &ledger.binary_store else {
+        return Ok(batch);
+    };
+    let Ok(store) = Arc::clone(&te.0).downcast::<fluree_db_binary_index::BinaryIndexStore>() else {
+        return Ok(batch);
+    };
+
+    let gv = fluree_db_binary_index::BinaryGraphView::new(Arc::clone(&store), 0);
+    let store_ref = gv.store();
+
+    let schema: Arc<[VarId]> = Arc::from(batch.schema().to_vec().into_boxed_slice());
+    let mut columns: Vec<Vec<Binding>> = Vec::with_capacity(schema.len());
+
+    for col_idx in 0..schema.len() {
+        let mut out_col: Vec<Binding> = Vec::with_capacity(batch.len());
+        let Some(col) = batch.column_by_idx(col_idx) else {
+            return Err(TransactError::Query(fluree_db_query::QueryError::Internal(
+                "batch column missing during materialization".to_string(),
+            )));
+        };
+
+        for b in col.iter() {
+            let materialized = match b {
+                Binding::EncodedSid { s_id } => {
+                    let iri = store_ref.resolve_subject_iri(*s_id).map_err(|e| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "resolve_subject_iri: {e}"
+                        )))
+                    })?;
+                    let sid = ledger.snapshot.encode_iri(&iri).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "encode_iri returned None for subject IRI: {iri}"
+                        )))
+                    })?;
+                    Binding::Sid(sid)
+                }
+                Binding::EncodedPid { p_id } => {
+                    let iri = store_ref.resolve_predicate_iri(*p_id).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "unknown predicate id: {p_id}"
+                        )))
+                    })?;
+                    let sid = ledger.snapshot.encode_iri(iri).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "encode_iri returned None for predicate IRI: {iri}"
+                        )))
+                    })?;
+                    Binding::Sid(sid)
+                }
+                Binding::EncodedLit {
+                    o_kind,
+                    o_key,
+                    p_id,
+                    dt_id,
+                    lang_id,
+                    i_val,
+                    t,
+                } => {
+                    let val = gv
+                        .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                        .map_err(|e| {
+                            TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                                "decode_value_from_kind: {e}"
+                            )))
+                        })?;
+
+                    match val {
+                        FlakeValue::Ref(sid) => Binding::Sid(sid),
+                        other => {
+                            let dt_sid = store_ref
+                                .dt_sids()
+                                .get(*dt_id as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Sid::new(0, ""));
+                            let dt_iri = store_ref.sid_to_iri(&dt_sid);
+                            let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
+                                TransactError::Query(fluree_db_query::QueryError::Internal(
+                                    format!("encode_iri returned None for datatype IRI: {dt_iri}"),
+                                ))
+                            })?;
+                            let meta = store_ref.decode_meta(*lang_id, *i_val);
+                            let dtc = meta
+                                .as_ref()
+                                .and_then(|m| m.lang.as_ref())
+                                .map(|s| {
+                                    fluree_db_core::DatatypeConstraint::LangTag(
+                                        std::sync::Arc::from(s.as_str()),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    fluree_db_core::DatatypeConstraint::Explicit(dt)
+                                });
+                            Binding::Lit {
+                                val: other,
+                                dtc,
+                                t: Some(*t),
+                                op: None,
+                                p_id: Some(*p_id),
+                            }
+                        }
+                    }
+                }
+                _ => b.clone(),
+            };
+            out_col.push(materialized);
+        }
+
+        columns.push(out_col);
+    }
+
+    Batch::new(schema, columns).map_err(|e| TransactError::Query(e.into()))
 }
 
 /// Lower UnresolvedPattern list to Pattern list

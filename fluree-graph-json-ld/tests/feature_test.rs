@@ -174,12 +174,12 @@ fn test_base_empty_resets() {
 }
 
 // ============================================================================
-// Tests from Clojure expand_test.cljc base-and-vocab-test
+// Tests adapted from legacy expand test cases: base-and-vocab-test
 // ============================================================================
 
 #[test]
 fn test_base_and_vocab_full() {
-    // Matches the Clojure test: base-and-vocab-test
+    // Scenario: base-and-vocab-test
     let doc = json!({
         "@context": {
             "@base": "https://base.com/base/iri",
@@ -236,7 +236,7 @@ fn test_relative_vocab_resolves_against_base() {
 }
 
 // ============================================================================
-// Tests from Clojure expand_test.cljc type-sub-context
+// Tests adapted from legacy expand test cases: type-sub-context
 // ============================================================================
 
 #[test]
@@ -287,7 +287,7 @@ fn test_type_sub_context_with_aliased_keys() {
 }
 
 // ============================================================================
-// Tests from Clojure expand_test.cljc shacl-embedded-nodes (string version)
+// Tests adapted from legacy expand test cases: shacl-embedded-nodes (string version)
 // ============================================================================
 
 #[test]

@@ -36,18 +36,27 @@ impl<'a> super::Parser<'a> {
             }
         }
 
-        // LIMIT
-        if self.stream.check_keyword(TokenKind::KwLimit) {
-            if let Some(limit) = self.parse_limit() {
-                modifiers = modifiers.with_limit(limit);
+        // LIMIT / OFFSET (either order; BSBM uses OFFSET then LIMIT)
+        //
+        // SPARQL 1.1 grammar allows:
+        //   LimitOffsetClauses ::= LimitClause? OffsetClause? | OffsetClause? LimitClause?
+        //
+        // Parse both in a loop so we accept either ordering and treat later clauses
+        // as overriding earlier ones (consistent with many engines' error-tolerant parsing).
+        loop {
+            if self.stream.check_keyword(TokenKind::KwLimit) {
+                if let Some(limit) = self.parse_limit() {
+                    modifiers = modifiers.with_limit(limit);
+                }
+                continue;
             }
-        }
-
-        // OFFSET
-        if self.stream.check_keyword(TokenKind::KwOffset) {
-            if let Some(offset) = self.parse_offset() {
-                modifiers = modifiers.with_offset(offset);
+            if self.stream.check_keyword(TokenKind::KwOffset) {
+                if let Some(offset) = self.parse_offset() {
+                    modifiers = modifiers.with_offset(offset);
+                }
+                continue;
             }
+            break;
         }
 
         modifiers

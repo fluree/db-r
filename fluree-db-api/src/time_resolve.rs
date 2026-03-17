@@ -17,7 +17,7 @@ use chrono::{TimeZone, Utc};
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::{
     range_bounded_with_overlay, range_with_overlay, Flake, FlakeValue, IndexType, LedgerSnapshot,
-    ObjectBounds, RangeMatch, RangeOptions, RangeTest, Sid,
+    ObjectBounds, RangeMatch, RangeOptions, RangeTest, Sid, TXN_META_GRAPH_ID,
 };
 use fluree_vocab::db::TIME as LEDGER_TIME;
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB};
@@ -34,7 +34,7 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 
 /// Resolve an ISO-8601 datetime to a transaction number using POST index queries.
 ///
-/// # Algorithm (matches Clojure)
+/// # Algorithm
 ///
 /// 1. Query POST for first commit with `ledger#time > target_epoch_ms`
 /// 2. Return that flake's `t - 1` (the previous commit's t)
@@ -84,7 +84,7 @@ where
     let earliest_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -95,7 +95,7 @@ where
     } else {
         range_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -142,7 +142,7 @@ where
     let after_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -153,7 +153,7 @@ where
     } else {
         range_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -260,7 +260,7 @@ where
     let flakes = if let Some(ovl) = overlay {
         range_bounded_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             ovl,
             IndexType::Spot,
             start_bound,
@@ -271,7 +271,7 @@ where
     } else {
         range_bounded_with_overlay(
             snapshot,
-            0,
+            TXN_META_GRAPH_ID,
             &fluree_db_core::NoOverlay,
             IndexType::Spot,
             start_bound,

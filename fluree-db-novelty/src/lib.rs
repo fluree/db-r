@@ -35,7 +35,7 @@ pub use commit::{
     trace_commits_by_id, Commit, CommitEnvelope, CommitRef, TxnMetaEntry, TxnMetaValue,
     TxnSignature, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
 };
-pub use commit_flakes::generate_commit_flakes;
+pub use commit_flakes::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
 pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use commit_v2::verify_commit_v2_blob;
@@ -378,7 +378,7 @@ impl Novelty {
     ///
     /// Uses binary search for O(log n + k) slicing.
     ///
-    /// Clojure semantics:
+    /// Semantics:
     /// - If leftmost=false: left boundary is EXCLUSIVE (> first)
     /// - If leftmost=true: no left boundary
     /// - rhs is INCLUSIVE when present

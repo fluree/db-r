@@ -39,12 +39,21 @@ pub enum PatternType {
 const HIGHLY_SELECTIVE: f64 = 1.0;
 /// Medium selectivity - fallback for bound-subject patterns
 const MODERATELY_SELECTIVE: f64 = 10.0;
-/// Fallback for bound-object and property-scan patterns
-const DEFAULT_SELECTIVITY: f64 = 1000.0;
+/// Fallback for bound-object patterns (`?s <p> <o>`).
+///
+/// With no statistics, we still treat a bound object as more selective than a
+/// pure property scan (`?s <p> ?o`) because it can use a predicate+object index
+/// access path.
+const DEFAULT_BOUND_OBJECT_SELECTIVITY: f64 = 1_000.0;
+/// Fallback for property-scan patterns (`?s <p> ?o`).
+///
+/// With no statistics, assume these are relatively large so we avoid placing
+/// them before bound-object constraints.
+const DEFAULT_PROPERTY_SCAN_SELECTIVITY: f64 = 1_000_000.0;
 /// Full scan - all variables unbound
 const FULL_SCAN: f64 = 1e12;
 
-// Clojure fallback caps differ by pattern type:
+// Fallback caps differ by pattern type:
 // - bound-subject (s p ?o): min count 10
 // - bound-object (?s p o): min count 1000
 const BOUND_SUBJECT_FALLBACK_CAP: f64 = 10.0;
@@ -132,13 +141,23 @@ pub(crate) fn estimate_triple_row_count(
                 }
                 if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        return (prop.count as f64 / prop.ndv_values as f64)
-                            .ceil()
-                            .max(HIGHLY_SELECTIVE);
+                        // Class count missing from stats.
+                        //
+                        // Using the mean class size (count/ndv_values) can severely
+                        // underestimate common classes (e.g., `bsbm:Product`), which
+                        // leads to bad join ordering when paired with small predicates
+                        // like `rdfs:label`.
+                        //
+                        // Use a more conservative fallback: scale by sqrt(ndv_values)
+                        // (between mean and total) to avoid treating unknown classes
+                        // as extremely selective.
+                        let ndv = prop.ndv_values as f64;
+                        let est = prop.count as f64 / ndv.sqrt().max(1.0);
+                        return est.ceil().max(HIGHLY_SELECTIVE);
                     }
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_BOUND_OBJECT_SELECTIVITY
         }
 
         PatternType::BoundSubject => {
@@ -166,7 +185,7 @@ pub(crate) fn estimate_triple_row_count(
                     return (prop.count as f64).min(BOUND_OBJECT_FALLBACK_CAP);
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_BOUND_OBJECT_SELECTIVITY
         }
 
         PatternType::PropertyScan => {
@@ -175,7 +194,7 @@ pub(crate) fn estimate_triple_row_count(
                     return prop.count as f64;
                 }
             }
-            DEFAULT_SELECTIVITY
+            DEFAULT_PROPERTY_SCAN_SELECTIVITY
         }
 
         PatternType::FullScan => FULL_SCAN,
@@ -734,11 +753,11 @@ pub fn estimate_pattern(
         },
 
         Pattern::PropertyPath(_) => PatternEstimate::Source {
-            row_count: DEFAULT_SELECTIVITY,
+            row_count: DEFAULT_PROPERTY_SCAN_SELECTIVITY,
         },
 
         Pattern::R2rml(_) => PatternEstimate::Source {
-            row_count: DEFAULT_SELECTIVITY,
+            row_count: DEFAULT_PROPERTY_SCAN_SELECTIVITY,
         },
 
         Pattern::Service(_) => PatternEstimate::Source {
@@ -788,7 +807,7 @@ pub fn estimate_branch_cardinality(patterns: &[Pattern], stats: Option<&StatsVie
     }
 
     if triples.is_empty() {
-        return (DEFAULT_SELECTIVITY) * non_triple_estimate;
+        return (DEFAULT_PROPERTY_SCAN_SELECTIVITY) * non_triple_estimate;
     }
 
     // Sort triples by standalone row count for initial ordering (most selective first)
@@ -1293,7 +1312,7 @@ mod tests {
     #[test]
     fn test_reorder_patterns_seeded_prefers_joinable_over_more_selective_cartesian() {
         // If vars are already bound from an upstream operator, prefer patterns that
-        // join with those vars to avoid cartesian explosions (Clojure parity).
+        // join with those vars to avoid cartesian explosions.
 
         let s = VarId(0);
         let o1 = VarId(1);

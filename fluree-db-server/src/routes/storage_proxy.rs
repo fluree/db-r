@@ -337,6 +337,10 @@ pub async fn get_block(
     };
 
     // Load ledger context for leaf decoding + policy filtering
+    // Force a fresh load so policy evaluation sees current data.
+    // This avoids stale-cache issues after reindex updates.
+    fluree.disconnect_ledger(&body.ledger).await;
+
     let handle = fluree
         .ledger_cached(&body.ledger)
         .await

@@ -9,8 +9,7 @@ This guide provides tools and techniques for debugging query performance and cor
 Get query execution plan:
 
 ```bash
-curl -X POST http://localhost:8090/v1/fluree/query \
-  -H "X-Fluree-Explain: true" \
+curl -X POST http://localhost:8090/v1/fluree/explain \
   -H "Content-Type: application/json" \
   -d '{
     "from": "mydb:main",
@@ -237,7 +236,7 @@ Look for:
 
 1. **Check explain plan:**
    ```bash
-   curl -H "X-Fluree-Explain: true" ...
+   curl -X POST http://localhost:8090/v1/fluree/explain -d '{...}'
    ```
 
 2. **Check indexing lag:**
@@ -563,7 +562,7 @@ console.log(`Approach 1: ${time1}ms, Approach 2: ${time2}ms`);
 Run explain on new queries:
 
 ```bash
-curl -H "X-Fluree-Explain: true" ...
+curl -X POST http://localhost:8090/v1/fluree/explain -d '{...}'
 ```
 
 ### 2. Test with Representative Data

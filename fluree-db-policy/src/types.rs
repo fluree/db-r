@@ -169,7 +169,7 @@ pub struct PropertyPolicyEntry {
 /// Indexed policy set
 ///
 /// Class policies are indexed INTO by_property (not a separate by_class index).
-/// This matches Clojure's approach for efficient lookup.
+/// This is designed for efficient lookup.
 #[derive(Debug, Default)]
 pub struct PolicySet {
     /// All restrictions in parse order (insertion order preserved)
@@ -204,7 +204,7 @@ impl PolicySet {
     /// Get candidate restrictions for a flake
     ///
     /// Order: property-specific -> subject-specific -> defaults
-    /// Preserves insertion order within each bucket (like Clojure's conjv).
+    /// Preserves insertion order within each bucket.
     pub fn restrictions_for_flake(&self, subject: &Sid, property: &Sid) -> Vec<&PolicyRestriction> {
         let mut candidates = Vec::new();
 
@@ -233,7 +233,7 @@ impl PolicySet {
     /// Get candidate policy entries for a flake with per-property class_check_needed info.
     ///
     /// Order: property-specific -> subject-specific -> defaults.
-    /// Preserves insertion order within each bucket (like Clojure's conjv).
+    /// Preserves insertion order within each bucket.
     ///
     /// Returns `FlakePolicyEntry` which includes:
     /// - `idx`: restriction index
@@ -286,7 +286,7 @@ struct PolicyWrapperInner {
     modify: PolicySet,
     /// Root flag - bypasses all policies
     root: bool,
-    /// Single default-allow knob (Clojure parity)
+    /// Single default-allow knob
     default_allow: bool,
     /// Policy values map (for identity/context bindings)
     policy_values: HashMap<String, Sid>,

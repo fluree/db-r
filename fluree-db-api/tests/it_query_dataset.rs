@@ -303,7 +303,7 @@ async fn dataset_multiple_default_graphs_union() {
 }
 
 // =============================================================================
-// Composed datasets across connections (Clojure parity)
+// Composed datasets across connections
 // =============================================================================
 
 #[tokio::test]
@@ -930,7 +930,7 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
         .await
         .expect("query should succeed");
 
-    // Should return empty results (Clojure parity: missing graph → empty, not error)
+    // Should return empty results (missing graph → empty, not error)
     assert!(
         result.is_empty(),
         "nonexistent graph should return empty results"
@@ -1524,7 +1524,7 @@ async fn dataset_time_travel_commit_too_short_errors() {
 }
 
 // =============================================================================
-// Single-DB Mode GRAPH Pattern Tests (Clojure Parity)
+// Single-DB Mode GRAPH Pattern Tests
 // =============================================================================
 
 /// GRAPH with matching alias returns results (single-db mode, no dataset)

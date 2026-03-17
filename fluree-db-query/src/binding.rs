@@ -48,9 +48,9 @@ pub enum Binding {
     /// The canonical IRI is the universal join key, while the cached SID enables
     /// efficient lookups in the originating ledger.
     ///
-    /// # Design (mirrors Clojure's match structure)
+    /// # Design (mirrors the legacy match structure)
     ///
-    /// Clojure stores both `::iri` and `::sids {alias -> sid}` in match maps.
+    /// The legacy match maps store both `::iri` and `::sids {alias -> sid}`.
     /// This variant captures the same information for Rust.
     IriMatch {
         /// Canonical IRI string - the universal join key for cross-ledger equality

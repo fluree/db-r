@@ -59,6 +59,24 @@ pub trait Operator: Send + Sync {
     fn estimated_rows(&self) -> Option<usize> {
         None
     }
+
+    /// Consume all remaining output rows to exhaustion and return the total count.
+    ///
+    /// # Contract
+    ///
+    /// - **Exhaustion**: Must consume the operator fully. After returning `Some(n)`,
+    ///   the operator is exhausted — `next_batch()` must return `None`.
+    /// - **Semantic fidelity**: The count must equal the number of rows the normal
+    ///   `next_batch()` loop would have produced. All operator semantics (filtering,
+    ///   Unbound/Poisoned handling, SPARQL substitution) must be preserved.
+    /// - **Fallback**: Return `Ok(None)` when count-only mode cannot guarantee the
+    ///   above — the caller falls back to the normal `next_batch()` drain loop.
+    ///
+    /// Operators that implement this avoid materializing output batches, reducing
+    /// allocation and cloning overhead when the downstream consumer only needs a count.
+    async fn drain_count(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<u64>> {
+        Ok(None)
+    }
 }
 
 /// Boxed operator for dynamic dispatch

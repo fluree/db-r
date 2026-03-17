@@ -281,7 +281,7 @@ where
 
         // 6. Disconnect from ledger cache (if caching enabled)
         // This evicts the ledger from the LedgerManager so stale state isn't served.
-        // Equivalent to Clojure's `release-ledger` at the end of drop-ledger.
+        // Equivalent to releasing the ledger at the end of drop-ledger.
         if let Some(mgr) = &self.ledger_manager {
             info!(ledger_id = %ledger_id, "Disconnecting ledger from cache");
             mgr.disconnect(&ledger_id).await;

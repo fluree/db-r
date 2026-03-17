@@ -669,7 +669,7 @@ pub struct UnresolvedOptions {
     pub reasoning: Option<crate::rewrite::ReasoningModes>,
     /// Whether to treat bare "?var" object strings as variables in WHERE.
     ///
-    /// Clojure parity: when false, bare "?x" object values are literals unless
+    /// When false, bare "?x" object values are literals unless
     /// explicitly wrapped as {"@variable": "?x"}.
     pub object_var_parsing: bool,
 }

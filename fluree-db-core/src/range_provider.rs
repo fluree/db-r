@@ -28,6 +28,13 @@ use std::collections::HashMap;
 /// Implementations must return results in the correct index order (SPOT, PSOT,
 /// POST, or OPST) matching the requested `IndexType`.
 pub trait RangeProvider: Send + Sync {
+    /// Downcast hook so downstream crates can recover the concrete type
+    /// (e.g., `BinaryRangeProvider`) from `Arc<dyn RangeProvider>`.
+    ///
+    /// Cost: one `TypeId` comparison at the call site. Called once per
+    /// `ScanOperator::open()`, not per row.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Execute a range query, returning matching flakes in index order.
     ///
     /// # Arguments

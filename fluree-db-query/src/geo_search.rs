@@ -21,13 +21,15 @@ use crate::operator::{
 };
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::format::branch::BranchManifest;
+use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, OverlayOp,
-    RunRecord, RunSortOrder,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore,
+    ColumnProjection, OverlayOp, RunSortOrder,
 };
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
+use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -159,54 +161,58 @@ impl GeoSearchOperator {
 
         let mut results: Vec<(u64, f64)> = Vec::new(); // (s_id, distance)
 
+        // Get branch manifest for POST order.
+        let branch_ref = store
+            .branch_for_order(g_id, RunSortOrder::Post)
+            .ok_or_else(|| {
+                QueryError::Internal(format!("GeoSearch: no POST branch for g_id={}", g_id))
+            })?;
+        let branch: Arc<BranchManifest> = Arc::new(branch_ref.clone());
+
+        let geo_otype = OType::GEO_POINT.as_u16();
+
         // Scan each latitude band range
         for (min_o_key, max_o_key) in bounds {
-            // Build RunRecord bounds for POST scan
-            // POST sort order: p_id, o_kind, o_key, s_id, dt, t, op, lang_id, i
-            // We set dt to span full range since GeoPoints may have any datatype ID
-            let min_key = RunRecord {
-                g_id,
+            // Build RunRecordV2 bounds for POST scan
+            // POST sort order: p_id, o_type, o_key, o_i, s_id
+            let min_key = RunRecordV2 {
                 s_id: SubjectId::from_u64(0),
                 p_id,
-                dt: 0,
-                o_kind: ObjKind::GEO_POINT.as_u8(),
-                op: 0,
+                o_type: geo_otype,
                 o_key: min_o_key,
+                o_i: 0,
                 t: 0,
-                i: 0,
-                lang_id: 0,
+                g_id,
             };
 
-            let max_key = RunRecord {
-                g_id,
+            let max_key = RunRecordV2 {
                 s_id: SubjectId::from_u64(u64::MAX),
                 p_id,
-                dt: u16::MAX, // Span all datatype IDs
-                o_kind: ObjKind::GEO_POINT.as_u8(),
-                op: 1, // Include both assert (1) and retract (0)
+                o_type: geo_otype,
                 o_key: max_o_key,
+                o_i: u32::MAX,
                 t: u32::MAX,
-                i: u32::MAX,
-                lang_id: u16::MAX,
+                g_id,
             };
 
             // Create filter for p_id and GEO_POINT
             let filter = BinaryFilter {
                 s_id: None,
                 p_id: Some(p_id),
-                o_kind: Some(ObjKind::GEO_POINT.as_u8()),
+                o_type: Some(geo_otype),
                 o_key: None, // Range filtering done by cursor bounds
+                o_i: None,
             };
 
             // Create cursor for POST order
             let mut cursor = BinaryCursor::new(
                 store.clone(),
                 RunSortOrder::Post,
-                g_id,
+                branch.clone(),
                 &min_key,
                 &max_key,
                 filter,
-                false, // don't need region2 (dt, t, lang, i)
+                ColumnProjection::all(),
             );
 
             // Time-travel and overlay support (must match binary scan semantics).
@@ -219,12 +225,12 @@ impl GeoSearchOperator {
             // Iterate results - collect ALL points within radius first
             // (limit is applied after sorting by distance for correct "nearest k" semantics)
             while let Some(batch) = cursor
-                .next_leaf()
+                .next_batch()
                 .map_err(|e| QueryError::Internal(e.to_string()))?
             {
-                for i in 0..batch.s_ids.len() {
-                    let o_key = batch.o_keys[i];
-                    let s_id = batch.s_ids[i];
+                for i in 0..batch.row_count {
+                    let o_key = batch.o_key.get(i);
+                    let s_id = batch.s_id.get(i);
 
                     // Decode GeoPoint from o_key
                     let bits = GeoPointBits(o_key);
@@ -345,17 +351,14 @@ impl Operator for GeoSearchOperator {
         }
 
         // Overlay translation + DictOverlay setup (matches ScanOperator's binary path).
+        let g_id = ctx.binary_g_id;
         if let Some(ovl) = ctx.overlay {
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
-            let gv = BinaryGraphView::new(store.clone(), ctx.binary_g_id);
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
             let mut ops = crate::binary_scan::translate_overlay_flakes(
                 ovl,
-                &mut dict_ov,
+                store,
+                ctx.dict_novelty.as_ref(),
                 ctx.to_t,
-                ctx.binary_g_id,
+                g_id,
             );
             let epoch = ovl.epoch();
             if !ops.is_empty() {
@@ -363,7 +366,12 @@ impl Operator for GeoSearchOperator {
                 self.overlay_ops = ops;
                 self.overlay_epoch = epoch;
             }
-            self.dict_overlay = Some(dict_ov);
+            // Build DictOverlay for ephemeral ID translation.
+            if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
+                let gv = BinaryGraphView::new(store.clone(), g_id);
+                let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
+                self.dict_overlay = Some(dict_ov);
+            }
         }
 
         // Resolve predicate ID once at open (may allocate ephemeral ID if overlay present).

@@ -1,6 +1,5 @@
-//! Transact list container serialization integration tests (Clojure parity)
+//! Transact list container serialization integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/transact/list_container_serialization_test.clj`.
 //! Tests RDF @list container serialization and persistence.
 
 mod support;

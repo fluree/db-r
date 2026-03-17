@@ -636,7 +636,7 @@ impl DatasetSpec {
 
     /// Parse dataset + connection options from a query JSON object.
     ///
-    /// Mirrors Clojure `query-connection` semantics:
+    /// Mirrors `query-connection` semantics:
     /// - Dataset spec may live at top-level (`from`, `from-named`, `ledger`) OR inside `opts`.
     /// - Connection/policy-related options are read from `opts`.
     /// - History queries use explicit `to` key: `{ "from": "ledger@t:1", "to": "ledger@t:latest" }`
@@ -650,7 +650,7 @@ impl DatasetSpec {
 
         let opts_obj = obj.get("opts").and_then(|v| v.as_object());
 
-        // Dataset location precedence matches Clojure:
+        // Dataset location precedence:
         // default aliases: opts.from || opts.ledger || query.from || query.ledger
         // named aliases:   opts.from-named || query.from-named
         // to (history):    opts.to || query.to
@@ -845,7 +845,7 @@ impl QueryConnectionOptions {
 
 /// Parse time-travel specification from ledger ID string.
 ///
-/// Supports Clojure-compatible formats:
+/// Supports compatible formats:
 /// - `ledger:main@t:42` → identifier="ledger:main", TimeSpec::AtT(42)
 /// - `ledger:main@t:latest` → identifier="ledger:main", TimeSpec::Latest
 /// - `ledger:main@iso:2025-01-01T00:00:00Z` → identifier="ledger:main", TimeSpec::AtTime(...)

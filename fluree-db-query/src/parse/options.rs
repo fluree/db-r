@@ -134,7 +134,7 @@ pub fn parse_distinct(obj: &serde_json::Map<String, JsonValue>) -> bool {
 
 /// Parse orderBy from JSON
 ///
-/// Supports multiple formats for db-clojure compatibility:
+/// Supports multiple formats for compatibility:
 /// - `"orderBy": "?x"` - single variable (defaults to ascending)
 /// - `"orderBy": ["?x", "?y"]` - multiple variables
 /// - `"orderBy": ["asc", "?x"]` - SPARQL translator form
@@ -155,7 +155,7 @@ pub fn parse_distinct(obj: &serde_json::Map<String, JsonValue>) -> bool {
 /// { "orderBy": [{"var": "?x", "direction": "asc"}] }
 /// ```
 pub fn parse_order_by(obj: &serde_json::Map<String, JsonValue>) -> Result<Vec<UnresolvedSortSpec>> {
-    // Accept both camelCase and kebab-case for Clojure parity.
+    // Accept both camelCase and kebab-case for compatibility.
     let Some(val) = obj.get("orderBy").or_else(|| obj.get("order-by")) else {
         return Ok(Vec::new());
     };
@@ -170,7 +170,7 @@ pub fn parse_order_by(obj: &serde_json::Map<String, JsonValue>) -> Result<Vec<Un
 
 /// Parse a single order term from any supported format
 ///
-/// Supports multiple formats for db-clojure compatibility:
+/// Supports multiple formats for compatibility:
 /// - Object: `{"var":"?x","direction":"desc"}`
 /// - String: `"?x"` (defaults asc) or `"(desc ?x)"` (EDN-ish)
 /// - Array: `["asc", "?x"]` (SPARQL translator form)
@@ -268,7 +268,7 @@ fn parse_sort_direction(s: &str) -> Result<UnresolvedSortDirection> {
 /// { "groupBy": ["?x", "?y"] }
 /// ```
 pub fn parse_group_by(obj: &serde_json::Map<String, JsonValue>) -> Result<Vec<Arc<str>>> {
-    // Accept both camelCase and kebab-case for Clojure parity.
+    // Accept both camelCase and kebab-case for compatibility.
     let Some(val) = obj.get("groupBy").or_else(|| obj.get("group-by")) else {
         return Ok(Vec::new());
     };
@@ -313,7 +313,7 @@ pub fn parse_having(
 
 /// Parse HAVING and extract aggregate specs from S-expression forms.
 ///
-/// Clojure parity:
+/// Compatibility:
 /// - allow `"having": "(>= (count ?x) 2)"` and `"having": "(>= (avg ?x) 10)"`
 /// - aggregate forms inside HAVING are rewritten into real query aggregates,
 ///   and the HAVING expression is rewritten to reference the aggregate output var.

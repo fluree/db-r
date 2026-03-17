@@ -1268,12 +1268,12 @@ fn lower_graph_select<E: IriEncoder>(
     let root = match &spec.root {
         UnresolvedRoot::Var(name) => {
             // Use get_or_insert: don't require root var to be in WHERE
-            // (Clojure allows unbound root vars; formatting skips those rows)
+            // (Allows unbound root vars; formatting skips those rows)
             let var_id = vars.get_or_insert(name);
             Root::Var(var_id)
         }
         UnresolvedRoot::Iri(expanded_iri) => {
-            // Clojure parity: allow non-IRI (and “faux compact”) ids to be used as subjects.
+            // Allow non-IRI (and “faux compact”) ids to be used as subjects.
             //
             // If the IRI encoder can't encode the value via namespaces, fall back to namespace_code=0
             // (raw id string). This supports ids like "foo" and "foaf:bar" without requiring @base/@vocab.

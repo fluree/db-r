@@ -104,6 +104,49 @@ impl DictTreeReader {
         }
     }
 
+    /// Load a `DictTreeReader` from CAS-stored [`DictTreeRefs`].
+    ///
+    /// Fetches and decodes the branch, resolves each leaf CID to a local
+    /// file path or keeps it as a remote CID for on-demand fetching, then
+    /// constructs the reader with an optional leaflet cache.
+    pub async fn from_refs(
+        cs: &Arc<dyn ContentStore>,
+        refs: &crate::format::wire_helpers::DictTreeRefs,
+        leaflet_cache: Option<&Arc<LeafletCache>>,
+    ) -> io::Result<Self> {
+        let branch_bytes = cs
+            .get(&refs.branch)
+            .await
+            .map_err(|e| io::Error::other(format!("failed to load branch: {e}")))?;
+        let branch = DictBranch::decode(&branch_bytes)?;
+
+        let mut local_files = HashMap::with_capacity(branch.leaves.len());
+        let mut remote_cids = HashMap::new();
+
+        for (cid, bl) in refs.leaves.iter().zip(branch.leaves.iter()) {
+            if let Some(local_path) = cs.resolve_local_path(cid) {
+                local_files.insert(bl.address.clone(), local_path);
+            } else {
+                remote_cids.insert(bl.address.clone(), cid.clone());
+            }
+        }
+
+        let leaf_source = if remote_cids.is_empty() {
+            LeafSource::LocalFiles(local_files)
+        } else {
+            LeafSource::CasOnDemand {
+                cs: Arc::clone(cs),
+                local_files,
+                remote_cids,
+            }
+        };
+
+        match leaflet_cache {
+            Some(cache) => Ok(Self::with_cache(branch, leaf_source, Arc::clone(cache))),
+            None => Ok(Self::new(branch, leaf_source)),
+        }
+    }
+
     /// Attach a global cache to this reader.
     pub fn set_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
         self.global_cache = cache;
@@ -125,6 +168,54 @@ impl DictTreeReader {
         let leaf = ReverseLeaf::from_bytes(&leaf_data)?;
 
         Ok(leaf.lookup(key))
+    }
+
+    /// Range scan: find all entries whose key is in `[start_key, end_key)`.
+    ///
+    /// Scans across multiple B-tree leaves as needed. Returns `(key_bytes, id)` pairs
+    /// in sorted key order. Used for subject prefix scans (e.g., commit SHA lookup).
+    pub fn reverse_range_scan(
+        &self,
+        start_key: &[u8],
+        end_key: &[u8],
+    ) -> io::Result<Vec<(Vec<u8>, u64)>> {
+        if self.branch.leaves.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Find the first leaf that might contain start_key.
+        let start_leaf = match self.branch.find_leaf(start_key) {
+            Some(idx) => idx,
+            None => {
+                // start_key is before the first leaf or after the last.
+                // If the first leaf's first_key >= start_key, it might have matches.
+                if self.branch.leaves[0].first_key.as_slice() >= start_key {
+                    0
+                } else {
+                    return Ok(Vec::new());
+                }
+            }
+        };
+
+        let mut results = Vec::new();
+
+        for leaf_idx in start_leaf..self.branch.leaves.len() {
+            let leaf_entry = &self.branch.leaves[leaf_idx];
+
+            // If this leaf's first_key >= end_key, no more matches possible.
+            if leaf_entry.first_key.as_slice() >= end_key {
+                break;
+            }
+
+            let leaf_data = self.load_leaf(&leaf_entry.address)?;
+            let leaf = ReverseLeaf::from_bytes(&leaf_data)?;
+
+            for (key, id) in leaf.scan_range(start_key, end_key) {
+                results.push((key.to_vec(), id));
+            }
+        }
+
+        Ok(results)
     }
 
     /// Load leaf bytes from the configured source.

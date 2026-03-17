@@ -1,13 +1,6 @@
-//! SPARQL integration tests (Clojure parity)
+//! SPARQL integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/sparql_test.cljc` at a high level:
-//! - Create a ledger
-//! - Seed data (the Clojure integration test uses memory-backed storage)
-//! - Query using SPARQL
-//! - Exercise update semantics via JSON-LD Update transactions (DELETE/INSERT/WHERE behavior)
-//!
-//! Note: The original Clojure integration test seeds data via SPARQL UPDATE (INSERT DATA).
-//! In Rust, we seed via JSON-LD insert and then validate SPARQL query behavior.
+//! Covers query + update semantics (DELETE/INSERT/WHERE) using JSON-LD Update transactions.
 
 mod support;
 
@@ -33,7 +26,7 @@ fn normalize_object_rows(value: &JsonValue) -> Vec<String> {
 async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
     let ledger0 = genesis_ledger(fluree, ledger_id);
 
-    // Seed dataset roughly equivalent to the Clojure SPARQL INSERT DATA payload.
+    // Seed dataset roughly equivalent to a SPARQL INSERT DATA payload.
     let insert = json!({
         "@context": {
             "ex": "http://example.org/ns/",
@@ -369,11 +362,11 @@ async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
         .await
         .expect("sparql query should succeed");
 
-    // Clojure parity default output (array rows).
+    // Default output (array rows).
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld, json!([["ex:jdoe", "Jane Doe"]]));
 
-    // SPARQL JSON output (Clojure parity uses compact IRIs).
+    // SPARQL JSON output uses compact IRIs.
     let sparql_json = result
         .to_sparql_json(&ledger.snapshot)
         .expect("to_sparql_json");
@@ -508,7 +501,7 @@ async fn sparql_delete_data_removes_specified_triples() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    // Equivalent to Clojure's SPARQL: DELETE DATA { ex:jdoe person:favNums 3 . ex:jdoe person:favNums 7 . }
+    // Equivalent SPARQL: DELETE DATA { ex:jdoe person:favNums 3 . ex:jdoe person:favNums 7 . }
     // Represented as a JSON-LD Update transaction (no WHERE needed).
     let delete_txn = json!({
         "@context": {
@@ -675,7 +668,7 @@ async fn sparql_optional_includes_unbound_values_as_null() {
 }
 
 #[tokio::test]
-async fn sparql_optional_multi_pattern_allows_partial_binding() {
+async fn sparql_optional_multi_pattern_requires_conjunctive_match() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "people:main";
@@ -700,19 +693,10 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
     let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     let expected = json!([
-        ["ex:bbob", 23, null],
-        ["ex:fbueller", null, "fb@example.com"],
-        ["ex:jbob", 0, null],
-        ["ex:jbob", 3, null],
-        ["ex:jbob", 5, null],
-        ["ex:jbob", 6, null],
-        ["ex:jbob", 7, null],
-        ["ex:jbob", 8, null],
-        ["ex:jbob", 9, null],
-        ["ex:jdoe", 3, null],
-        ["ex:jdoe", 7, null],
-        ["ex:jdoe", 42, null],
-        ["ex:jdoe", 99, null]
+        ["ex:bbob", null, null],
+        ["ex:fbueller", null, null],
+        ["ex:jbob", null, null],
+        ["ex:jdoe", null, null]
     ]);
 
     assert_eq!(
@@ -3384,5 +3368,63 @@ async fn sparql_post_query_values_with_undef() {
         rows.len(),
         1,
         "VALUES with UNDEF should match exactly one row (ex:s1, red): {rows:?}"
+    );
+}
+
+// =========================================================================
+// SPARQL DESCRIBE Tests
+// =========================================================================
+
+#[tokio::test]
+async fn sparql_describe_constant_iri_outgoing_triples() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "describe:const");
+
+    let insert = json!({
+        "@context": { "ex": "http://example.org/" },
+        "@graph": [
+            { "@id": "ex:alice", "ex:name": "Alice", "ex:knows": {"@id": "ex:bob"} },
+            { "@id": "ex:bob", "ex:name": "Bob" }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+    let ledger = receipt.ledger;
+
+    let query = r#"
+        PREFIX ex: <http://example.org/>
+        DESCRIBE ex:alice
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("DESCRIBE should succeed");
+
+    // DESCRIBE lowers to a graph (CONSTRUCT-style) result.
+    let json = result.to_construct(&ledger.snapshot).expect("to_construct");
+
+    let graph = json
+        .get("@graph")
+        .and_then(|v| v.as_array())
+        .expect("@graph array");
+
+    let alice = graph
+        .iter()
+        .find(|n| n.get("@id") == Some(&JsonValue::String("ex:alice".to_string())))
+        .expect("graph should include ex:alice node");
+
+    let name = alice.get("ex:name").expect("ex:name present");
+    let has_alice_name = match name {
+        JsonValue::String(s) => s == "Alice",
+        JsonValue::Array(items) => items.iter().any(|v| v == "Alice"),
+        _ => false,
+    };
+    assert!(
+        has_alice_name,
+        "DESCRIBE should include outgoing properties for ex:alice: {alice}"
+    );
+    assert!(
+        alice.get("ex:knows").is_some(),
+        "DESCRIBE should include outgoing link ex:knows: {alice}"
     );
 }

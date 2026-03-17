@@ -120,7 +120,7 @@ impl<Id: DictId> VecBiDict<Id> {
     /// entries Vec and reverse HashMap without any path-dependent lookup logic.
     ///
     /// This is the safe way to seed a `VecBiDict` from persisted data (e.g.,
-    /// an `IndexRootV5`'s inline dictionary vectors) — it guarantees ID
+    /// an `IndexRoot`'s inline dictionary vectors) — it guarantees ID
     /// stability regardless of insertion order.
     pub fn from_ordered_vec(base_id: Id, entries: Vec<Arc<str>>) -> Self {
         let mut reverse = HashMap::with_capacity(entries.len());

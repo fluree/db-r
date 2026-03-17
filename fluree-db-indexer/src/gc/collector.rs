@@ -3,7 +3,7 @@
 //! Provides the `clean_garbage` function that walks the prev-index chain,
 //! identifies gc-eligible indexes, and deletes obsolete nodes.
 //!
-//! # Clojure Parity Semantics
+//! # GC semantics
 //!
 //! The garbage record in root N contains addresses of nodes that were replaced
 //! when creating root N from root N-1. When we GC:
@@ -28,19 +28,18 @@ pub(crate) struct IndexChainEntry {
     pub(crate) garbage_id: Option<ContentId>,
 }
 
-/// Extract the GC-relevant fields from an IRB1 index root blob.
+/// Extract the GC-relevant fields from an index root blob (FIR6).
 ///
 /// Returns `(index_t, prev_index_id, garbage_id)`.
 fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
-    let v5 = fluree_db_binary_index::IndexRootV5::decode(bytes).map_err(|e| {
-        crate::error::IndexerError::Serialization(format!("index root: expected IRB1: {e}"))
-    })?;
-    let prev_id = v5.prev_index.map(|p| p.id);
-    let garbage_id = v5.garbage.map(|g| g.id);
-    Ok((v5.index_t, prev_id, garbage_id))
+    let root = fluree_db_binary_index::IndexRoot::decode(bytes)
+        .map_err(|e| crate::error::IndexerError::Serialization(format!("index root FIR6: {e}")))?;
+    let prev_id = root.prev_index.map(|p| p.id);
+    let garbage_id = root.garbage.map(|g| g.id);
+    Ok((root.index_t, prev_id, garbage_id))
 }
 
-/// Derive a storage address from a ContentId.
+/// Derive a storage address from a ContentId using an explicit kind.
 pub(crate) fn derive_address(
     cid: &ContentId,
     kind: ContentKind,
@@ -48,6 +47,15 @@ pub(crate) fn derive_address(
     ledger_id: &str,
 ) -> String {
     fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex())
+}
+
+/// Derive a storage address from a ContentId using its embedded content kind.
+///
+/// Falls back to `ContentKind::IndexRoot` if the CID has no recognized kind
+/// (shouldn't happen in practice, but keeps GC tolerant).
+fn derive_address_from_cid(cid: &ContentId, storage_method: &str, ledger_id: &str) -> String {
+    let kind = cid.content_kind().unwrap_or(ContentKind::IndexRoot);
+    derive_address(cid, kind, storage_method, ledger_id)
 }
 
 /// Walk the prev-index chain starting from the current root CID.
@@ -67,12 +75,7 @@ pub(crate) async fn walk_prev_index_chain<S: Storage>(
     let mut current_id = current_root_id.clone();
 
     loop {
-        let address = derive_address(
-            &current_id,
-            ContentKind::IndexRoot,
-            storage_method,
-            ledger_id,
-        );
+        let address = derive_address_from_cid(&current_id, storage_method, ledger_id);
 
         // Load the db-root - if this fails on the first entry, propagate error.
         // For subsequent entries (prev_index links), treat as end of chain.
@@ -142,7 +145,7 @@ fn current_timestamp_ms() -> i64 {
 
 /// Clean garbage from old index versions.
 ///
-/// This function implements Clojure-parity GC semantics:
+/// This function implements the expected GC semantics:
 ///
 /// 1. Walks the prev-index chain to collect all index versions
 /// 2. Retains `current + max_old_indexes` versions (e.g., max_old_indexes=5 keeps 6 total)
@@ -296,12 +299,8 @@ where
         }
 
         // Delete the old db-root
-        let root_addr = derive_address(
-            &entry_to_delete.root_id,
-            ContentKind::IndexRoot,
-            storage_method,
-            ledger_id,
-        );
+        let root_addr =
+            derive_address_from_cid(&entry_to_delete.root_id, storage_method, ledger_id);
         if let Err(e) = storage.delete(&root_addr).await {
             tracing::debug!(
                 address = %root_addr,
@@ -332,15 +331,15 @@ where
 mod tests {
     use super::*;
     use fluree_db_binary_index::{
-        BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefsV5, DictTreeRefs, IndexRootV5,
+        BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
     use fluree_db_core::prelude::*;
     use std::collections::BTreeMap;
 
     const LEDGER: &str = "test:main";
 
-    /// Build a minimal IRB1 root with the given t, prev_index, and garbage.
-    fn minimal_irb1(
+    /// Build a minimal FIR6 root with the given t, prev_index, and garbage.
+    fn minimal_fir6(
         t: i64,
         prev_index: Option<BinaryPrevIndexRef>,
         garbage: Option<BinaryGarbageRef>,
@@ -350,7 +349,7 @@ mod tests {
             branch: dummy_cid.clone(),
             leaves: Vec::new(),
         };
-        let root = IndexRootV5 {
+        let root = IndexRoot {
             ledger_id: LEDGER.to_string(),
             index_t: t,
             base_t: 0,
@@ -360,7 +359,7 @@ mod tests {
             graph_iris: Vec::new(),
             datatype_iris: Vec::new(),
             language_tags: Vec::new(),
-            dict_refs: DictRefsV5 {
+            dict_refs: DictRefs {
                 forward_packs: DictPackRefs {
                     string_fwd_packs: Vec::new(),
                     subject_fwd_ns_packs: Vec::new(),
@@ -370,6 +369,7 @@ mod tests {
             },
             subject_watermarks: Vec::new(),
             string_watermark: 0,
+            lex_sorted_string_ids: false,
             total_commit_size: 0,
             total_asserts: 0,
             total_retracts: 0,
@@ -381,6 +381,7 @@ mod tests {
             prev_index,
             garbage,
             sketch_ref: None,
+            o_type_table: IndexRoot::build_o_type_table(&[], &[]),
         };
         root.encode()
     }
@@ -401,11 +402,11 @@ mod tests {
 
     #[test]
     fn test_parse_chain_fields_v3_cid() {
-        // IRB1 root with prev_index and garbage set.
+        // FIR6 root with prev_index and garbage set.
         let (prev_cid, _) = cid_and_addr(ContentKind::IndexRoot, b"prev");
         let (garb_cid, _) = cid_and_addr(ContentKind::GarbageRecord, b"garb");
 
-        let bytes = minimal_irb1(
+        let bytes = minimal_fir6(
             5,
             Some(BinaryPrevIndexRef {
                 t: 4,
@@ -423,8 +424,8 @@ mod tests {
 
     #[test]
     fn test_parse_chain_fields_minimal() {
-        // IRB1 root without prev_index or garbage.
-        let bytes = minimal_irb1(1, None, None);
+        // FIR6 root without prev_index or garbage.
+        let bytes = minimal_fir6(1, None, None);
         let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
         assert_eq!(t, 1);
         assert_eq!(prev, None);
@@ -457,7 +458,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let (root_cid, root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root1");
 
-        let root_bytes = minimal_irb1(1, None, None);
+        let root_bytes = minimal_fir6(1, None, None);
         storage.write_bytes(&root_addr, &root_bytes).await.unwrap();
 
         let chain = walk_prev_index_chain(&storage, &root_cid, LEDGER)
@@ -480,16 +481,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_walk_chain_irb1_format() {
-        // Test chain walking with IRB1-encoded roots
+    async fn test_walk_chain_fir6_format() {
+        // Test chain walking with FIR6-encoded roots
         let storage = MemoryStorage::new();
 
         let (cid1, addr1) = cid_and_addr(ContentKind::IndexRoot, b"root1");
         let (cid2, addr2) = cid_and_addr(ContentKind::IndexRoot, b"root2");
         let (_, addr3) = cid_and_addr(ContentKind::IndexRoot, b"root3");
 
-        let root1 = minimal_irb1(1, None, None);
-        let root2 = minimal_irb1(
+        let root1 = minimal_fir6(1, None, None);
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -497,7 +498,7 @@ mod tests {
             }),
             None,
         );
-        let root3 = minimal_irb1(
+        let root3 = minimal_fir6(
             3,
             Some(BinaryPrevIndexRef {
                 t: 2,
@@ -527,7 +528,7 @@ mod tests {
         let (missing_cid, _) = cid_and_addr(ContentKind::IndexRoot, b"missing");
         let (_, addr2) = cid_and_addr(ContentKind::IndexRoot, b"root2");
 
-        let root2 = minimal_irb1(
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -547,7 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clean_garbage_clojure_semantics() {
-        // Test Clojure parity GC with IRB1-encoded roots and garbage items.
+        // Test GC with FIR6-encoded roots and garbage items.
         let storage = MemoryStorage::new();
 
         let (cid1, addr1) = cid_and_addr(ContentKind::IndexRoot, b"root1");
@@ -560,7 +561,7 @@ mod tests {
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
         // t=1: oldest, has its own garbage manifest
-        let root1 = minimal_irb1(
+        let root1 = minimal_fir6(
             1,
             None,
             Some(BinaryGarbageRef {
@@ -569,7 +570,7 @@ mod tests {
         );
 
         // t=2: points to t=1, has garbage manifest (nodes replaced from t=1->t=2)
-        let root2 = minimal_irb1(
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -581,7 +582,7 @@ mod tests {
         );
 
         // t=3: current, points to t=2
-        let root3 = minimal_irb1(
+        let root3 = minimal_fir6(
             3,
             Some(BinaryPrevIndexRef {
                 t: 2,
@@ -656,8 +657,8 @@ mod tests {
         // Recent timestamp (5 mins ago) -- NOT old enough
         let recent_ts = current_timestamp_ms() - (5 * 60 * 1000);
 
-        let root1 = minimal_irb1(1, None, None);
-        let root2 = minimal_irb1(
+        let root1 = minimal_fir6(1, None, None);
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -667,7 +668,7 @@ mod tests {
                 id: garb_cid2.clone(),
             }),
         );
-        let root3 = minimal_irb1(
+        let root3 = minimal_fir6(
             3,
             Some(BinaryPrevIndexRef {
                 t: 2,
@@ -720,8 +721,8 @@ mod tests {
 
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
-        let root1 = minimal_irb1(1, None, None);
-        let root2 = minimal_irb1(
+        let root1 = minimal_fir6(1, None, None);
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -731,7 +732,7 @@ mod tests {
                 id: garb_cid2.clone(),
             }),
         );
-        let root3 = minimal_irb1(
+        let root3 = minimal_fir6(
             3,
             Some(BinaryPrevIndexRef {
                 t: 2,
@@ -797,8 +798,8 @@ mod tests {
 
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
-        let root1 = minimal_irb1(1, None, None);
-        let root2 = minimal_irb1(
+        let root1 = minimal_fir6(1, None, None);
+        let root2 = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -808,7 +809,7 @@ mod tests {
                 id: garb_cid2.clone(),
             }),
         );
-        let root3 = minimal_irb1(
+        let root3 = minimal_fir6(
             3,
             Some(BinaryPrevIndexRef {
                 t: 2,
@@ -818,7 +819,7 @@ mod tests {
                 id: garb_cid3.clone(),
             }),
         );
-        let root4 = minimal_irb1(
+        let root4 = minimal_fir6(
             4,
             Some(BinaryPrevIndexRef {
                 t: 3,
@@ -828,7 +829,7 @@ mod tests {
                 id: garb_cid4.clone(),
             }),
         );
-        let root5 = minimal_irb1(
+        let root5 = minimal_fir6(
             5,
             Some(BinaryPrevIndexRef {
                 t: 4,
@@ -942,7 +943,7 @@ mod tests {
 
         // --- Base root at t=5 (the index before incremental update) ---
         let (base_root_cid, base_root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root-t5");
-        let base_root_bytes = minimal_irb1(5, None, None);
+        let base_root_bytes = minimal_fir6(5, None, None);
         storage
             .write_bytes(&base_root_addr, &base_root_bytes)
             .await
@@ -979,7 +980,7 @@ mod tests {
 
         // New root at t=10: prev_index → base root, garbage → manifest
         let (new_root_cid, new_root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root-t10");
-        let new_root_bytes = minimal_irb1(
+        let new_root_bytes = minimal_fir6(
             10,
             Some(BinaryPrevIndexRef {
                 t: 5,

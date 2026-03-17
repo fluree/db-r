@@ -1,6 +1,4 @@
-//! Indexing statistics integration tests (Clojure parity)
-//!
-//! Mirrors `db-clojure/test/fluree/db/property_class_statistics_test.clj`.
+//! Indexing statistics integration tests
 //!
 //! Includes tests for:
 //! - Property and class statistics persistence
@@ -28,8 +26,8 @@ use support::{
 
 /// Apply a binary index root to a ledger, loading the full BinaryIndexStore
 /// and attaching a BinaryRangeProvider so subsequent queries work correctly.
-/// Auto-detects IRB1 (v5) vs v4 JSON format.
-async fn apply_index_v2<S: Storage + Clone + 'static>(
+/// Loads the FIR6 binary index root and attaches it to the ledger state.
+async fn apply_index<S: Storage + Clone + 'static>(
     ledger: &mut LedgerState,
     root_id: &fluree_db_core::ContentId,
     ledger_id: &str,
@@ -58,17 +56,17 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
-    // Extract metadata from IRB1 root
-    let v5 = fluree_db_binary_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");
+    // Extract metadata from FIR6 root
+    let root = fluree_db_binary_index::IndexRoot::decode(&bytes).expect("decode FIR6 root");
     let meta = LedgerSnapshotMetadata {
-        ledger_id: v5.ledger_id,
-        t: v5.index_t,
-        namespace_codes: v5.namespace_codes.into_iter().collect(),
-        stats: v5.stats,
-        schema: v5.schema,
-        subject_watermarks: v5.subject_watermarks,
-        string_watermark: v5.string_watermark,
-        graph_iris: v5.graph_iris,
+        ledger_id: root.ledger_id,
+        t: root.index_t,
+        namespace_codes: root.namespace_codes.into_iter().collect(),
+        stats: root.stats,
+        schema: root.schema,
+        subject_watermarks: root.subject_watermarks,
+        string_watermark: root.string_watermark,
+        graph_iris: root.graph_iris,
     };
     let mut db = LedgerSnapshot::new_meta(meta).expect("seed graph registry from root");
     db.range_provider = Some(Arc::new(provider));
@@ -269,7 +267,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
 
 #[tokio::test]
 async fn statistics_work_with_memory_storage_when_indexed() {
-    // Clojure: `property-class-statistics-memory-storage-test`
+    // Scenario: `property-class-statistics-memory-storage-test`
     let mut fluree = FlureeBuilder::memory().build_memory();
 
     let (local, handle) = start_background_indexer_local(
@@ -451,7 +449,7 @@ async fn ledger_info_api_returns_expected_structure() {
             assert_eq!(info["graph"], "urn:default", "default graph should be urn:default");
 
             // ================================================================
-            // Verify commit structure (Clojure parity)
+            // Verify commit structure
             // ================================================================
             let commit = &info["commit"];
             assert_eq!(commit["@context"], "https://ns.flur.ee/db/v1");
@@ -1791,7 +1789,7 @@ async fn large_dataset_statistics_accuracy() {
                     "index_t ({index_t}) should be >= commit_t ({commit_t})"
                 );
                 let root_cid = root_id.expect("expected root_id");
-                apply_index_v2(
+                apply_index(
                     &mut ledger,
                     &root_cid,
                     ledger_id,

@@ -1,6 +1,5 @@
 //! Explain API integration tests that require persisted index statistics.
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/explain_test.clj` cases that depend on indexing/stats.
 
 #![cfg(feature = "native")]
 
@@ -41,7 +40,7 @@ async fn index_and_load_db(
 
 #[tokio::test]
 async fn explain_no_optimization_when_equal_selectivity() {
-    // Clojure: explain-no-optimization-test
+    // Scenario: explain-no-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -109,7 +108,7 @@ async fn explain_no_optimization_when_equal_selectivity() {
 
 #[tokio::test]
 async fn explain_reorders_bound_object_email_first() {
-    // Clojure: explain-value-lookup-optimization-test
+    // Scenario: explain-value-lookup-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -173,7 +172,7 @@ async fn explain_reorders_bound_object_email_first() {
 
 #[tokio::test]
 async fn explain_reorders_badge_property_scan_before_class_scan() {
-    // Clojure: explain-property-count-optimization-test
+    // Scenario: explain-property-count-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -236,7 +235,7 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
 
 #[tokio::test]
 async fn explain_includes_inputs_fields_and_flags() {
-    // Clojure: explain-inputs-field-test
+    // Scenario: explain-inputs-field-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),

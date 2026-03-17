@@ -28,7 +28,7 @@ pub struct VendedCredentials {
 impl VendedCredentials {
     /// Parse credentials from REST catalog response config map.
     ///
-    /// Expected keys (from Clojure reference / Polaris):
+    /// Expected keys (from reference / Polaris):
     /// - `s3.access-key-id`
     /// - `s3.secret-access-key`
     /// - `s3.session-token`

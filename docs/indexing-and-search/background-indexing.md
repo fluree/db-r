@@ -40,7 +40,7 @@ Organized by object first:
 31 → schema:age → ex:alice → [t=10]
 ```
 
-**Optimized for:** "Find subjects that reference this value"
+**Optimized for:** "Find subjects with this object value"
 
 ### PSOT (Predicate-Subject-Object-Time)
 
@@ -228,9 +228,9 @@ Smaller `reindex-min-bytes` keeps novelty smaller (better query performance) at 
 Indexes are stored as immutable, content-addressed snapshots:
 
 ```text
-  - Leaf blobs (FLI2) and branch manifests (FBR2)
+  - Leaf blobs (FLI3) and branch manifests (FBR3)
   - Dictionary blobs (forward packs, reverse tree leaves/branches)
-  - An index root blob (IRB1) that references everything needed for queries
+  - An index root blob (FIR6) that references everything needed for queries
 ```
 
 The nameservice stores the current index root CID (`index_head_id`) and its watermark (`index_t`). Peers fetch only the CAS objects they need on demand.

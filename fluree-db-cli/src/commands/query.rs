@@ -93,6 +93,7 @@ pub async fn run(
     format_str: &str,
     normalize_arrays: bool,
     bench: bool,
+    explain: bool,
     sparql_flag: bool,
     fql_flag: bool,
     at: Option<&str>,
@@ -101,6 +102,7 @@ pub async fn run(
     direct: bool,
 ) -> CliResult<()> {
     const BENCH_ROWS: usize = 5;
+    const DEFAULT_TABLE_PREVIEW_ROWS: usize = 200;
     let limit = if bench { Some(BENCH_ROWS) } else { None };
     let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
@@ -130,6 +132,27 @@ pub async fn run(
             )));
         }
     };
+
+    if explain {
+        if bench {
+            return Err(CliError::Usage(
+                "--bench is not compatible with --explain".to_string(),
+            ));
+        }
+        if normalize_arrays {
+            return Err(CliError::Usage(
+                "--normalize-arrays is not applicable to --explain".to_string(),
+            ));
+        }
+        if !matches!(
+            output_format,
+            OutputFormatKind::Json | OutputFormatKind::TypedJson
+        ) {
+            return Err(CliError::Usage(
+                "--explain output is JSON only; use --format json".to_string(),
+            ));
+        }
+    }
 
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
@@ -215,8 +238,59 @@ pub async fn run(
 
             // Execute query via remote HTTP
             let timer = Instant::now();
-            let result = match (query_format, at) {
-                (detect::QueryFormat::Sparql, Some(at_str)) => {
+            let result = match (query_format, at, explain) {
+                (detect::QueryFormat::Sparql, Some(at_str), true) => {
+                    // Remote time travel explain uses connection-scoped SPARQL:
+                    // server requires FROM clause to identify the ledger/time.
+                    if fluree_db_api::sparql_dataset_ledger_ids(&content)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        return Err(CliError::Usage(
+                            "SPARQL query already contains FROM/FROM NAMED; \
+                             for remote time travel, encode time travel in the FROM IRI \
+                             (e.g., FROM <ledger@t:1>) instead of using --at"
+                                .to_string(),
+                        ));
+                    }
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_iri = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let injected = inject_sparql_from_before_where(&content, &from_iri).ok_or_else(
+                        || {
+                            CliError::Usage(
+                                "unable to inject SPARQL FROM clause for remote time travel; \
+                                 please write the query as `SELECT ... WHERE { ... }` or include an explicit FROM"
+                                    .to_string(),
+                            )
+                        },
+                    )?;
+                    client.explain_connection_sparql(&injected).await?
+                }
+                (detect::QueryFormat::JsonLd, Some(at_str), true) => {
+                    // Remote time travel explain uses connection-scoped JSON-LD:
+                    // inject `"from": "<ledger>@t:..."` and POST to /explain.
+                    let spec = parse_time_spec(at_str);
+                    let suffix = time_spec_to_suffix(&spec);
+                    let from_id = attach_time_suffix_preserving_fragment(&remote_alias, &suffix);
+                    let mut json_query: serde_json::Value = serde_json::from_str(&content)?;
+                    if let Some(obj) = json_query.as_object_mut() {
+                        obj.insert("from".to_string(), serde_json::Value::String(from_id));
+                    } else {
+                        return Err(CliError::Input(
+                            "JSON-LD query must be a JSON object".to_string(),
+                        ));
+                    }
+                    client.explain_connection_jsonld(&json_query).await?
+                }
+                (detect::QueryFormat::Sparql, None, true) => {
+                    client.explain_sparql(&remote_alias, &content).await?
+                }
+                (detect::QueryFormat::JsonLd, None, true) => {
+                    let json_query: serde_json::Value = serde_json::from_str(&content)?;
+                    client.explain_jsonld(&remote_alias, &json_query).await?
+                }
+                (detect::QueryFormat::Sparql, Some(at_str), false) => {
                     // Remote time travel uses connection-scoped SPARQL:
                     // server requires FROM clause to identify the ledger/time.
                     //
@@ -248,7 +322,7 @@ pub async fn run(
                     )?;
                     client.query_connection_sparql(&injected).await?
                 }
-                (detect::QueryFormat::JsonLd, Some(at_str)) => {
+                (detect::QueryFormat::JsonLd, Some(at_str), false) => {
                     // Remote time travel uses connection-scoped JSON-LD:
                     // inject `"from": "<ledger>@t:..."` and POST to /query.
                     let spec = parse_time_spec(at_str);
@@ -264,10 +338,10 @@ pub async fn run(
                     }
                     client.query_connection_jsonld(&json_query).await?
                 }
-                (detect::QueryFormat::Sparql, None) => {
+                (detect::QueryFormat::Sparql, None, false) => {
                     client.query_sparql(&remote_alias, &content).await?
                 }
-                (detect::QueryFormat::JsonLd, None) => {
+                (detect::QueryFormat::JsonLd, None, false) => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
                     client.query_jsonld(&remote_alias, &json_query).await?
                 }
@@ -276,9 +350,37 @@ pub async fn run(
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
-            let output = output::format_result(&result, output_format, query_format, limit)?;
+            if explain {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                eprintln!("(explain, {})", format_duration(elapsed));
+                return Ok(());
+            }
+
+            // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
+            // For table output, show a preview unless the result set is small (or --bench is used).
+            let effective_limit = if !bench
+                && output_format == OutputFormatKind::Table
+                && query_format == detect::QueryFormat::Sparql
+                && limit.is_none()
+            {
+                let total = result
+                    .pointer("/results/bindings")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if total > DEFAULT_TABLE_PREVIEW_ROWS {
+                    Some(DEFAULT_TABLE_PREVIEW_ROWS)
+                } else {
+                    None
+                }
+            } else {
+                limit
+            };
+
+            let output =
+                output::format_result(&result, output_format, query_format, effective_limit)?;
             println!("{}", output.text);
-            print_footer(output.total_rows, limit, elapsed);
+            print_footer(output.total_rows, effective_limit, elapsed);
         }
         LedgerMode::Local { fluree, alias } => {
             // Load a single view (optionally time-traveled) and execute against it.
@@ -291,6 +393,23 @@ pub async fn run(
                 }
                 None => fluree.db(&alias).await?,
             };
+
+            if explain {
+                let timer = Instant::now();
+                let resp = match query_format {
+                    detect::QueryFormat::Sparql => {
+                        fluree.explain_sparql(&view, content.as_str()).await?
+                    }
+                    detect::QueryFormat::JsonLd => {
+                        let json_query: serde_json::Value = serde_json::from_str(&content)?;
+                        fluree.explain(&view, &json_query).await?
+                    }
+                };
+                let elapsed = timer.elapsed();
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+                eprintln!("(explain, {})", format_duration(elapsed));
+                return Ok(());
+            }
 
             // Benchmark mode should measure query execution only (not view loading or result formatting).
             // For FQL, we also exclude CLI-side JSON parsing from the timed region.
@@ -322,6 +441,17 @@ pub async fn run(
                 // without materializing full SPARQL JSON / full-result formatting.
                 match query_format {
                     detect::QueryFormat::Sparql => {
+                        // CONSTRUCT/DESCRIBE produce graph results (not tabular SPARQL JSON).
+                        // For bench mode, avoid expensive graph materialization and just report size.
+                        if result.output.construct_template().is_some() {
+                            println!(
+                                "(graph result: {} triples)",
+                                format_count(result.row_count())
+                            );
+                            print_footer(result.row_count(), None, elapsed);
+                            return Ok(());
+                        }
+
                         if let Some(output) = output::format_sparql_table_from_result(
                             &result,
                             &view.snapshot,
@@ -377,30 +507,72 @@ pub async fn run(
                     _ => output_format,
                 };
 
-                // Fast path: SPARQL default table output (avoid materializing full SPARQL JSON).
-                if query_format == detect::QueryFormat::Sparql
+                // Graph results (SPARQL CONSTRUCT/DESCRIBE) don't have a meaningful table view.
+                let display_format = if query_format == detect::QueryFormat::Sparql
+                    && result.output.construct_template().is_some()
                     && display_format == OutputFormatKind::Table
+                {
+                    OutputFormatKind::Json
+                } else {
+                    display_format
+                };
+
+                // Safety: rendering a `table` for millions of rows will effectively hang the CLI.
+                // For table output, show a preview unless the result set is small.
+                let effective_limit = if display_format == OutputFormatKind::Table
+                    && query_format == detect::QueryFormat::Sparql
                     && limit.is_none()
                 {
+                    let total = result.row_count();
+                    if total > DEFAULT_TABLE_PREVIEW_ROWS {
+                        Some(DEFAULT_TABLE_PREVIEW_ROWS)
+                    } else {
+                        None
+                    }
+                } else {
+                    limit
+                };
+
+                // Fast path: SPARQL table output (avoid materializing full SPARQL JSON).
+                if query_format == detect::QueryFormat::Sparql
+                    && display_format == OutputFormatKind::Table
+                {
                     let render_timer = Instant::now();
-                    if let Some(output) =
-                        output::format_sparql_table_from_result(&result, &view.snapshot, None)?
-                    {
+                    if let Some(output) = output::format_sparql_table_from_result(
+                        &result,
+                        &view.snapshot,
+                        effective_limit,
+                    )? {
                         let render_elapsed = render_timer.elapsed();
                         println!("{}", output.text);
-                        eprintln!(
-                            "({} rows, query: {}, render: {})",
-                            format_count(output.total_rows),
-                            format_duration(elapsed),
-                            format_duration(render_elapsed),
-                        );
+                        if let Some(n) = effective_limit {
+                            eprintln!(
+                                "(first {} of {} rows, query: {}, render: {})",
+                                format_count(n),
+                                format_count(output.total_rows),
+                                format_duration(elapsed),
+                                format_duration(render_elapsed),
+                            );
+                        } else {
+                            eprintln!(
+                                "({} rows, query: {}, render: {})",
+                                format_count(output.total_rows),
+                                format_duration(elapsed),
+                                format_duration(render_elapsed),
+                            );
+                        }
                         return Ok(());
                     }
                 }
 
                 // Full formatting path
                 let render_timer = Instant::now();
-                let formatted_json = if display_format == OutputFormatKind::TypedJson {
+                let formatted_json = if query_format == detect::QueryFormat::Sparql
+                    && result.output.construct_template().is_some()
+                {
+                    // CONSTRUCT/DESCRIBE graph results: render as JSON-LD.
+                    result.to_construct(&view.snapshot)?
+                } else if display_format == OutputFormatKind::TypedJson {
                     let mut config = fluree_db_api::FormatterConfig::typed_json();
                     if normalize_arrays {
                         config = config.with_normalize_arrays();
@@ -417,8 +589,12 @@ pub async fn run(
                         }
                     }
                 };
-                let output =
-                    output::format_result(&formatted_json, display_format, query_format, limit)?;
+                let output = output::format_result(
+                    &formatted_json,
+                    display_format,
+                    query_format,
+                    effective_limit,
+                )?;
                 let render_elapsed = render_timer.elapsed();
                 println!("{}", output.text);
                 eprintln!(

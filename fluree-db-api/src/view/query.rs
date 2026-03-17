@@ -126,7 +126,7 @@ where
         .await
     }
 
-    /// Execute a query with tracking (Clojure parity).
+    /// Execute a query with tracking.
     ///
     /// Returns a tracked response with fuel, time, and policy statistics.
     /// When `format_config` is `None`, defaults to JSON-LD for FlureeQL
@@ -136,14 +136,20 @@ where
         db: &GraphDb,
         q: impl Into<QueryInput<'_>>,
         format_config: Option<crate::format::FormatterConfig>,
+        tracking_override: Option<TrackingOptions>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let input = q.into();
 
-        // Get tracker - use tracked endpoint helpers that default to all tracking enabled
-        let tracker = match &input {
-            QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
-            QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+        // Get tracker: use caller-provided options if given, otherwise fall back
+        // to defaults (all-enabled for SPARQL, opts-derived for JSON-LD).
+        let tracker = if let Some(opts) = tracking_override {
+            Tracker::new(opts)
+        } else {
+            match &input {
+                QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+                QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+            }
         };
 
         // Determine output format: caller override > input-type default
@@ -151,7 +157,7 @@ where
             QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
             _ => crate::format::FormatterConfig::jsonld(),
         };
-        let format_config = format_config.unwrap_or(default_format);
+        let mut format_config = format_config.unwrap_or(default_format);
 
         // Parse
         let (vars, parsed) = match &input {
@@ -197,6 +203,13 @@ where
             Some(db.overlay.clone()),
             db.binary_graph(),
         );
+
+        // CONSTRUCT/DESCRIBE graph results must be formatted as JSON-LD.
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
 
         // Format with tracking
         let result_json = match db.policy() {

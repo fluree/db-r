@@ -1,6 +1,6 @@
 //! Drop ledger integration tests
 //!
-//! Tests the `drop_ledger` API with feature parity to Clojure's drop-ledger behavior.
+//! Tests the `drop_ledger` API behavior.
 //!
 //! Note: `drop_graph_source` exists in Rust (`fluree-db-api/src/admin.rs`) but does not
 //! yet have integration-test coverage here.
@@ -380,7 +380,7 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
     );
 }
 
-/// Test that drop_ledger disconnects the ledger from cache (Clojure release-ledger parity).
+/// Test that drop_ledger disconnects the ledger from cache.
 ///
 /// This ensures dropped ledgers don't remain in the LedgerManager cache,
 /// which could serve stale data for queries against a deleted ledger.

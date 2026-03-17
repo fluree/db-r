@@ -1,6 +1,5 @@
-//! JSON-LD basic integration tests (Clojure parity)
+//! JSON-LD basic integration tests
 //!
-//! Ports from `db-clojure/test/fluree/db/query/json_ld_basic_test.clj`.
 
 mod support;
 
@@ -275,7 +274,7 @@ async fn jsonld_basic_single_subject_query_graph_crawl() {
 
 #[tokio::test]
 async fn jsonld_basic_single_subject_graph_crawl_with_depth() {
-    // Mirrors the “depth graph crawl” behavior in Clojure:
+    // Mirrors the “depth graph crawl” behavior:
     // with depth=3 and wildcard selection, refs should auto-expand transitively.
     let (fluree, ledger) = seed_movie_graph().await;
 

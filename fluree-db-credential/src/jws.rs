@@ -57,7 +57,7 @@ struct JwkOkp {
 ///
 /// # V1 Scope
 /// Requires `header.jwk` (embedded public key in JWK format).
-/// - Clojure's `crypto/create-jws` with `{:include-pubkey true}` embeds pubkey
+/// - Legacy `crypto/create-jws` with `{:include-pubkey true}` embeds pubkey
 /// - `kid`-based verification deferred to V2
 ///
 /// # Returns

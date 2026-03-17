@@ -5,9 +5,6 @@
 //! - Edge cases (3+ branches, nested unions, double inverse)
 //! - Negative tests (partial conditions shouldn't trigger inference)
 //!
-//! Ported from Clojure tests in:
-//! - db-clojure/test/fluree/db/reasoner/owl_datalog_restrictions_test.clj
-//! - db-clojure/test/fluree/db/reasoner/owl_datalog_edge_cases_test.clj
 
 mod support;
 

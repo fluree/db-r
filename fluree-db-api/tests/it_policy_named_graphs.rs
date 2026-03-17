@@ -59,7 +59,7 @@ async fn policy_applies_to_named_graph_queries() {
 
             // Policy: deny schema:ssn but allow everything else.
             //
-            // We include an explicit allow-all policy (Clojure parity pattern) so this test
+            // We include an explicit allow-all policy so this test
             // doesn't depend on subtle default-allow behavior when policies are present.
             let policy = json!([
                 {

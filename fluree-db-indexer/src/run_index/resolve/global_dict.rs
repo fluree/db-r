@@ -418,7 +418,7 @@ impl PredicateDict {
         Ok(())
     }
 
-    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRoot`).
     ///
     /// Entry at index `i` gets ID `i`. This is the safe way to seed a dict
     /// from persisted data — it guarantees ID stability.
@@ -591,14 +591,19 @@ impl SharedDictAllocator {
         Self::from_predicate_dict(&new_datatype_dict())
     }
 
-    /// Create a shared allocator pre-seeded for graph IDs with ledger-scoped txn-meta.
+    /// Create a shared allocator pre-seeded for system graph IDs:
+    /// - dict_id=0 → g_id=1 txn-meta
+    /// - dict_id=1 → g_id=2 config
     ///
-    /// Matches `GlobalDicts::new()`: txn-meta graph at ID 0.
-    /// (Callers add +1 for the g_id convention: g_id 0 = default, g_id 1 = txn-meta.)
+    /// This aligns the index root `graph_iris` layout with `fluree-db-core`'s
+    /// `GraphRegistry::apply_delta`, which reserves g_id=2 and assigns user graphs
+    /// starting at g_id=3.
     pub fn new_graph(ledger_id: &str) -> Self {
         let mut d = PredicateDict::new();
         let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        let config_iri = fluree_db_core::graph_registry::config_graph_iri(ledger_id);
         d.get_or_insert(&txn_meta_iri);
+        d.get_or_insert(&config_iri);
         Self::from_predicate_dict(&d)
     }
 
@@ -970,7 +975,7 @@ impl LanguageTagDict {
         self.inner = VecBiDict::new(1);
     }
 
-    /// Reconstruct from an ordered list of tags (e.g., from `IndexRootV5`).
+    /// Reconstruct from an ordered list of tags (e.g., from `IndexRoot`).
     ///
     /// Tag at index `i` gets ID `i + 1` (base_id=1; 0 = "no tag").
     pub fn from_ordered_tags(tags: Vec<std::sync::Arc<str>>) -> Self {
@@ -1053,11 +1058,14 @@ impl GlobalDicts {
     /// Creates `subjects.fwd` and `strings.fwd` in the given `run_dir`.
     /// The same `run_dir` must be passed to `persist()` later.
     ///
-    /// Pre-inserts the ledger-scoped txn-meta graph IRI as the first graph entry,
-    /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
+    /// Pre-inserts the ledger-scoped system graph IRIs as the first graph entries,
+    /// guaranteeing stable IDs:
+    /// - dict_id=0 → g_id=1 txn-meta
+    /// - dict_id=1 → g_id=2 config
     pub fn new(run_dir: impl AsRef<Path>, ledger_id: &str) -> io::Result<Self> {
         let dir = run_dir.as_ref();
         let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        let config_iri = fluree_db_core::graph_registry::config_graph_iri(ledger_id);
         let mut dicts = Self {
             subjects: SubjectDict::new(dir.join("subjects.fwd"))?,
             predicates: PredicateDict::new(),
@@ -1068,17 +1076,21 @@ impl GlobalDicts {
             numbigs: FxHashMap::default(),
             vectors: FxHashMap::default(),
         };
-        // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
+        // Reserve g_id=1 for txn-meta, g_id=2 for config.
         dicts.graphs.get_or_insert(&txn_meta_iri);
+        dicts.graphs.get_or_insert(&config_iri);
         Ok(dicts)
     }
 
     /// Create GlobalDicts with in-memory dictionaries (no disk files, for tests).
     ///
-    /// Pre-inserts the ledger-scoped txn-meta graph IRI as the first graph entry,
-    /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
+    /// Pre-inserts the ledger-scoped system graph IRIs as the first graph entries,
+    /// guaranteeing stable IDs:
+    /// - dict_id=0 → g_id=1 txn-meta
+    /// - dict_id=1 → g_id=2 config
     pub fn new_memory(ledger_id: &str) -> Self {
         let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        let config_iri = fluree_db_core::graph_registry::config_graph_iri(ledger_id);
         let mut dicts = Self {
             subjects: SubjectDict::new_memory(),
             predicates: PredicateDict::new(),
@@ -1089,8 +1101,9 @@ impl GlobalDicts {
             numbigs: FxHashMap::default(),
             vectors: FxHashMap::default(),
         };
-        // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
+        // Reserve g_id=1 for txn-meta, g_id=2 for config.
         dicts.graphs.get_or_insert(&txn_meta_iri);
+        dicts.graphs.get_or_insert(&config_iri);
         dicts
     }
 

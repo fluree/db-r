@@ -1,9 +1,9 @@
-//! Background indexing wait integration test (Clojure parity)
+//! Background indexing wait integration test
 //!
-//! Clojure tests commonly do:
-//! - commit with `{:index-files-ch index-ch}`
-//! - block on `(block-until-index-complete index-ch)`
-//! - then reload/query/assert against the persisted index
+//! Common workflow:
+//! - commit
+//! - wait for indexing to complete
+//! - reload/query/assert against the persisted index
 //!
 //! Rust equivalent:
 //! - transact (capture `receipt.t`)

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use once_cell::sync::OnceCell;
 
 use super::forward_pack::{lookup_in_pack, parse_pack_meta, ParsedPackMeta};
-use crate::format::index_root::PackBranchEntry;
+use crate::format::wire_helpers::PackBranchEntry;
 use fluree_db_core::{ContentId, ContentStore};
 
 /// Global atomic counter for unique temp file names (avoids collisions
@@ -497,7 +497,7 @@ fn atomic_write_to_cache(cache_path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::dict::forward_pack::{encode_forward_pack, KIND_STRING_FWD};
-    use crate::format::index_root::PackBranchEntry;
+    use crate::format::wire_helpers::PackBranchEntry;
     use fluree_db_core::content_kind::DictKind;
     use fluree_db_core::{ContentKind, MemoryContentStore};
 

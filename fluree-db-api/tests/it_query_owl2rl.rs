@@ -1,9 +1,6 @@
 //! OWL2-RL integration tests
 //!
 //! These tests validate OWL2-RL forward-chaining materialization rules.
-//! Ported from the Clojure tests in:
-//! - db-clojure/test/fluree/db/reasoner/owl2rl_test.clj
-//! - db-clojure/test/fluree/db/reasoner/owl2rl_class_test.clj
 //!
 //! Test coverage:
 //! - eq-sym, eq-trans: owl:sameAs symmetry and transitivity

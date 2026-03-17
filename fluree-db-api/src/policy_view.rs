@@ -1,14 +1,14 @@
 //! Policy-wrapped view abstraction
 //!
 //! This module provides `PolicyWrappedView`, a first-class "policy-wrapped db" type
-//! that mirrors Clojure's `policy-enforce-db` / `wrap-policy` pattern.
+//! that preserves the legacy policy-wrap flow.
 //!
 //! # Design Goals
 //!
 //! - **Wrap-first model**: Create policy-wrapped views once, then query them
 //! - **Cheap metadata**: Wrapper is purely metadata - no DB state copied
 //! - **Per-graph policy**: Each graph in a dataset can have its own policy enforcer
-//! - **Clojure parity**: Matches the flow of `restrict-db` → `wrap-policy` → execute
+//! - Matches the flow of `restrict-db` → `wrap-policy` → execute
 //!
 //! # Usage
 //!
@@ -125,8 +125,7 @@ impl<'a> PolicyWrappedView<'a> {
 
 /// Wrap a ledger state with policy based on query connection options.
 ///
-/// This is the main entry point for creating policy-wrapped views,
-/// mirroring Clojure's `policy-enforce-db`.
+/// This is the main entry point for creating policy-wrapped views.
 ///
 /// # Arguments
 ///
@@ -216,7 +215,7 @@ pub async fn build_policy_context(
 
 /// Wrap a ledger with identity-based policy via `f:policyClass` lookup.
 ///
-/// Convenience wrapper that mirrors Clojure's `wrap-identity-policy`.
+/// Convenience wrapper for identity-based policy wrapping.
 /// Queries for policies via the identity's `f:policyClass` property.
 ///
 /// # Arguments

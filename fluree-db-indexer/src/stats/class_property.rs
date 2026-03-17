@@ -17,7 +17,7 @@ use fluree_vocab::predicates::RDF_TYPE;
 
 /// Tracks property usage per class from novelty flakes
 ///
-/// This extracts class-property statistics matching Clojure's `compute-class-property-stats-from-novelty`:
+/// This extracts class-property statistics matching legacy `compute-class-property-stats-from-novelty`:
 /// - Tracks rdf:type flakes to build subject→class mapping
 /// - For each property used by a subject, tracks usage per class:
 ///   - Datatypes used (e.g., xsd:string, xsd:integer)
@@ -349,13 +349,13 @@ pub async fn compute_class_property_stats_parallel(
 
     // Phase 1: Initialize extractor with prior stats and collect novelty type flakes.
     //
-    // IMPORTANT (Clojure parity):
+    // IMPORTANT:
     // We must NOT treat "rdf:type present in novelty" as replacing prior class membership.
     // Instead, we:
     // - fetch the base classes for the subject from the persisted PSOT index (assertions only)
     // - apply novelty rdf:type asserts/retracts as a delta on top of that base set
     //
-    // This matches Clojure's `batched-get-subject-classes` which applies `apply-type-novelty`
+    // This matches legacy `batched-get-subject-classes` which applies `apply-type-novelty`
     // to the base class set returned from PSOT.
     let mut extractor = ClassPropertyExtractor::from_prior(prior_stats);
 
@@ -385,7 +385,7 @@ pub async fn compute_class_property_stats_parallel(
 
     // Phase 4: Batch lookup base classes from PSOT index (async), then apply novelty deltas.
     //
-    // NOTE: Like Clojure, base lookup uses only assertions from the persisted index.
+    // NOTE: Base lookup uses only assertions from the persisted index.
     // It does NOT collapse historical retractions inside the index itself.
     let mut subject_classes: HashMap<Sid, HashSet<Sid>> = if all_subjects_to_lookup.is_empty() {
         HashMap::new()

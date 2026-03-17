@@ -1,6 +1,5 @@
-//! Explain API integration tests (Clojure parity)
+//! Explain API integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/explain_test.clj` in spirit.
 //! The native/statistics-backed tests live in `it_query_explain_native.rs`.
 
 mod support;
@@ -11,7 +10,7 @@ use support::{genesis_ledger, graphdb_from_ledger};
 
 #[tokio::test]
 async fn explain_no_stats_reports_none_and_reason() {
-    // Clojure: explain-no-stats-test
+    // Scenario: explain-no-stats-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "no-stats:main");
 

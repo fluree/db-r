@@ -1,6 +1,6 @@
 //! Shared test harness for fluree-db-api integration tests.
 //!
-//! Provides type aliases, helpers, and utilities that match the Clojure test patterns.
+//! Provides type aliases, helpers, and utilities used by integration tests.
 
 // Many helpers are used by *some* integration test crates but not others.
 // Keep them centralized here and silence dead_code warnings in crates that
@@ -37,7 +37,7 @@ pub type MemoryLedger = LedgerState;
 // Context helpers
 // =============================================================================
 
-/// Standard default context used in Fluree tests (matches Clojure `test-utils/default-context`)
+/// Standard default context used in Fluree tests
 pub fn default_context() -> JsonValue {
     json!({
         "xsd": "http://www.w3.org/2001/XMLSchema#",
@@ -249,7 +249,7 @@ pub async fn trigger_index_and_wait_outcome(
 
 /// Start a `BackgroundIndexerWorker` on a `tokio::task::LocalSet` and return the handle.
 ///
-/// This is the Rust equivalent of Clojure tests that pass an `index-files-ch` to `commit!`
+/// Equivalent to tests that wait on indexing completion
 /// and then block until indexing completes. In Rust, tests should:
 /// - transact (get `receipt.t`)
 /// - `handle.trigger(ledger_id, receipt.t)`
@@ -277,9 +277,9 @@ where
 // Index config assertions
 // =============================================================================
 
-/// Assert that IndexConfig defaults match Clojure parity.
+/// Assert that IndexConfig defaults match expected defaults.
 ///
-/// Clojure defaults from `add-reindex-thresholds`:
+/// Reindex threshold defaults:
 /// - min: 100_000
 /// - max: 1_000_000
 pub fn assert_index_defaults() {
@@ -389,7 +389,7 @@ pub fn context_ex_schema() -> JsonValue {
 // Test data fixtures
 // =============================================================================
 
-/// People test data (matches Clojure `test-utils/people`)
+/// People test data
 pub fn people_data() -> JsonValue {
     json!([
         {
@@ -548,7 +548,7 @@ pub async fn seed_people_with_ssn(fluree: &MemoryFluree, ledger_id: &str) -> Mem
         .ledger
 }
 
-/// Load people test data into a new ledger (matches Clojure `test-utils/load-people`)
+/// Load people test data into a new ledger
 pub async fn load_people(fluree: &MemoryFluree) -> Result<String, Box<dyn std::error::Error>> {
     let ledger_id = "test/people:main";
     let ledger = fluree.create_ledger(ledger_id).await?;

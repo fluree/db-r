@@ -7,6 +7,33 @@ use std::collections::HashMap;
 
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::GraphId;
+use rustc_hash::FxHashMap;
+
+/// Sentinel datatype value used in [`SpotClassStats`] for object-reference
+/// properties (`ObjKind::REF_ID`). Displayed as `@id` in stats output.
+pub const DT_REF_ID: u16 = u16::MAX;
+
+/// Class→property→datatype statistics collected during the SPOT merge.
+///
+/// Exploits SPOT ordering (subject-grouped) to compute class statistics
+/// with O(properties-per-subject) memory per subject group. Only the global
+/// accumulators grow with distinct classes/properties.
+///
+/// # Datatype keys
+///
+/// The inner `u16` key is a `DatatypeDictId` for literal values, or
+/// [`DT_REF_ID`] (`u16::MAX`) for object references (`@id`).
+#[derive(Debug, Default)]
+pub struct SpotClassStats {
+    /// (g_id, class_sid64) → instance count (number of subjects with this rdf:type)
+    pub class_counts: FxHashMap<(GraphId, u64), u64>,
+    /// (g_id, class_sid64) → p_id → dt → flake count
+    pub class_prop_dts: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u16, u64>>>,
+    /// (g_id, class_sid64) → p_id → lang_id → flake count
+    pub class_prop_langs: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u16, u64>>>,
+    /// (g_id, class_sid64) → p_id → target_class sid64 → count
+    pub class_prop_refs: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u64, u64>>>,
+}
 
 /// Build JSON array for class→property→datatype stats from SPOT merge results.
 ///
@@ -15,14 +42,14 @@ use fluree_db_core::GraphId;
 ///
 /// Shared between the import pipeline and rebuild pipeline.
 pub fn build_class_stats_json(
-    cs: &crate::run_index::SpotClassStats,
+    cs: &SpotClassStats,
     predicate_sids: &[(u16, String)],
     dt_tags: &[ValueTypeTag],
     run_dir: &std::path::Path,
     namespace_codes: &HashMap<u16, String>,
 ) -> std::io::Result<Vec<serde_json::Value>> {
     use crate::run_index::dict_io;
-    use crate::run_index::DT_REF_ID;
+
     use fluree_db_core::subject_id::SubjectId;
     use std::io::{Read as _, Seek as _, SeekFrom};
 
@@ -148,9 +175,9 @@ pub fn build_class_stats_json(
 /// own class stats reflecting only the subjects and properties within that graph.
 ///
 /// Parallel to `build_class_stats_json` but returns typed structs suitable for
-/// binary stats encoding in `IndexRootV5`.
+/// binary stats encoding in `IndexRoot`.
 pub fn build_class_stat_entries(
-    cs: &crate::run_index::SpotClassStats,
+    cs: &SpotClassStats,
     predicate_sids: &[(u16, String)],
     dt_tags: &[ValueTypeTag],
     language_tags: &[String],
@@ -227,7 +254,7 @@ pub fn build_class_stat_entries(
                         let mut datatypes: Vec<(u8, u64)> = dt_map
                             .iter()
                             .map(|(&dt_dict_id, &count)| {
-                                let tag = if dt_dict_id == crate::run_index::DT_REF_ID {
+                                let tag = if dt_dict_id == DT_REF_ID {
                                     fluree_db_core::value_id::ValueTypeTag::JSON_LD_ID.as_u8()
                                 } else {
                                     dt_tags

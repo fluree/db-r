@@ -61,7 +61,7 @@ pub fn format(
         result.output.select_vars_or_empty().to_vec()
     };
 
-    // Clojure parity: order head vars lexicographically by variable name (without '?').
+    // Order head vars lexicographically by variable name (without '?').
     // This also stabilizes output across planner reorderings.
     let mut head_pairs: Vec<(String, fluree_db_query::VarId)> = head_vars
         .iter()
@@ -135,7 +135,7 @@ fn format_binding(
 
         // Reference (IRI or blank node)
         Binding::Sid(sid) => {
-            // Clojure parity: SPARQL JSON output uses compact IRIs where possible (not full IRIs).
+            // SPARQL JSON output uses compact IRIs where possible (not full IRIs).
             let iri = compactor.compact_sid(sid)?;
             // Check if it's a blank node (starts with _:)
             if iri.starts_with("_:") {
@@ -231,7 +231,7 @@ fn format_binding(
                     } else {
                         d.to_string()
                     };
-                    // Clojure parity: include datatype for numeric literals.
+                    // Include datatype for numeric literals.
                     Ok(Some(json!({
                         "type": "literal",
                         "value": value_str,
@@ -239,7 +239,7 @@ fn format_binding(
                     })))
                 }
                 FlakeValue::Boolean(b) => {
-                    // Clojure parity: include datatype for non-string literals.
+                    // Include datatype for non-string literals.
                     Ok(Some(json!({
                         "type": "literal",
                         "value": b.to_string(),

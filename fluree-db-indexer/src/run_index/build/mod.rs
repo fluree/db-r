@@ -1,3 +1,4 @@
+pub mod build_from_commits;
 pub mod incremental_branch;
 pub mod incremental_leaf;
 pub mod incremental_resolve;

@@ -279,6 +279,10 @@ pub enum Commands {
         #[arg(long)]
         bench: bool,
 
+        /// Print an explain plan (no execution)
+        #[arg(long)]
+        explain: bool,
+
         /// Force SPARQL query format
         #[arg(long, conflicts_with = "jsonld")]
         sparql: bool,

@@ -269,6 +269,14 @@ impl StorageRead for AnyStorage {
         self.0.read_bytes_hint(address, hint).await
     }
 
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        self.0.read_byte_range(address, range).await
+    }
+
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.0.exists(address).await
     }
@@ -576,7 +584,7 @@ where
     }
 }
 
-/// Tiered storage router used for Clojure-style `commitStorage` vs `indexStorage`.
+/// Tiered storage router used for `commitStorage` vs `indexStorage`.
 ///
 /// This routes writes/reads based on the address path:
 /// - `.../commit/...` and `.../txn/...` -> commit storage
@@ -596,7 +604,7 @@ impl<S> TieredStorage<S> {
         // Extract the path portion after :// if present (fluree:*://path)
         let path = address.split("://").nth(1).unwrap_or(address);
 
-        // Clojure parity: commit blobs + txn blobs go to commit storage.
+        // Commit blobs + txn blobs go to commit storage.
         path.contains("/commit/") || path.contains("/txn/")
     }
 }
@@ -626,6 +634,18 @@ where
             self.commit.read_bytes_hint(address, hint).await
         } else {
             self.index.read_bytes_hint(address, hint).await
+        }
+    }
+
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        if Self::route_to_commit(address) {
+            self.commit.read_byte_range(address, range).await
+        } else {
+            self.index.read_byte_range(address, range).await
         }
     }
 
@@ -688,7 +708,7 @@ where
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
-        // Clojure parity: commit blobs + txn blobs go to commit storage.
+        // Commit blobs + txn blobs go to commit storage.
         match kind {
             ContentKind::Commit | ContentKind::Txn => {
                 self.commit
@@ -709,7 +729,7 @@ where
         ledger_id: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
-        // Clojure parity: commit blobs + txn blobs go to commit storage.
+        // Commit blobs + txn blobs go to commit storage.
         match kind {
             ContentKind::Commit | ContentKind::Txn => {
                 self.commit
@@ -804,6 +824,14 @@ impl StorageRead for AddressIdentifierResolverStorage {
         hint: fluree_db_core::ReadHint,
     ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.route(address).read_bytes_hint(address, hint).await
+    }
+
+    async fn read_byte_range(
+        &self,
+        address: &str,
+        range: std::ops::Range<u64>,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+        self.route(address).read_byte_range(address, range).await
     }
 
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
@@ -1092,7 +1120,7 @@ fn start_background_indexing_if_enabled(
     tx::IndexingMode::Background(handle)
 }
 
-/// Connect using the Clojure-style JSON-LD connection config.
+/// Connect using the JSON-LD connection config.
 ///
 /// This is the **single source of truth** entrypoint: all convenience helpers
 /// should generate JSON-LD and call this.
@@ -1332,7 +1360,7 @@ pub async fn connect_filesystem(path: impl AsRef<str>) -> Result<FlureeClient> {
     connect_json_ld(&config).await
 }
 
-/// Convenience helper: connect with S3 storage (Clojure `connect-s3` parity).
+/// Convenience helper: connect with S3 storage.
 ///
 /// This just generates JSON-LD and delegates to `connect_json_ld`.
 ///
@@ -1441,7 +1469,7 @@ impl FlureeBuilder {
         }
     }
 
-    /// Configure for S3-backed storage (Clojure `connect-s3` parity).
+    /// Configure for S3-backed storage.
     ///
     /// This sets **index storage** to S3 and configures a **storage-backed nameservice**
     /// using the same S3 storage.
@@ -2005,7 +2033,7 @@ impl FlureeBuilder {
 
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
     ///
-    /// This mirrors Clojure's `connect-s3` convenience behavior.
+    /// Convenience wrapper around JSON-LD config for S3-backed storage.
     ///
     /// Notes:
     /// - Requires the `aws` feature.
@@ -2557,7 +2585,7 @@ where
     /// Disconnect a ledger from the connection cache
     ///
     /// Releases the cached ledger state, forcing a fresh load on the next access.
-    /// This is the Rust equivalent of Clojure's `release-ledger`.
+    /// Release a cached ledger handle.
     ///
     /// Use this when:
     /// - You want to force a fresh load of a ledger (e.g., after external changes)
@@ -2622,7 +2650,7 @@ where
 
     /// Refresh a cached ledger by polling the nameservice
     ///
-    /// This is the Rust equivalent of Clojure's `fluree.db.api/refresh`.
+    /// Refresh a cached ledger if stale.
     ///
     /// # Behavior
     ///
@@ -2674,7 +2702,7 @@ where
         let mgr = match &self.ledger_manager {
             Some(mgr) => mgr,
             None => {
-                // Caching disabled - refresh is a no-op (Clojure parity: no cold-load)
+                // Caching disabled - refresh is a no-op
                 return Ok(Some(NotifyResult::NotLoaded));
             }
         };

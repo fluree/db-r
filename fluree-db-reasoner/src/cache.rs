@@ -77,7 +77,7 @@ impl Eq for ReasoningCacheKey {}
 
 /// Budget constraints for reasoning operations
 ///
-/// Instead of a hard iteration cap (like Clojure's max=10), we use
+/// Instead of a hard iteration cap (e.g. max=10), we use
 /// time/memory/fact budgets that can be tuned for different workloads.
 #[derive(Clone, Debug)]
 pub struct ReasoningBudget {

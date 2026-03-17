@@ -1,6 +1,6 @@
 //! Policy transaction (modify) enforcement tests.
 //!
-//! Clojure parity: `fluree.snapshot.policy.tx-test`
+//! Scenario reference: `fluree.snapshot.policy.tx-test`
 //!
 //! Tests modify-policy enforcement including:
 //! - f:onProperty modify policies with f:query
@@ -59,7 +59,7 @@ async fn seed_users(fluree: &support::MemoryFluree, ledger_id: &str) -> fluree_d
 
 /// Test: User can modify their own email (property policy allows)
 ///
-/// Clojure parity: property-policy-tx-enforcement (john-allowed case)
+/// property-policy-tx-enforcement (john-allowed case)
 #[tokio::test]
 async fn modify_policy_allows_own_property() {
     assert_index_defaults();
@@ -177,7 +177,7 @@ async fn modify_policy_allows_own_property() {
 
 /// Test: User cannot modify another user's email (property policy denies)
 ///
-/// Clojure parity: property-policy-tx-enforcement (alice-not-allowed case)
+/// property-policy-tx-enforcement (alice-not-allowed case)
 #[tokio::test]
 async fn modify_policy_denies_other_property() {
     assert_index_defaults();
@@ -279,7 +279,7 @@ async fn modify_policy_denies_other_property() {
 
 /// Test: View-only policy blocks all modifications
 ///
-/// Clojure parity: view-only-policy-restricts-tx (first test case)
+/// view-only-policy-restricts-tx (first test case)
 #[tokio::test]
 async fn view_only_policy_blocks_modify() {
     assert_index_defaults();
@@ -352,7 +352,7 @@ async fn view_only_policy_blocks_modify() {
     );
 
     let err = result.unwrap_err();
-    // Clojure parity: "Database policy denies all modifications."
+    // "Database policy denies all modifications."
     // Rust uses: "Policy enforcement prevents modification."
     assert!(
         err.error.contains("denied")
@@ -365,7 +365,7 @@ async fn view_only_policy_blocks_modify() {
 
 /// Test: Always-false modify query denies with custom message
 ///
-/// Clojure parity: view-only-policy-restricts-tx (second test case)
+/// view-only-policy-restricts-tx (second test case)
 #[tokio::test]
 async fn modify_query_always_false_denies() {
     assert_index_defaults();

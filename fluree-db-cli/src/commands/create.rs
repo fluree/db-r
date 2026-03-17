@@ -334,6 +334,11 @@ where
                 cumulative_flakes,
                 ..
             } => {
+                // Finish the scan bar if scanning never happened (small/non-streaming files).
+                // If scanning did happen, the bar is already finished via finish_with_message().
+                if !sb.is_finished() {
+                    sb.finish_and_clear();
+                }
                 let t0 = *commit_start.get_or_init(std::time::Instant::now);
                 cb.set_length(total as u64);
                 cb.set_position(chunk as u64);

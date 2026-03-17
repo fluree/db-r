@@ -1,7 +1,7 @@
-//! Explain API: query optimization plan (Clojure parity)
+//! Explain API: query optimization plan
 //!
 //! This module builds a user-facing explanation of query planning decisions.
-//! It is intended for integration testing parity with `db-clojure`'s `explain-test`.
+//! It is intended for integration testing coverage of the explain surface.
 
 use crate::error::{ApiError, Result};
 use crate::format::iri::IriCompactor;
@@ -100,7 +100,7 @@ fn plan_patterns_to_json(
             _ => "triple",
         };
 
-        // Inputs: keep close to Clojure's fields, but backed by our explain inputs.
+        // Inputs: keep close to the existing fields, but backed by our explain inputs.
         let mut inputs = Map::new();
         inputs.insert("type".to_string(), JsonValue::String(typ.to_string()));
         // Always include these flags for parity/stability; they will be overwritten
@@ -127,7 +127,7 @@ fn plan_patterns_to_json(
                     inputs.insert("clamped-to-one?".to_string(), json!(false));
                 }
             } else if tp.o_bound() {
-                // Clojure parity: these flags are present for bound-object patterns even if NDV
+                // These flags are present for bound-object patterns even if NDV.
                 // stats aren't available (they'll just be false).
                 inputs.insert("used-values-ndv?".to_string(), json!(false));
                 inputs.insert("clamped-to-one?".to_string(), json!(false));
@@ -209,19 +209,54 @@ fn explain_from_parsed(
         }
     };
 
-    let triples_in_order: Vec<TriplePattern> = parsed
-        .patterns
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Triple(tp) => Some(TriplePattern {
-                s: normalize_ref(&tp.s),
-                p: normalize_ref(&tp.p),
-                o: normalize_term(&tp.o),
-                dtc: tp.dtc.clone(),
-            }),
-            _ => None,
-        })
-        .collect();
+    fn collect_triples_in_order(
+        out: &mut Vec<TriplePattern>,
+        patterns: &[Pattern],
+        normalize_ref: &impl Fn(&Ref) -> Ref,
+        normalize_term: &impl Fn(&Term) -> Term,
+    ) {
+        for p in patterns {
+            match p {
+                Pattern::Triple(tp) => out.push(TriplePattern {
+                    s: normalize_ref(&tp.s),
+                    p: normalize_ref(&tp.p),
+                    o: normalize_term(&tp.o),
+                    dtc: tp.dtc.clone(),
+                }),
+                Pattern::Optional(inner)
+                | Pattern::Minus(inner)
+                | Pattern::Exists(inner)
+                | Pattern::NotExists(inner) => {
+                    collect_triples_in_order(out, inner, normalize_ref, normalize_term);
+                }
+                Pattern::Union(branches) => {
+                    for branch in branches {
+                        collect_triples_in_order(out, branch, normalize_ref, normalize_term);
+                    }
+                }
+                Pattern::Graph { patterns, .. } => {
+                    collect_triples_in_order(out, patterns, normalize_ref, normalize_term);
+                }
+                Pattern::Service(sp) => {
+                    collect_triples_in_order(out, &sp.patterns, normalize_ref, normalize_term);
+                }
+                Pattern::Subquery(sq) => {
+                    collect_triples_in_order(out, &sq.patterns, normalize_ref, normalize_term);
+                }
+                // Non-triple patterns (FILTER, BIND, VALUES, SEARCH, etc.) don't contribute
+                // to triple-level selectivity scoring.
+                _ => {}
+            }
+        }
+    }
+
+    let mut triples_in_order = Vec::new();
+    collect_triples_in_order(
+        &mut triples_in_order,
+        &parsed.patterns,
+        &normalize_ref,
+        &normalize_term,
+    );
 
     let stats_view = snapshot
         .stats
