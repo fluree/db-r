@@ -1109,7 +1109,6 @@ struct IndexBuildInput<'a> {
     /// Whether to collect ID-based stats during Phase D remap.
     collect_id_stats: bool,
     /// Turtle @prefix IRI → short prefix name, for IRI compaction in display.
-    #[expect(dead_code)]
     prefix_map: &'a HashMap<String, String>,
 }
 
@@ -2764,8 +2763,24 @@ where
         let v3_dt_tags = input.dt_tags;
         let v3_rdf_type_p_id = input.rdf_type_p_id;
 
+        // Type alias for the aggregate stats output from finalize_with_aggregate_properties.
+        // (IdStatsResult, agg_props, class_counts, class_properties, class_ref_targets)
+        type StatsOutput = (
+            fluree_db_indexer::stats::IdStatsResult,
+            Vec<fluree_db_core::GraphPropertyStatEntry>,
+            Vec<(fluree_db_core::GraphId, u64, u64)>,
+            std::collections::HashMap<
+                (fluree_db_core::GraphId, u64),
+                std::collections::HashSet<u32>,
+            >,
+            std::collections::HashMap<
+                (fluree_db_core::GraphId, u64),
+                std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
+            >,
+        );
+
         let mut v3_handle = tokio::task::spawn_blocking(
-            move || -> std::result::Result<(_, Option<fluree_db_indexer::stats::IdStatsResult>), ImportError> {
+            move || -> std::result::Result<(_, Option<StatsOutput>), ImportError> {
                 let registry = fluree_db_core::OTypeRegistry::new(&v3_datatype_iris);
 
                 let commits: Vec<fluree_db_indexer::CommitInput> = v3_sorted_commit_infos
@@ -2787,8 +2802,6 @@ where
                 let mut stats_hook = v3_collect_id_stats.then(|| {
                     let mut hook = fluree_db_indexer::stats::IdStatsHook::new();
                     hook.set_rdf_type_p_id(v3_rdf_type_p_id);
-                    // Import does not currently surface class/ref-target stats; avoid extra memory.
-                    hook.set_track_ref_targets(false);
                     hook
                 });
 
@@ -2815,17 +2828,16 @@ where
                 std::fs::create_dir_all(&cfg_g0.run_dir)
                     .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-                let g0_result =
-                    fluree_db_indexer::build_indexes_from_commits(
-                        &commits,
-                        &registry,
-                        &cfg_g0,
-                        stats_hook.as_mut(),
-                        dt_tags,
-                    )
-                    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+                let g0_result = fluree_db_indexer::build_indexes_from_commits(
+                    &commits,
+                    &registry,
+                    &cfg_g0,
+                    stats_hook.as_mut(),
+                    dt_tags,
+                )
+                .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-                let id_stats_result = stats_hook.map(|h| h.finalize());
+                let stats_output = stats_hook.map(|h| h.finalize_with_aggregate_properties());
 
                 // Meta chunk is always the last chunk when present.
                 let g1_result = if let Some(meta_commit) = commits.last() {
@@ -2898,14 +2910,14 @@ where
                     "V3 index build complete"
                 );
 
-                Ok((result, id_stats_result))
+                Ok((result, stats_output))
             },
         );
 
         // Poll the merge counter periodically so the CLI progress bar updates
         // during the index build (which runs on a blocking thread).
         let index_start = std::time::Instant::now();
-        let (v3_result, id_stats_result) = loop {
+        let (v3_result, stats_output) = loop {
             tokio::select! {
                 result = &mut v3_handle => {
                     // Build finished — emit final progress and break.
@@ -3023,6 +3035,15 @@ where
             Vec::new()
         };
 
+        // Destructure the aggregate stats output for both IndexStats (root) and CLI summary.
+        let (id_stats_result, summary_agg_props, summary_class_counts, summary_class_ref_targets) =
+            match stats_output {
+                Some((ids, agg_props, class_counts, _class_props, class_ref_targets)) => {
+                    (Some(ids), agg_props, class_counts, class_ref_targets)
+                }
+                None => (None, Vec::new(), Vec::new(), HashMap::new()),
+            };
+
         let stats_v6: Option<fluree_db_core::IndexStats> = id_stats_result.map(|id_stats| {
             use fluree_db_core::index_stats as is;
 
@@ -3084,6 +3105,21 @@ where
                 graphs: Some(id_stats.graphs),
             }
         });
+
+        // Build CLI import summary before IndexRoot consumes predicate_sids_v6.
+        let summary = if summary_agg_props.is_empty() && summary_class_counts.is_empty() {
+            None
+        } else {
+            Some(build_import_summary(
+                &summary_agg_props,
+                &summary_class_counts,
+                &summary_class_ref_targets,
+                &predicate_sids_v6,
+                input.namespace_codes,
+                input.run_dir,
+                input.prefix_map,
+            ))
+        };
 
         // Build default_graph_orders from V3 upload result.
         let default_graph_orders: Vec<DefaultGraphOrder> = v3_uploaded
@@ -3164,29 +3200,30 @@ where
         Ok(IndexUploadResult {
             root_id: root_cid,
             index_t: input.final_t,
-            summary: None, // Stats deferred for V3 milestone.
+            summary,
         })
     }
 }
 
 /// Build a lightweight import summary for CLI display.
 ///
-/// Extracts top-5 classes, properties, and connections from the already-computed
-/// stats data. Uses the subject dict files on disk for class IRI resolution.
-// Kept for: CLI import summary display (currently deferred — stats summary is None).
-// Use when: V3 import pipeline re-enables stats collection and summary output.
-#[expect(dead_code)]
+/// Extracts top-5 classes, properties, and connections from the aggregate
+/// stats produced by `IdStatsHook::finalize_with_aggregate_properties()`.
+/// Uses the subject dict files on disk for class IRI resolution.
+#[allow(clippy::type_complexity)]
 fn build_import_summary(
-    spot_class_stats: Option<&fluree_db_indexer::stats::SpotClassStats>,
     agg_props: &[fluree_db_core::GraphPropertyStatEntry],
+    class_counts: &[(fluree_db_core::GraphId, u64, u64)],
+    class_ref_targets: &HashMap<
+        (fluree_db_core::GraphId, u64),
+        HashMap<u32, HashMap<u64, i64>>,
+    >,
     predicate_sids: &[(u16, String)],
     namespace_codes: &HashMap<u16, String>,
     run_dir: &Path,
     prefix_map: &HashMap<String, String>,
 ) -> ImportSummary {
     // Build IRI → compact form using turtle @prefix declarations + well-known builtins.
-    // prefix_map is IRI → short (e.g., "https://dblp.org/rdf/schema#" → "dblp").
-    // Builtins fill in common prefixes that may not appear in @prefix.
     let builtin_prefixes: &[(&str, &str)] = &[
         (fluree_vocab::rdf::NS, "rdf"),
         (fluree_vocab::rdfs::NS, "rdfs"),
@@ -3214,6 +3251,7 @@ fn build_import_summary(
         }
         full_iri.to_string()
     };
+
     // ---- Top 5 properties by count ----
     let mut props_sorted: Vec<_> = agg_props.iter().collect();
     props_sorted.sort_by(|a, b| b.count.cmp(&a.count));
@@ -3230,16 +3268,13 @@ fn build_import_summary(
         })
         .collect();
 
-    let cs = match spot_class_stats {
-        Some(cs) if !cs.class_counts.is_empty() => cs,
-        _ => {
-            return ImportSummary {
-                top_classes: Vec::new(),
-                top_properties,
-                top_connections: Vec::new(),
-            };
-        }
-    };
+    if class_counts.is_empty() {
+        return ImportSummary {
+            top_classes: Vec::new(),
+            top_properties,
+            top_connections: Vec::new(),
+        };
+    }
 
     // Build SID resolver from dict files on disk.
     use fluree_db_core::subject_id::SubjectId;
@@ -3252,7 +3287,6 @@ fn build_import_summary(
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        // Try to resolve via dict files; fall back to numeric representation.
         let sids_path = run_dir.join("subjects.sids");
         let idx_path = run_dir.join("subjects.idx");
         let fwd_path = run_dir.join("subjects.fwd");
@@ -3287,7 +3321,7 @@ fn build_import_summary(
 
     // ---- Top 5 classes by count (union across graphs) ----
     let mut class_totals: HashMap<u64, u64> = HashMap::new();
-    for (&(_g_id, class_sid64), &count) in &cs.class_counts {
+    for &(_g_id, class_sid64, count) in class_counts {
         *class_totals.entry(class_sid64).or_insert(0) += count;
     }
     let mut classes_sorted: Vec<_> = class_totals.iter().collect();
@@ -3300,10 +3334,12 @@ fn build_import_summary(
 
     // ---- Top 5 connections: Class → property → Class (union across graphs) ----
     let mut connections: Vec<(u64, u32, u64, u64)> = Vec::new();
-    for (&(_g_id, src_class), prop_map) in &cs.class_prop_refs {
+    for (&(_g_id, src_class), prop_map) in class_ref_targets {
         for (&p_id, target_map) in prop_map {
-            for (&target_class, &count) in target_map {
-                connections.push((src_class, p_id, target_class, count));
+            for (&target_class, &delta) in target_map {
+                if delta > 0 {
+                    connections.push((src_class, p_id, target_class, delta as u64));
+                }
             }
         }
     }
