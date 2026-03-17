@@ -361,6 +361,46 @@ async fn drop_branch_with_children_deferred() {
     fluree.insert(feature, &txn2).await.unwrap();
 }
 
+/// Transacting on a retracted branch fails.
+#[tokio::test]
+async fn transact_on_retracted_branch_fails() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // Create dev, then a child so dev can be retracted (not purged)
+    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"))
+        .await
+        .unwrap();
+
+    // Load dev ledger state before retraction
+    let dev = fluree.ledger("mydb:dev").await.unwrap();
+
+    // Retract dev (deferred because it has a child)
+    fluree.drop_branch("mydb", "dev").await.unwrap();
+
+    // Attempting to transact on the retracted branch should fail
+    let txn2 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:new", "ex:val": 2}]
+    });
+    let err = fluree
+        .insert(dev, &txn2)
+        .await
+        .expect_err("transacting on retracted branch should fail");
+    assert!(
+        err.to_string().to_lowercase().contains("retracted"),
+        "error should mention retraction: {err}"
+    );
+}
+
 /// Dropping the last child of a retracted parent cascades to purge the parent.
 #[tokio::test]
 async fn drop_branch_cascade() {

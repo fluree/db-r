@@ -450,6 +450,12 @@ fn verify_sequencing(
             Ok(())
         }
         Some(record) => {
+            if record.retracted {
+                return Err(TransactError::Retracted(
+                    base.ledger_id().to_string(),
+                ));
+            }
+
             // Normal case: verify both t and previous
             if base.t() != record.commit_t {
                 return Err(TransactError::CommitConflict {

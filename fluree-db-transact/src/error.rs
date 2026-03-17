@@ -49,6 +49,10 @@ pub enum TransactError {
     #[error("Commit ID mismatch: expected {expected}, found {found}")]
     CommitIdMismatch { expected: String, found: String },
 
+    /// Ledger or branch has been retracted (soft-deleted)
+    #[error("Ledger has been retracted: {0}")]
+    Retracted(String),
+
     /// Empty transaction (no flakes to commit)
     #[error("Empty transaction: no flakes to commit")]
     EmptyTransaction,
