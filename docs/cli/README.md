@@ -56,6 +56,7 @@ fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 | [`drop`](drop.md) | Drop (delete) a ledger |
 | [`insert`](insert.md) | Insert data into a ledger |
 | [`upsert`](upsert.md) | Upsert data (insert or update existing) |
+| [`update`](update.md) | Update with WHERE/DELETE/INSERT patterns |
 | [`query`](query.md) | Query a ledger |
 | [`history`](history.md) | Show change history for an entity |
 | [`export`](export.md) | Export ledger data |
@@ -118,7 +119,7 @@ When you run `fluree init`, a `.fluree/` directory is created with:
 
 ## Input Resolution
 
-Commands that accept data input (`insert`, `upsert`, `query`) use flexible argument resolution:
+Commands that accept data input (`insert`, `upsert`, `update`, `query`) use flexible argument resolution:
 
 | Arguments | Behavior |
 |-----------|----------|

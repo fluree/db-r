@@ -116,6 +116,28 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             .await
         }
 
+        Commands::Update {
+            args,
+            expr,
+            file,
+            message,
+            format,
+            remote,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::update::run(
+                &args,
+                expr.as_deref(),
+                file.as_deref(),
+                message.as_deref(),
+                format.as_deref(),
+                &fluree_dir,
+                remote.as_deref(),
+                direct,
+            )
+            .await
+        }
+
         Commands::Upsert {
             args,
             expr,

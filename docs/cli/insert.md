@@ -81,5 +81,6 @@ Override with `--format turtle` or `--format jsonld`.
 ## See Also
 
 - [upsert](upsert.md) - Insert or update existing data
+- [update](update.md) - Full WHERE/DELETE/INSERT updates
 - [query](query.md) - Query the inserted data
 - [export](export.md) - Export all data

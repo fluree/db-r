@@ -22,7 +22,7 @@ pub struct Cli {
 
     /// Execute directly via the CLI, bypassing auto-routing through a local server.
     /// By default, if a local server is running (started via `fluree server start`),
-    /// commands like query/insert/upsert are automatically routed through it.
+    /// commands like query/insert/upsert/update are automatically routed through it.
     #[arg(long, global = true)]
     pub direct: bool,
 
@@ -156,6 +156,45 @@ pub enum Commands {
         message: Option<String>,
 
         /// Data format (turtle or jsonld); auto-detected if omitted
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Update with full WHERE/DELETE/INSERT semantics
+    ///
+    /// Examples:
+    ///   fluree update '{"where": [...], "delete": [...], "insert": [...]}'
+    ///   fluree update -f update.json
+    ///   fluree update -f update.ru --format sparql
+    ///   cat update.json | fluree update
+    Update {
+        /// Optional ledger name and/or inline data.
+        ///
+        /// With 0 args: uses active ledger; provide data via -e, -f, or stdin.
+        /// With 1 arg: if it looks like data (JSON or SPARQL UPDATE), uses it as
+        ///   inline data with the active ledger; if it's an existing file,
+        ///   reads from it; otherwise treats it as a ledger name.
+        /// With 2 args: first is ledger name, second is inline data.
+        #[arg(num_args = 0..=2)]
+        args: Vec<String>,
+
+        /// Inline data expression (JSON-LD or SPARQL UPDATE).
+        #[arg(short = 'e', long = "expr")]
+        expr: Option<String>,
+
+        /// Read data from a file
+        #[arg(short = 'f', long = "file")]
+        file: Option<PathBuf>,
+
+        /// Commit message
+        #[arg(short = 'm', long = "message")]
+        message: Option<String>,
+
+        /// Data format (jsonld or sparql); auto-detected if omitted
         #[arg(long)]
         format: Option<String>,
 
