@@ -239,10 +239,20 @@ async fn wait_for_dynamodb(sdk_config: &aws_config::SdkConfig) {
     panic!("DynamoDB did not become ready in time");
 }
 
-/// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService).
+/// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService, sdk_config).
 async fn setup_localstack_ns() -> (
     testcontainers::ContainerAsync<GenericImage>,
     DynamoDbNameService,
+) {
+    let (_container, ns, _sdk_config) = setup_localstack_ns_with_config().await;
+    (_container, ns)
+}
+
+/// Like `setup_localstack_ns` but also returns the SDK config for direct DynamoDB access in tests.
+async fn setup_localstack_ns_with_config() -> (
+    testcontainers::ContainerAsync<GenericImage>,
+    DynamoDbNameService,
+    aws_config::SdkConfig,
 ) {
     let image = GenericImage::new("localstack/localstack", "latest")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
@@ -266,7 +276,7 @@ async fn setup_localstack_ns() -> (
 
     let client = aws_sdk_dynamodb::Client::new(&sdk_config);
     let ns = DynamoDbNameService::from_client(client, table.to_string());
-    (container, ns)
+    (container, ns, sdk_config)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -412,7 +422,7 @@ async fn nameservice_admin_publisher() {
 /// swallowed — publish_index returned Ok(()) without writing anything.
 #[tokio::test]
 async fn publish_index_without_preexisting_index_item() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_container, ns, sdk_config) = setup_localstack_ns_with_config().await;
 
     let alias = "missing-index-item:main";
 
@@ -427,12 +437,17 @@ async fn publish_index_without_preexisting_index_item() {
     assert_eq!(rec.index_t, 1);
 
     // 2. Manually delete the sk="index" item to simulate the bug condition
-    let sdk_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let ddb = aws_sdk_dynamodb::Client::new(&sdk_config);
     ddb.delete_item()
         .table_name("fluree-ns-test")
-        .key("pk", aws_sdk_dynamodb::types::AttributeValue::S("missing-index-item:main".to_string()))
-        .key("sk", aws_sdk_dynamodb::types::AttributeValue::S("index".to_string()))
+        .key(
+            "pk",
+            aws_sdk_dynamodb::types::AttributeValue::S("missing-index-item:main".to_string()),
+        )
+        .key(
+            "sk",
+            aws_sdk_dynamodb::types::AttributeValue::S("index".to_string()),
+        )
         .send()
         .await
         .expect("delete_item should succeed");
