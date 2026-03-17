@@ -689,22 +689,21 @@ impl NameService for FileNameService {
         match parent_branch_point {
             Some(bp) => {
                 let parent_address = Self::ns_address(&ledger_name, &bp.source);
-                let new_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let new_count_clone = new_count.clone();
                 self.storage
-                    .compare_and_swap(&parent_address, move |bytes| {
+                    .compare_and_swap(&parent_address, |bytes| {
                         let Some(data) = bytes else {
                             return Ok(CasAction::Abort(()));
                         };
                         let mut file: NsFileV2 =
                             serde_json::from_slice(data).map_err(json_ext_err)?;
                         file.branches = file.branches.saturating_sub(1);
-                        new_count_clone.store(file.branches, std::sync::atomic::Ordering::Relaxed);
                         let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
-                Ok(Some(new_count.load(std::sync::atomic::Ordering::Relaxed)))
+                // Re-read the parent to get the updated count
+                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                Ok(Some(parent_record.map(|r| r.branches).unwrap_or(0)))
             }
             None => Ok(None),
         }
@@ -1314,10 +1313,8 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsFileV2> = match bytes {
-                            Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
-                            None => None,
-                        };
+                        let existing: Option<NsFileV2> =
+                            bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1418,10 +1415,8 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsIndexFileV2> = match bytes {
-                            Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
-                            None => None,
-                        };
+                        let existing: Option<NsIndexFileV2> =
+                            bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1565,10 +1560,8 @@ impl StatusPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> = match bytes {
-                    Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
-                    None => None,
-                };
+                let existing: Option<NsFileV2> =
+                    bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
 
                 let current = match &existing {
                     None => None,
@@ -1704,10 +1697,8 @@ impl ConfigPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> = match bytes {
-                    Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
-                    None => None,
-                };
+                let existing: Option<NsFileV2> =
+                    bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
 
                 let current = match &existing {
                     None => None,
