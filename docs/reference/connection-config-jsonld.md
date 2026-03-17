@@ -11,8 +11,7 @@ All construction flows through `FlureeBuilder`:
 - `FlureeBuilder::from_json_ld(&json)?` — parses JSON-LD config into builder settings
   - Then call `.build_client().await` for a type-erased `FlureeClient`
   - Or use typed terminal methods (`.build()`, `.build_memory()`, `.build_s3()`) for compile-time type safety
-- `connect_json_ld(&json).await` — convenience wrapper: `FlureeBuilder::from_json_ld(config)?.build_client().await`
-- Convenience helpers (delegate to `FlureeBuilder` directly, no JSON-LD round-trip):
+- Convenience helpers (delegate to `FlureeBuilder` directly):
   - `connect_memory().await` → `FlureeBuilder::memory().build_client().await`
   - `connect_filesystem(path).await` → `FlureeBuilder::file(path).build_client().await` (requires `native`)
   - `connect_s3(bucket, endpoint).await` → `FlureeBuilder::s3(bucket, endpoint).build_client().await` (requires `aws`)

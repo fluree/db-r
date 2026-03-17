@@ -233,8 +233,8 @@ pub use fluree_graph_json_ld::ParsedContext;
 
 /// A dynamically-dispatched storage backend.
 ///
-/// This allows `connect_json_ld` to return a single concrete Fluree type regardless of
-/// whether the config selects memory, filesystem, or S3 storage.
+/// This allows `FlureeBuilder::build_client()` to return a single concrete Fluree type
+/// regardless of whether the config selects memory, filesystem, or S3 storage.
 ///
 /// Wraps `Arc<dyn Storage>` where `Storage = StorageRead + ContentAddressedWrite`.
 #[derive(Clone)]
@@ -901,7 +901,7 @@ impl StorageMethod for AddressIdentifierResolverStorage {
     }
 }
 
-/// Fluree runtime type returned by `connect_json_ld`.
+/// Type-erased Fluree runtime type returned by `FlureeBuilder::build_client()`.
 pub type FlureeClient = Fluree<AnyStorage, AnyNameService>;
 
 fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
@@ -1077,8 +1077,8 @@ fn build_indexer_config(config: &ConnectionConfig) -> fluree_db_indexer::Indexer
 
 /// Derive `IndexConfig` from `ConnectionConfig` defaults (or fall back to compiled defaults).
 ///
-/// Used by `connect_json_ld` paths where indexing thresholds come from the JSON-LD
-/// connection config rather than the `FlureeBuilder`.
+/// Used by `FlureeBuilder::from_json_ld()` to extract indexing thresholds from the
+/// parsed JSON-LD connection config.
 fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
     let indexing = config.defaults.as_ref().and_then(|d| d.indexing.as_ref());
 
@@ -1092,13 +1092,6 @@ fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
             .map(|v| v as usize)
             .unwrap_or(IndexConfig::default().reindex_max_bytes),
     }
-}
-
-/// Connect using the JSON-LD connection config.
-///
-/// Parses the JSON-LD config and delegates to `FlureeBuilder::build_client()`.
-pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient> {
-    FlureeBuilder::from_json_ld(config)?.build_client().await
 }
 
 /// Convenience helper: connect with in-memory storage.
