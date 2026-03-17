@@ -475,7 +475,10 @@ impl<S: Storage> StorageContentStore<S> {
         }
         let prefix = ledger_id_prefix_for_path(&self.ledger_id);
         let hex = id.digest_hex();
-        Some(format!("fluree:{}://{}/index/objects/dicts/{}.dict", self.method, prefix, hex))
+        Some(format!(
+            "fluree:{}://{}/index/objects/dicts/{}.dict",
+            self.method, prefix, hex
+        ))
     }
 }
 

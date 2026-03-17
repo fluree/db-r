@@ -1313,8 +1313,9 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsFileV2> =
-                            bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
+                        let existing: Option<NsFileV2> = bytes
+                            .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
+                            .transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1415,8 +1416,9 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsIndexFileV2> =
-                            bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
+                        let existing: Option<NsIndexFileV2> = bytes
+                            .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
+                            .transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1560,8 +1562,9 @@ impl StatusPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> =
-                    bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
+                let existing: Option<NsFileV2> = bytes
+                    .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
+                    .transpose()?;
 
                 let current = match &existing {
                     None => None,
@@ -1697,8 +1700,9 @@ impl ConfigPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> =
-                    bytes.map(|data| serde_json::from_slice(data).map_err(json_ext_err)).transpose()?;
+                let existing: Option<NsFileV2> = bytes
+                    .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
+                    .transpose()?;
 
                 let current = match &existing {
                     None => None,

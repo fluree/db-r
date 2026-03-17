@@ -13,8 +13,8 @@ use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
-use fluree_db_nameservice::NsRecord;
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
+use fluree_db_nameservice::NsRecord;
 use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -371,7 +371,9 @@ where
         }
 
         // Leaf branch — full drop
-        let parent_new_count = self.purge_branch(&ledger_id, Some(&record), &mut report).await?;
+        let parent_new_count = self
+            .purge_branch(&ledger_id, Some(&record), &mut report)
+            .await?;
 
         // Cascade upward if parent is retracted with zero children
         if let (Some(0), Some(bp)) = (parent_new_count, &record.branch_point) {
@@ -432,7 +434,9 @@ where
 
         info!(ledger_id = %ancestor_id, "Cascading drop to retracted ancestor");
 
-        let parent_new_count = match self.purge_branch(ancestor_id, Some(&ancestor), report).await
+        let parent_new_count = match self
+            .purge_branch(ancestor_id, Some(&ancestor), report)
+            .await
         {
             Ok(c) => c,
             Err(e) => {

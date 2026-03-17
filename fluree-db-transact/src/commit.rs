@@ -453,9 +453,7 @@ fn verify_sequencing(
         }
         Some(record) => {
             if record.retracted {
-                return Err(TransactError::Retracted(
-                    base.ledger_id().to_string(),
-                ));
+                return Err(TransactError::Retracted(base.ledger_id().to_string()));
             }
 
             // Normal case: verify both t and previous

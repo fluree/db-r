@@ -348,8 +348,8 @@ where
         target_id: &str,
         index_cid: &fluree_db_core::ContentId,
     ) -> Result<()> {
-        use fluree_db_binary_index::format::branch::read_branch_v2_from_bytes;
-        use fluree_db_binary_index::IndexRootV5;
+        use fluree_db_binary_index::format::branch::read_branch_from_bytes;
+        use fluree_db_binary_index::format::index_root::IndexRoot;
         use fluree_db_core::content_kind::ContentKind;
         use fluree_db_core::storage::content_address;
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
@@ -362,7 +362,7 @@ where
         let root_bytes = source_store.get(index_cid).await.map_err(|e| {
             ApiError::internal(format!("failed to read index root {}: {}", index_cid, e))
         })?;
-        let root = IndexRootV5::decode(&root_bytes).map_err(|e| {
+        let root = IndexRoot::decode(&root_bytes).map_err(|e| {
             ApiError::internal(format!("failed to decode index root {}: {}", index_cid, e))
         })?;
 
@@ -374,13 +374,13 @@ where
         for ng in &root.named_graphs {
             for (_, branch_cid) in &ng.orders {
                 let branch_addr = content_address(
-                    &method,
+                    method,
                     ContentKind::IndexBranch,
                     source_id,
                     &branch_cid.digest_hex(),
                 );
                 if let Ok(branch_bytes) = storage.read_bytes(&branch_addr).await {
-                    if let Ok(manifest) = read_branch_v2_from_bytes(&branch_bytes) {
+                    if let Ok(manifest) = read_branch_from_bytes(&branch_bytes) {
                         for leaf in &manifest.leaves {
                             all_cids.push(leaf.leaf_cid.clone());
                         }
@@ -406,8 +406,8 @@ where
                 continue;
             };
             let hex = cid.digest_hex();
-            let src_addr = content_address(&method, kind, source_id, &hex);
-            let dst_addr = content_address(&method, kind, target_id, &hex);
+            let src_addr = content_address(method, kind, source_id, &hex);
+            let dst_addr = content_address(method, kind, target_id, &hex);
 
             let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
                 ApiError::internal(format!(

@@ -166,14 +166,10 @@ pub fn validate_branch_name(name: &str) -> Result<(), LedgerIdParseError> {
         )));
     }
     if name.contains(':') {
-        return Err(LedgerIdParseError::new(
-            "Branch name cannot contain ':'",
-        ));
+        return Err(LedgerIdParseError::new("Branch name cannot contain ':'"));
     }
     if name.contains('@') {
-        return Err(LedgerIdParseError::new(
-            "Branch name cannot contain '@'",
-        ));
+        return Err(LedgerIdParseError::new("Branch name cannot contain '@'"));
     }
     if name.contains('\0') {
         return Err(LedgerIdParseError::new(
