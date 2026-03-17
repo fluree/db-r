@@ -116,7 +116,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             .await
         }
 
-        Commands::Transact {
+        Commands::Update {
             args,
             expr,
             file,
@@ -125,7 +125,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             remote,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::transact::run(
+            commands::update::run(
                 &args,
                 expr.as_deref(),
                 file.as_deref(),

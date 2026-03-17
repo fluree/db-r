@@ -1,11 +1,11 @@
-# fluree transact
+# fluree update
 
-Execute a transaction with full WHERE/DELETE/INSERT semantics.
+Update data with full WHERE/DELETE/INSERT semantics.
 
 ## Usage
 
 ```bash
-fluree transact [LEDGER] [DATA] [OPTIONS]
+fluree update [LEDGER] [DATA] [OPTIONS]
 ```
 
 ## Arguments
@@ -29,13 +29,13 @@ fluree transact [LEDGER] [DATA] [OPTIONS]
 
 ## Description
 
-Executes a general-purpose transaction against a ledger. Unlike `insert` (which only adds data) and `upsert` (which replaces by subject+predicate), `transact` supports the full WHERE/DELETE/INSERT pattern, enabling:
+Executes a WHERE/DELETE/INSERT transaction against a ledger. Unlike `insert` (which only adds data) and `upsert` (which replaces by subject+predicate), `update` supports the full WHERE/DELETE/INSERT pattern, enabling:
 
 - **Conditional deletes**: delete triples matching a WHERE pattern
 - **Conditional updates**: delete old values and insert new ones based on WHERE matches
 - **Computed updates**: use variables from WHERE to derive new values via `bind`
 - **Delete-only operations**: WHERE + DELETE without INSERT
-- **Insert-only operations**: equivalent to `insert` but using the transact endpoint
+- **Insert-only operations**: equivalent to `insert` but using the update command
 
 ### Supported Formats
 
@@ -56,7 +56,7 @@ For direct local mode (`--direct`), use JSON-LD format instead.
 
 ```bash
 # Update Alice's age: find old value, delete it, insert new one
-fluree transact '{
+fluree update '{
   "@context": {"ex": "http://example.org/"},
   "where": [{"@id": "ex:alice", "ex:age": "?oldAge"}],
   "delete": [{"@id": "ex:alice", "ex:age": "?oldAge"}],
@@ -68,7 +68,7 @@ fluree transact '{
 
 ```bash
 # Remove all email addresses for alice
-fluree transact '{
+fluree update '{
   "@context": {"ex": "http://example.org/"},
   "where": [{"@id": "ex:alice", "ex:email": "?email"}],
   "delete": [{"@id": "ex:alice", "ex:email": "?email"}]
@@ -79,7 +79,7 @@ fluree transact '{
 
 ```bash
 # Set all "pending" users to "active"
-fluree transact '{
+fluree update '{
   "@context": {"ex": "http://example.org/"},
   "where": [{"@id": "?person", "ex:status": "pending"}],
   "delete": [{"@id": "?person", "ex:status": "pending"}],
@@ -90,15 +90,15 @@ fluree transact '{
 ### From File
 
 ```bash
-fluree transact -f update.json
-fluree transact -f update.json -m "Updated user statuses"
+fluree update -f update.json
+fluree update -f update.json -m "Updated user statuses"
 ```
 
 ### SPARQL UPDATE (via server)
 
 ```bash
 # Requires a running server (fluree server start)
-fluree transact -e 'PREFIX ex: <http://example.org/>
+fluree update -e 'PREFIX ex: <http://example.org/>
 DELETE { ex:alice ex:age ?oldAge }
 INSERT { ex:alice ex:age 31 }
 WHERE { ex:alice ex:age ?oldAge }'
@@ -107,13 +107,13 @@ WHERE { ex:alice ex:age ?oldAge }'
 ### Pipe from stdin
 
 ```bash
-cat update.json | fluree transact
+cat update.json | fluree update
 ```
 
 ### Target a specific ledger
 
 ```bash
-fluree transact production -f migration.json
+fluree update production -f migration.json
 ```
 
 ## Output
@@ -144,7 +144,7 @@ Override with `--format jsonld` or `--format sparql`.
 |-----------|-------------|--------|-------------|----------|
 | `insert` | No | No | No | Add new data |
 | `upsert` | No | Auto (per subject+predicate) | No | Replace values for known entities |
-| `transact` | Yes | Explicit | Yes | Targeted updates, deletes, complex transformations |
+| `update` | Yes | Explicit | Yes | Targeted updates, deletes, complex transformations |
 
 ## See Also
 

@@ -22,7 +22,7 @@ pub struct Cli {
 
     /// Execute directly via the CLI, bypassing auto-routing through a local server.
     /// By default, if a local server is running (started via `fluree server start`),
-    /// commands like query/insert/upsert/transact are automatically routed through it.
+    /// commands like query/insert/upsert/update are automatically routed through it.
     #[arg(long, global = true)]
     pub direct: bool,
 
@@ -164,14 +164,14 @@ pub enum Commands {
         remote: Option<String>,
     },
 
-    /// Transact with full WHERE/DELETE/INSERT semantics
+    /// Update with full WHERE/DELETE/INSERT semantics
     ///
     /// Examples:
-    ///   fluree transact '{"where": [...], "delete": [...], "insert": [...]}'
-    ///   fluree transact -f update.json
-    ///   fluree transact -f update.ru --format sparql
-    ///   cat update.json | fluree transact
-    Transact {
+    ///   fluree update '{"where": [...], "delete": [...], "insert": [...]}'
+    ///   fluree update -f update.json
+    ///   fluree update -f update.ru --format sparql
+    ///   cat update.json | fluree update
+    Update {
         /// Optional ledger name and/or inline data.
         ///
         /// With 0 args: uses active ledger; provide data via -e, -f, or stdin.

@@ -6,7 +6,7 @@ use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
 use std::path::{Path, PathBuf};
 
-/// Resolve positional args for insert/query/upsert/transact commands.
+/// Resolve positional args for insert/query/upsert/update commands.
 ///
 /// Returns `(ledger_name, inline_input, file_path)`:
 /// - 0 args: active ledger, no inline or file

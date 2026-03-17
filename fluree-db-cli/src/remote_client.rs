@@ -611,11 +611,11 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
-    // Transact
+    // Update (WHERE/DELETE/INSERT)
     // =========================================================================
 
-    /// Execute a full JSON-LD transaction (insert + delete with WHERE).
-    pub async fn transact_jsonld(
+    /// Execute a JSON-LD update (WHERE/DELETE/INSERT) via the transact endpoint.
+    pub async fn update_jsonld(
         &self,
         ledger: &str,
         body: &serde_json::Value,
@@ -630,8 +630,8 @@ impl RemoteLedgerClient {
         .await
     }
 
-    /// Execute a SPARQL UPDATE transaction.
-    pub async fn transact_sparql(
+    /// Execute a SPARQL UPDATE via the transact endpoint.
+    pub async fn update_sparql(
         &self,
         ledger: &str,
         sparql: &str,

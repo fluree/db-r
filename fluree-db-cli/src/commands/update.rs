@@ -6,29 +6,29 @@ use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
 use std::path::Path;
 
-/// Format detected for the transact body.
+/// Format detected for the update body.
 ///
-/// `transact` accepts JSON-LD (with where/delete/insert) and SPARQL UPDATE.
+/// `update` accepts JSON-LD (with where/delete/insert) and SPARQL UPDATE.
 /// Turtle is not valid here—use `insert` or `upsert` for Turtle data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransactFormat {
+enum UpdateFormat {
     JsonLd,
     SparqlUpdate,
 }
 
 /// Detect whether the input is JSON-LD or SPARQL UPDATE.
-fn detect_transact_format(
+fn detect_update_format(
     path: Option<&Path>,
     content: &str,
     explicit: Option<&str>,
-) -> CliResult<TransactFormat> {
+) -> CliResult<UpdateFormat> {
     // Explicit flag
     if let Some(fmt) = explicit {
         return match fmt.to_lowercase().as_str() {
-            "jsonld" | "json-ld" | "json" => Ok(TransactFormat::JsonLd),
-            "sparql" | "sparql-update" => Ok(TransactFormat::SparqlUpdate),
+            "jsonld" | "json-ld" | "json" => Ok(UpdateFormat::JsonLd),
+            "sparql" | "sparql-update" => Ok(UpdateFormat::SparqlUpdate),
             other => Err(CliError::Usage(format!(
-                "unknown transact format '{other}'\n  {} valid formats: jsonld, sparql",
+                "unknown update format '{other}'\n  {} valid formats: jsonld, sparql",
                 colored::Colorize::bold(colored::Colorize::cyan("help:"))
             ))),
         };
@@ -38,21 +38,21 @@ fn detect_transact_format(
     if let Some(p) = path {
         if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
             match ext.to_lowercase().as_str() {
-                "json" | "jsonld" => return Ok(TransactFormat::JsonLd),
-                "rq" | "ru" | "sparql" => return Ok(TransactFormat::SparqlUpdate),
+                "json" | "jsonld" => return Ok(UpdateFormat::JsonLd),
+                "rq" | "ru" | "sparql" => return Ok(UpdateFormat::SparqlUpdate),
                 _ => {}
             }
         }
     }
 
     // Content sniffing
-    sniff_transact_format(content)
+    sniff_update_format(content)
 }
 
-fn sniff_transact_format(content: &str) -> CliResult<TransactFormat> {
+fn sniff_update_format(content: &str) -> CliResult<UpdateFormat> {
     // Try JSON parse first
     if serde_json::from_str::<serde_json::Value>(content).is_ok() {
-        return Ok(TransactFormat::JsonLd);
+        return Ok(UpdateFormat::JsonLd);
     }
 
     // Check for SPARQL UPDATE keywords
@@ -62,11 +62,11 @@ fn sniff_transact_format(content: &str) -> CliResult<TransactFormat> {
         || upper.starts_with("PREFIX")
         || upper.starts_with("BASE")
     {
-        return Ok(TransactFormat::SparqlUpdate);
+        return Ok(UpdateFormat::SparqlUpdate);
     }
 
     Err(CliError::Usage(format!(
-        "could not detect transact format\n  {} use --format jsonld or --format sparql to specify",
+        "could not detect update format\n  {} use --format jsonld or --format sparql to specify",
         colored::Colorize::bold(colored::Colorize::cyan("help:"))
     )))
 }
@@ -95,7 +95,7 @@ pub async fn run(
 
     // For format detection, prefer the -f path, then positional file
     let detect_path = file_flag.or(positional_file.as_deref());
-    let txn_format = detect_transact_format(detect_path, &content, format_flag)?;
+    let txn_format = detect_update_format(detect_path, &content, format_flag)?;
 
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
@@ -118,12 +118,10 @@ pub async fn run(
             ..
         } => {
             let result = match txn_format {
-                TransactFormat::SparqlUpdate => {
-                    client.transact_sparql(&remote_alias, &content).await?
-                }
-                TransactFormat::JsonLd => {
+                UpdateFormat::SparqlUpdate => client.update_sparql(&remote_alias, &content).await?,
+                UpdateFormat::JsonLd => {
                     let json: serde_json::Value = serde_json::from_str(&content)?;
-                    client.transact_jsonld(&remote_alias, &json).await?
+                    client.update_jsonld(&remote_alias, &json).await?
                 }
             };
 
@@ -132,7 +130,7 @@ pub async fn run(
             print_txn_result(&result);
         }
         LedgerMode::Local { fluree, alias } => match txn_format {
-            TransactFormat::SparqlUpdate => {
+            UpdateFormat::SparqlUpdate => {
                 // SPARQL UPDATE requires the server's parsing/lowering pipeline
                 // which needs access to the ledger's namespace registry. This is
                 // handled automatically when routing through the HTTP server.
@@ -145,7 +143,7 @@ pub async fn run(
                         .into(),
                 ));
             }
-            TransactFormat::JsonLd => {
+            UpdateFormat::JsonLd => {
                 let json: serde_json::Value = serde_json::from_str(&content)?;
                 let commit_opts = CommitOpts {
                     message: message.map(String::from),
@@ -177,91 +175,88 @@ mod tests {
 
     #[test]
     fn detect_explicit_jsonld() {
-        let fmt = detect_transact_format(None, "", Some("jsonld")).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(None, "", Some("jsonld")).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
 
-        let fmt = detect_transact_format(None, "", Some("json-ld")).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(None, "", Some("json-ld")).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
 
-        let fmt = detect_transact_format(None, "", Some("json")).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(None, "", Some("json")).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
     }
 
     #[test]
     fn detect_explicit_sparql() {
-        let fmt = detect_transact_format(None, "", Some("sparql")).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(None, "", Some("sparql")).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
 
-        let fmt = detect_transact_format(None, "", Some("sparql-update")).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(None, "", Some("sparql-update")).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
     }
 
     #[test]
     fn detect_explicit_unknown_errors() {
-        let result = detect_transact_format(None, "", Some("turtle"));
+        let result = detect_update_format(None, "", Some("turtle"));
         assert!(result.is_err());
     }
 
     #[test]
     fn detect_by_file_extension() {
-        let fmt = detect_transact_format(Some(Path::new("update.json")), "anything", None).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(Some(Path::new("update.json")), "anything", None).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
 
-        let fmt =
-            detect_transact_format(Some(Path::new("update.jsonld")), "anything", None).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(Some(Path::new("update.jsonld")), "anything", None).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
 
-        let fmt = detect_transact_format(Some(Path::new("update.ru")), "anything", None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(Some(Path::new("update.ru")), "anything", None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
 
-        let fmt = detect_transact_format(Some(Path::new("update.rq")), "anything", None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(Some(Path::new("update.rq")), "anything", None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
 
-        let fmt =
-            detect_transact_format(Some(Path::new("update.sparql")), "anything", None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(Some(Path::new("update.sparql")), "anything", None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
     }
 
     #[test]
     fn sniff_json_ld_body() {
         let content = r#"{"where": [], "delete": [], "insert": []}"#;
-        let fmt = detect_transact_format(None, content, None).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(None, content, None).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
     }
 
     #[test]
     fn sniff_sparql_insert_data() {
         let content = "INSERT DATA { <http://example.org/x> <http://example.org/val> \"hello\" }";
-        let fmt = detect_transact_format(None, content, None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(None, content, None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
     }
 
     #[test]
     fn sniff_sparql_delete_where() {
         let content =
             "DELETE { ?s <http://example.org/val> ?o } WHERE { ?s <http://example.org/val> ?o }";
-        let fmt = detect_transact_format(None, content, None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(None, content, None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
     }
 
     #[test]
     fn sniff_sparql_with_prefix() {
         let content = "PREFIX ex: <http://example.org/>\nINSERT DATA { ex:x ex:val \"hello\" }";
-        let fmt = detect_transact_format(None, content, None).unwrap();
-        assert_eq!(fmt, TransactFormat::SparqlUpdate);
+        let fmt = detect_update_format(None, content, None).unwrap();
+        assert_eq!(fmt, UpdateFormat::SparqlUpdate);
     }
 
     #[test]
     fn sniff_unrecognized_errors() {
-        let result = detect_transact_format(None, "not json and not sparql", None);
+        let result = detect_update_format(None, "not json and not sparql", None);
         assert!(result.is_err());
     }
 
     #[test]
     fn explicit_overrides_extension() {
         // Even with .ru extension, explicit "jsonld" wins
-        let fmt =
-            detect_transact_format(Some(Path::new("update.ru")), "{}", Some("jsonld")).unwrap();
-        assert_eq!(fmt, TransactFormat::JsonLd);
+        let fmt = detect_update_format(Some(Path::new("update.ru")), "{}", Some("jsonld")).unwrap();
+        assert_eq!(fmt, UpdateFormat::JsonLd);
     }
 }

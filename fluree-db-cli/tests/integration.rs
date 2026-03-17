@@ -1454,11 +1454,11 @@ fn create_from_unsupported_files_only_fails() {
 }
 
 // ============================================================================
-// Transact (WHERE/DELETE/INSERT) tests
+// Update (WHERE/DELETE/INSERT) tests
 // ============================================================================
 
 #[test]
-fn transact_where_delete_insert_json_ld() {
+fn update_where_delete_insert_json_ld() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp).args(["create", "txdb"]).assert().success();
@@ -1474,10 +1474,10 @@ fn transact_where_delete_insert_json_ld() {
         .success()
         .stdout(predicate::str::contains("Committed t=1"));
 
-    // Use transact to update Alice's age: WHERE old age, DELETE old, INSERT new
+    // Use update to change Alice's age: WHERE old age, DELETE old, INSERT new
     fluree_cmd(&tmp)
         .args([
-            "transact",
+            "update",
             "-e",
             r#"{"@context": {"ex": "http://example.org/"}, "where": [{"@id": "ex:alice", "ex:age": "?oldAge"}], "delete": [{"@id": "ex:alice", "ex:age": "?oldAge"}], "insert": [{"@id": "ex:alice", "ex:age": 31}]}"#,
         ])
@@ -1500,7 +1500,7 @@ fn transact_where_delete_insert_json_ld() {
 }
 
 #[test]
-fn transact_delete_only() {
+fn update_delete_only() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1521,7 +1521,7 @@ fn transact_delete_only() {
     // Delete email using where + delete (no insert)
     fluree_cmd(&tmp)
         .args([
-            "transact",
+            "update",
             "-e",
             r#"{"@context": {"ex": "http://example.org/"}, "where": [{"@id": "ex:bob", "ex:email": "?email"}], "delete": [{"@id": "ex:bob", "ex:email": "?email"}]}"#,
         ])
@@ -1531,7 +1531,7 @@ fn transact_delete_only() {
 }
 
 #[test]
-fn transact_insert_only_via_transact() {
+fn update_insert_only_via_update() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1539,10 +1539,10 @@ fn transact_insert_only_via_transact() {
         .assert()
         .success();
 
-    // Use transact with insert-only (no where/delete)
+    // Use update with insert-only (no where/delete)
     fluree_cmd(&tmp)
         .args([
-            "transact",
+            "update",
             "-e",
             r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:charlie", "ex:name": "Charlie"}]}"#,
         ])
@@ -1552,7 +1552,7 @@ fn transact_insert_only_via_transact() {
 }
 
 #[test]
-fn transact_with_commit_message() {
+fn update_with_commit_message() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1562,11 +1562,11 @@ fn transact_with_commit_message() {
 
     fluree_cmd(&tmp)
         .args([
-            "transact",
+            "update",
             "-e",
             r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:x", "ex:val": "test"}]}"#,
             "-m",
-            "initial transact",
+            "initial update",
         ])
         .assert()
         .success()
@@ -1574,7 +1574,7 @@ fn transact_with_commit_message() {
 }
 
 #[test]
-fn transact_from_json_file() {
+fn update_from_json_file() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1592,7 +1592,7 @@ fn transact_from_json_file() {
         .assert()
         .success();
 
-    // Write a transact body to a file
+    // Write an update body to a file
     let json_path = tmp.path().join("update.json");
     std::fs::write(
         &json_path,
@@ -1601,14 +1601,14 @@ fn transact_from_json_file() {
     .unwrap();
 
     fluree_cmd(&tmp)
-        .args(["transact", "-f", json_path.to_str().unwrap()])
+        .args(["update", "-f", json_path.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("Committed t=2"));
 }
 
 #[test]
-fn transact_sparql_update_in_direct_mode_fails() {
+fn update_sparql_update_in_direct_mode_fails() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp).args(["create", "spdb"]).assert().success();
@@ -1617,7 +1617,7 @@ fn transact_sparql_update_in_direct_mode_fails() {
     fluree_cmd(&tmp)
         .args([
             "--direct",
-            "transact",
+            "update",
             "-e",
             "PREFIX ex: <http://example.org/> INSERT DATA { ex:x ex:val \"hello\" }",
         ])
@@ -1629,47 +1629,47 @@ fn transact_sparql_update_in_direct_mode_fails() {
 }
 
 #[test]
-fn transact_without_active_ledger_errors() {
+fn update_without_active_ledger_errors() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
 
     fluree_cmd(&tmp)
-        .args(["transact", "-e", "{}"])
+        .args(["update", "-e", "{}"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no active ledger set"));
 }
 
 #[test]
-fn transact_without_init_errors() {
+fn update_without_init_errors() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp)
-        .args(["transact", "-e", "{}"])
+        .args(["update", "-e", "{}"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no .fluree/ directory found"));
 }
 
 #[test]
-fn help_shows_transact_command() {
+fn help_shows_update_command() {
     cargo_bin_cmd!("fluree")
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("transact"));
+        .stdout(predicate::str::contains("update"));
 }
 
 #[test]
-fn transact_help_shows_description() {
+fn update_help_shows_description() {
     cargo_bin_cmd!("fluree")
-        .args(["transact", "--help"])
+        .args(["update", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("WHERE/DELETE/INSERT"));
 }
 
 #[test]
-fn transact_via_stdin() {
+fn update_via_stdin() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1677,9 +1677,9 @@ fn transact_via_stdin() {
         .assert()
         .success();
 
-    // Pipe JSON-LD transaction body via stdin (no -e, -f, or positional data)
+    // Pipe JSON-LD update body via stdin (no -e, -f, or positional data)
     fluree_cmd(&tmp)
-        .arg("transact")
+        .arg("update")
         .write_stdin(r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:alice", "ex:name": "Alice"}]}"#)
         .assert()
         .success()
