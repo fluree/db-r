@@ -457,6 +457,20 @@ pub enum BranchAction {
         remote: Option<String>,
     },
 
+    /// Drop a branch
+    Drop {
+        /// Branch name to drop (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
     /// List all branches
     List {
         /// Ledger name (defaults to active ledger)

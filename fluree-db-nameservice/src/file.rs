@@ -667,6 +667,48 @@ impl NameService for FileNameService {
 
         Ok(())
     }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+
+        // Read the record to find the parent before purging
+        let record = self
+            .load_record(&ledger_name, &branch)
+            .await?
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_branch_point = record.branch_point.clone();
+
+        // Remove the NS files (purge)
+        let main_path = self.ns_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&main_path).await;
+        let idx_path = self.index_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&idx_path).await;
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_branch_point {
+            Some(bp) => {
+                let parent_address = Self::ns_address(&ledger_name, &bp.source);
+                let new_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let new_count_clone = new_count.clone();
+                self.storage
+                    .compare_and_swap(&parent_address, move |bytes| {
+                        let Some(data) = bytes else {
+                            return Ok(CasAction::Abort(()));
+                        };
+                        let mut file: NsFileV2 =
+                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        file.branches = file.branches.saturating_sub(1);
+                        new_count_clone.store(file.branches, std::sync::atomic::Ordering::Relaxed);
+                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        Ok(CasAction::Write(new_bytes))
+                    })
+                    .await?;
+                Ok(Some(new_count.load(std::sync::atomic::Ordering::Relaxed)))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[async_trait]

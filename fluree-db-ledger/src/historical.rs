@@ -28,8 +28,8 @@
 use crate::error::{LedgerError, Result};
 use crate::LedgerState;
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue,
-    GraphDbRef, GraphId, IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
+    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
 

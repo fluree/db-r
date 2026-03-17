@@ -756,6 +756,42 @@ where
 
         Ok(())
     }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+
+        // Read the record to find the parent before purging
+        let record = self
+            .load_record(&ledger_name, &branch)
+            .await?
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_branch_point = record.branch_point.clone();
+
+        // Remove the NS files
+        let main_key = self.ns_key(&ledger_name, &branch);
+        let index_key = self.index_key(&ledger_name, &branch);
+        let _ = self.storage.delete(&main_key).await;
+        let _ = self.storage.delete(&index_key).await;
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_branch_point {
+            Some(bp) => {
+                let parent_key = self.ns_key(&ledger_name, &bp.source);
+                let new_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let new_count_clone = new_count.clone();
+                self.cas_update::<NsFileV2, _>(&parent_key, move |existing| {
+                    let mut file = existing?;
+                    file.branches = file.branches.saturating_sub(1);
+                    new_count_clone.store(file.branches, std::sync::atomic::Ordering::Relaxed);
+                    Some(file)
+                })
+                .await?;
+                Ok(Some(new_count.load(std::sync::atomic::Ordering::Relaxed)))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[async_trait]

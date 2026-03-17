@@ -25,6 +25,11 @@ pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliRes
         BranchAction::List { ledger, remote } => {
             run_list(ledger.as_deref(), dirs, remote.as_deref(), direct).await
         }
+        BranchAction::Drop {
+            name,
+            ledger,
+            remote,
+        } => run_drop(&name, ledger.as_deref(), dirs, remote.as_deref(), direct).await,
     }
 }
 
@@ -220,14 +225,124 @@ fn print_branch_list_json(result: &serde_json::Value) -> CliResult<()> {
             .and_then(|v| v.as_i64())
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let source = branch
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let source = branch.get("source").and_then(|v| v.as_str()).unwrap_or("-");
         table.add_row(vec![name.to_string(), t, source.to_string()]);
     }
 
     println!("{table}");
+    Ok(())
+}
+
+// =============================================================================
+// Drop
+// =============================================================================
+
+async fn run_drop(
+    name: &str,
+    ledger: Option<&str>,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let alias = context::resolve_ledger(ledger, dirs)?;
+        let ledger_name = extract_ledger_name(&alias);
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let result = client.drop_branch(ledger_name, name).await?;
+
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+
+        print_branch_dropped(&result)?;
+        return Ok(());
+    }
+
+    let mode = {
+        let mode = context::resolve_ledger_mode(ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
+    };
+
+    match mode {
+        LedgerMode::Tracked {
+            client,
+            remote_alias,
+            remote_name,
+            ..
+        } => {
+            let ledger_name = extract_ledger_name(&remote_alias);
+            let result = client.drop_branch(ledger_name, name).await?;
+
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+            print_branch_dropped(&result)?;
+        }
+        LedgerMode::Local { fluree, alias } => {
+            let ledger_name = extract_ledger_name(&alias);
+            let report = fluree.drop_branch(ledger_name, name).await?;
+
+            if report.deferred {
+                println!(
+                    "Branch '{}' retracted (has children, storage preserved).",
+                    name
+                );
+            } else {
+                println!("Dropped branch '{}'.", name);
+            }
+            if report.artifacts_deleted > 0 {
+                println!("  Artifacts deleted: {}", report.artifacts_deleted);
+            }
+            if !report.cascaded.is_empty() {
+                println!("  Cascaded drops: {}", report.cascaded.join(", "));
+            }
+            for warning in &report.warnings {
+                eprintln!("  Warning: {}", warning);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
+    let ledger_id = result
+        .get("ledger_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let deferred = result
+        .get("deferred")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if deferred {
+        println!(
+            "Branch retracted (has children, storage preserved): {}",
+            ledger_id
+        );
+    } else {
+        println!("Dropped branch: {}", ledger_id);
+    }
+
+    if let Some(artifacts) = result.get("artifacts_deleted").and_then(|v| v.as_u64()) {
+        if artifacts > 0 {
+            println!("  Artifacts deleted: {}", artifacts);
+        }
+    }
+    if let Some(cascaded) = result.get("cascaded").and_then(|v| v.as_array()) {
+        if !cascaded.is_empty() {
+            let names: Vec<&str> = cascaded.iter().filter_map(|v| v.as_str()).collect();
+            println!("  Cascaded drops: {}", names.join(", "));
+        }
+    }
+    if let Some(warnings) = result.get("warnings").and_then(|v| v.as_array()) {
+        for w in warnings {
+            if let Some(msg) = w.as_str() {
+                eprintln!("  Warning: {}", msg);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -749,6 +749,28 @@ impl RemoteLedgerClient {
         .await
     }
 
+    /// Drop a branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/drop-branch` with a JSON body.
+    pub async fn drop_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("drop-branch");
+        let body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
     /// List all branches for a ledger on the remote server.
     ///
     /// Calls `GET {base_url}/branch/{ledger}`.

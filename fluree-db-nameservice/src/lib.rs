@@ -401,6 +401,18 @@ pub trait NameService: Debug + Send + Sync {
         new_branch: &str,
         branch_point: BranchPoint,
     ) -> Result<()>;
+
+    /// Drop a branch, purging its nameservice record and decrementing
+    /// the parent branch's child count.
+    ///
+    /// Returns `Some(new_count)` with the parent's updated `branches` count
+    /// if the dropped branch had a parent, or `None` if it had no parent
+    /// (i.e., was the root branch).
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch
+    /// record does not exist.
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
 }
 
 /// Publisher trait for writing nameservice records

@@ -559,11 +559,9 @@ impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
     }
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
-        self.branch_store.resolve_local_path(id).or_else(|| {
-            self.parents
-                .iter()
-                .find_map(|p| p.resolve_local_path(id))
-        })
+        self.branch_store
+            .resolve_local_path(id)
+            .or_else(|| self.parents.iter().find_map(|p| p.resolve_local_path(id)))
     }
 }
 

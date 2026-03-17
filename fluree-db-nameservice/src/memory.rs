@@ -158,6 +158,26 @@ impl NameService for MemoryNameService {
 
         Ok(())
     }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .remove(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        // Decrement parent's child count if this branch had a parent
+        let parent_new_count = record.branch_point.as_ref().and_then(|bp| {
+            let parent_id = format_ledger_id(&record.name, &bp.source);
+            let parent_key = self.normalize_ledger_id(&parent_id);
+            let parent = records.get_mut(&parent_key)?;
+            parent.branches = parent.branches.saturating_sub(1);
+            Some(parent.branches)
+        });
+
+        Ok(parent_new_count)
+    }
 }
 
 #[async_trait]

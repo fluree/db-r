@@ -73,6 +73,7 @@ pub mod ledger_manager;
 pub mod search;
 
 pub use admin::{
+    BranchDropReport,
     DropMode,
     DropReport,
     DropStatus,
@@ -389,6 +390,13 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         self.0
             .create_branch(ledger_name, new_branch, branch_point)
             .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.0.drop_branch(ledger_id).await
     }
 }
 

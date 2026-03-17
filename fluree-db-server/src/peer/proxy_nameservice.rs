@@ -181,6 +181,13 @@ impl NameService for ProxyNameService {
             "create_branch not supported in proxy mode".to_string(),
         ))
     }
+
+    async fn drop_branch(&self, _ledger_id: &str) -> Result<Option<u32>> {
+        // Proxy peers forward branch deletion to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "drop_branch not supported in proxy mode".to_string(),
+        ))
+    }
 }
 
 #[async_trait]

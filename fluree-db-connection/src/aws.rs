@@ -96,6 +96,16 @@ impl NameService for AwsNameService {
             }
         }
     }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.drop_branch(ledger_id).await,
+            Self::Storage(ns) => ns.drop_branch(ledger_id).await,
+        }
+    }
 }
 
 #[async_trait]

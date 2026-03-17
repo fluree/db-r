@@ -681,6 +681,78 @@ impl NameService for DynamoDbNameService {
 
         Ok(())
     }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        // Read all items for this branch to find the parent
+        let items = self.query_all_items(&pk).await?;
+        let meta = Self::find_item_by_sk(&items, SK_META)
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_source = meta
+            .get(ATTR_BP_SOURCE)
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+
+        let branch_name = meta
+            .get(ATTR_NAME)
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        // Delete all items for this branch
+        for item in &items {
+            if let Some(sk_val) = item.get(ATTR_SK).and_then(|v| v.as_s().ok()) {
+                let _ = self
+                    .client
+                    .delete_item()
+                    .table_name(&self.table_name)
+                    .key(ATTR_PK, AttributeValue::S(pk.clone()))
+                    .key(ATTR_SK, AttributeValue::S(sk_val.to_string()))
+                    .send()
+                    .await;
+            }
+        }
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_source {
+            Some(source) => {
+                let parent_pk = format_ledger_id(&branch_name, &source);
+                let result = self
+                    .client
+                    .update_item()
+                    .table_name(&self.table_name)
+                    .key(ATTR_PK, AttributeValue::S(parent_pk))
+                    .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+                    .update_expression("SET #b = if_not_exists(#b, :zero) - :one")
+                    .expression_attribute_names("#b", ATTR_BRANCHES)
+                    .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+                    .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+                    .return_values(aws_sdk_dynamodb::types::ReturnValue::UpdatedNew)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        NameServiceError::storage(format!(
+                            "DynamoDB decrement branches failed: {e}"
+                        ))
+                    })?;
+
+                let new_count = result
+                    .attributes()
+                    .and_then(|attrs| attrs.get(ATTR_BRANCHES))
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+
+                Ok(Some(new_count))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 // ─── Publisher ──────────────────────────────────────────────────────────────

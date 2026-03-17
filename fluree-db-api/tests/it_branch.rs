@@ -6,6 +6,7 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
+use fluree_db_nameservice::NameService;
 use serde_json::json;
 
 /// Extract sorted name strings from query result rows.
@@ -48,7 +49,9 @@ async fn create_and_list_branches() {
     let record = fluree.create_branch("mydb", "dev", None).await.unwrap();
     assert_eq!(record.branch, "dev");
     assert_eq!(record.ledger_id, "mydb:dev");
-    let bp = record.branch_point.expect("branch should have a branch_point");
+    let bp = record
+        .branch_point
+        .expect("branch should have a branch_point");
     assert_eq!(bp.source, "main");
 
     // List branches
@@ -205,6 +208,201 @@ async fn branch_t_advances_independently() {
     assert_eq!(dev.t(), 3);
 }
 
+/// Dropping a leaf branch (no children) fully deletes it.
+#[tokio::test]
+async fn drop_branch_leaf() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // Create and then drop a leaf branch
+    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    let report = fluree.drop_branch("mydb", "dev").await.unwrap();
+
+    assert!(!report.deferred, "leaf branch should not be deferred");
+    assert_eq!(report.ledger_id, "mydb:dev");
+
+    // Branch should no longer be in the list
+    let branches = fluree.list_branches("mydb").await.unwrap();
+    let names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+    assert_eq!(names, vec!["main"]);
+}
+
+/// Cannot drop the main branch.
+#[tokio::test]
+async fn drop_main_refused() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    fluree.create_ledger("mydb").await.unwrap();
+
+    let err = fluree
+        .drop_branch("mydb", "main")
+        .await
+        .expect_err("dropping main should fail");
+    assert!(
+        err.to_string().contains("main"),
+        "error should mention main: {err}"
+    );
+}
+
+/// branches count is incremented on create and decremented on drop.
+#[tokio::test]
+async fn branches_count_tracks_children() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // main starts with branches == 0
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 0);
+
+    // Create two child branches
+    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 1);
+
+    fluree.create_branch("mydb", "staging", None).await.unwrap();
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 2);
+
+    // Drop one
+    fluree.drop_branch("mydb", "dev").await.unwrap();
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 1);
+
+    // Drop the other
+    fluree.drop_branch("mydb", "staging").await.unwrap();
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 0);
+}
+
+/// Branch with children is retracted (deferred) but storage is preserved.
+/// Children can still operate after parent is deferred.
+#[tokio::test]
+async fn drop_branch_with_children_deferred() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // Create dev, then branch feature from dev
+    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"))
+        .await
+        .unwrap();
+
+    // dev now has branches == 1
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:dev")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.branches, 1);
+
+    // Drop dev — should be deferred because it has a child
+    let report = fluree.drop_branch("mydb", "dev").await.unwrap();
+    assert!(report.deferred, "branch with children should be deferred");
+
+    // dev is retracted but still present
+    let record = fluree
+        .nameservice()
+        .lookup("mydb:dev")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.retracted);
+
+    // feature still works (can transact)
+    let feature = fluree.ledger("mydb:feature").await.unwrap();
+    let txn2 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:new", "ex:val": 2}]
+    });
+    fluree.insert(feature, &txn2).await.unwrap();
+}
+
+/// Dropping the last child of a retracted parent cascades to purge the parent.
+#[tokio::test]
+async fn drop_branch_cascade() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // main -> dev -> feature
+    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"))
+        .await
+        .unwrap();
+
+    // Retract dev (deferred because feature exists)
+    let report = fluree.drop_branch("mydb", "dev").await.unwrap();
+    assert!(report.deferred);
+
+    // Drop feature — last child of retracted dev — should cascade
+    let report = fluree.drop_branch("mydb", "feature").await.unwrap();
+    assert!(!report.deferred, "leaf branch should not be deferred");
+    assert!(
+        report.cascaded.contains(&"mydb:dev".to_string()),
+        "cascade should include dev: {:?}",
+        report.cascaded
+    );
+
+    // dev should be purged entirely
+    let record = fluree.nameservice().lookup("mydb:dev").await.unwrap();
+    assert!(record.is_none(), "dev should be purged after cascade");
+
+    // Only main remains
+    let branches = fluree.list_branches("mydb").await.unwrap();
+    let names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+    assert_eq!(names, vec!["main"]);
+}
+
 /// Branching from a branch (nested branches) correctly chains namespace fallback.
 ///
 /// main (t=1: seed) -> dev (t=2: dev-data) -> feature (t=2: feature-data)
@@ -275,7 +473,9 @@ async fn nested_branch_data_isolation() {
 
     // Feature: Alice (seed from main->dev chain) + Bob (from dev) + Carol (feature-only)
     let feature = fluree.ledger("mydb:feature").await.unwrap();
-    let result = support::query_jsonld(&fluree, &feature, &query).await.unwrap();
+    let result = support::query_jsonld(&fluree, &feature, &query)
+        .await
+        .unwrap();
     let rows = result.to_jsonld(&feature.snapshot).unwrap();
     assert_eq!(extract_names(&rows), vec!["Alice", "Bob", "Carol"]);
 }
