@@ -906,11 +906,15 @@ where
                                 fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
                                     &blob,
                                 )
-                                .unwrap_or_else(|_| {
+                                .unwrap_or_else(|e| {
+                                    tracing::warn!(p_id, error = %e, "failed to decode fulltext arena, starting fresh");
                                     fluree_db_binary_index::arena::fulltext::FulltextArena::new()
                                 })
                             }
-                            Err(_) => fluree_db_binary_index::arena::fulltext::FulltextArena::new(),
+                            Err(e) => {
+                                tracing::warn!(p_id, error = %e, "failed to fetch fulltext arena, starting fresh");
+                                fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                            }
                         }
                     } else {
                         fluree_db_binary_index::arena::fulltext::FulltextArena::new()

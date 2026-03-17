@@ -475,8 +475,9 @@ impl BinaryIndexStore {
             DecodeKind::F64 => Ok(FlakeValue::Double(key.decode_f64())),
             DecodeKind::Date => {
                 let days = key.decode_date();
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163)
-                    .unwrap_or(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                let date = chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163).unwrap_or(
+                    chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch date is valid"),
+                );
                 let iso = date.format("%Y-%m-%d").to_string();
                 match fluree_db_core::temporal::Date::parse(&iso) {
                     Ok(d) => Ok(FlakeValue::Date(Box::new(d))),
@@ -489,7 +490,9 @@ impl BinaryIndexStore {
                 let frac_micros = (micros % 1_000_000) as u32;
                 let time =
                     chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
-                        .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                        .unwrap_or(
+                            chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("midnight is valid"),
+                        );
                 let iso = time.format("%H:%M:%S%.6f").to_string();
                 match fluree_db_core::temporal::Time::parse(&iso) {
                     Ok(t) => Ok(FlakeValue::Time(Box::new(t))),

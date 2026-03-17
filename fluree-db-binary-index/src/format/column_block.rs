@@ -89,6 +89,9 @@ impl ColumnBlockRef {
     }
 
     /// Deserialize from wire format (16 bytes, little-endian).
+    ///
+    /// All `try_into().unwrap()` calls are safe: `buf` is exactly 16 bytes,
+    /// so each fixed-width sub-slice is guaranteed to be the correct length.
     pub fn read_le(buf: &[u8; COLUMN_BLOCK_REF_SIZE]) -> Self {
         Self {
             col_id: u16::from_le_bytes(buf[0..2].try_into().unwrap()),

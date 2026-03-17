@@ -200,8 +200,9 @@ pub fn write_run_file(
 // Kept for: rebuild path where assert/retract ops must survive into the merge.
 // Use when: incremental rebuild pipeline is wired in.
 // Called by: RunWriterWithOp::flush_buffer and tests.
-// Note: #[allow] instead of #[expect] because Rust's dead_code lint transitivity
-// makes #[expect] unfulfilled when parent callers are also annotated.
+// Note: Using #[allow] instead of #[expect] because when the sole caller
+// (RunWriterWithOp) is also dead, #[expect(dead_code)] becomes unfulfilled
+// and triggers a separate warning. This is a known Rust lint transitivity issue.
 #[allow(dead_code)]
 pub(crate) fn write_run_file_with_op(
     path: &Path,

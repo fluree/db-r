@@ -142,8 +142,7 @@ pub fn build_indexes_from_commits(
         progress: None, // Progress already reported during remap.
     };
 
-    let order_results =
-        build_all_indexes(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
+    let order_results = build_all_indexes(&build_config).map_err(io::Error::other)?;
 
     let build_elapsed = build_start.elapsed();
 
@@ -242,8 +241,7 @@ pub fn build_indexes_from_remapped_commits(
         progress: None, // Progress already reported during remap.
     };
 
-    let order_results =
-        build_all_indexes(&build_config).map_err(|e| io::Error::other(e.to_string()))?;
+    let order_results = build_all_indexes(&build_config).map_err(io::Error::other)?;
 
     let build_elapsed = build_start.elapsed();
 

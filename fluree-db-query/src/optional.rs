@@ -656,7 +656,7 @@ impl OptionalOperator {
             current_required_row: 0,
             pending_output: VecDeque::new(),
             out_schema: None,
-            result_cache: LruCache::new(NonZeroUsize::new(8192).unwrap()),
+            result_cache: LruCache::new(NonZeroUsize::new(8192).expect("8192 is non-zero")),
         }
     }
 

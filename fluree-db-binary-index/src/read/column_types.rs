@@ -32,15 +32,19 @@ pub enum ColumnData<T: Copy> {
 }
 
 impl<T: Copy> ColumnData<T> {
-    /// Get the value at `idx`. Panics on out-of-bounds for `Block`.
-    /// For `AbsentDefault`, panics — caller must check `is_absent()` first
-    /// or use `get_or(default)`.
+    /// Get the value at `idx`.
+    ///
+    /// # Panics
+    /// - Out-of-bounds index on `Block`.
+    /// - Called on `AbsentDefault` — use `is_absent()` to check first, or `get_or(default)`.
     #[inline]
     pub fn get(&self, idx: usize) -> T {
         match self {
             ColumnData::Block(arr) => arr[idx],
             ColumnData::Const(v) => *v,
-            ColumnData::AbsentDefault => panic!("ColumnData::get on AbsentDefault"),
+            ColumnData::AbsentDefault => {
+                panic!("ColumnData::get called on AbsentDefault; use get_or() or check is_absent() first")
+            }
         }
     }
 

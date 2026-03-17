@@ -16,12 +16,9 @@ use fluree_db_binary_index::format::run_record_v2::{
 use fluree_db_binary_index::read::column_loader::{
     load_leaflet_columns, load_leaflet_columns_cached,
 };
-// V5 leaflet internals (LeafletHeader, decode_leaflet_region1/2, read_leaf_header,
-// CachedRegion1, CachedRegion2) have been removed. V5 fast-paths that directly
-// accessed raw leaflet bytes are stubbed with todo!("V3 leaflet fast-path").
 use fluree_db_binary_index::{
     BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch, ColumnProjection,
-    ColumnSet, OverlayOp, RunSortOrder,
+    ColumnSet, RunSortOrder,
 };
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
@@ -32,173 +29,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
-// Shared types
+// Shared free functions
 // ---------------------------------------------------------------------------
-
-// Used by: V3 leaflet fast-path dead-code cluster below (merge_overlay_deltas, group_key_for_fact).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-struct FactKey {
-    s_id: u64,
-    o_type: u16,
-    o_key: u64,
-    o_i: u32,
-}
-
-// Used by: V3 leaflet fast-path dead-code cluster below (group_key_for_fact, add_count).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-enum GroupKey {
-    Ref(u64),
-    Lit { o_type: u16, o_key: u64 },
-}
-
-// ---------------------------------------------------------------------------
-// Shared free functions (extracted from duplicate `impl` methods)
-// ---------------------------------------------------------------------------
-
-// Kept for: V3 leaflet fast-path port of group-count and bound-object-count operators.
-// Use when: the V3 fast-path is implemented to replace the current fallback-to-scan path.
-// How: these functions implement overlay delta merging and group-key accumulation
-// that will be needed by any direct-leaflet-scan optimization.
-fn overlay_ops_for_ctx(ctx: &ExecutionContext<'_>, gv: &BinaryGraphView) -> Vec<OverlayOp> {
-    let Some(overlay) = ctx.overlay else {
-        return Vec::new();
-    };
-    crate::binary_scan::translate_overlay_flakes(
-        overlay,
-        &gv.clone_store(),
-        ctx.dict_novelty.as_ref(),
-        ctx.to_t,
-        gv.g_id(),
-    )
-}
-
-#[expect(dead_code)]
-#[inline]
-fn group_key_for_fact(key: &FactKey) -> GroupKey {
-    if key.o_type == OType::IRI_REF.as_u16() {
-        GroupKey::Ref(key.o_key)
-    } else {
-        GroupKey::Lit {
-            o_type: key.o_type,
-            o_key: key.o_key,
-        }
-    }
-}
-
-// V5 leaflet first-record helpers (read_leaflet_first, prefix_from_leaflet_first,
-// prefix_from_dir_or_leaflet, prefix_from_run_record) have been removed.
-// The V5 fast-path that used them is stubbed below with todo!("V3 leaflet fast-path").
-
-#[expect(dead_code)]
-fn add_count(map: &mut HashMap<GroupKey, i64>, key: GroupKey, add: i64) {
-    *map.entry(key).or_insert(0) += add;
-}
-
-#[expect(dead_code)]
-#[inline]
-fn io_to_query(where_: &'static str, e: std::io::Error) -> QueryError {
-    QueryError::execution(format!("{where_}: {e}"))
-}
 
 #[inline]
 fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
-    // Fast-path is available if either V5 or V6 store is loaded.
     let has_store = ctx.graph_view().is_some() || ctx.binary_store.is_some();
     !has_store || ctx.history_mode || ctx.policy_enforcer.is_some()
-}
-
-/// Resolve a predicate [`Ref`] to its binary index `p_id`.
-#[expect(dead_code)]
-fn resolve_predicate_id(
-    predicate: &crate::triple::Ref,
-    store: &BinaryIndexStore,
-    context_label: &str,
-) -> Result<u32> {
-    match predicate {
-        crate::triple::Ref::Sid(sid) => store.sid_to_p_id(sid).ok_or_else(|| {
-            QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
-        }),
-        crate::triple::Ref::Iri(iri) => store.find_predicate_id(iri).ok_or_else(|| {
-            QueryError::InvalidQuery("predicate not found in binary predicate dict".to_string())
-        }),
-        _ => Err(QueryError::InvalidQuery(format!(
-            "{context_label} requires a bound predicate"
-        ))),
-    }
-}
-
-// V5 helpers removed: open_and_read_leaf, DecodedR1, decode_r1_cached, decode_r2_cached.
-// These used V5 APIs (resolved_path, ensure_index_leaf_cached, read_leaf_header,
-// LeafFileHeader, LeafletHeader, decode_leaflet_region1/2, CachedRegion1/2).
-// The V5 fast-paths that used them are stubbed with todo!("V3 leaflet fast-path").
-
-/// Merge novelty overlay deltas into an accumulator.
-///
-/// Translates overlay ops, filters by `p_id` and an additional caller-supplied `filter`,
-/// then replays assert/retract ops in time order and calls `apply_delta` for each net change.
-#[expect(dead_code)]
-fn merge_overlay_deltas<F, A>(
-    ctx: &ExecutionContext<'_>,
-    gv: &BinaryGraphView,
-    p_id: u32,
-    filter: F,
-    mut apply_delta: A,
-) where
-    F: Fn(&OverlayOp) -> bool,
-    A: FnMut(&FactKey, i64),
-{
-    if ctx.overlay.is_none() {
-        return;
-    }
-    let overlay_ops = overlay_ops_for_ctx(ctx, gv);
-    if overlay_ops.is_empty() {
-        return;
-    }
-
-    let mut ops: Vec<(FactKey, i64, bool)> = overlay_ops
-        .into_iter()
-        .filter(|op| op.p_id == p_id && filter(op))
-        .map(|op| {
-            (
-                FactKey {
-                    s_id: op.s_id,
-                    o_type: op.o_type,
-                    o_key: op.o_key,
-                    o_i: op.o_i,
-                },
-                op.t,
-                op.op,
-            )
-        })
-        .collect();
-
-    // Group by fact identity and apply ops in time order (retract before assert for same t).
-    ops.sort_unstable_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-
-    let mut idx = 0usize;
-    while idx < ops.len() {
-        let key = ops[idx].0;
-        // If the first op is a retract, the fact must have existed before overlay.
-        let mut present = !ops[idx].2;
-
-        while idx < ops.len() && ops[idx].0 == key {
-            let op_is_assert = ops[idx].2;
-            if op_is_assert {
-                if !present {
-                    present = true;
-                    apply_delta(&key, 1);
-                }
-            } else if present {
-                present = false;
-                apply_delta(&key, -1);
-            }
-            idx += 1;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,18 +63,11 @@ pub struct PredicateGroupCountFirstsOperator {
     predicate: crate::triple::Ref,
     /// LIMIT k (top-k by count)
     limit: usize,
-    /// Optional stats view used to detect single-datatype predicates.
-    // Kept for: V3 leaflet fast-path may use stats for single-datatype optimization.
-    // Use when: V3 direct-leaflet-scan fast-path is implemented.
-    #[expect(dead_code)]
-    stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
     /// Fallback operator for non-binary / overlay / policy / history contexts.
     fallback: Option<BoxedOperator>,
-    /// Materialized results (already sorted and truncated to limit)
-    results: Vec<(GroupKey, i64)>,
-    /// V6 results: (o_type, o_key, count). When present, used instead of `results`.
+    /// V6 results: (o_type, o_key, count).
     results_v6: Option<Vec<(u16, u64, i64)>>,
     /// Next result to emit
     pos: usize,
@@ -250,7 +80,7 @@ impl PredicateGroupCountFirstsOperator {
         count_var: VarId,
         predicate: crate::triple::Ref,
         limit: usize,
-        stats: Option<Arc<StatsView>>,
+        _stats: Option<Arc<StatsView>>,
     ) -> Self {
         Self {
             schema: Arc::from(vec![object_var, count_var].into_boxed_slice()),
@@ -259,10 +89,8 @@ impl PredicateGroupCountFirstsOperator {
             count_var,
             predicate,
             limit: limit.max(1),
-            stats,
             state: OperatorState::Created,
             fallback: None,
-            results: Vec::new(),
             results_v6: None,
             pos: 0,
         }
@@ -327,7 +155,7 @@ impl Operator for PredicateGroupCountFirstsOperator {
             return Ok(());
         }
         self.state = OperatorState::Open;
-        self.results.clear();
+        self.results_v6 = None;
         self.pos = 0;
         self.fallback = None;
 
@@ -378,105 +206,51 @@ impl Operator for PredicateGroupCountFirstsOperator {
             return Ok(None);
         }
 
-        // V6 results path: eagerly decode (o_type, o_key) → FlakeValue.
-        if let Some(v6_results) = &self.results_v6 {
-            if self.pos >= v6_results.len() {
-                self.state = OperatorState::Exhausted;
-                return Ok(None);
-            }
-            let binary_index_store = ctx.binary_store.as_ref().ok_or_else(|| {
-                QueryError::Internal("V6 group-count results but no V6 store".to_string())
-            })?;
-            let g_id = ctx.binary_g_id;
-            let p_id = resolve_predicate_id_v6(&self.predicate, binary_index_store)?;
-            let view =
-                fluree_db_binary_index::BinaryGraphView::new(Arc::clone(binary_index_store), g_id);
-
-            let batch_size = ctx.batch_size;
-            let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
-            let mut col_c: Vec<Binding> = Vec::with_capacity(batch_size);
-
-            while self.pos < v6_results.len() && col_o.len() < batch_size {
-                let (o_type, o_key, count) = v6_results[self.pos];
-                self.pos += 1;
-
-                if o_type == OType::IRI_REF.as_u16() {
-                    col_o.push(Binding::EncodedSid { s_id: o_key });
-                } else {
-                    let val = view
-                        .decode_value(o_type, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("V6 decode_value: {e}")))?;
-                    let dt = binary_index_store
-                        .resolve_datatype_sid(o_type)
-                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
-                    let lang: Option<Arc<str>> =
-                        binary_index_store.resolve_lang_tag(o_type).map(Arc::from);
-                    col_o.push(Binding::Lit {
-                        val,
-                        dtc: match lang {
-                            Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
-                            None => fluree_db_core::DatatypeConstraint::Explicit(dt),
-                        },
-                        t: None,
-                        op: None,
-                        p_id: None,
-                    });
-                }
-                col_c.push(Binding::lit(
-                    fluree_db_core::FlakeValue::Long(count),
-                    fluree_db_core::Sid::xsd_integer(),
-                ));
-            }
-
-            return Ok(Some(crate::binding::Batch::new(
-                self.schema.clone(),
-                vec![col_o, col_c],
-            )?));
-        }
-
-        // V5 results path.
-        if self.pos >= self.results.len() {
+        let Some(v6_results) = &self.results_v6 else {
+            self.state = OperatorState::Exhausted;
+            return Ok(None);
+        };
+        if self.pos >= v6_results.len() {
             self.state = OperatorState::Exhausted;
             return Ok(None);
         }
-
-        let Some(gv) = ctx.graph_view() else {
-            return Err(QueryError::InvalidQuery(
-                "predicate group-count fast-path requires binary index store".to_string(),
-            ));
-        };
-        let store = gv.clone_store();
+        let binary_index_store = ctx.binary_store.as_ref().ok_or_else(|| {
+            QueryError::Internal("V6 group-count results but no V6 store".to_string())
+        })?;
+        let g_id = ctx.binary_g_id;
+        let p_id = resolve_predicate_id_v6(&self.predicate, binary_index_store)?;
+        let view =
+            fluree_db_binary_index::BinaryGraphView::new(Arc::clone(binary_index_store), g_id);
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
         let mut col_c: Vec<Binding> = Vec::with_capacity(batch_size);
 
-        while self.pos < self.results.len() && col_o.len() < batch_size {
-            let (key, count) = self.results[self.pos];
+        while self.pos < v6_results.len() && col_o.len() < batch_size {
+            let (o_type, o_key, count) = v6_results[self.pos];
             self.pos += 1;
 
-            match key {
-                GroupKey::Ref(s_id) => col_o.push(Binding::EncodedSid { s_id }),
-                GroupKey::Lit { o_type, o_key } => {
-                    // V5 results path: decode to FlakeValue from o_type/o_key.
-                    let val = store
-                        .decode_value_no_graph(o_type, o_key)
-                        .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))?;
-                    let dt = store
-                        .resolve_datatype_sid(o_type)
-                        .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
-                    let lang: Option<Arc<str>> = store.resolve_lang_tag(o_type).map(Arc::from);
-                    col_o.push(Binding::Lit {
-                        val,
-                        dtc: match lang {
-                            Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
-                            None => fluree_db_core::DatatypeConstraint::Explicit(dt),
-                        },
-                        t: None,
-                        op: None,
-                        p_id: None,
-                    });
-                }
+            if o_type == OType::IRI_REF.as_u16() {
+                col_o.push(Binding::EncodedSid { s_id: o_key });
+            } else {
+                let val = view
+                    .decode_value(o_type, o_key, p_id)
+                    .map_err(|e| QueryError::Internal(format!("V6 decode_value: {e}")))?;
+                let dt = binary_index_store
+                    .resolve_datatype_sid(o_type)
+                    .unwrap_or_else(|| fluree_db_core::Sid::new(0, ""));
+                let lang: Option<Arc<str>> =
+                    binary_index_store.resolve_lang_tag(o_type).map(Arc::from);
+                col_o.push(Binding::Lit {
+                    val,
+                    dtc: match lang {
+                        Some(tag) => fluree_db_core::DatatypeConstraint::LangTag(tag),
+                        None => fluree_db_core::DatatypeConstraint::Explicit(dt),
+                    },
+                    t: None,
+                    op: None,
+                    p_id: None,
+                });
             }
             col_c.push(Binding::lit(
                 fluree_db_core::FlakeValue::Long(count),
@@ -495,7 +269,6 @@ impl Operator for PredicateGroupCountFirstsOperator {
         if let Some(mut op) = self.fallback.take() {
             op.close();
         }
-        self.results.clear();
         self.results_v6 = None;
         self.pos = 0;
     }
@@ -525,11 +298,6 @@ pub struct PredicateObjectCountFirstsOperator {
     predicate: crate::triple::Ref,
     /// Bound object term (Sid/Iri/Value).
     object: Term,
-    /// Optional stats view (reserved for future scan-shape pruning).
-    // Kept for: future scan-shape pruning (e.g. datatype-gated equality / pruning).
-    // Use when: we extend this operator to apply StatsView-derived pruning beyond FIRST-based skipping.
-    #[expect(dead_code)]
-    stats: Option<Arc<StatsView>>,
     /// Operator state
     state: OperatorState,
     /// Fallback operator for non-binary / overlay / policy / history contexts.
@@ -546,7 +314,7 @@ impl PredicateObjectCountFirstsOperator {
         subject_var: VarId,
         object: Term,
         count_var: VarId,
-        stats: Option<Arc<StatsView>>,
+        _stats: Option<Arc<StatsView>>,
     ) -> Self {
         Self {
             schema: Arc::from(vec![count_var].into_boxed_slice()),
@@ -554,7 +322,6 @@ impl PredicateObjectCountFirstsOperator {
             count_var,
             predicate,
             object,
-            stats,
             state: OperatorState::Created,
             fallback: None,
             count: 0,
