@@ -700,6 +700,14 @@ impl Publisher for DynamoDbNameService {
 
 impl DynamoDbNameService {
     /// Shared helper for publish_index and publish_index_allow_equal.
+    ///
+    /// Uses `attribute_not_exists(#it) OR {condition}` so that missing index
+    /// items are created (fixing ledgers where `sk="index"` was never written
+    /// by older migration paths), while existing items are only updated when
+    /// the monotonicity condition is met.
+    ///
+    /// A `meta_exists` pre-check guards against publishing to a completely
+    /// uninitialized alias — matching the `publish_commit` contract.
     async fn update_index_item(
         &self,
         ledger_id: &str,
@@ -708,10 +716,22 @@ impl DynamoDbNameService {
         condition: &str,
     ) -> std::result::Result<(), NameServiceError> {
         let pk = Self::normalize(ledger_id);
+
+        // Guard: the ledger must be initialized (meta item must exist).
+        if !self.meta_exists(&pk).await? {
+            return Err(NameServiceError::not_found(format!(
+                "Ledger not initialized: {pk}"
+            )));
+        }
+
         let now = Self::now_epoch_ms().to_string();
 
-        // Prepend attribute_exists to catch uninitialized ledger IDs.
-        let full_condition = format!("attribute_exists(#pk) AND {condition}");
+        // `attribute_not_exists(#it)` is true when the item is absent
+        // (DynamoDB UpdateItem creates items by default), while `{condition}`
+        // (e.g., "#it < :t") gates updates to existing items. This handles
+        // ledgers where the sk="index" record was never created (e.g., older
+        // migration paths that pre-date create_ledger_with_ref).
+        let full_condition = format!("attribute_not_exists(#it) OR {condition}");
 
         let result = self
             .client
@@ -734,13 +754,11 @@ impl DynamoDbNameService {
         match result {
             Ok(_) => Ok(()),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Distinguish stale (item exists, t check failed) from missing.
-                if !self.meta_exists(&pk).await? {
-                    return Err(NameServiceError::not_found(format!(
-                        "Ledger not initialized: {pk}"
-                    )));
-                }
-                Ok(()) // Stale — silently ignored.
+                // With the condition `attribute_not_exists(#it) OR #it < :t`,
+                // ConditionalCheckFailedException means the index item exists
+                // and its index_t >= the incoming t. This is a stale/duplicate
+                // publish — safe to ignore.
+                Ok(())
             }
             Err(e) => Err(NameServiceError::storage(format!(
                 "DynamoDB UpdateItem failed: {e}"
