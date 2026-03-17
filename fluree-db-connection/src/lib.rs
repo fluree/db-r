@@ -272,6 +272,14 @@ pub async fn connect_async(config_json: &serde_json::Value) -> Result<Connection
     create_async_connection(config).await
 }
 
+/// Create an async connection from a pre-parsed `ConnectionConfig`.
+///
+/// This avoids the JSON-LD parse round-trip when the config has already been
+/// parsed (e.g., by `FlureeBuilder::from_json_ld`).
+pub async fn connect_from_config(config: ConnectionConfig) -> Result<ConnectionHandle> {
+    create_async_connection(config).await
+}
+
 /// Sync connection creation for local backends (file, memory)
 fn create_sync_connection(config: ConnectionConfig) -> Result<ConnectionHandle> {
     match &config.index_storage.storage_type {

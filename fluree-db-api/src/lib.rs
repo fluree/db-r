@@ -1094,317 +1094,54 @@ fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
     }
 }
 
-/// Start background indexing if enabled in the config.
-///
-/// Creates a BackgroundIndexerWorker and spawns it on the tokio runtime.
-/// Returns the appropriate IndexingMode (Background with handle, or Disabled).
-fn start_background_indexing_if_enabled(
-    config: &ConnectionConfig,
-    storage: AnyStorage,
-    nameservice: AnyNameService,
-) -> tx::IndexingMode {
-    if !is_indexing_enabled(config) {
-        return tx::IndexingMode::Disabled;
-    }
-
-    let indexer_config = build_indexer_config(config);
-    let (worker, handle) = fluree_db_indexer::BackgroundIndexerWorker::new(
-        storage,
-        Arc::new(nameservice),
-        indexer_config,
-    );
-
-    // Spawn the worker on the tokio runtime
-    tokio::spawn(worker.run());
-
-    tx::IndexingMode::Background(handle)
-}
-
 /// Connect using the JSON-LD connection config.
 ///
-/// This is the **single source of truth** entrypoint: all convenience helpers
-/// should generate JSON-LD and call this.
+/// Parses the JSON-LD config and delegates to `FlureeBuilder::build_client()`.
 pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient> {
-    let parsed = ConnectionConfig::from_json_ld(config)
-        .map_err(|e| ApiError::config(format!("Invalid JSON-LD config: {}", e)))?;
-
-    // --- S3 / AWS path (async-only) ---
-    #[cfg(feature = "aws")]
-    if matches!(parsed.index_storage.storage_type, StorageType::S3(_)) {
-        let handle = fluree_db_connection::connect_async(config).await?;
-        let fluree_db_connection::ConnectionHandle::Aws(aws_handle) = handle else {
-            return Err(ApiError::config(
-                "Expected AWS connection handle for S3 config",
-            ));
-        };
-
-        // Decide whether to use tiered commit/index routing.
-        let index = aws_handle.index_storage().clone();
-        let commit = aws_handle.commit_storage().clone();
-        let base_storage: Arc<dyn Storage> =
-            if index.bucket() != commit.bucket() || index.prefix() != commit.prefix() {
-                Arc::new(TieredStorage::new(commit, index))
-            } else {
-                Arc::new(index)
-            };
-
-        // Build address identifier resolver if configured
-        let storage: AnyStorage = if let Some(addr_ids) = &aws_handle.config().address_identifiers {
-            let mut identifier_map = std::collections::HashMap::new();
-            for (identifier, storage_config) in addr_ids.iter() {
-                let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
-                    StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
-                    _ => build_local_storage_from_config(storage_config)?,
-                };
-                identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
-            }
-            AnyStorage::new(Arc::new(AddressIdentifierResolverStorage::new(
-                AnyStorage::new(base_storage),
-                identifier_map,
-            )))
-        } else {
-            AnyStorage::new(base_storage)
-        };
-
-        let connection = Connection::new(aws_handle.config().clone(), storage);
-
-        let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
-        let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Start background indexing if enabled in config
-        let indexing_mode = start_background_indexing_if_enabled(
-            aws_handle.config(),
-            connection.storage().clone(),
-            nameservice.clone(),
-        );
-
-        let index_config = derive_index_config(aws_handle.config());
-
-        return Ok(Fluree {
-            connection,
-            nameservice,
-            leaflet_cache,
-            indexing_mode,
-            index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        });
-    }
-
-    // --- Local (memory/filesystem) ---
-    match &parsed.index_storage.storage_type {
-        StorageType::Memory => {
-            let base_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-
-            // Build address identifier resolver if configured
-            let storage: AnyStorage = if let Some(addr_ids) = &parsed.address_identifiers {
-                let mut identifier_map = std::collections::HashMap::new();
-                for (identifier, storage_config) in addr_ids.iter() {
-                    let id_storage = build_local_storage_from_config(storage_config)?;
-                    identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
-                }
-                AnyStorage::new(Arc::new(AddressIdentifierResolverStorage::new(
-                    AnyStorage::new(base_storage),
-                    identifier_map,
-                )))
-            } else {
-                AnyStorage::new(base_storage)
-            };
-
-            let connection = Connection::new(parsed, storage);
-            let nameservice_inner = MemoryNameService::new();
-            let nameservice =
-                AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
-
-            let leaflet_cache = make_leaflet_cache(connection.config());
-
-            // Start background indexing if enabled in config
-            let index_config = derive_index_config(connection.config());
-            let indexing_mode = start_background_indexing_if_enabled(
-                connection.config(),
-                connection.storage().clone(),
-                nameservice.clone(),
-            );
-
-            Ok(Fluree {
-                connection,
-                nameservice,
-                leaflet_cache,
-                indexing_mode,
-                index_config,
-                r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-                ledger_manager: None,
-            })
-        }
-        StorageType::File => {
-            #[cfg(not(feature = "native"))]
-            {
-                Err(ApiError::config(
-                    "Filesystem storage requires the 'native' feature",
-                ))
-            }
-            #[cfg(feature = "native")]
-            {
-                let path = parsed
-                    .index_storage
-                    .path
-                    .clone()
-                    .ok_or_else(|| ApiError::config("File storage requires filePath"))?;
-                let file_storage = FileStorage::new(path.as_ref());
-                let base_storage: Arc<dyn Storage> =
-                    if let Some(key_str) = parsed.index_storage.aes256_key.as_ref() {
-                        // Note: This encrypts storage reads/writes (index/commit blobs). The file-based
-                        // nameservice remains plaintext, matching the existing builder behavior.
-                        let key = decode_encryption_key_base64(key_str.as_ref())?;
-                        let encryption_key = EncryptionKey::new(key, 0);
-                        let key_provider = StaticKeyProvider::new(encryption_key);
-                        Arc::new(EncryptedStorage::new(file_storage, key_provider))
-                    } else {
-                        Arc::new(file_storage)
-                    };
-
-                // Build address identifier resolver if configured
-                let storage: AnyStorage = if let Some(addr_ids) = &parsed.address_identifiers {
-                    let mut identifier_map = std::collections::HashMap::new();
-                    for (identifier, storage_config) in addr_ids.iter() {
-                        let id_storage = build_local_storage_from_config(storage_config)?;
-                        identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
-                    }
-                    AnyStorage::new(Arc::new(AddressIdentifierResolverStorage::new(
-                        AnyStorage::new(base_storage),
-                        identifier_map,
-                    )))
-                } else {
-                    AnyStorage::new(base_storage)
-                };
-
-                let connection = Connection::new(parsed, storage);
-                let nameservice_inner = FileNameService::new(path.as_ref());
-                let nameservice =
-                    AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
-
-                let leaflet_cache = make_leaflet_cache(connection.config());
-
-                // Start background indexing if enabled in config
-                let index_config = derive_index_config(connection.config());
-                let indexing_mode = start_background_indexing_if_enabled(
-                    connection.config(),
-                    connection.storage().clone(),
-                    nameservice.clone(),
-                );
-
-                Ok(Fluree {
-                    connection,
-                    nameservice,
-                    leaflet_cache,
-                    indexing_mode,
-                    index_config,
-                    r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-                    ledger_manager: None,
-                })
-            }
-        }
-        StorageType::S3(_) => Err(ApiError::config(
-            "S3 storage requires the 'aws' feature on fluree-db-api",
-        )),
-        StorageType::Unsupported { type_iri, .. } => Err(ApiError::config(format!(
-            "Unsupported storage type in JSON-LD config: {}",
-            type_iri
-        ))),
-    }
+    FlureeBuilder::from_json_ld(config)?.build_client().await
 }
 
 /// Convenience helper: connect with in-memory storage.
-///
-/// This just generates JSON-LD and delegates to `connect_json_ld`.
 pub async fn connect_memory() -> Result<FlureeClient> {
-    let config = serde_json::json!({
-        "@context": {
-            "@base": "https://ns.flur.ee/config/connection/",
-            "@vocab": "https://ns.flur.ee/system#"
-        },
-        "@graph": [
-            {"@id": "memoryStorage", "@type": "Storage"},
-            {"@id": "connection",
-             "@type": "Connection",
-             "commitStorage": {"@id": "memoryStorage"},
-             "indexStorage": {"@id": "memoryStorage"},
-             "primaryPublisher": {"@type": "Publisher", "storage": {"@id": "memoryStorage"}}}
-        ]
-    });
-    connect_json_ld(&config).await
+    FlureeBuilder::memory().build_client().await
 }
 
 /// Convenience helper: connect with filesystem storage.
-///
-/// This just generates JSON-LD and delegates to `connect_json_ld`.
 #[cfg(feature = "native")]
 pub async fn connect_filesystem(path: impl AsRef<str>) -> Result<FlureeClient> {
-    let config = serde_json::json!({
-        "@context": {
-            "@base": "https://ns.flur.ee/config/connection/",
-            "@vocab": "https://ns.flur.ee/system#"
-        },
-        "@graph": [
-            {"@id": "fileStorage", "@type": "Storage", "filePath": path.as_ref()},
-            {"@id": "connection",
-             "@type": "Connection",
-             "commitStorage": {"@id": "fileStorage"},
-             "indexStorage": {"@id": "fileStorage"},
-             "primaryPublisher": {"@type": "Publisher", "storage": {"@id": "fileStorage"}}}
-        ]
-    });
-    connect_json_ld(&config).await
+    FlureeBuilder::file(path.as_ref()).build_client().await
 }
 
 /// Convenience helper: connect with S3 storage.
 ///
-/// This just generates JSON-LD and delegates to `connect_json_ld`.
-///
 /// Notes:
 /// - Requires the `aws` feature on `fluree-db-api`.
 /// - For LocalStack/MinIO/custom endpoints, `endpoint` should be provided.
-/// - For S3 Express directory buckets (`--x-s3` suffix), the helper **ignores** the
-///   provided endpoint and omits `s3Endpoint` in the generated JSON-LD to avoid
-///   signature/endpoint issues.
 #[cfg(feature = "aws")]
 pub async fn connect_s3(
     bucket: impl AsRef<str>,
     endpoint: impl AsRef<str>,
 ) -> Result<FlureeClient> {
-    let bucket = bucket.as_ref();
-    // S3 Express directory buckets should not be configured with a manual endpoint.
-    // The AWS SDK handles directory bucket endpoints and session auth automatically.
-    let is_express = fluree_db_storage_aws::S3Storage::is_express_bucket(bucket);
-    let storage_node = if is_express {
-        serde_json::json!({"@id": "s3Storage", "@type": "Storage", "s3Bucket": bucket})
-    } else {
-        serde_json::json!({"@id": "s3Storage", "@type": "Storage", "s3Bucket": bucket, "s3Endpoint": endpoint.as_ref()})
-    };
-
-    let config = serde_json::json!({
-        "@context": {
-            "@base": "https://ns.flur.ee/config/connection/",
-            "@vocab": "https://ns.flur.ee/system#"
-        },
-        "@graph": [
-            storage_node,
-            {"@id": "connection",
-             "@type": "Connection",
-             "commitStorage": {"@id": "s3Storage"},
-             "indexStorage": {"@id": "s3Storage"},
-             "primaryPublisher": {"@type": "Publisher", "storage": {"@id": "s3Storage"}}}
-        ]
-    });
-    connect_json_ld(&config).await
+    FlureeBuilder::s3(bucket.as_ref(), endpoint.as_ref())
+        .build_client()
+        .await
 }
 
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
+///
+/// This is the **single construction path** for all Fluree instances. Both
+/// programmatic (Rust embedder) and config-based (JSON-LD) construction go
+/// through this builder.
+///
+/// ## Typed vs Dynamic Builds
+///
+/// - **Typed builds** (`build()`, `build_memory()`, `build_s3()`) return concrete
+///   `Fluree<S, N>` types — best for Rust embedders who know the storage backend
+///   at compile time.
+/// - **Dynamic build** (`build_client()`) returns `FlureeClient` (type-erased) —
+///   used when the storage backend is determined at runtime from config.
 #[derive(Debug, Clone, Default)]
 pub struct FlureeBuilder {
     config: ConnectionConfig,
@@ -1647,7 +1384,11 @@ impl FlureeBuilder {
     /// Create a builder from JSON-LD configuration.
     ///
     /// Parses a JSON-LD configuration document and extracts all settings including
-    /// storage path, cache settings, and encryption key.
+    /// storage path, cache settings, encryption key, indexing config, address
+    /// identifiers, and publisher/nameservice config.
+    ///
+    /// The returned builder can be further customized before calling a terminal
+    /// build method (`build()`, `build_memory()`, `build_client()`, etc.).
     ///
     /// # Encryption Key from Environment
     ///
@@ -1668,26 +1409,40 @@ impl FlureeBuilder {
     /// ```
     ///
     /// The key should be base64-encoded, 32 bytes when decoded.
-    #[cfg(feature = "native")]
     pub fn from_json_ld(json: &serde_json::Value) -> Result<Self> {
         let config = ConnectionConfig::from_json_ld(json)
             .map_err(|e| ApiError::config(format!("Invalid JSON-LD config: {}", e)))?;
 
-        // Extract path and encryption key from storage config
+        // Extract path from storage config (used by typed file builds)
+        #[cfg(feature = "native")]
         let storage_path = config.index_storage.path.as_ref().map(|p| p.to_string());
 
+        // Extract encryption key if configured
         let encryption_key = if let Some(key_str) = &config.index_storage.aes256_key {
             Some(Self::decode_encryption_key(key_str)?)
         } else {
             None
         };
 
+        // Extract indexing config if enabled in JSON-LD defaults
+        let indexing_config = if is_indexing_enabled(&config) {
+            let indexer_config = build_indexer_config(&config);
+            let index_config = derive_index_config(&config);
+            Some(IndexingBuilderConfig {
+                indexer_config,
+                index_config,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
+            #[cfg(feature = "native")]
             storage_path,
             encryption_key,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
-            indexing_config: None,
+            indexing_config,
         })
     }
 
@@ -2226,6 +1981,242 @@ impl FlureeBuilder {
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
+        })
+    }
+
+    /// Build a type-erased `FlureeClient` from the builder configuration.
+    ///
+    /// This is the dynamic counterpart to `build()` / `build_memory()` / `build_s3()`.
+    /// It handles the full configuration surface including:
+    /// - Storage backend selection (memory, file, S3) based on `ConnectionConfig`
+    /// - Encryption (wraps storage if encryption key is configured)
+    /// - Address identifier routing (multi-storage read routing)
+    /// - Tiered commit/index storage (S3: separate buckets for reads vs writes)
+    /// - Nameservice selection based on publisher config
+    /// - Ledger caching (enabled by default)
+    /// - Background indexing (if configured)
+    ///
+    /// Use this when the storage backend is determined at runtime (e.g., from
+    /// JSON-LD config). For compile-time-known backends, prefer the typed build
+    /// methods for better type safety.
+    pub async fn build_client(self) -> Result<FlureeClient> {
+        // --- S3 / AWS path (async-only) ---
+        #[cfg(feature = "aws")]
+        if matches!(self.config.index_storage.storage_type, StorageType::S3(_)) {
+            return self.build_client_s3().await;
+        }
+
+        // --- Local (memory/filesystem) ---
+        match &self.config.index_storage.storage_type {
+            StorageType::Memory => self.build_client_memory(),
+            StorageType::File => self.build_client_file(),
+            StorageType::S3(_) => Err(ApiError::config(
+                "S3 storage requires the 'aws' feature on fluree-db-api",
+            )),
+            StorageType::Unsupported { type_iri, .. } => Err(ApiError::config(format!(
+                "Unsupported storage type: {}",
+                type_iri
+            ))),
+        }
+    }
+
+    /// Build a type-erased memory-backed client.
+    fn build_client_memory(self) -> Result<FlureeClient> {
+        let base_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+
+        // Wrap with address identifier routing if configured
+        let storage = self.wrap_address_identifiers(base_storage)?;
+
+        let connection = Connection::new(self.config, storage);
+        let nameservice_inner = MemoryNameService::new();
+        let nameservice =
+            AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+
+        Self::finalize_client(
+            connection,
+            nameservice,
+            self.indexing_config,
+            self.ledger_cache_config,
+        )
+    }
+
+    /// Build a type-erased file-backed client.
+    fn build_client_file(self) -> Result<FlureeClient> {
+        #[cfg(not(feature = "native"))]
+        {
+            Err(ApiError::config(
+                "Filesystem storage requires the 'native' feature",
+            ))
+        }
+        #[cfg(feature = "native")]
+        {
+            let path = self
+                .config
+                .index_storage
+                .path
+                .as_ref()
+                .ok_or_else(|| ApiError::config("File storage requires filePath"))?
+                .clone();
+
+            let file_storage = FileStorage::new(path.as_ref());
+            let base_storage: Arc<dyn Storage> = if let Some(key) = self.encryption_key {
+                let encryption_key = EncryptionKey::new(key, 0);
+                let key_provider = StaticKeyProvider::new(encryption_key);
+                Arc::new(EncryptedStorage::new(file_storage, key_provider))
+            } else {
+                Arc::new(file_storage)
+            };
+
+            // Wrap with address identifier routing if configured
+            let storage = self.wrap_address_identifiers(base_storage)?;
+
+            let connection = Connection::new(self.config, storage);
+            let nameservice_inner = FileNameService::new(path.as_ref());
+            let nameservice =
+                AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+
+            Self::finalize_client(
+                connection,
+                nameservice,
+                self.indexing_config,
+                self.ledger_cache_config,
+            )
+        }
+    }
+
+    /// Build a type-erased S3-backed client.
+    #[cfg(feature = "aws")]
+    async fn build_client_s3(self) -> Result<FlureeClient> {
+        // Delegate to fluree_db_connection for AWS SDK init,
+        // storage registry sharing, and nameservice creation.
+        let handle = fluree_db_connection::connect_from_config(self.config.clone()).await?;
+        let fluree_db_connection::ConnectionHandle::Aws(aws_handle) = handle else {
+            return Err(ApiError::config(
+                "Expected AWS connection handle for S3 config",
+            ));
+        };
+
+        // Decide whether to use tiered commit/index routing.
+        let index = aws_handle.index_storage().clone();
+        let commit = aws_handle.commit_storage().clone();
+        let base_storage: Arc<dyn Storage> =
+            if index.bucket() != commit.bucket() || index.prefix() != commit.prefix() {
+                Arc::new(TieredStorage::new(commit, index))
+            } else {
+                Arc::new(index)
+            };
+
+        // Wrap with address identifier routing if configured
+        let storage = self
+            .wrap_address_identifiers_aws(base_storage, aws_handle.config())
+            .await?;
+
+        let connection = Connection::new(aws_handle.config().clone(), storage);
+
+        let nameservice_inner = aws_handle.nameservice().clone();
+        let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
+        let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
+
+        Self::finalize_client(
+            connection,
+            nameservice,
+            self.indexing_config,
+            self.ledger_cache_config,
+        )
+    }
+
+    /// Wrap base storage with address identifier routing for local backends.
+    fn wrap_address_identifiers(&self, base_storage: Arc<dyn Storage>) -> Result<AnyStorage> {
+        if let Some(addr_ids) = &self.config.address_identifiers {
+            let mut identifier_map = std::collections::HashMap::new();
+            for (identifier, storage_config) in addr_ids.iter() {
+                let id_storage = build_local_storage_from_config(storage_config)?;
+                identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
+            }
+            Ok(AnyStorage::new(Arc::new(
+                AddressIdentifierResolverStorage::new(
+                    AnyStorage::new(base_storage),
+                    identifier_map,
+                ),
+            )))
+        } else {
+            Ok(AnyStorage::new(base_storage))
+        }
+    }
+
+    /// Wrap base storage with address identifier routing for AWS backends.
+    #[cfg(feature = "aws")]
+    async fn wrap_address_identifiers_aws(
+        &self,
+        base_storage: Arc<dyn Storage>,
+        config: &ConnectionConfig,
+    ) -> Result<AnyStorage> {
+        if let Some(addr_ids) = &config.address_identifiers {
+            let mut identifier_map = std::collections::HashMap::new();
+            for (identifier, storage_config) in addr_ids.iter() {
+                let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
+                    StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
+                    _ => build_local_storage_from_config(storage_config)?,
+                };
+                identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
+            }
+            Ok(AnyStorage::new(Arc::new(
+                AddressIdentifierResolverStorage::new(
+                    AnyStorage::new(base_storage),
+                    identifier_map,
+                ),
+            )))
+        } else {
+            Ok(AnyStorage::new(base_storage))
+        }
+    }
+
+    /// Shared finalization: create leaflet cache, ledger manager, indexing, and
+    /// assemble the `FlureeClient`.
+    fn finalize_client(
+        connection: Connection<AnyStorage>,
+        nameservice: AnyNameService,
+        indexing_config: Option<IndexingBuilderConfig>,
+        ledger_cache_config: Option<LedgerManagerConfig>,
+    ) -> Result<FlureeClient> {
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
+        // Start background indexing if configured
+        let (indexing_mode, index_config) = if let Some(idx_config) = indexing_config {
+            let (worker, handle) = BackgroundIndexerWorker::new(
+                connection.storage().clone(),
+                Arc::new(nameservice.clone()),
+                idx_config.indexer_config,
+            );
+            tokio::spawn(worker.run());
+            (
+                tx::IndexingMode::Background(handle),
+                idx_config.index_config,
+            )
+        } else {
+            (tx::IndexingMode::Disabled, IndexConfig::default())
+        };
+
+        // Create LedgerManager if caching is enabled
+        let ledger_manager = ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
+            Arc::new(LedgerManager::new(
+                connection.storage().clone(),
+                nameservice.clone(),
+                config,
+            ))
+        });
+
+        Ok(Fluree {
+            connection,
+            nameservice,
+            leaflet_cache,
+            indexing_mode,
+            index_config,
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
+            ledger_manager,
         })
     }
 }

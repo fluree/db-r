@@ -33,7 +33,7 @@ fluree-db-api = "0.1"
 Available feature flags:
 
 - `native` (default) - File storage support
-- `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `connect_s3` and `connect_json_ld` configs that use S3.
+- `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()` and S3-based JSON-LD configs.
 - `vector` - Embedded vector similarity search (HNSW indexes via usearch)
 - `credential` - DID/JWS/VerifiableCredential support for signed queries and transactions (pulls in crypto dependencies like `ed25519-dalek`, `bs58`). Off by default to reduce compile times.
 - `iceberg` - Apache Iceberg/R2RML graph source support (pulls in AWS SDK + native deps)
@@ -147,20 +147,19 @@ async fn main() -> Result<()> {
 }
 ```
 
-**S3 Express One Zone note:** for directory buckets (`--x-s3` suffix), prefer using `connect_json_ld`
-and omit `s3Endpoint`. (If you call `connect_s3` with an Express bucket, Rust will omit `s3Endpoint`
-automatically.)
+**S3 Express One Zone note:** for directory buckets (`--x-s3` suffix), omit `s3Endpoint` in JSON-LD config and let the SDK handle it.
 
 ## Connection Configuration (JSON-LD)
 
-All connection features are available through **JSON-LD configuration**. Convenience helpers
-(`connect_memory`, `connect_filesystem`, `connect_s3`) are just thin wrappers that generate JSON-LD
-and call `connect_json_ld`.
+For advanced configuration (tiered storage, address identifier routing, DynamoDB nameservice,
+environment variable indirection), use `FlureeBuilder::from_json_ld()` to parse a JSON-LD config
+and build from it. All convenience helpers (`connect_memory`, `connect_filesystem`, `connect_s3`)
+delegate to `FlureeBuilder` internally.
 
 See also: [JSON-LD connection configuration reference](../reference/connection-config-jsonld.md).
 
 ```rust
-use fluree_db_api::{connect_json_ld, Result};
+use fluree_db_api::{FlureeBuilder, Result};
 use serde_json::json;
 
 #[tokio::main]
@@ -172,7 +171,9 @@ async fn main() -> Result<()> {
             {"@id": "conn", "@type": "Connection", "indexStorage": {"@id": "s3Index"}}
         ]
     });
-    let fluree = connect_json_ld(&cfg).await?;
+    // from_json_ld parses the config into builder settings; build_client() constructs
+    // a type-erased FlureeClient suitable for runtime-determined backends.
+    let fluree = FlureeBuilder::from_json_ld(&cfg)?.build_client().await?;
     Ok(())
 }
 ```
