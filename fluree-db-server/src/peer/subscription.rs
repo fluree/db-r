@@ -382,6 +382,7 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
         default_context: None,
         retracted: record.retracted,
         branch_point: None,
+        branches: 0,
     })
 }
 

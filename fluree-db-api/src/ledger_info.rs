@@ -1366,6 +1366,7 @@ mod tests {
             default_context: None,
             retracted: false,
             branch_point: None,
+            branches: 0,
         };
 
         let json = ns_record_to_jsonld(&record);
@@ -1396,6 +1397,7 @@ mod tests {
             default_context: None,
             retracted: true,
             branch_point: None,
+            branches: 0,
         };
 
         let json = ns_record_to_jsonld(&record);

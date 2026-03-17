@@ -85,6 +85,7 @@ impl NsRecordResponse {
                 .and_then(|s| s.parse::<ContentId>().ok()),
             retracted: self.retracted,
             branch_point: None,
+            branches: 0,
         }
     }
 }

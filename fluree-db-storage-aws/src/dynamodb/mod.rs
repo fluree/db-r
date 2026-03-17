@@ -212,6 +212,12 @@ impl DynamoDbNameService {
                 })
             });
 
+        let branches = meta
+            .get(ATTR_BRANCHES)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         Some(NsRecord {
             ledger_id: pk.to_string(),
             name,
@@ -224,6 +230,7 @@ impl DynamoDbNameService {
             default_context,
             retracted,
             branch_point,
+            branches,
         })
     }
 

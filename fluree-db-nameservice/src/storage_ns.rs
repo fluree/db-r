@@ -127,6 +127,10 @@ struct NsFileV2 {
         default
     )]
     branch_point: Option<BranchPointRef>,
+
+    /// Number of child branches created from this branch
+    #[serde(rename = "f:branches", default, skip_serializing_if = "crate::is_zero")]
+    branches: u32,
 }
 
 /// JSON-LD representation of a branch point in an ns@v2 file.
@@ -271,6 +275,7 @@ impl<S> StorageNameService<S> {
             config_v: Some(0),
             config_meta: None,
             branch_point: None,
+            branches: 0,
         }
     }
 }
@@ -486,6 +491,7 @@ where
                     t: bp.t,
                 })
             }),
+            branches: main.branches,
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -727,6 +733,7 @@ where
             config_v: Some(0),
             config_meta: None,
             branch_point: None,
+            branches: 0,
         };
 
         let bytes = serde_json::to_vec_pretty(&file)?;

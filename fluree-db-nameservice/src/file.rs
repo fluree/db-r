@@ -132,6 +132,10 @@ struct NsFileV2 {
         default
     )]
     branch_point: Option<BranchPointRef>,
+
+    /// Number of child branches created from this branch
+    #[serde(rename = "f:branches", default, skip_serializing_if = "crate::is_zero")]
+    branches: u32,
 }
 
 /// JSON-LD representation of a branch point in an ns@v2 file.
@@ -367,6 +371,7 @@ impl FileNameService {
                     t: bp.t,
                 })
             }),
+            branches: main.branches,
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -632,6 +637,7 @@ impl Publisher for FileNameService {
             config_v: Some(0), // Unborn config
             config_meta: None,
             branch_point: None,
+            branches: 0,
         };
         let bytes = serde_json::to_vec_pretty(&file)?;
 
@@ -699,6 +705,7 @@ impl Publisher for FileNameService {
                             config_v: Some(0),
                             config_meta: None,
                             branch_point: None,
+                            branches: 0,
                         };
                         let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
                         Ok(CasAction::Write(new_bytes))
@@ -1319,6 +1326,7 @@ impl RefPublisher for FileNameService {
                             config_v: Some(0),
                             config_meta: None,
                             branch_point: None,
+                            branches: 0,
                         });
 
                         // CID goes into the commit_cid field.

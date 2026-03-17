@@ -531,6 +531,7 @@ mod tests {
             default_context: None,
             retracted: false,
             branch_point: None,
+            branches: 0,
         };
         let id = ledger_event_id("test:main", &record);
         assert_eq!(id, "ledger:test:main:42:40");

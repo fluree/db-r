@@ -121,6 +121,16 @@ pub struct NsRecord {
     /// [`Publisher::create_branch`]. `None` for the initial branch (typically "main").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_point: Option<BranchPoint>,
+
+    /// Number of child branches that were created from this branch.
+    /// Used for safe deletion: a branch with children cannot be fully purged
+    /// until all children are dropped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub branches: u32,
+}
+
+pub(crate) fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl NsRecord {
@@ -142,6 +152,7 @@ impl NsRecord {
             retracted: false,
             config_id: None,
             branch_point: None,
+            branches: 0,
         }
     }
 

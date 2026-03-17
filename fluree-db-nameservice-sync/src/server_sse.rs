@@ -135,6 +135,7 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
         default_context: None,
         retracted: record.retracted,
         branch_point: None,
+        branches: 0,
     }
 }
 
