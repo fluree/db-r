@@ -778,16 +778,15 @@ where
         match parent_branch_point {
             Some(bp) => {
                 let parent_key = self.ns_key(&ledger_name, &bp.source);
-                let new_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let new_count_clone = new_count.clone();
                 self.cas_update::<NsFileV2, _>(&parent_key, move |existing| {
                     let mut file = existing?;
                     file.branches = file.branches.saturating_sub(1);
-                    new_count_clone.store(file.branches, std::sync::atomic::Ordering::Relaxed);
                     Some(file)
                 })
                 .await?;
-                Ok(Some(new_count.load(std::sync::atomic::Ordering::Relaxed)))
+                // Re-read the parent to get the updated count
+                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                Ok(Some(parent_record.map(|r| r.branches).unwrap_or(0)))
             }
             None => Ok(None),
         }
