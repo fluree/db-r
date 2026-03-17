@@ -562,3 +562,67 @@ mem:fact-01kjte2qeekkgz4dryv84sqq8e a mem:Fact ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:34.446036+00:00"^^xsd:dateTime ;
     mem:factKind "command" .
+
+mem:decision-01kkymgaynzn5mrgy21pw22tf6 a mem:Decision ;
+    mem:content "CLI write command naming taxonomy — \"transact\" vs \"update\" vs \"insert\" vs \"upsert\"\n\n**Terminology:**\n- \"Transact\" = any write operation (the umbrella). The API builder uses `.transact()` to start any write. The HTTP endpoint is `/transact` for all writes.\n- \"Insert\" = append-only data addition (`fluree insert`)\n- \"Upsert\" = replace by subject+predicate (`fluree upsert`)\n- \"Update\" = WHERE/DELETE/INSERT pattern (`fluree update`)\n\n**The CLI command is `update`, NOT `transact`.** This aligns with the API layer where `GraphTransactBuilder` has three distinct methods: `.insert()`, `.upsert()`, `.update()`.\n\n**Code naming convention:**\n- CLI: `Commands::Update`, `commands::update::run()`, `UpdateFormat` enum\n- Remote client: `update_jsonld()`, `update_sparql()` (both route to HTTP `/transact` endpoint)\n- API builder: `.transact().update(&json)` — `.transact()` is the umbrella, `.update()` is the specific operation\n- Internal types like `TransactCore`, `GraphTransactBuilder`, `fluree-db-transact` crate — all correctly use \"transact\" for the generic write concept" ;
+    mem:tag "api-alignment" ;
+    mem:tag "cli" ;
+    mem:tag "insert" ;
+    mem:tag "naming" ;
+    mem:tag "taxonomy" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:tag "upsert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/graph_transact_builder.rs" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:31.413037+00:00"^^xsd:dateTime ;
+    mem:rationale "The original CLI command was named `transact` but this conflicted with the established API naming where \"transact\" means any write operation. Renamed to `update` to match the API layer's `.transact().update()` pattern, where update specifically means WHERE/DELETE/INSERT." ;
+    mem:alternatives "Keep `transact` as CLI command name (rejected: confuses the umbrella concept with a specific operation type); use `where-delete-insert` or `wdi` (rejected: too verbose/obscure)" .
+
+mem:fact-01kkymgssnce3t5w8bmfdx4sbk a mem:Fact ;
+    mem:content "CLI `fluree update` command — WHERE/DELETE/INSERT transactions\n\n**Usage:** `fluree update [LEDGER] [DATA] [OPTIONS]`\n**Flags:** `-e` (inline expr), `-f` (file), `-m` (commit message), `--format` (jsonld|sparql), `--remote` (remote name), `--direct` (bypass server routing)\n\n**Supported formats:**\n- JSON-LD (default): body with `where`, `delete`, and/or `insert` keys\n- SPARQL UPDATE: `INSERT DATA`, `DELETE DATA`, `DELETE/INSERT WHERE` syntax\n\n**Format auto-detection priority:** explicit `--format` flag > file extension (.json/.jsonld → JSON-LD, .rq/.ru/.sparql → SPARQL) > content sniffing (full JSON parse → JSON-LD; starts with INSERT/DELETE/PREFIX/BASE → SPARQL)\n\n**SPARQL UPDATE gating:** SPARQL UPDATE requires the server's parsing pipeline (namespace registry). It works via auto-routing through a running local server or `--remote`. In `--direct` mode, SPARQL UPDATE returns a clear error with actionable guidance to use JSON-LD instead.\n\n**Local JSON-LD path:** `fluree.graph(&alias).transact().update(&json).commit_opts(opts).commit().await`\n**Remote path:** `client.update_jsonld()` or `client.update_sparql()` — both hit `/transact` HTTP endpoint\n\n**Implementation:** `fluree-db-cli/src/commands/update.rs` — reuses `resolve_positional_args` and `print_txn_result` from the `insert` module. `UpdateFormat` enum + `detect_update_format()` + `sniff_update_format()` handle format detection.\n\n**Tests:** 12 integration tests in `fluree-db-cli/tests/integration.rs` (update_where_delete_insert_json_ld, update_delete_only, update_insert_only_via_update, update_with_commit_message, update_from_json_file, update_sparql_update_in_direct_mode_fails, update_without_active_ledger_errors, update_without_init_errors, help_shows_update_command, update_help_shows_description, update_via_stdin) + 11 unit tests for format detection.\n\n**Docs:** `docs/cli/update.md`" ;
+    mem:tag "cli" ;
+    mem:tag "command" ;
+    mem:tag "format-detection" ;
+    mem:tag "json-ld" ;
+    mem:tag "sparql-update" ;
+    mem:tag "update" ;
+    mem:tag "where-delete-insert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/update.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/tests/integration.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:46.613521+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kkymh6g8k90t0c4pa43hfgmf a mem:Fact ;
+    mem:content "CLI write command shared infrastructure (insert, upsert, update)\n\nAll three CLI write commands share the same architecture:\n\n**Input resolution** (`resolve_positional_args` in `commands/insert.rs`, shared by all three):\n- 0 args: active ledger, data via `-e`/`-f`/stdin\n- 1 arg: auto-detected as inline data (JSON/Turtle/SPARQL), file path, or ledger name\n- 2 args: first = ledger, second = inline data\n- Priority: `-e` > positional inline > `-f` > positional file > stdin\n\n**Format detection:**\n- `insert`/`upsert`: use `detect::detect_data_format()` → `DataFormat::Turtle` or `DataFormat::JsonLd`\n- `update`: uses its own `detect_update_format()` → `UpdateFormat::JsonLd` or `UpdateFormat::SparqlUpdate` (no Turtle — use insert/upsert for that)\n- All follow: explicit flag > file extension > content sniffing\n\n**Ledger mode dispatch** (all three commands):\n- `--remote` → `LedgerMode::Tracked` (remote HTTP client)\n- Otherwise → `resolve_ledger_mode()` → `LedgerMode::Local` or auto-route through local server via `try_server_route()`\n- `--direct` flag bypasses auto-routing\n\n**Local execution:** All use `fluree.graph(&alias).transact().<operation>().commit_opts(opts).commit().await`\n- insert: `.insert(&json)` or `.insert_turtle(&content)`\n- upsert: `.upsert(&json)` or `.upsert_turtle(&content)`\n- update: `.update(&json)` (no Turtle variant)\n\n**Remote execution:** Each has dedicated `RemoteLedgerClient` methods:\n- insert: `insert_jsonld()`, `insert_turtle()`\n- upsert: `upsert_jsonld()`, `upsert_turtle()`\n- update: `update_jsonld()`, `update_sparql()`\n\n**Output:** Local prints `Committed t={t}, {n} flakes`. Remote prints full JSON via `print_txn_result()` (shared from insert module)." ;
+    mem:tag "architecture" ;
+    mem:tag "cli" ;
+    mem:tag "format-detection" ;
+    mem:tag "input-resolution" ;
+    mem:tag "insert" ;
+    mem:tag "ledger-mode" ;
+    mem:tag "shared-infrastructure" ;
+    mem:tag "update" ;
+    mem:tag "upsert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-cli/src/commands/insert.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/upsert.rs" ;
+    mem:artifactRef "fluree-db-cli/src/context.rs" ;
+    mem:artifactRef "fluree-db-cli/src/detect.rs" ;
+    mem:artifactRef "fluree-db-cli/src/input.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:59.624804+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
