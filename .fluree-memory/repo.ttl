@@ -67,20 +67,6 @@ mem:constraint-01kjcyjgszs18b9h4jg7h3xpfj a mem:Constraint ;
     mem:sensitivity "public" ;
     mem:createdAt "2026-02-26T12:25:27.104151+00:00"^^xsd:dateTime .
 
-mem:constraint-01kjd0p1bpj6n5nw00ssap82h0 a mem:Constraint ;
-    mem:content "Memory hygiene when recalling: if memory_recall returns multiple overlapping/near-duplicate memories about the same concept, consolidate them into a single canonical memory. Prefer creating the canonical version via memory_update so it supersedes an older entry (superseded entries are filtered from \"current\" results). For any remaining duplicates, either forget them if they add no unique value, or rewrite them into a short pointer that links to the canonical memory ID." ;
-    mem:tag "agent-rules" ;
-    mem:tag "dedup" ;
-    mem:tag "hygiene" ;
-    mem:tag "memory" ;
-    mem:tag "recall" ;
-    mem:tag "supersedes" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:severity "should" ;
-    mem:artifactRef ".cursor/rules/fluree_rules.md" ;
-    mem:createdAt "2026-02-26T13:02:19.510395+00:00"^^xsd:dateTime .
-
 mem:constraint-01kjte29y3cp8mae56xy6yfv2n a mem:Constraint ;
     mem:content "SPARQL↔JSON-LD Parity: Must-Check When Adding SPARQL Features\n\nWhen implementing a new SPARQL feature from W3C compliance work (#55 sub-issues):\n\n1. **Shared IR change?** If adding a new Expression/Pattern/AggregateFn variant or modifying execution operators, it ALREADY affects JSON-LD query — ensure JSON-LD tests still pass.\n\n2. **Expressible in JSON-LD?** If the feature can be expressed in JSON-LD query syntax (new function, filter operator, aggregation mode), add JSON-LD query tests too — don't leave a parity gap.\n\n3. **Execution path missing entirely?** (e.g., VALUES, certain property path modes) — SPARQL lowering adds the IR pattern but JSON-LD lowering (`fluree-db-query/src/parse/lower.rs`) may not produce it yet. Track as a follow-up issue.\n\n4. **Test locations:**\n   - SPARQL integration: `fluree-db-api/tests/it_query_sparql.rs`\n   - JSON-LD integration: `fluree-db-api/tests/it_query.rs`, `it_query_analytical.rs`, `it_query_grouping.rs`\n   - Shared expression/execution unit tests: `fluree-db-query/src/` modules\n\n5. **Validation after shared-code changes:**\n   ```\n   cd testsuite-sparql &amp;&amp; make test-eval-cat CAT=&lt;category&gt;   # SPARQL W3C\n   cd .. &amp;&amp; cargo test -p fluree-db-api --test it_query        # JSON-LD\n   ```\n\nRationale: Both query languages compile to the same IR (fluree-db-query/src/ir.rs) and share the entire execution engine. A change to shared code that fixes SPARQL but breaks JSON-LD query is unacceptable." ;
     mem:tag "compliance" ;
@@ -98,22 +84,6 @@ mem:constraint-01kjte29y3cp8mae56xy6yfv2n a mem:Constraint ;
     mem:artifactRef "fluree-db-query/src/ir.rs" ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:20.611062+00:00"^^xsd:dateTime .
-
-mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
-    mem:content "memory_recall smart score filtering heuristic (MCP tool only):\n\nWhen the LLM calls memory_recall with NO explicit limit or offset, apply score-based trimming before returning results:\n- Fetch limit+1 candidates (the extra is a peek-ahead for reporting next score)\n- Threshold: top_score * 0.5 — drop any result below 50% of the top score\n- Always return at least 1 result (even if everything is below threshold)\n- Report the score of the first non-returned result in the <pagination> element so the LLM can decide whether to fetch more\n- Pagination hint: \"Results 1–N, next score: X.X. Use offset=N to retrieve more.\"\n\nWhen explicit limit or offset IS provided, bypass all smart filtering — honor the request exactly.\n\nKey files: fluree-db-memory/src/mcp.rs (use_smart_filter logic), fluree-db-memory/src/format.rs (next_score: Option<f64> param added to format_context_paged)" ;
-    mem:tag "bm25" ;
-    mem:tag "heuristic" ;
-    mem:tag "mcp" ;
-    mem:tag "memory" ;
-    mem:tag "recall" ;
-    mem:tag "scoring" ;
-    mem:tag "ux" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:branch "feature/memory" ;
-    mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
-    mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
-    mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .
 
 mem:decision-01kje2pt9maxrxjw49ydgejmpe a mem:Decision ;
     mem:content "f:enforceUnique uses storage-layer value identity, NOT RDF strict equality. The uniqueness key is (graph, predicate, FlakeValue) — it ignores the RDF datatype IRI (flake.dt) and language tag (FlakeMeta.lang). This matches \"how humans think of the value\": if the bytes are the same, it's a duplicate regardless of what datatype or language annotation is attached. Callers cannot subvert uniqueness by asserting the same string with a different datatype IRI or lang tag. Different FlakeValue variants (e.g., FlakeValue::String(\"42\") vs FlakeValue::Long(42)) are naturally distinct at the storage layer and do NOT conflict. The RangeMatch query uses predicate_object(p, o) without .with_datatype(), which matches all datatypes for that (p, o) pair in the POST index." ;
@@ -592,67 +562,3 @@ mem:fact-01kjte2qeekkgz4dryv84sqq8e a mem:Fact ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:34.446036+00:00"^^xsd:dateTime ;
     mem:factKind "command" .
-
-mem:fact-01kk1sq2xwmxsqe828pgk28svw a mem:Fact ;
-    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06 on fix/sparql-xsd-casts)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 225/327 (68.8%) — up from 214/327 (65.4%) after #46 fix\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%) — ✅ #54 closed\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%) — ✅ #48 closed (PR #75)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- cast: 6/6 (100%) — ✅ #46 (fix/sparql-xsd-casts branch)\n- construct: 0/7 (0%) — #53\n\nClosed since last update: #46 (PR pending)\nAlso closed: #48 (PR #75), #54 (PR #74)\n\nOpen: #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
-    mem:tag "compliance" ;
-    mem:tag "issue-55" ;
-    mem:tag "sparql" ;
-    mem:tag "status" ;
-    mem:tag "test-counts" ;
-    mem:tag "tracking" ;
-    mem:tag "w3c" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
-    mem:branch "main" ;
-    mem:supersedes mem:fact-01kk1qbna7qqqk6hck165kcjcy ;
-    mem:createdAt "2026-03-06T14:44:36.924914+00:00"^^xsd:dateTime ;
-    mem:factKind "api" .
-
-mem:fact-01kk20kbgep6w9wdw6tvs8tgsn a mem:Fact ;
-    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-06)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 225/327 (68.8%)\n\nSPARQL 1.1 per-category:\n- negation: 12/12 (100%)\n- cast: 6/6 (100%) — PR #83\n- syntax-query: 80/94 (85%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- aggregates: 22/46 (48%) — #61, #62\n- bindings: 3/11 (27%) — #51\n- bind: 2/10 (20%) — #51\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #51 (BIND/VALUES), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
-    mem:tag "compliance" ;
-    mem:tag "issue-55" ;
-    mem:tag "sparql" ;
-    mem:tag "status" ;
-    mem:tag "w3c" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
-    mem:branch "main" ;
-    mem:supersedes mem:fact-01kk1sq2xwmxsqe828pgk28svw ;
-    mem:createdAt "2026-03-06T16:44:54.670405+00:00"^^xsd:dateTime ;
-    mem:factKind "api" .
-
-mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
-    mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-09)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 241/327 (73.7%)\n\nSPARQL 1.1 per-category:\n- bind: 10/10 (100%) — FIXED in #51\n- cast: 6/6 (100%) — PR #83\n- negation: 12/12 (100%)\n- bindings: 10/11 (91%) — FIXED in #51 (remaining: graph test needs named graph support)\n- syntax-query: 81/94 (86%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- aggregates: 27/46 (59%)\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
-    mem:tag "compliance" ;
-    mem:tag "issue-55" ;
-    mem:tag "sparql" ;
-    mem:tag "status" ;
-    mem:tag "w3c" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "testsuite-sparql/tests/w3c_sparql.rs" ;
-    mem:branch "main" ;
-    mem:supersedes mem:fact-01kk20kbgep6w9wdw6tvs8tgsn ;
-    mem:createdAt "2026-03-09T14:42:16.841273+00:00"^^xsd:dateTime ;
-    mem:factKind "api" .
-    
-mem:fact-01kkczgb2b53zdb14517garj10 a mem:Fact ;
-    mem:content "CLI `fluree transact` command added (feature/cli-transact-command branch).\n\nSupports full WHERE/DELETE/INSERT transaction semantics — the missing piece alongside `insert` and `upsert`.\n\n**Formats:**\n- JSON-LD: full support in local + remote modes (where/delete/insert keys)\n- SPARQL UPDATE: supported via remote mode and auto-routing through running server; NOT supported in `--direct` local mode (requires server's namespace registry pipeline)\n\n**Key files:**\n- `fluree-db-cli/src/commands/transact.rs` — command implementation + format detection + unit tests (10)\n- `fluree-db-cli/src/cli.rs` — `Commands::Transact` variant (between Insert and Upsert)\n- `fluree-db-cli/tests/integration.rs` — 10 integration tests\n- `docs/cli/transact.md` — full documentation\n\n**Architecture:**\n- Reuses `resolve_positional_args` and `print_txn_result` from insert module\n- Local mode: `fluree.graph(&alias).transact().update(&json).commit_opts(...).commit().await`\n- Remote mode: `client.transact_jsonld()` / `client.transact_sparql()` (already existed)\n- Format detection: explicit flag > file extension > content sniffing" ;
-    mem:tag "cli" ;
-    mem:tag "command" ;
-    mem:tag "transact" ;
-    mem:tag "update" ;
-    mem:tag "where-delete-insert" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:artifactRef "docs/cli/transact.md" ;
-    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
-    mem:artifactRef "fluree-db-cli/src/commands/transact.rs" ;
-    mem:artifactRef "fluree-db-cli/src/lib.rs" ;
-    mem:branch "feature/cli-transact-command" ;
-    mem:createdAt "2026-03-10T22:57:26.091366+00:00"^^xsd:dateTime ;
-    mem:factKind "architecture" .
