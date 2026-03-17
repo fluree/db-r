@@ -1,7 +1,6 @@
-//! VALUES query integration tests (Clojure parity)
+//! VALUES query integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/values_test.clj` using JSON inputs only,
-//! with explicit `@context` on every insert/query.
+//! Uses explicit `@context` on every insert/query.
 //!
 //! Notes:
 //! - Federated query behavior (`query-connection` + `:from`) is covered.
@@ -132,7 +131,7 @@ async fn values_top_level_iri_values_constrain_where() {
 
 #[tokio::test]
 async fn values_equivalent_iri_forms_var_in_id_map() {
-    // Mirrors the three "equivalent syntactic forms" checks in Clojure.
+    // Mirrors the three "equivalent syntactic forms" checks.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_values_dataset(&fluree, "values-test:main").await;
 
@@ -281,7 +280,7 @@ async fn values_nested_under_optional_clause() {
 
 #[tokio::test]
 async fn values_match_meta_language_tag() {
-    // Clojure: match meta (language tag) => ["ex:nikola"]
+    // Scenario: match meta (language tag) => ["ex:nikola"]
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_values_dataset(&fluree, "values-test:main").await;
 
@@ -309,7 +308,7 @@ async fn values_match_meta_language_tag() {
 
 #[tokio::test]
 async fn values_with_empty_solution_seed() {
-    // Clojure: VALUES first, then match by name.
+    // Scenario: VALUES first, then match by name.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_values_dataset(&fluree, "values-test:main").await;
 
@@ -340,7 +339,7 @@ async fn values_with_empty_solution_seed() {
 
 #[tokio::test]
 async fn values_federated_query_connection_from_two_ledgers() {
-    // Clojure: federated VALUES across two ledgers via query_connection.
+    // Scenario: federated VALUES across two ledgers via query_connection.
     let fluree = FlureeBuilder::memory().build_memory();
     let _ = seed_values_dataset(&fluree, "values-test:main").await;
 

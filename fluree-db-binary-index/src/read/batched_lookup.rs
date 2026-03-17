@@ -6,13 +6,16 @@
 //! subject-ID ranges in bulk, filtering to the requested subject set
 //! in-memory.
 //!
-//! Mirrors Clojure's `batched-get-subject-classes` strategy.
+//! Mirrors the legacy `batched-get-subject-classes` strategy.
 
-use super::binary_cursor::{BinaryCursor, BinaryFilter};
+use super::binary_cursor::BinaryCursor;
 use super::binary_index_store::BinaryIndexStore;
-use crate::format::run_record::{RunRecord, RunSortOrder};
+use super::column_types::{BinaryFilter, ColumnProjection, ColumnSet};
+use crate::format::column_block::ColumnId;
+use crate::format::run_record::RunSortOrder;
+use crate::format::run_record_v2::RunRecordV2;
+use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::GraphId;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -24,7 +27,7 @@ use std::sync::Arc;
 /// from the persisted index at `to_t`. No overlay/novelty merge -- caller
 /// applies novelty deltas separately.
 ///
-/// Mirrors Clojure's `batched-get-subject-classes` strategy: one streaming
+/// Mirrors the legacy `batched-get-subject-classes` strategy: one streaming
 /// pass over PSOT bounded by the subject range, filtering to the requested
 /// subject set in-memory.
 ///
@@ -47,77 +50,81 @@ pub fn batched_lookup_predicate_refs(
     let s_id_set: HashSet<u64> = sorted_subjects.iter().copied().collect();
     let mut out: HashMap<u64, Vec<u64>> = HashMap::new();
 
-    // Chunk by subject-ID span to avoid scanning huge gaps.
-    // If subjects are dense (within MAX_SPAN), process as one chunk.
-    // Otherwise, break into sub-ranges.
-    const MAX_SPAN: u64 = 100_000; // Subject IDs within 100K -> one cursor pass
-    const MAX_CHUNK: usize = 1000; // At most 1000 subjects per chunk
+    let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
+        return Ok(out);
+    };
+    let branch = Arc::new(branch.clone());
 
+    let iri_ref = OType::IRI_REF.as_u16();
+
+    const MAX_SPAN: u64 = 100_000;
+    const MAX_CHUNK: usize = 1000;
     let chunks = chunk_subjects(&sorted_subjects, MAX_SPAN, MAX_CHUNK);
 
-    let ref_kind = ObjKind::REF_ID.as_u8();
+    // Only need s_id, o_type, o_key columns for class lookup.
+    let mut needed = ColumnSet::EMPTY;
+    needed.insert(ColumnId::SId);
+    needed.insert(ColumnId::OType);
+    needed.insert(ColumnId::OKey);
+    let projection = ColumnProjection {
+        output: needed,
+        internal: ColumnSet::EMPTY,
+    };
 
     for chunk in &chunks {
         let min_s = chunk[0];
         let max_s = *chunk.last().unwrap();
 
-        let min_key = RunRecord {
-            g_id,
+        let min_key = RunRecordV2 {
             s_id: SubjectId::from_u64(min_s),
-            p_id,
-            dt: 0,
-            o_kind: 0,
-            op: 0,
             o_key: 0,
-            t: 0,
-            lang_id: 0,
-            i: 0,
-        };
-        let max_key = RunRecord {
-            g_id,
-            s_id: SubjectId::from_u64(max_s),
             p_id,
-            dt: u16::MAX,
-            o_kind: u8::MAX,
-            op: u8::MAX,
+            t: 0,
+            o_i: 0,
+            o_type: 0,
+            g_id,
+        };
+        let max_key = RunRecordV2 {
+            s_id: SubjectId::from_u64(max_s),
             o_key: u64::MAX,
-            t: u32::MAX,
-            lang_id: u16::MAX,
-            i: u32::MAX,
+            p_id,
+            t: 0,
+            o_i: u32::MAX,
+            o_type: u16::MAX,
+            g_id,
         };
 
-        let mut filter = BinaryFilter::new();
-        filter.p_id = Some(p_id);
+        let filter = BinaryFilter {
+            p_id: Some(p_id),
+            ..Default::default()
+        };
 
         let mut cursor = BinaryCursor::new(
-            store.clone(),
+            Arc::clone(store),
             RunSortOrder::Psot,
-            g_id,
+            Arc::clone(&branch),
             &min_key,
             &max_key,
             filter,
-            true, // need_region2 for time filtering
+            projection,
         );
         cursor.set_to_t(to_t);
 
-        while let Some(batch) = cursor.next_leaf()? {
+        while let Some(batch) = cursor.next_batch()? {
             for i in 0..batch.row_count {
-                let s_id = batch.s_ids[i];
+                let s_id = batch.s_id.get(i);
                 if !s_id_set.contains(&s_id) {
                     continue;
                 }
-                if batch.p_ids[i] != p_id {
+                let ot = batch.o_type.get_or(i, 0);
+                if ot != iri_ref {
                     continue;
                 }
-                if batch.o_kinds[i] != ref_kind {
-                    continue;
-                }
-                out.entry(s_id).or_default().push(batch.o_keys[i]);
+                out.entry(s_id).or_default().push(batch.o_key.get(i));
             }
         }
     }
 
-    // Dedup class vectors.
     for classes in out.values_mut() {
         classes.sort_unstable();
         classes.dedup();

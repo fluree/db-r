@@ -130,7 +130,7 @@ impl GraphRegistry {
     /// Accepts the raw root format: a list of IRIs where **index 0 = g_id 1**
     /// (txn-meta), **index 1 = g_id 2** (config), **index 2 = g_id 3**
     /// (first user graph), etc. This matches the encoding in
-    /// `IndexRootV5.graph_iris` and the IRB1 binary root.
+    /// `IndexRoot.graph_iris` and the FIR6 binary root.
     ///
     /// The method builds the internal padded representation:
     /// `[None, Some(iris[0]), Some(iris[1]), ...]`

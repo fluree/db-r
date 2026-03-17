@@ -1,7 +1,4 @@
-//! Transact update integration tests (Clojure parity)
-//!
-//! Ports the `deleting-data` section from:
-//! `db-clojure/test/fluree/db/transact/update_test.clj`
+//! Transact update integration tests
 //!
 //! Note: The `transaction-functions` section (hash/datetime) is covered with bind support.
 

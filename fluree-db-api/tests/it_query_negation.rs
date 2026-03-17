@@ -1,6 +1,5 @@
-//! Negation query integration tests (Clojure parity)
+//! Negation query integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/negation_test.clj` using JSON inputs only.
 //! All inserts and queries are explicit with `@context`.
 
 mod support;
@@ -10,7 +9,7 @@ use serde_json::json;
 use support::{genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 
 fn ctx_ex() -> serde_json::Value {
-    // Match Clojure test's {"ex" "http://example.com/"} and include xsd/schema for safety.
+    // Match the minimal {"ex" "http://example.com/"} context and include xsd/schema for safety.
     json!({
         "ex": "http://example.com/",
         "schema": "http://schema.org/",
@@ -211,7 +210,7 @@ async fn not_exists_all_literals_filters_everything_when_match_exists() {
         "select": ["?s","?p","?o"],
         "where": [
             {"@id":"?s","?p":"?o"},
-            // NOTE: Clojure uses {"@id":"ex:alice","type","ex:Person"} but in JSON-LD WHERE
+            // NOTE: Some clients use {"@id":"ex:alice","type","ex:Person"} but in JSON-LD WHERE
             // our parser expects @type for rdf:type matching.
             ["not-exists", {"@id":"ex:alice","@type":"ex:Person"}]
         ]
@@ -335,7 +334,7 @@ async fn minus_all_literals_no_common_bindings_removes_nothing() {
 
 #[tokio::test]
 async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
-    // Clojure: demonstrates that NOT-EXISTS sees existing bindings for filter,
+    // Scenario: demonstrates that NOT-EXISTS sees existing bindings for filter,
     // while MINUS does not (i.e. filter inside MINUS can't reference outer vars).
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "negation:inner-filters");

@@ -6,4 +6,4 @@
 //!
 //! This module is kept for API stability / convenience.
 
-pub use fluree_db_novelty::generate_commit_flakes;
+pub use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};

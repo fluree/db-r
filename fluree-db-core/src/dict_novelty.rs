@@ -26,6 +26,7 @@
 
 use crate::ns_vec_bi_dict::NsVecBiDict;
 use crate::vec_bi_dict::VecBiDict;
+use crate::{Flake, FlakeValue};
 
 /// Namespace code reserved for overflow subjects (full IRI as suffix).
 /// Never stored in watermark vectors; always treated as novel.
@@ -137,6 +138,46 @@ impl DictNovelty {
             self.initialized,
             "DictNovelty: watermarks not initialized — set from index root before committing"
         );
+    }
+
+    /// Populate the novelty dictionaries from an iterator of flakes.
+    ///
+    /// Registers:
+    /// - subjects (`flake.s`)
+    /// - object refs (`FlakeValue::Ref`)
+    /// - string-ish literals (`FlakeValue::String`, `FlakeValue::Json`)
+    ///
+    /// Panics if the dict is uninitialized (same as `ensure_initialized()`).
+    pub fn populate_from_flakes_iter<'a, I>(&mut self, flakes: I)
+    where
+        I: IntoIterator<Item = &'a Flake>,
+    {
+        self.ensure_initialized();
+
+        for flake in flakes {
+            // Subject
+            self.subjects
+                .assign_or_lookup(flake.s.namespace_code, &flake.s.name);
+
+            // Object references
+            if let FlakeValue::Ref(ref sid) = flake.o {
+                self.subjects
+                    .assign_or_lookup(sid.namespace_code, &sid.name);
+            }
+
+            // String values
+            match &flake.o {
+                FlakeValue::String(s) | FlakeValue::Json(s) => {
+                    self.strings.assign_or_lookup(s);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Populate the novelty dictionaries from a slice of flakes.
+    pub fn populate_from_flakes(&mut self, flakes: &[Flake]) {
+        self.populate_from_flakes_iter(flakes);
     }
 }
 

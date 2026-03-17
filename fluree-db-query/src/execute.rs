@@ -31,7 +31,7 @@
 //! Use `execute_query` for simple execution or build an `ExecutableQuery` with custom `QueryOptions` for full control.
 
 mod dependency;
-mod operator_tree;
+pub(crate) mod operator_tree;
 mod pushdown;
 mod reasoning_prep;
 mod rewrite_glue;

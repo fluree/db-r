@@ -1,6 +1,6 @@
-//! Datatype coercion tests (Clojure parity)
+//! Datatype coercion tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/datatype_test.cljc`.
+//! Coverage for numeric/type coercion behavior.
 //! Tests the `coerce_value_by_datatype` function that converts values to specific XSD datatypes.
 //!
 //! Note: This tests low-level datatype coercion functionality.

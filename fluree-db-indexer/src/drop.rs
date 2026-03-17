@@ -11,8 +11,8 @@
 
 use std::collections::HashSet;
 
-use fluree_db_binary_index::format::branch::read_branch_v2_from_bytes;
-use fluree_db_binary_index::IndexRootV5;
+use fluree_db_binary_index::format::branch::read_branch_from_bytes;
+use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::Storage;
@@ -124,7 +124,7 @@ async fn collect_index_chain_cids<S: Storage>(
         // Add the root CID itself
         cids.insert(entry.root_id.clone());
 
-        // Load the full IndexRootV5 to get all CAS artifacts
+        // Load the full IndexRoot to get all CAS artifacts
         let root_addr = derive_address(
             &entry.root_id,
             ContentKind::IndexRoot,
@@ -143,7 +143,7 @@ async fn collect_index_chain_cids<S: Storage>(
             }
         };
 
-        let root = match IndexRootV5::decode(&root_bytes) {
+        let root = match IndexRoot::decode(&root_bytes) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
@@ -171,7 +171,7 @@ async fn collect_index_chain_cids<S: Storage>(
                     ledger_id,
                 );
                 match storage.read_bytes(&branch_addr).await {
-                    Ok(branch_bytes) => match read_branch_v2_from_bytes(&branch_bytes) {
+                    Ok(branch_bytes) => match read_branch_from_bytes(&branch_bytes) {
                         Ok(manifest) => {
                             for leaf in &manifest.leaves {
                                 cids.insert(leaf.leaf_cid.clone());
@@ -232,7 +232,7 @@ async fn collect_index_chain_cids<S: Storage>(
 mod tests {
     use super::*;
     use fluree_db_binary_index::{
-        BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefsV5, DictTreeRefs, IndexRootV5,
+        BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
     use fluree_db_core::content_kind::CODEC_FLUREE_COMMIT;
     use fluree_db_core::prelude::*;
@@ -249,8 +249,8 @@ mod tests {
         (cid, addr)
     }
 
-    /// Build a minimal IRB1 root.
-    fn minimal_irb1(
+    /// Build a minimal FIR6 root.
+    fn minimal_fir6(
         t: i64,
         prev_index: Option<BinaryPrevIndexRef>,
         garbage: Option<BinaryGarbageRef>,
@@ -260,7 +260,7 @@ mod tests {
             branch: dummy_cid.clone(),
             leaves: Vec::new(),
         };
-        let root = IndexRootV5 {
+        let root = IndexRoot {
             ledger_id: LEDGER.to_string(),
             index_t: t,
             base_t: 0,
@@ -270,7 +270,7 @@ mod tests {
             graph_iris: Vec::new(),
             datatype_iris: Vec::new(),
             language_tags: Vec::new(),
-            dict_refs: DictRefsV5 {
+            dict_refs: DictRefs {
                 forward_packs: DictPackRefs {
                     string_fwd_packs: Vec::new(),
                     subject_fwd_ns_packs: Vec::new(),
@@ -280,6 +280,7 @@ mod tests {
             },
             subject_watermarks: Vec::new(),
             string_watermark: 0,
+            lex_sorted_string_ids: false,
             total_commit_size: 0,
             total_asserts: 0,
             total_retracts: 0,
@@ -291,6 +292,7 @@ mod tests {
             prev_index,
             garbage,
             sketch_ref: None,
+            o_type_table: IndexRoot::build_o_type_table(&[], &[]),
         };
         root.encode()
     }
@@ -373,8 +375,8 @@ mod tests {
         let (root1_cid, root1_addr) = cid_and_addr(ContentKind::IndexRoot, b"root1");
         let (root2_cid, root2_addr) = cid_and_addr(ContentKind::IndexRoot, b"root2");
 
-        let root1_bytes = minimal_irb1(1, None, None);
-        let root2_bytes = minimal_irb1(
+        let root1_bytes = minimal_fir6(1, None, None);
+        let root2_bytes = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,
@@ -396,7 +398,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Should contain both root CIDs + the dummy dict tree CIDs from minimal_irb1
+        // Should contain both root CIDs + the dummy dict tree CIDs from minimal_fir6
         assert!(cids.contains(&root1_cid), "should contain root1");
         assert!(cids.contains(&root2_cid), "should contain root2");
         // The dummy tree branch CID appears in both roots
@@ -422,7 +424,7 @@ mod tests {
             .await
             .unwrap();
 
-        let root_bytes = minimal_irb1(
+        let root_bytes = minimal_fir6(
             1,
             None,
             Some(BinaryGarbageRef {
@@ -476,8 +478,8 @@ mod tests {
         let (root1_cid, root1_addr) = cid_and_addr(ContentKind::IndexRoot, b"root_a");
         let (root2_cid, root2_addr) = cid_and_addr(ContentKind::IndexRoot, b"root_b");
 
-        let root1_bytes = minimal_irb1(1, None, None);
-        let root2_bytes = minimal_irb1(
+        let root1_bytes = minimal_fir6(1, None, None);
+        let root2_bytes = minimal_fir6(
             2,
             Some(BinaryPrevIndexRef {
                 t: 1,

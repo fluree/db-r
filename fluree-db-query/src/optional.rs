@@ -37,7 +37,9 @@ use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::StatsView;
+use lru::LruCache;
 use std::collections::{HashSet, VecDeque};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// Builder for correlated optional operators
@@ -73,7 +75,27 @@ pub trait OptionalBuilder: Send + Sync {
     /// - `Ok(None)` - The required row has bindings that make the optional impossible
     ///   (e.g., Poisoned vars in correlation positions)
     /// - `Err(e)` - A planning/building error that should be propagated
-    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator>>;
+    fn build(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<BoxedOperator>>;
+
+    /// Optional cache key for correlated OPTIONAL evaluation.
+    ///
+    /// If this returns `Some(key)`, the OptionalOperator may memoize the optional-side
+    /// results across required rows that share the same correlation bindings.
+    ///
+    /// Default: no caching.
+    fn cache_key(
+        &self,
+        _required_batch: &Batch,
+        _row: usize,
+        _ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Box<[u8]>>> {
+        Ok(None)
+    }
 
     /// Get the output schema of the optional operator
     ///
@@ -209,7 +231,12 @@ impl PatternOptionalBuilder {
     /// the canonical IRI. For IriMatch bindings in object position, uses `Term::Iri`.
     /// The scan operator will encode this IRI for each target ledger's namespace
     /// table, enabling correct cross-ledger OPTIONAL matching.
-    fn substitute_pattern(&self, required_batch: &Batch, row: usize) -> TriplePattern {
+    fn substitute_pattern(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<TriplePattern> {
         let mut pattern = self.pattern.clone();
 
         for instr in &self.bind_instructions {
@@ -224,6 +251,19 @@ impl PatternOptionalBuilder {
                         Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
                             // Use Ref::Iri so scan can encode for each target ledger
                             pattern.s = Ref::Iri(iri.clone());
+                        }
+                        Binding::EncodedSid { s_id } => {
+                            // Late materialized subject ID: resolve to IRI for correlation.
+                            let store = ctx.binary_store.as_ref().ok_or_else(|| {
+                                QueryError::Internal(
+                                    "OPTIONAL correlation requires binary store for EncodedSid"
+                                        .into(),
+                                )
+                            })?;
+                            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                                QueryError::Internal(format!("resolve subject iri: {e}"))
+                            })?;
+                            pattern.s = Ref::Iri(Arc::<str>::from(iri));
                         }
                         _ => {
                             // Leave as variable
@@ -277,12 +317,17 @@ impl PatternOptionalBuilder {
             }
         }
 
-        pattern
+        Ok(pattern)
     }
 }
 
 impl OptionalBuilder for PatternOptionalBuilder {
-    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator>> {
+    fn build(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<BoxedOperator>> {
         // Check for poisoned bindings - if any correlation var is poisoned,
         // the optional cannot match
         if self.has_poisoned_binding(required_batch, row) {
@@ -290,12 +335,67 @@ impl OptionalBuilder for PatternOptionalBuilder {
         }
 
         // Substitute bindings into pattern and create scan operator
-        let bound_pattern = self.substitute_pattern(required_batch, row);
+        let bound_pattern = self.substitute_pattern(required_batch, row, ctx)?;
         Ok(Some(Box::new(ScanOperator::new(
             bound_pattern,
             None,
             Vec::new(),
         ))))
+    }
+
+    fn cache_key(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Box<[u8]>>> {
+        // Key on the substituted correlation bindings only.
+        // For the common case `OPTIONAL { ?s <p> ?o }` with `?s` coming from the left,
+        // this makes repeated `?s` values (fan-out on the left) reuse right-side results.
+        if self.has_poisoned_binding(required_batch, row) {
+            return Ok(None);
+        }
+
+        // Today we support cache keys for subjects that are either already encoded
+        // or can be resolved to an IRI string without ambiguity.
+        // (Multi-ledger mode can still work without caching.)
+        for instr in &self.bind_instructions {
+            if instr.position != PatternPosition::Subject {
+                continue;
+            }
+            let binding = required_batch.get_by_col(row, instr.left_col);
+            return match binding {
+                Binding::EncodedSid { s_id } => {
+                    let mut v = Vec::with_capacity(1 + 8);
+                    v.push(b'S');
+                    v.extend_from_slice(&s_id.to_le_bytes());
+                    Ok(Some(v.into_boxed_slice()))
+                }
+                Binding::Sid(sid) => {
+                    // Fallback stable key: namespace code + suffix bytes.
+                    let mut v = Vec::with_capacity(1 + 2 + sid.name_str().len());
+                    v.push(b's');
+                    v.extend_from_slice(&sid.namespace_code.to_le_bytes());
+                    v.extend_from_slice(sid.name_str().as_bytes());
+                    Ok(Some(v.into_boxed_slice()))
+                }
+                Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
+                    let mut v = Vec::with_capacity(1 + iri.len());
+                    v.push(b'i');
+                    v.extend_from_slice(iri.as_bytes());
+                    Ok(Some(v.into_boxed_slice()))
+                }
+                Binding::Unbound | Binding::Poisoned => Ok(None),
+                Binding::EncodedPid { .. } | Binding::EncodedLit { .. } | Binding::Lit { .. } => {
+                    Ok(None)
+                }
+                Binding::Grouped(_) => Ok(None),
+            };
+        }
+
+        // No subject correlation => don't cache.
+        let _ = ctx;
+        Ok(None)
     }
 
     fn schema(&self) -> &[VarId] {
@@ -426,7 +526,12 @@ impl PlanTreeOptionalBuilder {
 }
 
 impl OptionalBuilder for PlanTreeOptionalBuilder {
-    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator>> {
+    fn build(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        _ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<BoxedOperator>> {
         // Check for poisoned bindings - if any shared var is poisoned,
         // the optional cannot match
         if self.has_poisoned_shared_var(required_batch, row) {
@@ -501,6 +606,11 @@ pub struct OptionalOperator {
     pending_output: VecDeque<PendingOptionalMatch>,
     /// Variables required by downstream operators; if set, output is trimmed.
     out_schema: Option<Arc<[VarId]>>,
+    /// Memoized optional-side results keyed by correlation bindings.
+    ///
+    /// This prevents repeated OPTIONAL evaluation when the left side has fan-out
+    /// on the correlation key (common for `?s <p1> ?o1 OPTIONAL { ?s <p2> ?o2 }`).
+    result_cache: LruCache<Box<[u8]>, Arc<Vec<Batch>>>,
 }
 
 /// Tracks a required row's optional matches with progress cursor
@@ -546,6 +656,7 @@ impl OptionalOperator {
             current_required_row: 0,
             pending_output: VecDeque::new(),
             out_schema: None,
+            result_cache: LruCache::new(NonZeroUsize::new(8192).expect("8192 is non-zero")),
         }
     }
 
@@ -841,7 +952,27 @@ impl Operator for OptionalOperator {
                 self.current_required_row += 1;
 
                 // Build optional operator for this row (propagate errors)
-                match self.optional_builder.build(required_batch, required_row)? {
+                let cache_key =
+                    self.optional_builder
+                        .cache_key(required_batch, required_row, ctx)?;
+
+                if let Some(key) = cache_key.as_ref() {
+                    if let Some(cached) = self.result_cache.get(key) {
+                        self.pending_output.push_back(PendingOptionalMatch {
+                            required_row,
+                            optional_batches: (**cached).clone(),
+                            batch_idx: 0,
+                            row_idx: 0,
+                            matched: false,
+                        });
+                        continue;
+                    }
+                }
+
+                match self
+                    .optional_builder
+                    .build(required_batch, required_row, ctx)?
+                {
                     None => {
                         // Builder returned None (e.g., poisoned correlation var)
                         // Emit with Poisoned for optional-only vars
@@ -866,6 +997,11 @@ impl Operator for OptionalOperator {
                         }
 
                         optional_op.close();
+
+                        if let Some(key) = cache_key {
+                            self.result_cache
+                                .put(key, Arc::new(optional_batches.clone()));
+                        }
 
                         // Add to pending output with progress cursor at start
                         self.pending_output.push_back(PendingOptionalMatch {
@@ -972,7 +1108,14 @@ mod tests {
 
     #[test]
     fn test_pattern_optional_builder_with_poisoned() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
         use fluree_db_core::FlakeValue;
+        use fluree_db_core::LedgerSnapshot;
+
+        let snapshot = LedgerSnapshot::genesis("test/main");
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
@@ -990,7 +1133,7 @@ mod tests {
         let batch_poisoned = Batch::new(required_schema.clone(), columns_poisoned).unwrap();
 
         // Builder should return Ok(None) for poisoned correlation var
-        assert!(builder.build(&batch_poisoned, 0).unwrap().is_none());
+        assert!(builder.build(&batch_poisoned, 0, &ctx).unwrap().is_none());
 
         // Create a batch with normal bindings
         let columns_normal = vec![
@@ -1003,7 +1146,7 @@ mod tests {
         let batch_normal = Batch::new(required_schema, columns_normal).unwrap();
 
         // Builder should return Ok(Some(...)) for normal bindings
-        assert!(builder.build(&batch_normal, 0).unwrap().is_some());
+        assert!(builder.build(&batch_normal, 0, &ctx).unwrap().is_some());
     }
 
     #[test]

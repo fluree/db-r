@@ -47,8 +47,11 @@ mod graph_crawl;
 pub mod iri;
 mod jsonld;
 mod materialize;
+mod rdf_xml;
 mod sparql;
+mod sparql_xml;
 mod typed;
+mod xml_escape;
 
 pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use iri::IriCompactor;
@@ -104,7 +107,10 @@ pub fn format_results(
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
     // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
-    if matches!(config.format, OutputFormat::Tsv | OutputFormat::Csv) {
+    if matches!(
+        config.format,
+        OutputFormat::Tsv | OutputFormat::Csv | OutputFormat::SparqlXml | OutputFormat::RdfXml
+    ) {
         return Err(FormatError::InvalidBinding(format!(
             "{:?} format produces bytes/String, not JsonValue. \
              Use format_results_string() or QueryResult::to_tsv()/to_csv() instead.",
@@ -144,6 +150,14 @@ pub fn format_results(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::SparqlXml => Err(FormatError::InvalidBinding(
+            "SPARQL XML produces String, not JsonValue. Use format_results_string() instead."
+                .to_string(),
+        )),
+        OutputFormat::RdfXml => Err(FormatError::InvalidBinding(
+            "RDF/XML produces String, not JsonValue. Use format_results_string() instead."
+                .to_string(),
+        )),
         OutputFormat::Tsv | OutputFormat::Csv => {
             unreachable!("Delimited formats rejected before dispatch")
         }
@@ -166,6 +180,14 @@ pub fn format_results_string(
     match config.format {
         OutputFormat::Tsv => return delimited::format_tsv(result, snapshot),
         OutputFormat::Csv => return delimited::format_csv(result, snapshot),
+        OutputFormat::SparqlXml => {
+            let compactor = IriCompactor::new(snapshot.namespaces(), context);
+            return sparql_xml::format(result, &compactor, config);
+        }
+        OutputFormat::RdfXml => {
+            let compactor = IriCompactor::new(snapshot.namespaces(), context);
+            return rdf_xml::format(result, &compactor, config);
+        }
         _ => {}
     }
 
@@ -294,6 +316,14 @@ pub async fn format_results_async(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::SparqlXml => Err(FormatError::InvalidBinding(
+            "SPARQL XML produces String, not JsonValue. Use format_results_string_async() instead."
+                .to_string(),
+        )),
+        OutputFormat::RdfXml => Err(FormatError::InvalidBinding(
+            "RDF/XML produces String, not JsonValue. Use format_results_string_async() instead."
+                .to_string(),
+        )),
         OutputFormat::Tsv | OutputFormat::Csv => {
             unreachable!("Delimited formats rejected before dispatch")
         }
@@ -322,6 +352,14 @@ pub async fn format_results_string_async(
     match config.format {
         OutputFormat::Tsv => return delimited::format_tsv(result, db.snapshot),
         OutputFormat::Csv => return delimited::format_csv(result, db.snapshot),
+        OutputFormat::SparqlXml => {
+            let compactor = IriCompactor::new(db.snapshot.namespaces(), context);
+            return sparql_xml::format(result, &compactor, config);
+        }
+        OutputFormat::RdfXml => {
+            let compactor = IriCompactor::new(db.snapshot.namespaces(), context);
+            return rdf_xml::format(result, &compactor, config);
+        }
         _ => {}
     }
 

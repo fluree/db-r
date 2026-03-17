@@ -4,7 +4,7 @@
 //! group using `fluree_db_spatial`, and uploads cell index leaflets, manifests,
 //! and geometry arenas to CAS.
 
-use fluree_db_binary_index::SpatialArenaRefV5;
+use fluree_db_binary_index::SpatialArenaRef;
 use fluree_db_core::{ContentId, ContentKind, GraphId, Storage};
 
 use crate::error::{IndexerError, Result};
@@ -23,13 +23,17 @@ use crate::run_index;
 /// This avoids re-entering `block_on` from within a sync closure, which would
 /// deadlock inside the `spawn_blocking` + `handle.block_on()` pattern.
 ///
-/// Returns per-graph spatial arena refs for inclusion in `IndexRootV5`.
+/// Returns per-graph spatial arena refs for inclusion in `IndexRoot`.
+// Kept for: full-rebuild spatial upload pipeline (rebuild.rs collects spatial
+// entries but does not yet call this; wiring deferred to rebuild-spatial milestone).
+// Use when: rebuild.rs is extended to upload spatial indexes after Phase C remap.
+#[expect(dead_code)]
 pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
     entries: &[crate::spatial_hook::SpatialEntry],
     predicates: &run_index::PredicateDict,
     ledger_id: &str,
     storage: &S,
-) -> Result<Vec<(GraphId, Vec<SpatialArenaRefV5>)>> {
+) -> Result<Vec<(GraphId, Vec<SpatialArenaRef>)>> {
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
 
@@ -43,7 +47,7 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
             .push(entry);
     }
 
-    let mut per_graph: BTreeMap<GraphId, Vec<SpatialArenaRefV5>> = BTreeMap::new();
+    let mut per_graph: BTreeMap<GraphId, Vec<SpatialArenaRef>> = BTreeMap::new();
 
     for ((g_id, p_id), group_entries) in grouped {
         // Resolve predicate IRI for SpatialCreateConfig.
@@ -146,7 +150,7 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
                 ))
             })?;
 
-        per_graph.entry(g_id).or_default().push(SpatialArenaRefV5 {
+        per_graph.entry(g_id).or_default().push(SpatialArenaRef {
             p_id,
             root_cid,
             manifest: manifest_cid,

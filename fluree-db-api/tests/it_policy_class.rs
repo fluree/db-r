@@ -1,6 +1,6 @@
 //! Policy class-based query tests.
 //!
-//! Clojure parity: `fluree.snapshot.policy.policy-class-test`
+//! Scenario reference: `fluree.snapshot.policy.policy-class-test`
 //!
 //! Tests policy class lookup where policies are stored in the database
 //! and loaded via f:policyClass references.
@@ -15,7 +15,7 @@ use support::{assert_index_defaults, genesis_ledger};
 
 /// Test: Policy class restricts SSN visibility to own user
 ///
-/// Clojure parity: class-policy-query (first test case)
+/// class-policy-query (first test case)
 #[tokio::test]
 async fn policy_class_restricts_ssn_to_own_user() {
     assert_index_defaults();
@@ -134,7 +134,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
 
 /// Test: Policy class allows viewing non-restricted properties
 ///
-/// Clojure parity: class-policy-query (in a graph crawl restricts)
+/// class-policy-query (in a graph crawl restricts)
 #[tokio::test]
 async fn policy_class_allows_non_restricted_properties() {
     assert_index_defaults();
@@ -235,7 +235,7 @@ async fn policy_class_allows_non_restricted_properties() {
 
 /// Test: Policy blocks query for another user's restricted SSN
 ///
-/// Clojure parity: class-policy-query (with where-clause match of restricted data)
+/// class-policy-query (with where-clause match of restricted data)
 #[tokio::test]
 async fn policy_class_blocks_other_user_ssn_in_where() {
     assert_index_defaults();

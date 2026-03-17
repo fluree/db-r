@@ -259,7 +259,7 @@ Examples:
 ```
 fluree:ipfs://mydb/main/commit/a1b2c3...f6a1b2.fcv2
 fluree:ipfs://mydb/main/index/roots/d4e5f6...c3d4e5.json
-fluree:ipfs://mydb/main/index/spot/abc123...def456.fli2
+fluree:ipfs://mydb/main/index/spot/abc123...def456.fli
 ```
 
 The hash hex in the filename is extracted and used to construct a CID for retrieval from IPFS.

@@ -204,8 +204,8 @@ async fn object_count_zero_matches() {
         .expect("query");
     let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
-    // No WHERE bindings match, so no rows to aggregate → empty result.
-    assert_eq!(json_rows, json!([]));
+    // SPARQL semantics: ungrouped aggregates return exactly one row even with zero matches.
+    assert_eq!(json_rows, json!([0]));
 }
 
 // =============================================================================

@@ -320,7 +320,7 @@ fluree-db/
 **Purpose:** Binary index wire formats and read-side runtime
 
 **Responsibilities:**
-- Binary index format codecs (IRB1 root, FBR2 branch, FLI2 leaf, leaflet layout)
+- Binary index format codecs (FIR6 root, FBR3 branch, FLI3 leaf, leaflet layout)
 - Dictionary artifacts and readers (inline dicts, dict trees, arenas)
 - Query-time read types (`BinaryIndexStore`, `BinaryGraphView`, cursors)
 

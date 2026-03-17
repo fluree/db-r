@@ -619,7 +619,7 @@ pipeline exposed by `fluree-db-api`:
 This pipeline:
 - Parses Turtle in parallel, but **writes commits serially** (hash-linked commit chain).
 - Streams run generation during import and builds multi-order binary indexes (SPOT/PSOT/POST/OPST).
-- Writes a V2 index root to CAS and publishes it to the nameservice so queries can use the normal
+- Writes an index root to CAS and publishes it to the nameservice so queries can use the normal
   `db()` / `query()` path.
   
 Temporary `tmp_import/` session files are cleaned up on success (configurable).

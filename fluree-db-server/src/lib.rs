@@ -1,7 +1,7 @@
 //! Fluree DB HTTP Server
 //!
 //! A thin HTTP REST API wrapper around `fluree-db-api`, providing endpoints
-//! equivalent to the Clojure Fluree server.
+//! equivalent to the legacy server behavior.
 //!
 //! # Features
 //!

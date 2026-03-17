@@ -384,13 +384,13 @@ impl Flake {
 
     /// Fast deterministic size estimate for stats (`IndexStats.size`)
     ///
-    /// Mirrors the intent of Clojure's `flake/size-flake`: **speed over accuracy**.
+    /// Mirrors the intent of legacy `flake/size-flake`: **speed over accuracy**.
     /// This is *not* the storage byte size of index nodes; it is an estimate of
     /// total bytes represented by flakes.
     ///
     /// Important: keep this allocation-free and platform-stable (u64).
     pub fn size_estimate_bytes(&self) -> u64 {
-        // Clojure uses a fixed base (38 bytes) + object/meta additions.
+        // Uses a fixed base (38 bytes) + object/meta additions.
         const BASE: u64 = 38;
 
         let o_size: u64 = match &self.o {

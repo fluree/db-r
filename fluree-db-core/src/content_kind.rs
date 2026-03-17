@@ -18,15 +18,6 @@ pub const CODEC_FLUREE_COMMIT: u64 = FLUREE_CODEC_BASE + 1;
 /// Multicodec for Fluree transaction (txn) blobs.
 pub const CODEC_FLUREE_TXN: u64 = FLUREE_CODEC_BASE + 2;
 
-/// Multicodec for Fluree index root descriptors.
-pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
-
-/// Multicodec for Fluree index branch manifests (FBR1).
-pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
-
-/// Multicodec for Fluree index leaf files (FLI2).
-pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
-
 /// Multicodec for Fluree dictionary blobs (all sub-kinds).
 ///
 /// `DictKind` is parameterized (`NumBig { p_id }`, `VectorShard { p_id }`, etc.)
@@ -48,6 +39,25 @@ pub const CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT: u64 = FLUREE_CODEC_BASE + 10;
 
 /// Multicodec for Fluree spatial index artifacts (S2 cell index, geometry arena, root manifest).
 pub const CODEC_FLUREE_SPATIAL_INDEX: u64 = FLUREE_CODEC_BASE + 11;
+
+/// Multicodec for Fluree history sidecar blobs (FHS1, per-leaf time-travel data).
+pub const CODEC_FLUREE_HISTORY_SIDECAR: u64 = FLUREE_CODEC_BASE + 12;
+
+/// Multicodec for Fluree index branch manifests (FBR3).
+pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 13;
+
+/// Multicodec for Fluree index leaf files (FLI3).
+pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 14;
+
+/// Multicodec for Fluree index root descriptors (FIR6).
+pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 15;
+
+// Legacy codec constants (pre-V3 format). Kept for backward-compatible CID
+// resolution — existing ledgers may have index artifacts stored under these
+// codecs in the nameservice.
+const CODEC_LEGACY_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
+const CODEC_LEGACY_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
+const CODEC_LEGACY_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
 
 // ============================================================================
 // DictKind
@@ -102,15 +112,15 @@ pub enum ContentKind {
     Commit,
     /// Transaction blob (binary encoded flakes)
     Txn,
-    /// DB root index node (the "root pointer" written each refresh)
+    /// DB root index node (FIR6 format)
     IndexRoot,
     /// Garbage record (GC metadata)
     GarbageRecord,
     /// Dictionary artifact (predicates, subjects, strings, etc.)
     DictBlob { dict: DictKind },
-    /// Index branch manifest (FBR1 format)
+    /// Index branch manifest (FBR3 format)
     IndexBranch,
-    /// Index leaf file (FLI2 format)
+    /// Index leaf file (FLI3 format)
     IndexLeaf,
     /// Ledger configuration object (origin discovery, replication defaults)
     LedgerConfig,
@@ -120,6 +130,8 @@ pub enum ContentKind {
     GraphSourceSnapshot,
     /// Spatial index artifact (S2 cell index, geometry arena, root manifest)
     SpatialIndex,
+    /// History sidecar blob (FHS1, per-leaf time-travel data)
+    HistorySidecar,
 }
 
 // ============================================================================
@@ -143,6 +155,7 @@ impl ContentKind {
             ContentKind::StatsSketch => CODEC_FLUREE_STATS_SKETCH,
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
             ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
+            ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
         }
     }
 
@@ -166,6 +179,12 @@ impl ContentKind {
             CODEC_FLUREE_STATS_SKETCH => Some(ContentKind::StatsSketch),
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
+            CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
+            // Legacy codecs (pre-V3 format) — map to current content kinds so
+            // CIDs stored by older builds can still be resolved.
+            CODEC_LEGACY_INDEX_ROOT => Some(ContentKind::IndexRoot),
+            CODEC_LEGACY_INDEX_BRANCH => Some(ContentKind::IndexBranch),
+            CODEC_LEGACY_INDEX_LEAF => Some(ContentKind::IndexLeaf),
             _ => None,
         }
     }
@@ -184,6 +203,7 @@ impl ContentKind {
             ContentKind::StatsSketch => "stats-sketch",
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
             ContentKind::SpatialIndex => "spatial-index",
+            ContentKind::HistorySidecar => "history-sidecar",
         }
     }
 }

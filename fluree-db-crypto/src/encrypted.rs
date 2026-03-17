@@ -234,6 +234,10 @@ where
         self.decrypt(&encrypted).map_err(Into::into)
     }
 
+    // read_byte_range: uses default (full read + slice). AES-GCM encryption
+    // requires decrypting the entire blob — partial range reads on ciphertext
+    // are not meaningful. The default calls read_bytes() → decrypt → slice.
+
     async fn exists(&self, address: &str) -> fluree_db_core::error::Result<bool> {
         // Pass through - existence check doesn't need decryption
         self.inner.exists(address).await

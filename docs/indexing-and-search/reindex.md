@@ -6,6 +6,8 @@ The Reindex API provides full rebuilds of ledger indexes from the commit chain. 
 
 Unlike [background indexing](background-indexing.md) which incrementally updates indexes as transactions commit, reindexing rebuilds the entire binary columnar index from the commit history.
 
+Reindex publishes the new index root via `publish_index_allow_equal`, which means a reindex can produce a **new index root CID** even when `index_t` stays the same (same logical snapshot, different physical layout/config).
+
 ## When to Reindex
 
 ### Common Use Cases
@@ -25,7 +27,7 @@ Consider these factors:
 
 ## Rust API
 
-The reindex API is exposed through the `Fluree` type in `fluree-db-api`. In Rust, `Fluree` serves as the equivalent of Clojure's "connection" object - it owns the storage backend, node cache, nameservice, and provides all ledger operations including queries, transactions, and admin functions like reindex.
+The reindex API is exposed through the `Fluree` type in `fluree-db-api`. `Fluree` owns the storage backend, node cache, nameservice, and provides all ledger operations including queries, transactions, and admin functions like reindex.
 
 ### Basic Reindex
 
@@ -161,7 +163,7 @@ The reindex operation:
    - **Phase C**: Merges per-chunk dictionaries into global dictionaries with remap tables
    - **Phase D**: Builds SPOT indexes from sorted commit files via k-way merge with graph-aware partitioning
    - **Phase E**: Builds secondary indexes (PSOT, POST, OPST) per-graph from partitioned run files
-   - **Phase F**: Uploads dictionaries and index artifacts to CAS, creates `IndexRootV5` (IRB1)
+   - **Phase F**: Uploads dictionaries and index artifacts to CAS, creates `IndexRoot` (FIR6)
 4. **Validates** that no new commits arrived during the build (conflict detection)
 5. **Publishes** the new index root via `publish_index_allow_equal`
 6. **Spawns** async garbage collection to clean up old index versions

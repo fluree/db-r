@@ -32,6 +32,24 @@ pub enum OutputFormat {
     /// ```
     SparqlJson,
 
+    /// W3C SPARQL 1.1 Query Results XML format
+    ///
+    /// Produces an XML document with root `<sparql>` in the
+    /// `http://www.w3.org/2005/sparql-results#` namespace.
+    ///
+    /// **Note**: SPARQL XML produces `String`, not `JsonValue`. Use
+    /// `format_results_string()` / `format_results_string_async()` or
+    /// query builder `.execute_formatted_string()`.
+    SparqlXml,
+
+    /// RDF/XML graph serialization (`application/rdf+xml`)
+    ///
+    /// **Graph results only** (SPARQL CONSTRUCT / DESCRIBE). Produces `String`, not `JsonValue`.
+    ///
+    /// **Note**: Use `format_results_string()` / `format_results_string_async()` or
+    /// query builder `.execute_formatted_string()`.
+    RdfXml,
+
     /// Typed JSON format
     ///
     /// Always includes explicit datatype (even for inferable types):
@@ -69,7 +87,7 @@ pub enum OutputFormat {
 /// Only used when `OutputFormat::JsonLd` is selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JsonLdRowShape {
-    /// Rows are arrays aligned to select order (Clojure parity)
+    /// Rows are arrays aligned to select order.
     ///
     /// ```json
     /// [["ex:alice", "Alice", 30], ["ex:bob", "Bob", 25]]
@@ -135,6 +153,22 @@ impl FormatterConfig {
     pub fn sparql_json() -> Self {
         Self {
             format: OutputFormat::SparqlJson,
+            ..Default::default()
+        }
+    }
+
+    /// Create a SPARQL XML config
+    pub fn sparql_xml() -> Self {
+        Self {
+            format: OutputFormat::SparqlXml,
+            ..Default::default()
+        }
+    }
+
+    /// Create an RDF/XML config (graph results only: CONSTRUCT/DESCRIBE)
+    pub fn rdf_xml() -> Self {
+        Self {
+            format: OutputFormat::RdfXml,
             ..Default::default()
         }
     }
@@ -209,6 +243,18 @@ mod tests {
     fn test_sparql_json_config() {
         let config = FormatterConfig::sparql_json();
         assert_eq!(config.format, OutputFormat::SparqlJson);
+    }
+
+    #[test]
+    fn test_sparql_xml_config() {
+        let config = FormatterConfig::sparql_xml();
+        assert_eq!(config.format, OutputFormat::SparqlXml);
+    }
+
+    #[test]
+    fn test_rdf_xml_config() {
+        let config = FormatterConfig::rdf_xml();
+        assert_eq!(config.format, OutputFormat::RdfXml);
     }
 
     #[test]

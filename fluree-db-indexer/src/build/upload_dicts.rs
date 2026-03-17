@@ -904,6 +904,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         per_pred.insert(
                                             p_id.to_string(),
                                             VectorDictRef {
+                                                p_id,
                                                 manifest: manifest_cid,
                                                 shards: shard_cids,
                                             },
@@ -996,8 +997,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             },
             subject_reverse,
             string_reverse,
-            numbig,
-            vectors,
         },
         subject_id_encoding,
         subject_watermarks,
@@ -1005,5 +1004,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         graph_iris,
         datatype_iris,
         language_tags,
+        numbig,
+        vectors,
     })
 }

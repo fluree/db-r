@@ -11,7 +11,7 @@ pub const DEFAULT_CACHE_MB_FALLBACK: usize = 1000;
 
 /// Calculate the default cache size in MB based on available system memory.
 ///
-/// This matches the Clojure `default-cache-max-mb` function:
+/// This matches the legacy `default-cache-max-mb` behavior:
 /// - On native: Uses 50% of available system memory
 /// - On WASM: Returns a conservative 1000 MB default
 ///

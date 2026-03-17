@@ -1,8 +1,8 @@
 //! Run-based index generation pipeline.
 //!
-//! This module implements Phase B of `INCREMENTAL_INDEXING_STRATEGY.md`: walking the
-//! binary commit chain, resolving commit-local IDs to global numeric IDs, and
-//! producing sorted run files for external-merge index building.
+//! This module implements Phase B: walking the binary commit chain,
+//! resolving commit-local IDs to global numeric IDs, and producing
+//! sorted run files for external-merge index building.
 //!
 //! ## Sub-modules
 //!
@@ -10,9 +10,6 @@
 //! - [`runs`] — Run file I/O, spool, run writer, streaming readers
 //! - [`build`] — Index building, merge, incremental updates
 //! - [`vocab`] — Dictionary I/O, vocab files, vocab merge
-//!
-//! Read-side types (RunRecord, BinaryIndexStore, BinaryCursor, etc.) live in
-//! `fluree-db-binary-index` — import them from there directly.
 
 // ── Sub-modules ──────────────────────────────────────────────────────────────
 pub mod build;
@@ -29,7 +26,6 @@ pub use resolve::resolver;
 
 pub use runs::run_file;
 pub use runs::run_writer;
-pub use runs::sorted_commit_reader;
 pub use runs::spool;
 pub use runs::streaming_reader;
 
@@ -55,41 +51,29 @@ pub use resolve::global_dict::{
     DictAllocator, DictWorkerCache, GlobalDicts, LanguageTagDict, PredicateDict,
     SharedDictAllocator, StringValueDict, SubjectDict,
 };
-pub use resolve::lang_remap::{build_lang_remap, build_lang_remap_from_vocabs};
+pub use resolve::lang_remap::build_lang_remap_from_vocabs;
 pub use resolve::resolver::{CommitResolver, ResolverError};
 
 // From runs/
-pub use runs::run_file::{read_run_file, write_run_file, RunFileInfo};
-pub use runs::run_writer::{
-    MultiOrderConfig, MultiOrderRunWriter, RecordSink, RunWriter, RunWriterConfig, RunWriterResult,
-};
-pub use runs::sorted_commit_reader::StreamingSortedCommitReader;
+pub use runs::run_file::{write_run_file, RunFileInfo};
+pub use runs::run_writer::{MultiOrderConfig, MultiOrderRunWriter, RunWriter, RunWriterResult};
 pub use runs::spool::{
-    collect_chunk_run_files, remap_commit_to_runs, remap_spool_to_runs,
+    collect_chunk_run_files, remap_commit_to_runs, remap_spool_to_runs, remap_v1_to_v2,
     sort_remap_and_write_sorted_commit, spool_to_runs, SortedCommitInfo, SpoolFileInfo,
     SpoolReader, SpoolWriter, TypesMapConfig,
 };
 pub use runs::streaming_reader::StreamingRunReader;
 
 // From build/
-pub use build::incremental_branch::{
-    update_branch, BranchUpdateResult, IncrementalBranchConfig, IncrementalBranchError,
-};
-pub use build::incremental_leaf::{
-    update_leaf, IncrementalLeafError, LeafUpdateInput, LeafUpdateOutput, NewLeafBlob,
-};
-pub use build::incremental_resolve::{
-    resolve_incremental_commits, IncrementalNovelty, IncrementalResolveConfig,
-    IncrementalResolveError,
-};
+pub use build::incremental_branch::{update_branch, BranchUpdateConfig, BranchUpdateResult};
+pub use build::incremental_leaf::{update_leaf, LeafUpdateInput, LeafUpdateOutput, NewLeafBlob};
+pub use build::incremental_resolve::{IncrementalNovelty, IncrementalResolveConfig};
 pub use build::incremental_root::IncrementalRootBuilder;
 pub use build::index_build::{
-    build_all_indexes, build_index, build_index_from_run_paths, build_spot_from_sorted_commits,
-    build_spot_index, precompute_language_dict, ClassBitsetTable, GraphIndexResult,
-    IndexBuildConfig, IndexBuildResult, SortedCommitInput, SpotClassStats, SpotFromCommitsConfig,
-    DT_REF_ID,
+    build_all_indexes, build_index, BuildAllConfig, GraphIndexResult, IndexBuildConfig,
+    IndexBuildError, IndexBuildResult,
 };
-pub use build::merge::{KWayMerge, MergeSource};
+pub use build::merge::KWayMerge;
 pub use build::novelty_merge::{merge_novelty, MergeInput, MergeOutput};
 pub use build::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
 
@@ -128,11 +112,6 @@ pub struct RunGenerationResult {
 }
 
 /// Persist namespace map to `{run_dir}/namespaces.json`.
-///
-/// Writes a stable JSON array sorted by code for deterministic ordering:
-/// ```json
-/// [{"code": 0, "prefix": ""}, {"code": 3, "prefix": "http://..."}]
-/// ```
 pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) -> io::Result<()> {
     let mut entries: Vec<_> = ns_prefixes.iter().collect();
     entries.sort_by_key(|(&code, _)| code);

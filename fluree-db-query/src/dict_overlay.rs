@@ -567,7 +567,14 @@ impl DictOverlay {
     /// Uses watermark routing for subject refs and string IDs:
     /// IDs above the watermark are novel (resolved from DictNovelty).
     /// IDs at or below the watermark are persisted (delegated to store).
-    pub fn decode_value(&self, o_kind: u8, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+    pub fn decode_value(
+        &self,
+        o_kind: u8,
+        o_key: u64,
+        p_id: u32,
+        dt_id: u16,
+        lang_id: u16,
+    ) -> io::Result<FlakeValue> {
         let initialized = self.dict_novelty.is_initialized();
 
         // REF_ID — check for novel/ephemeral subject IDs
@@ -632,7 +639,8 @@ impl DictOverlay {
         }
 
         // Delegate to graph view for all persisted entries (graph-scoped decode)
-        self.graph_view.decode_value(o_kind, o_key, p_id)
+        self.graph_view
+            .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id)
     }
 
     /// Decode a datatype ID back to a Sid.

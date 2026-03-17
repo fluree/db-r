@@ -23,7 +23,7 @@ use super::pack_builder::{
     DEFAULT_TARGET_PACK_BYTES, DEFAULT_TARGET_PAGE_BYTES,
 };
 use super::reverse_leaf::{encode_reverse_leaf, ReverseEntry, ReverseLeaf};
-use crate::format::index_root::PackBranchEntry;
+use crate::format::wire_helpers::PackBranchEntry;
 
 // ============================================================================
 // Forward Packs (append-only)
@@ -391,7 +391,7 @@ fn unchanged_tree(existing_branch: &DictBranch) -> IncrementalTreeResult {
 mod tests {
     use super::super::builder::{build_reverse_tree, DEFAULT_TARGET_LEAF_BYTES};
     use super::*;
-    use crate::format::index_root::PackBranchEntry;
+    use crate::format::wire_helpers::PackBranchEntry;
     use fluree_db_core::ContentId;
 
     fn make_string_entry(id: u32, val: &str) -> (u32, Vec<u8>) {

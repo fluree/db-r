@@ -323,7 +323,7 @@ impl SubqueryOperator {
         }
 
         // Project to subquery select list before DISTINCT/ORDER BY/OFFSET/LIMIT so those modifiers
-        // apply to the intended output shape (Clojure parity).
+        // apply to the intended output shape.
         if !self.subquery.select.is_empty() {
             operator = Box::new(ProjectOperator::new(operator, self.subquery.select.clone()));
         }

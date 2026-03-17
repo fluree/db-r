@@ -1,7 +1,4 @@
-//! Connection-scoped query integration tests (Clojure parity)
-//!
-//! Ports dataset/federation cases from:
-//! - `db-clojure/test/fluree/db/query/federated_test.clj`
+//! Connection-scoped query integration tests
 //!
 //! Focus:
 //! - `query_connection` with `"from"` (combined datasets)
@@ -260,7 +257,7 @@ async fn query_connection_from_named_with_graph_patterns() {
     let fluree = FlureeBuilder::memory().build_memory();
     seed_federated_ledgers(&fluree).await;
 
-    // Clojure equivalent:
+    // Equivalent:
     // :from-named ["test/authors" "test/books" "test/movies"]
     // :where [[:graph "test/movies" {...}] [:graph "test/books" {...}] [:graph "test/authors" {...}]]
     //

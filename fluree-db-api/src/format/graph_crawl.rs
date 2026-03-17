@@ -246,7 +246,7 @@ pub async fn format_async(
                     };
 
                     let Some(root_sid) = root_sid else {
-                        // Unbound/poisoned root var - skip this row (Clojure behavior)
+                        // Unbound/poisoned root var - skip this row
                         continue;
                     };
 
@@ -542,7 +542,7 @@ impl<'a> GraphCrawlFormatter<'a> {
                         // @type special case: compact IRI string, not {"@id": ...}
                         values.push(json!(self.compactor.compact_sid(ref_sid)?));
                     } else {
-                        // Expansion decision (Clojure parity):
+                        // Expansion decision:
                         // 1. If explicit sub-selection exists → expand with that spec
                         // 2. Else if current_depth < max_depth → auto-expand with FULL parent spec
                         // 3. Else → just return {"@id": ...}
@@ -854,7 +854,14 @@ impl<'a> GraphCrawlFormatter<'a> {
             }
             FlakeValue::Boolean(b) => json!(b),
             FlakeValue::Vector(v) => json!(v),
-            FlakeValue::Json(_) => unreachable!("@json handled above"),
+            // JSON values should usually be handled by the `@json` branch above,
+            // but we can still encounter `FlakeValue::Json` here (e.g., custom
+            // datatypes or typed-json formatting paths). Never panic in a server
+            // formatter: fall back to parsing the JSON payload, or emit the raw
+            // string if it isn't valid JSON.
+            FlakeValue::Json(s) => {
+                serde_json::from_str::<JsonValue>(s).unwrap_or_else(|_| json!(s))
+            }
             FlakeValue::Null => return Ok(JsonValue::Null),
             FlakeValue::Ref(sid) => return Ok(json!({ "@id": self.compactor.compact_sid(sid)? })),
             FlakeValue::BigInt(n) => json!(n.to_string()),
@@ -1055,7 +1062,7 @@ impl<'a> GraphCrawlFormatter<'a> {
 
     fn apply_fuel_tracking(&self, flakes: Vec<Flake>) -> Result<Vec<Flake>> {
         if let Some(tracker) = self.tracker {
-            // Clojure parity: count fuel per flake emitted downstream (post-filters).
+            // Count fuel per flake emitted downstream (post-filters).
             for _ in 0..flakes.len() {
                 tracker.consume_fuel_one()?;
             }

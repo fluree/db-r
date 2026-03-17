@@ -21,6 +21,21 @@ pub fn value_hash(o_kind: u8, o_key: u64) -> u64 {
     xxh64(&buf, 0)
 }
 
+/// V2-compatible value hash using `o_type` (u16) instead of `o_kind` (u8).
+///
+/// Domain-separated by `o_type` to prevent cross-type collisions.
+/// Compatible with V1 hashing in the sense that HLL sketches built from
+/// V2 records can be merged with those from V1 records as long as
+/// the full rebuild produces a consistent sketch.
+pub fn value_hash_v2(o_type: u16, o_key: u64) -> u64 {
+    // domain(11) + type(2) + key(8) = 21 bytes
+    let mut buf = [0u8; 21];
+    buf[..11].copy_from_slice(OBJ_HASH_DOMAIN);
+    buf[11..13].copy_from_slice(&o_type.to_le_bytes());
+    buf[13..21].copy_from_slice(&o_key.to_le_bytes());
+    xxh64(&buf, 0)
+}
+
 /// Compute a stable hash of a subject ID for HLL insertion.
 ///
 /// Hashes `s_id` rather than using it directly to ensure uniform bit

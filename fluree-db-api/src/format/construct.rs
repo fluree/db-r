@@ -37,7 +37,7 @@ use std::sync::Arc;
 /// JSON-LD graph: `{"@context": ..., "@graph": [...]}`
 pub fn format(result: &QueryResult, compactor: &IriCompactor) -> Result<JsonValue> {
     // 1. Build Graph from template instantiation
-    let mut graph = instantiate_template(result, compactor)?;
+    let mut graph = instantiate_construct_graph(result, compactor)?;
 
     // Sort for deterministic output
     graph.sort();
@@ -61,11 +61,14 @@ pub fn format(result: &QueryResult, compactor: &IriCompactor) -> Result<JsonValu
     Ok(format_jsonld(&graph, &config))
 }
 
-/// Instantiate CONSTRUCT template patterns with query bindings
+/// Instantiate CONSTRUCT template patterns with query bindings.
 ///
-/// Produces a Graph with EXPANDED IRIs (not compact). Compaction is done
-/// at the formatting step, not here.
-fn instantiate_template(result: &QueryResult, compactor: &IriCompactor) -> Result<Graph> {
+/// Produces a Graph with EXPANDED IRIs (not compact). Compaction/serialization is done
+/// at the final output step, not here.
+pub(super) fn instantiate_construct_graph(
+    result: &QueryResult,
+    compactor: &IriCompactor,
+) -> Result<Graph> {
     let template = result
         .output
         .construct_template()

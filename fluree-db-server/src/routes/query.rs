@@ -16,7 +16,7 @@ use crate::telemetry::{
     create_request_span, extract_request_id, extract_trace_id, log_query_text, set_span_error_code,
     should_log_query_text,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -25,10 +25,59 @@ use fluree_db_api::{
     DatasetSpec, FreshnessCheck, FreshnessSource, GraphDb, GraphSource, LedgerState, TimeSpec,
     TrackingTally,
 };
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::Instrument;
+
+// ============================================================================
+// SPARQL Protocol query parameter support (GET ?query=...)
+// ============================================================================
+
+/// Optional URL query parameters for W3C SPARQL Protocol compliance.
+///
+/// The SPARQL Protocol (RFC 3986) allows queries via:
+///   GET /sparql?query=SELECT+...&default-graph-uri=...
+///
+/// When `query` is present and the request body is empty, the query parameter
+/// value is used as the SPARQL query string.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct SparqlParams {
+    /// The SPARQL query string (URL-encoded)
+    pub query: Option<String>,
+    /// Optional default graph URI (part of W3C SPARQL Protocol).
+    // Kept for: full SPARQL Protocol compliance — BSBM and other tools may send this param.
+    // Use when: implementing default-graph-uri scoping in query execution.
+    #[expect(dead_code)]
+    pub default_graph_uri: Option<String>,
+}
+
+/// If a `?query=` URL parameter is present and the credential body is empty,
+/// return the query param value as the SPARQL string. Otherwise fall back to
+/// the credential body.
+fn resolve_sparql_text(params: &SparqlParams, credential: &MaybeCredential) -> Result<String> {
+    // Prefer ?query= parameter when body is empty (standard SPARQL Protocol GET)
+    if let Some(ref q) = params.query {
+        let body = credential.body_string().unwrap_or_default();
+        if body.trim().is_empty() {
+            return Ok(q.clone());
+        }
+    }
+    // Fall back to request body
+    credential.body_string()
+}
+
+/// Check if the request should be treated as SPARQL based on headers OR the
+/// presence of a `?query=` URL parameter.
+fn is_sparql_request(
+    headers: &FlureeHeaders,
+    credential: &MaybeCredential,
+    params: &SparqlParams,
+) -> bool {
+    headers.is_sparql_query() || credential.is_sparql || params.query.is_some()
+}
 
 // ============================================================================
 // Data API Auth Helpers
@@ -150,6 +199,7 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
 ///   - Connection-scoped: requires FROM clause in SPARQL to specify ledger
 pub async fn query(
     State(state): State<Arc<AppState>>,
+    Query(params): Query<SparqlParams>,
     headers: FlureeHeaders,
     bearer: MaybeDataBearer,
     credential: MaybeCredential,
@@ -159,7 +209,7 @@ pub async fn query(
     let trace_id = extract_trace_id(&credential.headers);
 
     // Detect input format before span creation so otel.name is set at open time
-    let input_format = if headers.is_sparql_query() || credential.is_sparql {
+    let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
         "fql"
@@ -202,7 +252,7 @@ pub async fn query(
     let delimited = wants_delimited(&headers);
 
     // Handle SPARQL query
-    if headers.is_sparql_query() || credential.is_sparql {
+    if is_sparql_request(&headers, &credential, &params) {
         // Connection-scoped SPARQL returns pre-formatted JSON — delimited not supported
         if let Some(fmt) = delimited {
             return Err(ServerError::not_acceptable(format!(
@@ -212,7 +262,7 @@ pub async fn query(
             )));
         }
 
-        let sparql = credential.body_string()?;
+        let sparql = resolve_sparql_text(&params, &credential)?;
 
         // Log query text according to configuration
         log_query_text(&sparql, &state.telemetry_config, &span);
@@ -314,6 +364,7 @@ pub async fn query(
 pub async fn query_ledger(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
+    Query(params): Query<SparqlParams>,
     headers: FlureeHeaders,
     bearer: MaybeDataBearer,
     credential: MaybeCredential,
@@ -322,7 +373,7 @@ pub async fn query_ledger(
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
-    let input_format = if headers.is_sparql_query() || credential.is_sparql {
+    let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
         "fql"
@@ -366,8 +417,8 @@ pub async fn query_ledger(
     let delimited = wants_delimited(&headers);
 
     // Handle SPARQL query - ledger is known from path
-    if headers.is_sparql_query() || credential.is_sparql {
-        let sparql = credential.body_string()?;
+    if is_sparql_request(&headers, &credential, &params) {
+        let sparql = resolve_sparql_text(&params, &credential)?;
 
         // Log query text according to configuration
         log_query_text(&sparql, &state.telemetry_config, &span);
@@ -381,7 +432,7 @@ pub async fn query_ledger(
         }
 
         let identity = effective_identity(&credential, &bearer);
-        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited)
+        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited, &headers)
             .await;
     }
 
@@ -443,11 +494,217 @@ pub async fn query_ledger(
 pub async fn query_ledger_tail(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
+    params: Query<SparqlParams>,
     headers: FlureeHeaders,
     bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
-    query_ledger(State(state), Path(ledger), headers, bearer, credential).await
+    query_ledger(
+        State(state),
+        Path(ledger),
+        params,
+        headers,
+        bearer,
+        credential,
+    )
+    .await
+}
+
+/// Explain a query plan with ledger in path.
+///
+/// POST /:ledger/explain
+/// GET /:ledger/explain
+///
+/// Supports:
+/// - JSON-LD queries (JSON body)
+/// - SPARQL queries (Content-Type: application/sparql-query)
+/// - Signed requests (JWS/VC format)
+pub async fn explain_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    Query(params): Query<SparqlParams>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    credential: MaybeCredential,
+) -> Result<Json<JsonValue>> {
+    // Create request span with correlation context
+    let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
+    let trace_id = extract_trace_id(&credential.headers);
+
+    let input_format = if is_sparql_request(&headers, &credential, &params) {
+        "sparql"
+    } else {
+        "fql"
+    };
+
+    let span = create_request_span(
+        "explain",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&ledger),
+        None, // tenant_id not yet supported
+        Some(input_format),
+    );
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(status = "start", "ledger explain request received");
+
+        // Enforce data auth if configured (Bearer token OR signed request)
+        let data_auth = state.config.data_auth();
+        if data_auth.mode == crate::config::DataAuthMode::Required
+            && !credential.is_signed()
+            && bearer.0.is_none()
+        {
+            set_span_error_code(&span, "error:Unauthorized");
+            return Err(ServerError::unauthorized(
+                "Authentication required (signed request or Bearer token)",
+            ));
+        }
+
+        // SPARQL UPDATE should use the transact endpoint, not explain
+        if headers.is_sparql_update() || credential.is_sparql_update {
+            let error = ServerError::bad_request(
+                "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/explain",
+            );
+            set_span_error_code(&span, "error:BadRequest");
+            tracing::warn!(error = %error, "SPARQL UPDATE sent to explain endpoint");
+            return Err(error);
+        }
+
+        // Handle SPARQL explain
+        if is_sparql_request(&headers, &credential, &params) {
+            let sparql = resolve_sparql_text(&params, &credential)?;
+            log_query_text(&sparql, &state.telemetry_config, &span);
+
+            // Enforce bearer ledger scope for unsigned requests
+            if let Some(p) = bearer.0.as_ref() {
+                if !credential.is_signed() && !p.can_read(&ledger) {
+                    set_span_error_code(&span, "error:Forbidden");
+                    return Err(ServerError::not_found("Ledger not found"));
+                }
+            }
+
+            // For now, explain is ledger-scoped and does not support dataset clauses.
+            if fluree_db_api::sparql_dataset_ledger_ids(&sparql)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+            {
+                return Err(ServerError::bad_request(
+                    "SPARQL FROM/FROM NAMED is not supported for explain on the ledger-scoped endpoint; remove dataset clauses to explain the core plan"
+                        .to_string(),
+                ));
+            }
+
+            let ledger_id = ledger.clone();
+            let result = if state.config.is_proxy_storage_mode() {
+                state
+                    .fluree
+                    .explain_ledger_sparql(&ledger_id, &sparql)
+                    .await
+                    .map_err(ServerError::Api)?
+            } else {
+                let loaded = load_ledger_for_query(&state, &ledger_id, &span).await?;
+                let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+                state
+                    .fluree
+                    .as_file()
+                    .explain_sparql(&db, &sparql)
+                    .await
+                    .map_err(ServerError::Api)?
+            };
+
+            tracing::info!(status = "success", query_kind = "sparql", "explain completed");
+            return Ok(Json(result));
+        }
+
+        // Handle JSON-LD explain (JSON body)
+        let mut query_json: JsonValue = credential.body_json()?;
+        if should_log_query_text(&state.telemetry_config) {
+            if let Ok(query_text) = serde_json::to_string(&query_json) {
+                log_query_text(&query_text, &state.telemetry_config, &span);
+            }
+        }
+
+        let ledger_id = match get_ledger_id(Some(&ledger), &headers, &query_json) {
+            Ok(ledger_id) => {
+                span.record("ledger_id", ledger_id.as_str());
+                ledger_id
+            }
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "ledger ID mismatch");
+                return Err(e);
+            }
+        };
+
+        // Ledger-scoped endpoint: allow `from` as a named-graph selector, but reject
+        // attempts to target a different ledger than the URL.
+        normalize_ledger_scoped_from(&ledger_id, &mut query_json)?;
+
+        // Inject header values into query opts
+        inject_headers_into_query(&mut query_json, &headers);
+
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&ledger) {
+                set_span_error_code(&span, "error:Forbidden");
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        let identity = effective_identity(&credential, &bearer);
+        let policy_class = data_auth.default_policy_class.as_deref();
+        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+
+        let result = if state.config.is_proxy_storage_mode() {
+            state
+                .fluree
+                .explain_ledger(&ledger_id, &query_json)
+                .await
+                .map_err(ServerError::Api)?
+        } else {
+            let loaded = load_ledger_for_query(&state, &ledger_id, &span).await?;
+            let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+            state
+                .fluree
+                .as_file()
+                .explain(&db, &query_json)
+                .await
+                .map_err(ServerError::Api)?
+        };
+
+        tracing::info!(status = "success", query_kind = "jsonld", "explain completed");
+        Ok(Json(result))
+    }
+    .instrument(span)
+    .await
+}
+
+/// Explain a query plan with ledger as greedy tail segment.
+///
+/// POST /fluree/explain/<ledger...>
+/// GET /fluree/explain/<ledger...>
+///
+/// This avoids ambiguity when ledger names contain `/`.
+pub async fn explain_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    params: Query<SparqlParams>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    credential: MaybeCredential,
+) -> Result<Json<JsonValue>> {
+    explain_ledger(
+        State(state),
+        Path(ledger),
+        params,
+        headers,
+        bearer,
+        credential,
+    )
+    .await
 }
 
 /// Check if a query requires dataset features (multi-ledger, named graphs, etc.)
@@ -915,9 +1172,15 @@ async fn execute_sparql_ledger(
     sparql: &str,
     identity: Option<&str>,
     delimited: Option<DelimitedFormat>,
+    headers: &FlureeHeaders,
 ) -> Result<Response> {
     // Create span for peer mode loading
-    let span = tracing::debug_span!("sparql_execute", ledger_id = ledger_id);
+    let span = tracing::debug_span!(
+        "sparql_execute",
+        ledger_id = ledger_id,
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     async move {
         let span = tracing::Span::current();
 
@@ -943,8 +1206,27 @@ async fn execute_sparql_ledger(
             .map(|d| !d.default_graphs.is_empty() || !d.named_graphs.is_empty() || d.to_graph.is_some())
             .unwrap_or(false);
 
+        let wants_sparql_xml = headers.wants_sparql_results_xml();
+        let wants_rdf_xml = headers.wants_rdf_xml();
+        if wants_sparql_xml && wants_rdf_xml {
+            return Err(ServerError::not_acceptable(
+                "Conflicting Accept headers: both SPARQL Results XML and RDF/XML requested"
+                    .to_string(),
+            ));
+        }
+
         // In proxy mode, use the unified FlureeInstance method (returns pre-formatted JSON)
         if state.config.is_proxy_storage_mode() && !has_dataset_clause {
+            if wants_sparql_xml {
+                return Err(ServerError::not_acceptable(
+                    "SPARQL Results XML is not supported in proxy mode".to_string(),
+                ));
+            }
+            if wants_rdf_xml {
+                return Err(ServerError::not_acceptable(
+                    "RDF/XML is not supported in proxy mode".to_string(),
+                ));
+            }
             if let Some(fmt) = delimited {
                 return Err(ServerError::not_acceptable(format!(
                     "{} format not supported in proxy mode",
@@ -975,6 +1257,17 @@ async fn execute_sparql_ledger(
             if has_dataset_clause {
                 return Err(ServerError::not_acceptable(
                     "FROM/FROM NAMED is not currently supported with identity-scoped SPARQL on the ledger-scoped endpoint".to_string(),
+                ));
+            }
+            if wants_sparql_xml {
+                return Err(ServerError::not_acceptable(
+                    "SPARQL Results XML is not supported for identity-scoped SPARQL queries"
+                        .to_string(),
+                ));
+            }
+            if wants_rdf_xml {
+                return Err(ServerError::not_acceptable(
+                    "RDF/XML is not supported for identity-scoped SPARQL queries".to_string(),
                 ));
             }
             if let Some(fmt) = delimited {
@@ -1119,6 +1412,140 @@ async fn execute_sparql_ledger(
                 add_named(&iri_to_string(iri))?;
             }
 
+            // Tracked dataset query: if tracking headers are present, use tracked path
+            if headers.has_tracking() {
+                if wants_sparql_xml {
+                    return Err(ServerError::not_acceptable(
+                        "SPARQL Results XML is not supported for tracked queries".to_string(),
+                    ));
+                }
+                if wants_rdf_xml {
+                    return Err(ServerError::not_acceptable(
+                        "RDF/XML is not supported for tracked queries".to_string(),
+                    ));
+                }
+                let tracking_opts = headers.to_tracking_options();
+                let response = match &state.fluree {
+                    FlureeInstance::File(f) => {
+                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(f.as_ref())
+                            .sparql(sparql)
+                            .tracking(tracking_opts)
+                            .execute_tracked()
+                            .await
+                    }
+                    FlureeInstance::Proxy(p) => {
+                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(p.as_ref())
+                            .sparql(sparql)
+                            .tracking(tracking_opts)
+                            .execute_tracked()
+                            .await
+                    }
+                };
+                let response = match response {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let server_error =
+                            ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                        set_span_error_code(&span, "error:QueryFailed");
+                        tracing::error!(error = %server_error, "tracked SPARQL dataset query failed");
+                        return Err(server_error);
+                    }
+                };
+
+                let tally = TrackingTally {
+                    time: response.time.clone(),
+                    fuel: response.fuel,
+                    policy: response.policy.clone(),
+                };
+                let headers = tracking_headers(&tally);
+                let json = serde_json::to_value(&response).map_err(|e| {
+                    ServerError::internal(format!("Failed to serialize response: {}", e))
+                })?;
+
+                tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
+                return Ok((headers, Json(json)).into_response());
+            }
+
+            // SPARQL Results XML: execute and format as XML string (SELECT/ASK only)
+            if wants_sparql_xml {
+                let xml = match &state.fluree {
+                    FlureeInstance::File(f) => {
+                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(f.as_ref())
+                            .sparql(sparql)
+                            .format(fluree_db_api::FormatterConfig::sparql_xml())
+                            .execute_formatted_string()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                    FlureeInstance::Proxy(p) => {
+                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(p.as_ref())
+                            .sparql(sparql)
+                            .format(fluree_db_api::FormatterConfig::sparql_xml())
+                            .execute_formatted_string()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                };
+                let content_type = "application/sparql-results+xml; charset=utf-8";
+                return Ok((
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    xml.into_bytes(),
+                )
+                    .into_response());
+            }
+
+            // RDF/XML: execute and format graph results (CONSTRUCT/DESCRIBE only)
+            if wants_rdf_xml {
+                let is_graph_query = matches!(
+                    parsed.ast.as_ref().map(|a| &a.body),
+                    Some(fluree_db_sparql::ast::QueryBody::Construct(_))
+                        | Some(fluree_db_sparql::ast::QueryBody::Describe(_))
+                );
+                if !is_graph_query {
+                    return Err(ServerError::not_acceptable(
+                        "RDF/XML is only available for SPARQL CONSTRUCT/DESCRIBE queries"
+                            .to_string(),
+                    ));
+                }
+
+                let xml = match &state.fluree {
+                    FlureeInstance::File(f) => {
+                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(f.as_ref())
+                            .sparql(sparql)
+                            .format(fluree_db_api::FormatterConfig::rdf_xml())
+                            .execute_formatted_string()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                    FlureeInstance::Proxy(p) => {
+                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(p.as_ref())
+                            .sparql(sparql)
+                            .format(fluree_db_api::FormatterConfig::rdf_xml())
+                            .execute_formatted_string()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                };
+                let content_type = "application/rdf+xml; charset=utf-8";
+                return Ok((
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    xml.into_bytes(),
+                )
+                    .into_response());
+            }
+
             let result = match &state.fluree {
                 FlureeInstance::File(f) => {
                     let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
@@ -1152,6 +1579,67 @@ async fn execute_sparql_ledger(
         let graph = GraphDb::from_ledger_state(&ledger);
         let fluree = state.fluree.as_file();
 
+        // Tracked SPARQL: if tracking headers are present, use tracked execution path
+        if headers.has_tracking() {
+            if wants_sparql_xml {
+                return Err(ServerError::not_acceptable(
+                    "SPARQL Results XML is not supported for tracked queries".to_string(),
+                ));
+            }
+            if wants_rdf_xml {
+                return Err(ServerError::not_acceptable(
+                    "RDF/XML is not supported for tracked queries".to_string(),
+                ));
+            }
+            if let Some(fmt) = delimited {
+                return Err(ServerError::not_acceptable(format!(
+                    "{} format not supported for tracked queries",
+                    fmt.name().to_uppercase()
+                )));
+            }
+
+            let tracking_opts = headers.to_tracking_options();
+            let response = match graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .tracking(tracking_opts)
+                .execute_tracked()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    let server_error =
+                        ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                    set_span_error_code(&span, "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "tracked SPARQL query failed");
+                    return Err(server_error);
+                }
+            };
+
+            // Record tracker fields on the execution span
+            if let Some(ref time) = response.time {
+                span.record("tracker_time", time.as_str());
+            }
+            if let Some(fuel) = response.fuel {
+                span.record("tracker_fuel", fuel);
+            }
+
+            let tally = TrackingTally {
+                time: response.time.clone(),
+                fuel: response.fuel,
+                policy: response.policy.clone(),
+            };
+            let resp_headers = tracking_headers(&tally);
+
+            let json = serde_json::to_value(&response).map_err(|e| {
+                set_span_error_code(&span, "error:InternalError");
+                ServerError::internal(format!("Failed to serialize response: {}", e))
+            })?;
+
+            tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
+            return Ok((resp_headers, Json(json)).into_response());
+        }
+
         // Delimited fast path: execute raw query and format as TSV/CSV bytes
         if let Some(fmt) = delimited {
             let result = graph
@@ -1182,6 +1670,57 @@ async fn execute_sparql_ledger(
             return Ok(delimited_response(bytes, fmt));
         }
 
+        // SPARQL Results XML: execute and format as XML string (SELECT/ASK only)
+        if wants_sparql_xml {
+            let xml = graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .format(fluree_db_api::FormatterConfig::sparql_xml())
+                .execute_formatted_string()
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })
+                .map_err(ServerError::Api)?;
+            let content_type = "application/sparql-results+xml; charset=utf-8";
+            return Ok((
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                xml.into_bytes(),
+            )
+                .into_response());
+        }
+
+        // RDF/XML: execute and format graph results (CONSTRUCT/DESCRIBE only)
+        if wants_rdf_xml {
+            let is_graph_query = matches!(
+                parsed.ast.as_ref().map(|a| &a.body),
+                Some(fluree_db_sparql::ast::QueryBody::Construct(_))
+                    | Some(fluree_db_sparql::ast::QueryBody::Describe(_))
+            );
+            if !is_graph_query {
+                return Err(ServerError::not_acceptable(
+                    "RDF/XML is only available for SPARQL CONSTRUCT/DESCRIBE queries".to_string(),
+                ));
+            }
+
+            let xml = graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .format(fluree_db_api::FormatterConfig::rdf_xml())
+                .execute_formatted_string()
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })
+                .map_err(ServerError::Api)?;
+            let content_type = "application/rdf+xml; charset=utf-8";
+            return Ok((
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                xml.into_bytes(),
+            )
+                .into_response());
+        }
+
         // Execute SPARQL query via builder - formatted JSON output
         let result = graph
             .query(fluree.as_ref())
@@ -1206,6 +1745,7 @@ async fn execute_sparql_ledger(
 /// Supports signed requests (JWS/VC format).
 pub async fn explain(
     State(state): State<Arc<AppState>>,
+    Query(params): Query<SparqlParams>,
     headers: FlureeHeaders,
     bearer: MaybeDataBearer,
     credential: MaybeCredential,
@@ -1214,13 +1754,19 @@ pub async fn explain(
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
+    let input_format = if is_sparql_request(&headers, &credential, &params) {
+        "sparql"
+    } else {
+        "fql"
+    };
+
     let span = create_request_span(
         "explain",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger ID determined later
         None, // tenant_id not yet supported
-        None, // explain is the operation, no input format needed
+        Some(input_format),
     );
     async move {
         let span = tracing::Span::current();
@@ -1237,6 +1783,86 @@ pub async fn explain(
             return Err(ServerError::unauthorized(
                 "Authentication required (signed request or Bearer token)",
             ));
+        }
+
+        // SPARQL UPDATE should use the transact endpoint, not explain
+        if headers.is_sparql_update() || credential.is_sparql_update {
+            let error = ServerError::bad_request(
+                "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/explain",
+            );
+            set_span_error_code(&span, "error:BadRequest");
+            tracing::warn!(error = %error, "SPARQL UPDATE sent to explain endpoint");
+            return Err(error);
+        }
+
+        // Handle SPARQL explain (connection-scoped: ledger must be discoverable via header or FROM)
+        if is_sparql_request(&headers, &credential, &params) {
+            let sparql = resolve_sparql_text(&params, &credential)?;
+            log_query_text(&sparql, &state.telemetry_config, &span);
+
+            // Determine target ledger: header wins, otherwise require a single FROM ledger id.
+            let ledger_id = if let Some(ref l) = headers.ledger {
+                l.clone()
+            } else {
+                let ledger_ids = fluree_db_api::sparql_dataset_ledger_ids(&sparql).map_err(|e| {
+                    ServerError::bad_request(format!(
+                        "Unable to determine ledger for SPARQL explain; include a FROM clause (e.g., FROM <myledger:main>) or send '{}' header. Details: {}",
+                        FlureeHeaders::LEDGER,
+                        e
+                    ))
+                })?;
+                if ledger_ids.len() != 1 {
+                    return Err(ServerError::bad_request(
+                        "SPARQL explain requires exactly one target ledger (single FROM <ledger>); multi-ledger explain is not supported"
+                            .to_string(),
+                    ));
+                }
+                ledger_ids[0].clone()
+            };
+            span.record("ledger_id", ledger_id.as_str());
+
+            // Enforce bearer ledger scope for unsigned requests
+            if let Some(p) = bearer.0.as_ref() {
+                if !credential.is_signed() && !p.can_read(&ledger_id) {
+                    set_span_error_code(&span, "error:Forbidden");
+                    // Avoid existence leak
+                    return Err(ServerError::not_found("Ledger not found"));
+                }
+            }
+
+            let result = if state.config.is_proxy_storage_mode() {
+                match state.fluree.explain_ledger_sparql(&ledger_id, &sparql).await {
+                    Ok(result) => {
+                        tracing::info!(status = "success", "explain completed (proxy)");
+                        result
+                    }
+                    Err(e) => {
+                        let server_error = ServerError::Api(e);
+                        set_span_error_code(&span, "error:InvalidQuery");
+                        tracing::error!(
+                            error = %server_error,
+                            "explain execution failed (proxy)"
+                        );
+                        return Err(server_error);
+                    }
+                }
+            } else {
+                let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                match state.fluree.as_file().explain_sparql(&db, &sparql).await {
+                    Ok(result) => {
+                        tracing::info!(status = "success", "explain completed");
+                        result
+                    }
+                    Err(e) => {
+                        let server_error = ServerError::Api(e);
+                        set_span_error_code(&span, "error:InvalidQuery");
+                        tracing::error!(error = %server_error, "explain execution failed");
+                        return Err(server_error);
+                    }
+                }
+            };
+            return Ok(Json(result));
         }
 
         // Parse body as JSON

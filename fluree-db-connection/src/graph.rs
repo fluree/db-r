@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 /// A flattened graph of JSON-LD nodes indexed by expanded @id
 ///
-/// This handles the JSON-LD patterns used in Clojure's connection config:
+/// This handles the JSON-LD patterns used in the legacy connection config:
 /// - Nodes are objects with `@id` fields (after expansion)
 /// - References are objects with only `@id` (no other properties)
 /// - Property values are arrays (post-expansion)

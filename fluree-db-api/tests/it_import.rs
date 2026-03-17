@@ -28,9 +28,12 @@ fn extract_sorted_strings(v: &serde_json::Value) -> Vec<String> {
         .iter()
         .map(|row| {
             if let Some(arr) = row.as_array() {
-                arr[0].as_str().unwrap().to_string()
+                arr.first()
+                    .and_then(|v| v.as_str())
+                    .expect("expected string in first column")
+                    .to_string()
             } else {
-                row.as_str().unwrap().to_string()
+                row.as_str().expect("expected string row").to_string()
             }
         })
         .collect();

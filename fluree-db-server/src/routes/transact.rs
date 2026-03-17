@@ -22,6 +22,7 @@
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
+use crate::extract::tracking_headers;
 use crate::extract::{FlureeHeaders, MaybeCredential, MaybeDataBearer};
 use crate::state::AppState;
 use crate::telemetry::{
@@ -31,8 +32,8 @@ use axum::extract::{Path, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fluree_db_api::{
-    lower_sparql_update, parse_sparql, CommitOpts, NamespaceRegistry, SparqlQueryBody, TxnOpts,
-    TxnType,
+    lower_sparql_update, parse_sparql, CommitOpts, NamespaceRegistry, SparqlQueryBody,
+    TrackingOptions, TxnOpts, TxnType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -54,7 +55,7 @@ pub struct CommitInfo {
     pub hash: String,
 }
 
-/// Transaction response - matches Clojure server format
+/// Transaction response - expected server format
 #[derive(Serialize)]
 pub struct TransactResponse {
     /// Ledger identifier
@@ -70,7 +71,7 @@ pub struct TransactResponse {
 
 /// Compute transaction ID from request body (SHA-256 hash)
 ///
-/// This matches Clojure's derive-tx-id which hashes the JSON-LD normalized data.
+/// This matches the legacy derive-tx-id behavior which hashes the JSON-LD normalized data.
 /// For simplicity we hash the raw JSON bytes - this is deterministic for the same input.
 fn compute_tx_id(body: &JsonValue) -> String {
     let json_bytes = serde_json::to_vec(body).unwrap_or_default();
@@ -114,6 +115,101 @@ fn extract_query_params(request: &Request) -> TransactQueryParams {
         .query()
         .and_then(|q| serde_urlencoded::from_str(q).ok())
         .unwrap_or_default()
+}
+
+/// Check if the credential contains a W3C SPARQL Protocol form-encoded update
+/// (`Content-Type: application/x-www-form-urlencoded` with `update=<sparql>`).
+///
+/// If detected, rewrites the credential's body and flags so the rest of the
+/// pipeline treats it as `application/sparql-update`.  This is required for
+/// standard SPARQL benchmarking tools (e.g. BSBM test driver) that use the
+/// form-encoded transport defined in the SPARQL 1.1 Protocol spec §2.2.
+fn maybe_rewrite_form_encoded_update(credential: &mut MaybeCredential) {
+    // Only act when none of the typed content-type flags are already set
+    if credential.is_sparql_update
+        || credential.is_sparql
+        || credential.is_turtle
+        || credential.is_trig
+    {
+        return;
+    }
+
+    // Check Content-Type header for form-urlencoded
+    let is_form = credential
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("application/x-www-form-urlencoded"))
+        .unwrap_or(false);
+
+    if !is_form {
+        return;
+    }
+
+    // Try to parse the body as form data and extract the `update` field
+    let body_str = match std::str::from_utf8(&credential.body) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let parsed: Vec<(String, String)> = match serde_urlencoded::from_str(body_str) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    if let Some((_, sparql)) = parsed.iter().find(|(k, _)| k == "update") {
+        credential.body = axum::body::Bytes::from(sparql.clone());
+        credential.is_sparql_update = true;
+    }
+}
+
+/// Inject header-based tracking options into transaction body (modifies in place).
+///
+/// Mirrors the query-side `inject_headers_into_query` pattern: header values act
+/// as defaults that do not override body-level opts.
+fn inject_headers_into_txn(body: &mut JsonValue, headers: &FlureeHeaders) {
+    if !headers.has_tracking() {
+        return;
+    }
+    if let Some(obj) = body.as_object_mut() {
+        let opts = obj
+            .entry("opts")
+            .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+        if let Some(opts_obj) = opts.as_object_mut() {
+            headers.inject_into_opts(opts_obj);
+        }
+    }
+}
+
+/// Check if tracking options are present in transaction body (meta or max-fuel).
+fn has_tracking_opts(body: &JsonValue) -> bool {
+    let Some(opts) = body.get("opts") else {
+        return false;
+    };
+    if let Some(meta) = opts.get("meta") {
+        match meta {
+            JsonValue::Bool(true) => return true,
+            JsonValue::Object(obj) if !obj.is_empty() => return true,
+            _ => {}
+        }
+    }
+    opts.get("max-fuel").is_some()
+        || opts.get("max_fuel").is_some()
+        || opts.get("maxFuel").is_some()
+}
+
+/// Build `TrackingOptions` from the transaction body opts (after header injection).
+fn tracking_options_from_body(body: &JsonValue) -> Option<TrackingOptions> {
+    if !has_tracking_opts(body) {
+        return None;
+    }
+    let opts = body.get("opts");
+    let tracking = TrackingOptions::from_opts_value(opts);
+    if tracking.any_enabled() {
+        Some(tracking)
+    } else {
+        None
+    }
 }
 
 /// Helper to extract ledger ID from request
@@ -234,7 +330,7 @@ async fn transact_local(
     state: Arc<AppState>,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
     // Extract headers
@@ -245,7 +341,10 @@ async fn transact_local(
     };
 
     // Extract credential (consumes the request body)
-    let credential = MaybeCredential::extract(request).await?;
+    let mut credential = MaybeCredential::extract(request).await?;
+
+    // W3C SPARQL Protocol: rewrite form-encoded `update=...` to sparql-update
+    maybe_rewrite_form_encoded_update(&mut credential);
 
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
@@ -345,7 +444,7 @@ async fn transact_local(
 
         tracing::info!(status = "start", "transaction request received");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -372,9 +471,10 @@ async fn transact_local(
             &state,
             &ledger_id,
             TxnType::Update,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -423,7 +523,7 @@ async fn transact_ledger_local(
     ledger: String,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
 
@@ -432,7 +532,10 @@ async fn transact_ledger_local(
         Ok(h) => h,
         Err(e) => return Err(e),
     };
-    let credential = MaybeCredential::extract(request).await?;
+    let mut credential = MaybeCredential::extract(request).await?;
+
+    // W3C SPARQL Protocol: rewrite form-encoded `update=...` to sparql-update
+    maybe_rewrite_form_encoded_update(&mut credential);
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
@@ -515,7 +618,7 @@ async fn transact_ledger_local(
 
         tracing::info!(status = "start", "ledger transaction request received");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -542,9 +645,10 @@ async fn transact_ledger_local(
             &state,
             &ledger_id,
             TxnType::Update,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -577,7 +681,7 @@ async fn insert_local(
     state: Arc<AppState>,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
 
@@ -660,7 +764,7 @@ async fn insert_local(
 
         tracing::info!(status = "start", "insert transaction requested");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -687,9 +791,10 @@ async fn insert_local(
             &state,
             &ledger_id,
             TxnType::Insert,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -722,7 +827,7 @@ async fn upsert_local(
     state: Arc<AppState>,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
 
@@ -805,7 +910,7 @@ async fn upsert_local(
 
         tracing::info!(status = "start", "upsert transaction requested");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -832,9 +937,10 @@ async fn upsert_local(
             &state,
             &ledger_id,
             TxnType::Upsert,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -881,7 +987,7 @@ async fn insert_ledger_local(
     ledger: String,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
 
@@ -951,7 +1057,7 @@ async fn insert_ledger_local(
 
         tracing::info!(status = "start", "ledger insert transaction requested");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -978,9 +1084,10 @@ async fn insert_ledger_local(
             &state,
             &ledger_id,
             TxnType::Insert,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -1027,7 +1134,7 @@ async fn upsert_ledger_local(
     ledger: String,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
 
@@ -1097,7 +1204,7 @@ async fn upsert_ledger_local(
 
         tracing::info!(status = "start", "ledger upsert transaction requested");
 
-        let body_json = match credential.body_json() {
+        let mut body_json = match credential.body_json() {
             Ok(json) => json,
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -1124,9 +1231,10 @@ async fn upsert_ledger_local(
             &state,
             &ledger_id,
             TxnType::Upsert,
-            &body_json,
+            &mut body_json,
             &credential,
             author.as_deref(),
+            &headers,
         )
         .await
     }
@@ -1134,15 +1242,26 @@ async fn upsert_ledger_local(
     .await
 }
 
-/// Execute a transaction with the given type
+/// Execute a transaction with the given type.
+///
+/// When tracking headers are present (fluree-track-fuel, fluree-max-fuel, etc.),
+/// tracking options are injected into the transaction body and the response
+/// includes x-fdb-fuel / x-fdb-time headers.
 async fn execute_transaction(
     state: &AppState,
     ledger_id: &str,
     txn_type: TxnType,
-    body: &JsonValue,
+    body: &mut JsonValue,
     credential: &MaybeCredential,
     author: Option<&str>,
-) -> Result<Json<TransactResponse>> {
+    headers: &FlureeHeaders,
+) -> Result<Response> {
+    // Inject header-based tracking options into body opts (header defaults, body overrides)
+    inject_headers_into_txn(body, headers);
+
+    // Extract tracking options from body (after header injection)
+    let tracking = tracking_options_from_body(body);
+
     // Create execution span
     let span =
         tracing::debug_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
@@ -1196,6 +1315,9 @@ async fn execute_transaction(
         if let Some(config) = &state.index_config {
             builder = builder.index_config(config.clone());
         }
+        if let Some(opts) = tracking {
+            builder = builder.tracking(opts);
+        }
 
         let result = match builder.execute().await {
             Ok(result) => {
@@ -1215,14 +1337,23 @@ async fn execute_transaction(
             }
         };
 
-        Ok(Json(TransactResponse {
+        let response_json = Json(TransactResponse {
             ledger_id: ledger_id.to_string(),
             t: result.receipt.t,
             tx_id,
             commit: CommitInfo {
                 hash: result.receipt.commit_id.to_string(),
             },
-        }))
+        });
+
+        // Return tracking headers when a tally is present
+        match result.tally {
+            Some(tally) => {
+                let hdrs = tracking_headers(&tally);
+                Ok((hdrs, response_json).into_response())
+            }
+            None => Ok(response_json.into_response()),
+        }
     }
     .instrument(span)
     .await
@@ -1258,7 +1389,7 @@ async fn execute_turtle_transaction(
     turtle: &str,
     credential: &MaybeCredential,
     author: Option<&str>,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     let is_trig = credential.is_trig();
 
     // Create execution span
@@ -1349,14 +1480,22 @@ async fn execute_turtle_transaction(
             }
         };
 
-        Ok(Json(TransactResponse {
+        let response_json = Json(TransactResponse {
             ledger_id: ledger_id.to_string(),
             t: result.receipt.t,
             tx_id,
             commit: CommitInfo {
                 hash: result.receipt.commit_id.to_string(),
             },
-        }))
+        });
+
+        match result.tally {
+            Some(tally) => {
+                let hdrs = tracking_headers(&tally);
+                Ok((hdrs, response_json).into_response())
+            }
+            None => Ok(response_json.into_response()),
+        }
     }
     .instrument(span)
     .await
@@ -1379,7 +1518,7 @@ async fn execute_sparql_update_request(
     credential: &MaybeCredential,
     parent_span: &tracing::Span,
     bearer: Option<&crate::extract::DataPrincipal>,
-) -> Result<Json<TransactResponse>> {
+) -> Result<Response> {
     // Extract SPARQL string from body
     let sparql = match credential.body_string() {
         Ok(s) => s,
@@ -1523,14 +1662,22 @@ async fn execute_sparql_update_request(
         }
     };
 
-    Ok(Json(TransactResponse {
+    let response_json = Json(TransactResponse {
         ledger_id,
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
             hash: result.receipt.commit_id.to_string(),
         },
-    }))
+    });
+
+    match result.tally {
+        Some(tally) => {
+            let hdrs = tracking_headers(&tally);
+            Ok((hdrs, response_json).into_response())
+        }
+        None => Ok(response_json.into_response()),
+    }
 }
 
 // ===== Peer mode forwarding =====

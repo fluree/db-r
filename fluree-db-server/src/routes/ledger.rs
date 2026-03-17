@@ -28,7 +28,7 @@ pub struct CommitInfo {
     pub hash: String,
 }
 
-/// Create ledger response - matches Clojure server format
+/// Create ledger response - expected server format
 #[derive(Serialize)]
 pub struct CreateResponse {
     /// Ledger identifier
@@ -368,7 +368,7 @@ pub async fn info(
 
         let t = ledger_state.snapshot.t;
 
-        // Build comprehensive ledger info (at parity with Clojure)
+        // Build comprehensive ledger info
         //
         // By default we return the optimized base payload. Callers can opt into
         // heavier/real-time property details via query params.

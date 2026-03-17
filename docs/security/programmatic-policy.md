@@ -1,6 +1,6 @@
 # Programmatic Policy API (Rust)
 
-This guide covers how to use Fluree's policy system programmatically in Rust applications, mirroring Clojure's `wrap-policy` and `wrap-identity-policy` patterns.
+This guide covers how to use Fluree's policy system programmatically in Rust applications.
 
 ## Overview
 
@@ -202,7 +202,7 @@ let result = fluree.query_from()
 
 ## Policy Options Precedence
 
-When multiple policy options are provided, they follow this precedence (matching Clojure semantics):
+When multiple policy options are provided, they follow this precedence:
 
 | Priority | Option | Behavior |
 |----------|--------|----------|

@@ -9,13 +9,13 @@ pub struct IndexerConfig {
     /// Target estimated bytes per leaf node
     ///
     /// Leaves will be sized to approximately this many bytes during splits.
-    /// Default: 187,500 (half of Clojure default overflow-bytes)
+    /// Default: 187,500 (half of the legacy default overflow-bytes)
     pub leaf_target_bytes: u64,
 
     /// Maximum estimated bytes per leaf node
     ///
     /// Leaves split when they exceed this threshold.
-    /// Default: 375,000 (Clojure default overflow-bytes)
+    /// Default: 375,000 (legacy default overflow-bytes)
     pub leaf_max_bytes: u64,
 
     /// Target number of children per branch node
@@ -96,7 +96,7 @@ pub struct IndexerConfig {
     /// Default: 4 (one per sort order in a single-graph workload)
     pub incremental_max_concurrency: usize,
 
-    /// Target rows per leaflet (FLI2).
+    /// Target rows per leaflet (FLI3).
     ///
     /// This is primarily a build-format tuning knob. Smaller values produce
     /// more leaflets (and therefore more leaves) for the same dataset, which
@@ -105,7 +105,7 @@ pub struct IndexerConfig {
     /// Default: 25,000.
     pub leaflet_rows: usize,
 
-    /// Leaflets per leaf file (FLI2).
+    /// Leaflets per leaf file (FLI3).
     ///
     /// Default: 10.
     pub leaflets_per_leaf: usize,

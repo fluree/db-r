@@ -154,7 +154,7 @@ pub struct GraphStatsEntry {
     pub g_id: GraphId,
     /// Total number of flakes in this graph (after dedup).
     pub flakes: u64,
-    /// Byte size of flakes in this graph in the binary index.
+    /// Estimated byte size of flakes in this graph in the binary index.
     /// Set to 0 in the pre-index manifest (binary index not yet built).
     /// Populated by index build/refresh.
     pub size: u64,

@@ -48,7 +48,7 @@ fn validate_var_name(name: &str) -> Result<()> {
 
 /// Parse a JSON-LD VALUES clause.
 ///
-/// Accepts the same structure as Clojure's `util.parse/normalize-values`:
+/// Accepts the same structure as the legacy `util.parse/normalize-values`:
 /// - `[vars, vals]` where vars is a string or array of strings
 /// - vals is an array of rows; each row is either:
 ///   - an array of length |vars|

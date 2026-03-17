@@ -1,8 +1,8 @@
 # JSON-LD Connection Configuration (Rust)
 
-This page documents the **Clojure-style JSON-LD connection config** supported by the Rust implementation.
+This page documents the **JSON-LD connection config** supported by the Rust implementation.
 
-If you’ve used Fluree’s Clojure `connect` / `connect-s3` / `connect-file`, this is the same `@context` + `@graph` model.
+This config uses the same `@context` + `@graph` model as other Fluree JSON-LD config surfaces.
 
 ## Entry points
 
@@ -53,7 +53,7 @@ Many fields can be provided as direct literals **or** as a `ConfigurationValue` 
 Notes:
 - `envVar`: reads from environment (non-wasm targets)
 - `defaultVal`: fallback string value
-- `javaProp`: accepted for parity; Rust treats it like another env var key (best-effort)
+- `javaProp`: accepted for compatibility; Rust treats it like another env var key (best-effort)
 
 ## Connection node fields
 
@@ -177,8 +177,8 @@ detection (`--x-s3` + `-azN`) for diagnostics.
 }
 ```
 
-Note: some Clojure docs recommend omitting `s3Endpoint` for Express; Rust supports that when using
-`connect_json_ld`. For parity with the Clojure helper surface area, Rust also exposes
+Note: some legacy docs recommend omitting `s3Endpoint` for Express; Rust supports that when using
+`connect_json_ld`. For compatibility with the helper surface area, Rust also exposes
 `connect_s3(bucket, endpoint)`, but it **omits** `s3Endpoint` automatically when the bucket name
 looks like an Express directory bucket (to avoid `SignatureDoesNotMatch` / endpoint issues).
 
@@ -190,7 +190,7 @@ Guidance:
 #### addressIdentifier
 
 Rust parses `addressIdentifier` on storage nodes and uses it to rewrite **published**
-commit/index ContentIds so they include the identifier segment (Clojure parity), e.g.:
+commit/index ContentIds so they include the identifier segment, e.g.:
 `fluree:{addressIdentifier}:s3://...`.
 
 This is mainly useful when you have multiple storage backends and want addresses to
@@ -198,7 +198,7 @@ carry an explicit storage identifier.
 
 ## Split commit vs index storage (tiered S3)
 
-Rust supports Clojure’s tiered `commitStorage` + `indexStorage` format **when using JSON-LD**.
+Rust supports the tiered `commitStorage` + `indexStorage` format **when using JSON-LD**.
 Internally, Rust routes:
 - `.../commit/...` and `.../txn/...` → commit storage
 - everything else → index storage
@@ -276,9 +276,9 @@ Supported (and applied):
 - `dynamodbEndpoint`
 - `dynamodbTimeoutMs`
 
-## Parity notes vs Clojure
+## Compatibility notes
 
-This Rust JSON-LD model is intended to stay in parity with `../db` docs:
+This Rust JSON-LD model is intended to stay aligned with existing Fluree docs:
 - `../db/docs/S3_STORAGE_GUIDE.md`
 - `../db/docs/FILE_STORAGE_GUIDE.md`
 - `../db/docs/DYNAMODB_NAMESERVICE_GUIDE.md`

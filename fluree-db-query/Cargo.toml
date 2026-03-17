@@ -53,6 +53,8 @@ rustc-hash = "2"
 xxhash-rust = "0.8"
 # URL encoding
 percent-encoding = "2"
+# HashSet raw entry API for DISTINCT (avoid per-row allocations)
+hashbrown = { workspace = true }
 # Async runtime - needed for block_in_place in policy evaluation
 tokio = { workspace = true }
 # GeoRust ecosystem for WKT parsing and geometry types (S2 search)

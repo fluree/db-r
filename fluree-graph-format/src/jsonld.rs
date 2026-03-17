@@ -118,7 +118,7 @@ impl JsonLdFormatConfig {
         self
     }
 
-    /// Create a config for CONSTRUCT query output (Clojure parity mode)
+    /// Create a config for CONSTRUCT query output
     ///
     /// This convenience builder encapsulates all CONSTRUCT-specific settings:
     /// - `rdf:type` → `@type` conversion
@@ -153,7 +153,7 @@ impl JsonLdFormatConfig {
             .with_context_policy(context_policy)
             .with_type_handling(TypeHandling::AsAtType)
             .with_blank_node_policy(BlankNodePolicy::Deterministic)
-            // Clojure parity for CONSTRUCT (JSON-LD): always use arrays for values.
+            // For CONSTRUCT (JSON-LD): always use arrays for values.
             // (The API layer may override this for SPARQL CONSTRUCT output.)
             .with_multicardinal_arrays(true)
             .with_dedupe_values(true)

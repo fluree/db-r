@@ -1,7 +1,4 @@
-//! Credentialed query/transact integration tests (Clojure parity)
-//!
-//! Parity reference:
-//! - `db-clojure/test/fluree/db/json_ld/credential_test.cljc` (integration section)
+//! Credentialed query/transact integration tests
 //!
 //! Focus:
 //! - `credential_transact` (signed update txn with policy enforcement)
@@ -76,7 +73,7 @@ async fn seed_credential_ledger(
         .ledger;
 
     // Insert identities and a stored policy class. We intentionally store f:query as a JSON string
-    // (Clojure parity) so it can be used by identity-based policy loading (for SPARQL credential tests).
+    // so it can be used by identity-based policy loading (for SPARQL credential tests).
     //
     // Policy rule: allow view/modify only when the accessed subject is the identity.
     //
@@ -129,13 +126,13 @@ async fn seed_credential_ledger(
 
 /// Test: Credentialed transact and query with f:query policy enforcement
 ///
-/// Clojure parity: credential-test (integration section)
+/// credential-test (integration section)
 #[tokio::test]
 async fn credential_transact_then_credential_query_enforces_policy() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Clojure uses fixed private keys; we do the same to keep DIDs stable.
+    // Use fixed private keys to keep DIDs stable.
     let root_sk = SigningKey::from_bytes(&decode_hex_32(
         "27ee972212ecf6f1810b11ece94bb85487b4694580bcc189f731d54f0a242429",
     ));
@@ -248,7 +245,7 @@ async fn credential_transact_then_credential_query_enforces_policy() {
 
 /// Test: Credentialed SPARQL query with identity-based f:query policy
 ///
-/// Clojure parity: credential-test (SPARQL with identity-based policy)
+/// credential-test (SPARQL with identity-based policy)
 #[tokio::test]
 async fn credential_query_sparql_uses_identity_based_policy() {
     assert_index_defaults();

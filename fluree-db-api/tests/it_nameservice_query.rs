@@ -1,7 +1,5 @@
-//! Nameservice query integration tests (Clojure parity)
+//! Nameservice query integration tests
 //!
-//! Parity reference:
-//! - `db-clojure/test/fluree/db/nameservice_query_test.clj`
 
 mod support;
 
@@ -74,7 +72,7 @@ async fn nameservice_query_memory_parity() {
         .expect("insert 2")
         .ledger;
 
-    // Query for database records (Clojure: "Query for specific ledger information")
+    // Query for database records ("Query for specific ledger information")
     let db_query = json!({
         "@context": {"f":"https://ns.flur.ee/db#"},
         "select": {"?ns": ["f:ledger", "f:branch", "f:t"]},
@@ -251,7 +249,7 @@ async fn nameservice_slash_ledger_names_parity() {
     assert!(names.contains("tenant1/products"));
     assert!(names.contains("tenant2/orders"));
 
-    // Verify filesystem layout mirrors Clojure expectation: ns@v2/{ledger-name}/{branch}.json
+    // Verify filesystem layout: ns@v2/{ledger-name}/{branch}.json
     let ns_dir = tmp.path().join("ns@v2");
     assert!(ns_dir.exists(), "ns@v2 directory should exist");
     assert!(

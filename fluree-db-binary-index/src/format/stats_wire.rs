@@ -1,6 +1,6 @@
 //! Binary wire format for index stats and schema sections.
 //!
-//! These are embedded in the `IndexRootV5` binary root (not separate blobs).
+//! These are embedded in the `IndexRoot` binary root (not separate blobs).
 //! The encodings are fully structured binary — no JSON anywhere.
 //!
 //! ## Stats wire format

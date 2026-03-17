@@ -127,7 +127,7 @@ impl R2rmlScanOperator {
     /// 2. Cross-ledger SIDs don't match anyway (different namespace codes)
     /// 3. Encoding would silently drop rows for IRIs not in namespace table
     ///
-    /// This matches the Clojure implementation which uses `match-iri` for graph source results.
+    /// This matches the legacy implementation which uses `match-iri` for graph source results.
     fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_>) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {
@@ -561,6 +561,9 @@ impl Operator for R2rmlScanOperator {
                             // Helper function to emit an output row (inlined to avoid borrow issues)
                             macro_rules! emit_row {
                                 ($object_binding:expr) => {{
+                                    // Fuel tracking: count each emitted row
+                                    ctx.tracker.consume_fuel_one()?;
+
                                     // Build output row
                                     let mut out_row: Vec<Binding> =
                                         vec![Binding::Unbound; num_cols];

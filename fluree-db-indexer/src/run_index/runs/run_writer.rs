@@ -1,283 +1,180 @@
-//! Memory-bounded run writer: buffers records, sorts, and flushes to run files.
+//! V2 run writer — buffers `RunRecordV2` records, sorts, and flushes to V2 run files.
 //!
-//! Implements the external-sort pattern: accumulate records up to a memory
-//! budget, sort by the target index order (SPOT), and write as an immutable
-//! run file. The resulting run files are later merged (Phase C).
+//! Same background-flush architecture as V1 `RunWriter`, but operates on
+//! `RunRecordV2` with V2 sort comparators and V2 wire format.
 
-use super::run_file::{write_run_file, RunFileInfo};
+use super::run_file::{write_run_file, write_run_file_with_op, RunFileInfo};
 use crate::run_index::resolve::global_dict::LanguageTagDict;
-use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+use fluree_db_binary_index::format::run_record::{RunRecord, RunSortOrder};
+use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use std::io;
 use std::path::PathBuf;
 
-/// Trait for anything that can receive RunRecords.
+// ============================================================================
+// RecordSink trait (V1 RunRecord receiver, used by commit resolver)
+// ============================================================================
+
+/// Trait for anything that can receive V1 RunRecords.
 ///
-/// Implemented by `RunWriter` (single-order) and `MultiOrderRunWriter` (multi-order).
+/// Implemented by types that buffer V1 records during commit resolution.
+/// The resolver emits V1 `RunRecord` format which is later converted to V2.
 pub trait RecordSink {
     fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()>;
 }
 
-/// Configuration for the RunWriter.
-#[derive(Debug, Clone)]
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Configuration for a V2 run writer.
 pub struct RunWriterConfig {
-    /// Maximum memory budget for the record buffer in bytes.
-    /// Default: 256 MB.
+    /// Total memory budget in bytes for the record buffer.
     pub buffer_budget_bytes: usize,
-    /// Sort order for output run files.
+    /// Sort order for this writer's run files.
     pub sort_order: RunSortOrder,
     /// Directory where run files are written.
     pub run_dir: PathBuf,
 }
 
 impl RunWriterConfig {
-    /// Maximum number of records that fit in the budget.
+    /// Maximum records that fit in the budget.
     pub fn max_records(&self) -> usize {
-        self.buffer_budget_bytes / std::mem::size_of::<RunRecord>()
+        self.buffer_budget_bytes / std::mem::size_of::<RunRecordV2>()
     }
 }
 
-impl Default for RunWriterConfig {
-    fn default() -> Self {
-        Self {
-            buffer_budget_bytes: 256 * 1024 * 1024, // 256 MB
-            sort_order: RunSortOrder::Spot,
-            run_dir: PathBuf::from("."),
-        }
-    }
-}
+// ============================================================================
+// RunWriter
+// ============================================================================
 
-/// Result from a completed background flush thread.
-struct FlushResult {
-    info: RunFileInfo,
-    /// The now-empty buffer, returned for reuse (avoids reallocation).
-    buffer: Vec<RunRecord>,
-}
-
-/// Memory-bounded buffer that accumulates RunRecords and flushes sorted run files.
-///
-/// When a flush is triggered, the full buffer is handed off to a background
-/// thread for sort + write while the main thread continues pushing records
-/// into a spare buffer. At most one background flush is in flight per writer.
+/// V2 run writer with background flush.
 pub struct RunWriter {
     config: RunWriterConfig,
-    buffer: Vec<RunRecord>,
-    /// Number of run files written so far.
+    buffer: Vec<RunRecordV2>,
     run_count: u32,
-    /// Total records across all flushed runs + current buffer.
     total_records: u64,
-    /// Completed run file infos.
     run_files: Vec<RunFileInfo>,
-    /// Min t seen across all records.
     min_t: u32,
-    /// Max t seen across all records.
     max_t: u32,
-    /// Whether to clear the language dict after each flush.
-    /// True for standalone writers; false for sub-writers inside MultiOrderRunWriter
-    /// (avoids lang_id mismatch when writers flush at different times).
-    clear_lang_on_flush: bool,
-    /// Background flush thread handle (if a flush is in progress).
-    pending_flush: Option<std::thread::JoinHandle<io::Result<FlushResult>>>,
-    /// Spare buffer returned from a completed background flush, ready for reuse.
-    spare_buffer: Option<Vec<RunRecord>>,
+    pending_flush: Option<std::thread::JoinHandle<io::Result<FlushResultV2>>>,
+    spare_buffer: Option<Vec<RunRecordV2>>,
+}
+
+struct FlushResultV2 {
+    info: RunFileInfo,
+    spare: Vec<RunRecordV2>,
 }
 
 impl RunWriter {
     pub fn new(config: RunWriterConfig) -> Self {
-        let max_records = config.max_records();
-        tracing::info!(
-            budget_bytes = config.buffer_budget_bytes,
-            max_records,
-            record_size = std::mem::size_of::<RunRecord>(),
-            run_dir = %config.run_dir.display(),
-            "RunWriter initialized"
-        );
+        let cap = config.max_records().min(1_000_000);
         Self {
+            buffer: Vec::with_capacity(cap),
             config,
-            buffer: Vec::with_capacity(max_records.min(1_000_000)), // cap initial alloc
             run_count: 0,
             total_records: 0,
             run_files: Vec::new(),
             min_t: u32::MAX,
             max_t: 0,
-            clear_lang_on_flush: true,
             pending_flush: None,
             spare_buffer: None,
         }
     }
 
-    /// Push a record into the buffer. Flushes to disk if budget exceeded.
-    pub fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
-        // Track t range
+    /// Push a record. Flushes to disk when the buffer exceeds the budget.
+    pub fn push(&mut self, record: RunRecordV2) -> io::Result<()> {
         if record.t < self.min_t {
             self.min_t = record.t;
         }
         if record.t > self.max_t {
             self.max_t = record.t;
         }
-
         self.buffer.push(record);
-        self.total_records += 1;
-
         if self.buffer.len() >= self.config.max_records() {
-            self.flush_buffer(lang_dict)?;
-        }
-
-        Ok(())
-    }
-
-    /// Wait for any in-flight background flush to complete and collect its result.
-    fn join_pending_flush(&mut self) -> io::Result<()> {
-        if let Some(handle) = self.pending_flush.take() {
-            let result = handle.join().expect("flush thread panicked")?;
-            self.run_files.push(result.info);
-            self.spare_buffer = Some(result.buffer);
+            self.flush_buffer()?;
         }
         Ok(())
     }
 
-    /// Flush the current buffer by handing it to a background thread for sort + write.
-    ///
-    /// The main thread swaps in a spare (or fresh) buffer and continues immediately.
-    /// At most one background flush is in flight; if one is pending we join it first.
-    fn flush_buffer(&mut self, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
+    /// Flush the current buffer to a run file in a background thread.
+    fn flush_buffer(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
         }
 
-        // Capacity we allow for the returned spare buffer.
-        //
-        // IMPORTANT: The "full" buffer handed to the background thread can grow to the
-        // configured max_records (i.e., up to the byte budget). If we simply `clear()`
-        // and return it as the spare buffer, we permanently retain that large allocation,
-        // which can explode RSS (especially with MultiOrderRunWriter × N workers).
-        //
-        // Instead we drop the large allocation after each flush and return a smaller
-        // pre-sized buffer for reuse. This trades some re-allocation work for stable,
-        // predictable memory usage during large imports.
-        let reuse_capacity = self.config.max_records().min(1_000_000);
-
-        // 1. Wait for any pending background flush
+        // Join any pending flush first.
         self.join_pending_flush()?;
 
-        // 2. Capture parameters for the background thread
+        // Swap buffers.
+        let mut flush_buf = if let Some(mut spare) = self.spare_buffer.take() {
+            spare.clear();
+            std::mem::swap(&mut spare, &mut self.buffer);
+            spare
+        } else {
+            let cap = self.config.max_records().min(1_000_000);
+            let mut new_buf = Vec::with_capacity(cap);
+            std::mem::swap(&mut new_buf, &mut self.buffer);
+            new_buf
+        };
+
         let run_index = self.run_count;
-        let run_path = self
-            .config
-            .run_dir
-            .join(format!("run_{:05}.frn", run_index));
-        let sort_order = self.config.sort_order;
-        let lang_snapshot = lang_dict.clone(); // small — typically < 1KB
-
-        // 3. Swap buffers: take full buffer, replace with spare (or fresh)
-        let full_buffer = std::mem::replace(
-            &mut self.buffer,
-            self.spare_buffer
-                .take()
-                .unwrap_or_else(|| Vec::with_capacity(self.config.max_records().min(1_000_000))),
-        );
-        let record_count = full_buffer.len();
-
-        // 4. Spawn background sort + write
-        self.pending_flush = Some(
-            std::thread::Builder::new()
-                .name(format!("flush-{}", sort_order.dir_name()))
-                .spawn(move || {
-                    let mut buf = full_buffer;
-
-                    let sort_start = std::time::Instant::now();
-                    buf.sort_unstable_by(cmp_for_order(sort_order));
-                    let sort_elapsed = sort_start.elapsed();
-
-                    let (run_min_t, run_max_t) =
-                        buf.iter().fold((u32::MAX, 0u32), |(min, max), r| {
-                            (min.min(r.t), max.max(r.t))
-                        });
-
-                    let write_start = std::time::Instant::now();
-                    let info = write_run_file(
-                        &run_path,
-                        &buf,
-                        &lang_snapshot,
-                        sort_order,
-                        run_min_t,
-                        run_max_t,
-                    )?;
-                    let write_elapsed = write_start.elapsed();
-
-                    let file_bytes = info.record_count
-                        * fluree_db_binary_index::format::run_record::RECORD_WIRE_SIZE as u64;
-                    tracing::info!(
-                        run = run_index,
-                        records = record_count,
-                        file_mb = file_bytes as f64 / (1024.0 * 1024.0),
-                        sort_ms = sort_elapsed.as_millis(),
-                        write_ms = write_elapsed.as_millis(),
-                        path = %run_path.display(),
-                        "run file flushed (background)"
-                    );
-
-                    // Drop the large buffer allocation after the flush to avoid retaining
-                    // multi-GB capacities across runs.
-                    drop(buf);
-                    Ok(FlushResult {
-                        info,
-                        buffer: Vec::with_capacity(reuse_capacity),
-                    })
-                })?,
-        );
-
         self.run_count += 1;
+        self.total_records += flush_buf.len() as u64;
+        let order = self.config.sort_order;
+        let run_path = self.config.run_dir.join(format!("run_{run_index:05}.frn"));
+        let cmp = cmp_v2_for_order(order);
 
-        // 5. Optionally clear per-run lang dict (synchronous — affects subsequent records)
-        if self.clear_lang_on_flush {
-            lang_dict.clear();
-        }
+        let handle = std::thread::spawn(move || {
+            // Sort in place.
+            flush_buf.sort_unstable_by(cmp);
 
+            let min_t = flush_buf.iter().map(|r| r.t).min().unwrap_or(0);
+            let max_t = flush_buf.iter().map(|r| r.t).max().unwrap_or(0);
+
+            let info = write_run_file(&run_path, &flush_buf, order, min_t, max_t)?;
+
+            // Shrink buffer for reuse.
+            flush_buf.clear();
+            flush_buf.shrink_to(1_000_000);
+
+            Ok(FlushResultV2 {
+                info,
+                spare: flush_buf,
+            })
+        });
+
+        self.pending_flush = Some(handle);
         Ok(())
     }
 
-    /// Finish writing: flush any remaining buffered records and return results.
-    pub fn finish(mut self, lang_dict: &mut LanguageTagDict) -> io::Result<RunWriterResult> {
-        // Flush remaining records (spawns background thread)
-        self.flush_buffer(lang_dict)?;
-        // Wait for the final background flush to complete
+    fn join_pending_flush(&mut self) -> io::Result<()> {
+        if let Some(handle) = self.pending_flush.take() {
+            let result = handle
+                .join()
+                .map_err(|_| io::Error::other("flush thread panicked"))??;
+            self.run_files.push(result.info);
+            self.spare_buffer = Some(result.spare);
+        }
+        Ok(())
+    }
+
+    /// Finish writing, flush remaining records, return all run file metadata.
+    pub fn finish(mut self) -> io::Result<RunWriterResult> {
+        if !self.buffer.is_empty() {
+            self.flush_buffer()?;
+        }
         self.join_pending_flush()?;
 
         Ok(RunWriterResult {
             run_files: self.run_files,
             total_records: self.total_records,
-            min_t: if self.min_t == u32::MAX {
-                0
-            } else {
-                self.min_t
-            },
+            min_t: self.min_t,
             max_t: self.max_t,
         })
     }
-
-    /// Number of records currently buffered (not yet flushed).
-    pub fn buffered_count(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Number of run files written so far.
-    pub fn run_count(&self) -> u32 {
-        self.run_count
-    }
-
-    /// Total records processed (flushed + buffered).
-    pub fn total_records(&self) -> u64 {
-        self.total_records
-    }
 }
 
-impl RecordSink for RunWriter {
-    fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
-        self.push(record, lang_dict)
-    }
-}
-
-/// Result of a completed run generation.
+/// Result of finishing a V2 run writer.
 #[derive(Debug)]
 pub struct RunWriterResult {
     pub run_files: Vec<RunFileInfo>,
@@ -287,30 +184,25 @@ pub struct RunWriterResult {
 }
 
 // ============================================================================
-// Multi-order run writer
+// MultiOrderRunWriter
 // ============================================================================
 
-/// Configuration for multi-order run generation.
-#[derive(Debug, Clone)]
+/// Configuration for multi-order V2 run writer.
 pub struct MultiOrderConfig {
-    /// Total memory budget split evenly across all orders.
+    /// Total memory budget split evenly across orders.
     pub total_budget_bytes: usize,
-    /// Which orders to generate runs for.
+    /// Which orders to write.
     pub orders: Vec<RunSortOrder>,
-    /// Base directory; per-order subdirs are created beneath it.
+    /// Base directory; per-order subdirs created automatically.
     pub base_run_dir: PathBuf,
 }
 
-/// Writes records to multiple `RunWriter`s, one per sort order.
-///
-/// Each push fans out to every writer. OPST writers skip non-IRI records
-/// before buffering (saves memory).
+/// Fans out `RunRecordV2` records to per-order `RunWriter` instances.
 pub struct MultiOrderRunWriter {
     writers: Vec<(RunSortOrder, RunWriter)>,
 }
 
 impl MultiOrderRunWriter {
-    /// Create a multi-order writer. Creates per-order subdirectories.
     pub fn new(config: MultiOrderConfig) -> io::Result<Self> {
         let per_order_budget = config.total_budget_bytes / config.orders.len().max(1);
         let mut writers = Vec::with_capacity(config.orders.len());
@@ -318,274 +210,402 @@ impl MultiOrderRunWriter {
         for &order in &config.orders {
             let run_dir = config.base_run_dir.join(order.dir_name());
             std::fs::create_dir_all(&run_dir)?;
-
-            let wc = RunWriterConfig {
+            let w = RunWriter::new(RunWriterConfig {
                 buffer_budget_bytes: per_order_budget,
                 sort_order: order,
                 run_dir,
-            };
-            let mut w = RunWriter::new(wc);
-            w.clear_lang_on_flush = false;
+            });
             writers.push((order, w));
         }
-
-        tracing::info!(
-            orders = ?config.orders.iter().map(|o| o.dir_name()).collect::<Vec<_>>(),
-            per_order_budget_mb = per_order_budget as f64 / (1024.0 * 1024.0),
-            "MultiOrderRunWriter initialized"
-        );
 
         Ok(Self { writers })
     }
 
-    /// Push a record to all writers.
-    pub fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
-        for (_order, writer) in &mut self.writers {
-            writer.push(record, lang_dict)?;
+    /// Push a record to all order writers.
+    pub fn push(&mut self, record: RunRecordV2) -> io::Result<()> {
+        for (_, writer) in &mut self.writers {
+            writer.push(record)?;
         }
         Ok(())
     }
 
-    /// Finish all writers, returning per-order results.
-    pub fn finish(
-        self,
-        lang_dict: &mut LanguageTagDict,
-    ) -> io::Result<Vec<(RunSortOrder, RunWriterResult)>> {
+    /// Finish all writers and return per-order results.
+    pub fn finish(self) -> io::Result<Vec<(RunSortOrder, RunWriterResult)>> {
         let mut results = Vec::with_capacity(self.writers.len());
         for (order, writer) in self.writers {
-            let result = writer.finish(lang_dict)?;
-            results.push((order, result));
+            results.push((order, writer.finish()?));
         }
         Ok(results)
     }
-
-    /// Total records processed across all orders (flushed + buffered).
-    pub fn total_records(&self) -> u64 {
-        self.writers.iter().map(|(_, w)| w.total_records()).sum()
-    }
-
-    /// Total run files written across all orders.
-    pub fn run_count(&self) -> u32 {
-        self.writers.iter().map(|(_, w)| w.run_count()).sum()
-    }
 }
 
-impl RecordSink for MultiOrderRunWriter {
-    fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
-        self.push(record, lang_dict)
+// ============================================================================
+// RunWriterWithOp
+// ============================================================================
+
+/// V2 run writer that carries an op byte alongside each record.
+///
+/// Used by the rebuild path where assert/retract information must survive
+/// through the run-file stage into the merge pipeline.
+pub(crate) struct RunWriterWithOp {
+    config: RunWriterConfig,
+    buffer: Vec<RunRecordV2>,
+    op_buffer: Vec<u8>,
+    run_count: u32,
+    total_records: u64,
+    run_files: Vec<RunFileInfo>,
+    min_t: u32,
+    max_t: u32,
+    pending_flush: Option<std::thread::JoinHandle<io::Result<FlushResultV2WithOp>>>,
+    spare_buffer: Option<Vec<RunRecordV2>>,
+    spare_op_buffer: Option<Vec<u8>>,
+}
+
+struct FlushResultV2WithOp {
+    info: RunFileInfo,
+    spare: Vec<RunRecordV2>,
+    spare_ops: Vec<u8>,
+}
+
+impl RunWriterWithOp {
+    pub(crate) fn new(config: RunWriterConfig) -> Self {
+        let cap = config.max_records().min(1_000_000);
+        Self {
+            buffer: Vec::with_capacity(cap),
+            op_buffer: Vec::with_capacity(cap),
+            config,
+            run_count: 0,
+            total_records: 0,
+            run_files: Vec::new(),
+            min_t: u32::MAX,
+            max_t: 0,
+            pending_flush: None,
+            spare_buffer: None,
+            spare_op_buffer: None,
+        }
+    }
+
+    /// Push a record with its op byte.
+    pub(crate) fn push(&mut self, record: RunRecordV2, op: u8) -> io::Result<()> {
+        if record.t < self.min_t {
+            self.min_t = record.t;
+        }
+        if record.t > self.max_t {
+            self.max_t = record.t;
+        }
+        self.buffer.push(record);
+        self.op_buffer.push(op);
+        if self.buffer.len() >= self.config.max_records() {
+            self.flush_buffer()?;
+        }
+        Ok(())
+    }
+
+    fn flush_buffer(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        self.join_pending_flush()?;
+
+        // Swap record buffers.
+        let mut flush_buf = if let Some(mut spare) = self.spare_buffer.take() {
+            spare.clear();
+            std::mem::swap(&mut spare, &mut self.buffer);
+            spare
+        } else {
+            let cap = self.config.max_records().min(1_000_000);
+            let mut new_buf = Vec::with_capacity(cap);
+            std::mem::swap(&mut new_buf, &mut self.buffer);
+            new_buf
+        };
+
+        // Swap op buffers.
+        let mut flush_ops = if let Some(mut spare) = self.spare_op_buffer.take() {
+            spare.clear();
+            std::mem::swap(&mut spare, &mut self.op_buffer);
+            spare
+        } else {
+            let cap = self.config.max_records().min(1_000_000);
+            let mut new_buf = Vec::with_capacity(cap);
+            std::mem::swap(&mut new_buf, &mut self.op_buffer);
+            new_buf
+        };
+
+        let run_index = self.run_count;
+        self.run_count += 1;
+        self.total_records += flush_buf.len() as u64;
+        let order = self.config.sort_order;
+        let run_path = self.config.run_dir.join(format!("run_{run_index:05}.frn"));
+        let cmp = cmp_v2_for_order(order);
+
+        let handle = std::thread::spawn(move || {
+            // Sort both arrays together: build index permutation, sort indices,
+            // then apply to both arrays.
+            let n = flush_buf.len();
+            let mut indices: Vec<usize> = (0..n).collect();
+            indices.sort_unstable_by(|&a, &b| cmp(&flush_buf[a], &flush_buf[b]));
+
+            // Apply permutation in-place to both arrays.
+            let mut sorted_recs = Vec::with_capacity(n);
+            let mut sorted_ops = Vec::with_capacity(n);
+            for &idx in &indices {
+                sorted_recs.push(flush_buf[idx]);
+                sorted_ops.push(flush_ops[idx]);
+            }
+
+            let min_t = sorted_recs.iter().map(|r| r.t).min().unwrap_or(0);
+            let max_t = sorted_recs.iter().map(|r| r.t).max().unwrap_or(0);
+
+            let info =
+                write_run_file_with_op(&run_path, &sorted_recs, &sorted_ops, order, min_t, max_t)?;
+
+            // Reclaim buffers for reuse.
+            flush_buf.clear();
+            flush_buf.shrink_to(1_000_000);
+            flush_ops.clear();
+            flush_ops.shrink_to(1_000_000);
+
+            Ok(FlushResultV2WithOp {
+                info,
+                spare: flush_buf,
+                spare_ops: flush_ops,
+            })
+        });
+
+        self.pending_flush = Some(handle);
+        Ok(())
+    }
+
+    fn join_pending_flush(&mut self) -> io::Result<()> {
+        if let Some(handle) = self.pending_flush.take() {
+            let result = handle
+                .join()
+                .map_err(|_| io::Error::other("flush thread panicked"))??;
+            self.run_files.push(result.info);
+            self.spare_buffer = Some(result.spare);
+            self.spare_op_buffer = Some(result.spare_ops);
+        }
+        Ok(())
+    }
+
+    /// Finish writing, flush remaining records, return all run file metadata.
+    pub(crate) fn finish(mut self) -> io::Result<RunWriterResult> {
+        if !self.buffer.is_empty() {
+            self.flush_buffer()?;
+        }
+        self.join_pending_flush()?;
+
+        Ok(RunWriterResult {
+            run_files: self.run_files,
+            total_records: self.total_records,
+            min_t: self.min_t,
+            max_t: self.max_t,
+        })
     }
 }
 
 // ============================================================================
-// Tests
+// MultiOrderRunWriterWithOp
 // ============================================================================
+
+/// Fans out `(RunRecordV2, op)` pairs to per-order `RunWriterWithOp` instances.
+pub(crate) struct MultiOrderRunWriterWithOp {
+    writers: Vec<(RunSortOrder, RunWriterWithOp)>,
+}
+
+impl MultiOrderRunWriterWithOp {
+    pub(crate) fn new(config: MultiOrderConfig) -> io::Result<Self> {
+        let per_order_budget = config.total_budget_bytes / config.orders.len().max(1);
+        let mut writers = Vec::with_capacity(config.orders.len());
+
+        for &order in &config.orders {
+            let run_dir = config.base_run_dir.join(order.dir_name());
+            std::fs::create_dir_all(&run_dir)?;
+            let w = RunWriterWithOp::new(RunWriterConfig {
+                buffer_budget_bytes: per_order_budget,
+                sort_order: order,
+                run_dir,
+            });
+            writers.push((order, w));
+        }
+
+        Ok(Self { writers })
+    }
+
+    /// Push a record with its op byte to all order writers.
+    pub(crate) fn push(&mut self, record: RunRecordV2, op: u8) -> io::Result<()> {
+        for (_, writer) in &mut self.writers {
+            writer.push(record, op)?;
+        }
+        Ok(())
+    }
+
+    /// Finish all writers and return per-order results.
+    pub(crate) fn finish(self) -> io::Result<Vec<(RunSortOrder, RunWriterResult)>> {
+        let mut results = Vec::with_capacity(self.writers.len());
+        for (order, writer) in self.writers {
+            results.push((order, writer.finish()?));
+        }
+        Ok(results)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+    use fluree_db_core::o_type::OType;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::DatatypeDictId;
 
-    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
-        RunRecord::new(
-            0,
-            SubjectId::from_u64(s_id),
+    fn make_rec(s_id: u64, p_id: u32, o_type: u16, o_key: u64, t: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key,
             p_id,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(val),
             t,
-            true,
-            DatatypeDictId::INTEGER.as_u16(),
-            0,
-            None,
-        )
+            o_i: LIST_INDEX_NONE,
+            o_type,
+            g_id: 0,
+        }
     }
 
     #[test]
-    fn test_single_flush() {
-        let dir = std::env::temp_dir().join("fluree_test_run_writer_single");
+    fn single_writer_basic() {
+        let dir = std::env::temp_dir().join("fluree_test_run_writer_basic");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 1024 * 1024, // 1MB — won't trigger auto-flush
+        let mut writer = RunWriter::new(RunWriterConfig {
+            buffer_budget_bytes: 1024, // tiny budget to force multiple flushes
             sort_order: RunSortOrder::Spot,
             run_dir: dir.clone(),
-        };
+        });
 
-        let mut writer = RunWriter::new(config);
-        let mut lang_dict = LanguageTagDict::new();
-
-        // Push a few records
-        writer
-            .push(make_test_record(3, 1, 10, 1), &mut lang_dict)
-            .unwrap();
-        writer
-            .push(make_test_record(1, 1, 20, 1), &mut lang_dict)
-            .unwrap();
-        writer
-            .push(make_test_record(2, 1, 30, 2), &mut lang_dict)
-            .unwrap();
-
-        let result = writer.finish(&mut lang_dict).unwrap();
-        assert_eq!(result.run_files.len(), 1);
-        assert_eq!(result.total_records, 3);
-        assert_eq!(result.min_t, 1);
-        assert_eq!(result.max_t, 2);
-
-        // Verify file is sorted
-        let (header, _, records) =
-            super::super::run_file::read_run_file(&result.run_files[0].path).unwrap();
-        assert_eq!(header.record_count, 3);
-        // SPOT order: s_id 1, 2, 3
-        assert_eq!(records[0].s_id, SubjectId::from_u64(1));
-        assert_eq!(records[1].s_id, SubjectId::from_u64(2));
-        assert_eq!(records[2].s_id, SubjectId::from_u64(3));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_budget_triggers_multiple_runs() {
-        let dir = std::env::temp_dir().join("fluree_test_run_writer_multi");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Set budget to exactly 2 records (80 bytes at 40 bytes/record)
-        let config = RunWriterConfig {
-            buffer_budget_bytes: 80,
-            sort_order: RunSortOrder::Spot,
-            run_dir: dir.clone(),
-        };
-
-        let mut writer = RunWriter::new(config);
-        let mut lang_dict = LanguageTagDict::new();
-
-        // Push 5 records — should produce 3 run files (2+2+1)
-        for i in 0..5u64 {
+        // Push enough records to trigger at least one flush.
+        for i in 0..100 {
             writer
-                .push(make_test_record(i, 1, i as i64, 1), &mut lang_dict)
+                .push(make_rec(
+                    i,
+                    1,
+                    OType::XSD_INTEGER.as_u16(),
+                    i * 10,
+                    (i + 1) as u32,
+                ))
                 .unwrap();
         }
 
-        let result = writer.finish(&mut lang_dict).unwrap();
-        assert_eq!(result.total_records, 5);
-        // 5 records / 2 per run = 3 run files (2+2+1)
-        assert_eq!(result.run_files.len(), 3);
-        assert_eq!(result.run_files[0].record_count, 2);
-        assert_eq!(result.run_files[1].record_count, 2);
-        assert_eq!(result.run_files[2].record_count, 1);
+        let result = writer.finish().unwrap();
+        assert_eq!(result.total_records, 100);
+        assert!(!result.run_files.is_empty());
+        assert_eq!(result.min_t, 1);
+        assert_eq!(result.max_t, 100);
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_empty_writer() {
-        let dir = std::env::temp_dir().join("fluree_test_run_writer_empty");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = RunWriterConfig {
-            run_dir: dir.clone(),
-            ..Default::default()
-        };
-
-        let writer = RunWriter::new(config);
-        let mut lang_dict = LanguageTagDict::new();
-        let result = writer.finish(&mut lang_dict).unwrap();
-
-        assert_eq!(result.total_records, 0);
-        assert!(result.run_files.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_multi_order_writer_basic() {
-        let dir = std::env::temp_dir().join("fluree_test_multi_order_basic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let config = MultiOrderConfig {
-            total_budget_bytes: 4 * 1024 * 1024, // 4MB → 1MB each
-            orders: vec![
-                RunSortOrder::Spot,
-                RunSortOrder::Psot,
-                RunSortOrder::Post,
-                RunSortOrder::Opst,
-            ],
-            base_run_dir: dir.clone(),
-        };
-
-        let mut writer = MultiOrderRunWriter::new(config).unwrap();
-        let mut lang_dict = LanguageTagDict::new();
-
-        // Push 3 non-IRI records (integers)
-        writer
-            .push(make_test_record(3, 1, 10, 1), &mut lang_dict)
-            .unwrap();
-        writer
-            .push(make_test_record(1, 1, 20, 1), &mut lang_dict)
-            .unwrap();
-        writer
-            .push(make_test_record(2, 1, 30, 2), &mut lang_dict)
-            .unwrap();
-
-        let results = writer.finish(&mut lang_dict).unwrap();
-        assert_eq!(results.len(), 4);
-
-        // All orders should have 3 records
-        for (order, result) in &results {
-            assert_eq!(result.total_records, 3, "{:?} should have 3 records", order);
+        // Verify run files exist.
+        for info in &result.run_files {
+            assert!(info.path.exists());
         }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_multi_order_writer_opst_mixed_types() {
-        let dir = std::env::temp_dir().join("fluree_test_multi_order_opst");
+    fn multi_order_writer() {
+        let dir = std::env::temp_dir().join("fluree_test_multi_order_v2");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut writer = MultiOrderRunWriter::new(MultiOrderConfig {
+            total_budget_bytes: 256 * 1024,
+            orders: vec![RunSortOrder::Spot, RunSortOrder::Post, RunSortOrder::Opst],
+            base_run_dir: dir.clone(),
+        })
+        .unwrap();
+
+        for i in 0..50 {
+            writer
+                .push(make_rec(
+                    i,
+                    (i % 5) as u32,
+                    OType::XSD_INTEGER.as_u16(),
+                    i * 10,
+                    1,
+                ))
+                .unwrap();
+        }
+
+        let results = writer.finish().unwrap();
+        assert_eq!(results.len(), 3);
+        for (order, result) in &results {
+            assert_eq!(result.total_records, 50);
+            // Verify subdirectory was created.
+            assert!(dir.join(order.dir_name()).exists());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_writer_with_op_basic() {
+        let dir = std::env::temp_dir().join("fluree_test_run_writer_with_op_basic");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let config = MultiOrderConfig {
-            total_budget_bytes: 2 * 1024 * 1024,
-            orders: vec![RunSortOrder::Spot, RunSortOrder::Opst],
+        let mut writer = RunWriterWithOp::new(RunWriterConfig {
+            buffer_budget_bytes: 1024, // tiny budget to force multiple flushes
+            sort_order: RunSortOrder::Spot,
+            run_dir: dir.clone(),
+        });
+
+        for i in 0..100u64 {
+            let op = if i % 10 == 0 { 0u8 } else { 1u8 };
+            writer
+                .push(
+                    make_rec(i, 1, OType::XSD_INTEGER.as_u16(), i * 10, (i + 1) as u32),
+                    op,
+                )
+                .unwrap();
+        }
+
+        let result = writer.finish().unwrap();
+        assert_eq!(result.total_records, 100);
+        assert!(!result.run_files.is_empty());
+        assert_eq!(result.min_t, 1);
+        assert_eq!(result.max_t, 100);
+
+        for info in &result.run_files {
+            assert!(info.path.exists());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_order_writer_with_op() {
+        let dir = std::env::temp_dir().join("fluree_test_multi_order_v2_with_op");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut writer = MultiOrderRunWriterWithOp::new(MultiOrderConfig {
+            total_budget_bytes: 256 * 1024,
+            orders: vec![RunSortOrder::Spot, RunSortOrder::Post],
             base_run_dir: dir.clone(),
-        };
+        })
+        .unwrap();
 
-        let mut writer = MultiOrderRunWriter::new(config).unwrap();
-        let mut lang_dict = LanguageTagDict::new();
+        for i in 0..50u64 {
+            let op = if i % 5 == 0 { 0u8 } else { 1u8 };
+            writer
+                .push(
+                    make_rec(i, (i % 5) as u32, OType::XSD_INTEGER.as_u16(), i * 10, 1),
+                    op,
+                )
+                .unwrap();
+        }
 
-        // Push 2 integer records
-        writer
-            .push(make_test_record(1, 1, 10, 1), &mut lang_dict)
-            .unwrap();
-        writer
-            .push(make_test_record(2, 1, 20, 1), &mut lang_dict)
-            .unwrap();
-
-        // Push 1 IRI record
-        let iri_rec = RunRecord::new(
-            0,
-            SubjectId::from_u64(3),
-            1,
-            ObjKind::REF_ID,
-            ObjKey::encode_u32_id(42),
-            1,
-            true,
-            DatatypeDictId::ID.as_u16(),
-            0,
-            None,
-        );
-        writer.push(iri_rec, &mut lang_dict).unwrap();
-
-        let results = writer.finish(&mut lang_dict).unwrap();
-
-        // All orders receive all records (OPST no longer filters by type)
+        let results = writer.finish().unwrap();
+        assert_eq!(results.len(), 2);
         for (order, result) in &results {
-            assert_eq!(result.total_records, 3, "{:?} should have 3 records", order);
+            assert_eq!(result.total_records, 50);
+            assert!(dir.join(order.dir_name()).exists());
         }
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -47,6 +47,7 @@
 mod aggregate;
 mod ask;
 mod construct;
+mod describe;
 mod error;
 mod expression;
 mod path;
@@ -209,7 +210,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 let ctx = self.build_jsonld_context()?;
 
                 // SELECT * should behave like "wildcard select" for JSON-LD-style outputs.
-                // This lets formatters emit object rows keyed by variable name (Clojure parity).
+                // This lets formatters emit object rows keyed by variable name.
                 let output = match &select_query.select.variables {
                     SelectVariables::Star => QueryOutput::Wildcard,
                     _ => QueryOutput::Select(select),
@@ -227,7 +228,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
             QueryBody::Ask(ask_query) => self.lower_ask(ask_query),
-            QueryBody::Describe(_) => Err(LowerError::unsupported_form("DESCRIBE", self.ast.span)),
+            QueryBody::Describe(describe_query) => self.lower_describe(describe_query),
             QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
         }
     }
@@ -751,6 +752,49 @@ mod tests {
             .iter()
             .any(|p| matches!(p, Pattern::NotExists(_)));
         assert!(has_not_exists, "Expected NotExists pattern");
+    }
+
+    #[test]
+    fn test_filter_not_exists_unknown_predicate_does_not_error() {
+        // Regression guard: unknown predicate IRIs must not fail lowering.
+        // They should encode to the EMPTY namespace and naturally produce no matches at runtime.
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:a ?o .
+               FILTER NOT EXISTS { ?s <http://unknown.example/ns/does-not-exist> ?x }
+             }",
+        )
+        .unwrap();
+
+        let mut saw_not_exists = false;
+        for p in &query.patterns {
+            if let Pattern::NotExists(inner) = p {
+                saw_not_exists = true;
+                assert!(
+                    inner.iter().any(|ip| matches!(ip, Pattern::Triple(_))),
+                    "Expected NOT EXISTS inner pattern to contain a triple"
+                );
+
+                for ip in inner {
+                    if let Pattern::Triple(tp) = ip {
+                        if let Ref::Sid(sid) = &tp.p {
+                            if sid.name.as_ref() == "http://unknown.example/ns/does-not-exist" {
+                                assert_eq!(
+                                    sid.namespace_code,
+                                    fluree_vocab::namespaces::EMPTY,
+                                    "Unknown IRI should encode to EMPTY namespace"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(saw_not_exists, "Expected NotExists pattern");
+        panic!("Expected NOT EXISTS predicate to encode as EMPTY-namespace Sid");
     }
 
     // =========================================================================
@@ -2562,13 +2606,16 @@ mod tests {
         )
         .unwrap();
 
-        // The sequence expands to 2 triple patterns inside the optional.
-        // split_optional_groups splits each triple into its own optional group,
-        // producing: Triple(?s, ex:name, ?name), Optional([triple1]), Optional([triple2])
-        assert_eq!(query.patterns.len(), 3);
+        // The sequence expands to 2 triple patterns inside the OPTIONAL.
+        assert_eq!(query.patterns.len(), 2);
         assert!(matches!(query.patterns[0], Pattern::Triple(_)));
-        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
-        assert!(matches!(query.patterns[2], Pattern::Optional(_)));
+        if let Pattern::Optional(inner) = &query.patterns[1] {
+            assert_eq!(inner.len(), 2);
+            assert!(matches!(inner[0], Pattern::Triple(_)));
+            assert!(matches!(inner[1], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Optional pattern");
+        }
     }
 
     #[test]

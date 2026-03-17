@@ -14,7 +14,7 @@
 //!    write sorted run files
 //! 5. **Build indexes** — `build_all_indexes()` from completed run files
 //! 6. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 7. **IRB1 root** — `IndexRootV5` encoded and written to CAS
+//! 7. **FIR6 root** — `IndexRoot` encoded and written to CAS
 //! 8. **Publish** — `nameservice.publish_index_allow_equal()`
 //! 9. **Cleanup** — remove tmp session directory (only on full success)
 //!
@@ -31,10 +31,7 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{
-    ContentId, ContentKind, ContentStore, Storage, CODEC_FLUREE_INDEX_ROOT,
-    CODEC_FLUREE_STATS_SKETCH,
-};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -142,6 +139,8 @@ pub struct ImportConfig {
     /// Number of leaflets per leaf file. Default: 10.
     /// Larger values produce fewer, bigger leaf files (less tree depth, bigger reads).
     pub leaflets_per_leaf: usize,
+    /// Target rows per leaf. Default: 250_000.
+    pub leaf_target_rows: usize,
     /// Optional progress callback invoked at key pipeline milestones.
     pub progress: Option<ProgressFn>,
 }
@@ -177,6 +176,7 @@ impl Default for ImportConfig {
             max_inflight_chunks: 0,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            leaf_target_rows: 250_000,
             progress: None,
         }
     }
@@ -742,6 +742,12 @@ where
         self
     }
 
+    /// Set the target rows per leaf. Default: 250_000.
+    pub fn leaf_target_rows(mut self, n: usize) -> Self {
+        self.config.leaf_target_rows = n;
+        self
+    }
+
     /// Set a progress callback invoked at key pipeline milestones.
     pub fn on_progress(mut self, f: impl Fn(ImportPhase) + Send + Sync + 'static) -> Self {
         self.config.progress = Some(Arc::new(f));
@@ -1086,11 +1092,15 @@ struct IndexBuildInput<'a> {
     /// Built from per-chunk lang vocab files. Passed to Phase C
     /// to avoid recomputing.
     lang_remaps: Vec<Vec<u16>>,
+    // Kept for: V5 import stats pipeline (Phase D remap stats collection).
+    // Use when: import pipeline is extended with per-property stats + class tracking.
     /// Predicate field width in bytes (1, 2, or 4). Pre-computed from predicate
     /// dict size to avoid re-reading predicates.json in build_and_upload.
+    #[expect(dead_code)]
     p_width: u8,
     /// Datatype field width in bytes (1 or 2). Pre-computed from datatype dict
     /// size to avoid re-reading datatypes.dict in build_and_upload.
+    #[expect(dead_code)]
     dt_width: u8,
     /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
     dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
@@ -1171,6 +1181,19 @@ where
             import_result.total_retracts,
         )
         .await?;
+
+        // Publish index CID to nameservice so the server can find the root.
+        if config.publish {
+            nameservice
+                .publish_index(alias, index_result.index_t, &index_result.root_id)
+                .await
+                .map_err(|e| ImportError::Storage(format!("publish index: {e}")))?;
+            tracing::info!(
+                index_t = index_result.index_t,
+                root_id = %index_result.root_id,
+                "published index root to nameservice"
+            );
+        }
 
         root_id = Some(index_result.root_id);
         index_t = index_result.index_t;
@@ -2584,17 +2607,10 @@ where
     let total_asserts = state.cumulative_flakes;
     let total_retracts = 0u64;
 
-    // Pre-compute field widths from dict sizes (avoids re-reading dict files later).
-    let p_width = {
-        use fluree_db_binary_index::format::leaflet::p_width_for_max;
-        let n = spool_config.predicate_alloc.len();
-        p_width_for_max(n.saturating_sub(1))
-    };
-    let dt_width = {
-        use fluree_db_binary_index::format::leaflet::dt_width_for_max;
-        let n = spool_config.datatype_alloc.len();
-        dt_width_for_max(n.saturating_sub(1))
-    };
+    // p_width/dt_width are fixed in the current format.
+    // Keep the values as zero sentinels for the ChunkImportResult struct.
+    let p_width: u8 = 0;
+    let dt_width: u8 = 0;
 
     Ok(ChunkImportResult {
         final_t: state.t,
@@ -2630,7 +2646,7 @@ struct IndexUploadResult {
 #[allow(clippy::too_many_arguments)]
 async fn build_and_upload<S, N>(
     storage: &S,
-    nameservice: &N,
+    _nameservice: &N,
     alias: &str,
     input: IndexBuildInput<'_>,
     config: &ImportConfig,
@@ -2642,14 +2658,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
-    use fluree_db_binary_index::{IndexRootV5, RunSortOrder};
-    use fluree_db_core::PrefixTrie;
-    use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-    use fluree_db_indexer::run_index::{
-        build_all_indexes, build_spot_from_sorted_commits, ClassBitsetTable, SortedCommitInput,
-        SpotFromCommitsConfig,
-    };
-    use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
+    use fluree_db_binary_index::RunSortOrder;
+    use fluree_db_indexer::upload_dicts_from_disk;
 
     // ---- Phase C (SPOT) + Phase D (remap) + Phase E (secondary build) ----
     //
@@ -2661,7 +2671,6 @@ where
     //   - Phase E chains after Phase D (needs run files from D)
     //   - After all builds complete, upload index segments to CAS
     //   - Wait for dict upload to finish (may already be done)
-    let build_start = Instant::now();
     let secondary_orders = RunSortOrder::secondary_orders();
 
     tracing::info!(
@@ -2715,598 +2724,274 @@ where
     // Shared counter incremented by each merge thread per row processed.
     let merge_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    // Use pre-computed field widths (avoids re-reading predicates.json / datatypes.dict).
-    let p_width = input.p_width;
-    let dt_width = input.dt_width;
-
-    // ---- Phase B.5: Load remap tables + build class bitset table ----
-    let remap_dir = input.run_dir.join("remap");
-
-    // Use pre-computed lang remaps (avoids re-reading per-chunk lang vocab files).
-    let lang_remaps = input.lang_remaps;
-
-    // Load per-chunk remap tables (mmap). We need subject remaps *before* moving
-    // them into spot_inputs so we can build the class bitset table.
-    let n_chunks = input.sorted_commit_infos.len();
-    let mut subject_remaps: Vec<MmapSubjectRemap> = Vec::with_capacity(n_chunks);
-    let mut string_remaps: Vec<MmapStringRemap> = Vec::with_capacity(n_chunks);
-    let mut chunk_lang_remaps: Vec<Vec<u16>> = Vec::with_capacity(n_chunks);
-
-    for (pos, info) in input.sorted_commit_infos.iter().enumerate() {
-        let ci = info.chunk_idx;
-        let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
-        let str_path = remap_dir.join(format!("strings_{ci:05}.rmp"));
-        let s_remap = MmapSubjectRemap::open(&subj_path).map_err(|e| {
-            ImportError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("subject remap {}: {}", subj_path.display(), e),
-            ))
-        })?;
-        let str_remap = MmapStringRemap::open(&str_path).map_err(|e| {
-            ImportError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("string remap {}: {}", str_path.display(), e),
-            ))
-        })?;
-        let lang_remap = lang_remaps.get(pos).cloned().unwrap_or_else(|| vec![0]);
-        subject_remaps.push(s_remap);
-        string_remaps.push(str_remap);
-        chunk_lang_remaps.push(lang_remap);
-    }
-
-    // Build subject→class bitset table from types-map sidecars (Phase B.5).
-    // Each sidecar contains (g_id, s_sorted_local, class_sorted_local) tuples
-    // written during Phase A. Subject remap converts sorted-local → global sid64.
-    let bitset_inputs: Vec<(&std::path::Path, &MmapSubjectRemap)> = input
-        .sorted_commit_infos
-        .iter()
-        .zip(subject_remaps.iter())
-        .filter_map(|(info, remap)| info.types_map_path.as_ref().map(|p| (p.as_path(), remap)))
-        .collect();
-
-    let class_bitset = if !bitset_inputs.is_empty() {
-        let bitset_start = Instant::now();
-        let table =
-            ClassBitsetTable::build_from_type_maps(&bitset_inputs).map_err(ImportError::Io)?;
-        tracing::info!(
-            classes = table.class_count(),
-            elapsed_ms = bitset_start.elapsed().as_millis(),
-            "class bitset table ready for SPOT merge"
-        );
-        Some(table)
-    } else {
-        None
-    };
-
-    // Assemble SPOT inputs (move remaps directly, no boxing needed).
-    let mut spot_inputs: Vec<SortedCommitInput<MmapSubjectRemap, MmapStringRemap>> =
-        Vec::with_capacity(n_chunks);
-    for (i, ((s_remap, str_remap), lang_remap)) in subject_remaps
-        .into_iter()
-        .zip(string_remaps)
-        .zip(chunk_lang_remaps)
-        .enumerate()
-    {
-        spot_inputs.push(SortedCommitInput {
-            commit_path: input.sorted_commit_infos[i].path.clone(),
-            subject_remap: s_remap,
-            string_remap: str_remap,
-            lang_remap,
-        });
-    }
-
-    // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
-    let spot_leaflet_rows = config.leaflet_rows;
-    let spot_leaflets_per_leaf = config.leaflets_per_leaf;
-    let sec_leaflet_rows = config.leaflet_rows;
-    let sec_leaflets_per_leaf = config.leaflets_per_leaf;
-
-    let spot_index_dir = input.index_dir.to_path_buf();
-    let spot_counter = merge_counter.clone();
-    let spot_rdf_type_p_id = input.rdf_type_p_id;
-    let index_parent_span = tracing::Span::current();
-    let spot_span = index_parent_span.clone();
-    let spot_handle = tokio::task::spawn_blocking(move || {
-        let _guard = spot_span.enter();
-        build_spot_from_sorted_commits(
-            spot_inputs,
-            SpotFromCommitsConfig {
-                index_dir: spot_index_dir,
-                p_width,
-                dt_width,
-                leaflet_rows: spot_leaflet_rows,
-                leaflets_per_leaf: spot_leaflets_per_leaf,
-                zstd_level: 1,
-                progress: Some(spot_counter),
-                skip_dedup: true,   // Fresh import: unique asserts, no retractions.
-                skip_region3: true, // Append-only: no history journal needed.
-                rdf_type_p_id: Some(spot_rdf_type_p_id),
-                class_bitset,
-            },
-        )
-    });
-
-    // ---- Phase D→E: Remap to secondary run files, then build secondary indexes ----
+    // ---- V3 (FLI3/FIR6) index build ----
     //
-    // Phase D (remap) runs concurrently with Phase C (SPOT build) — no dependency.
-    // Phase E (secondary index build) chains after Phase D (needs run files).
-    // Both run inside a single spawn_blocking task.
-    let remap_run_dir = input.run_dir.to_path_buf();
-    let remap_remap_dir = remap_dir.clone();
-    let sorted_commit_infos = input.sorted_commit_infos;
-    let dt_tags = input.dt_tags;
-    let dt_tags_for_classes = dt_tags.clone();
-    let collect_id_stats = input.collect_id_stats;
-    let run_budget_mb = config.effective_run_budget_mb();
-    let worker_cap = config.effective_heavy_workers();
-    let remap_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
-    let secondary_counter = merge_counter.clone();
-    let de_index_dir = input.index_dir.to_path_buf();
+    // Only V3 format is supported. Builds FLI3 columnar leaves, FBR3 branches,
+    // assembles an FIR6 root, and returns early.
+    {
+        let lang_remaps = input.lang_remaps;
+        // V3 path: remap → V2 run files → k-way merge → FLI3/FBR3 for all 4 orders.
+        let v3_index_dir = input.index_dir.to_path_buf();
+        let v3_run_dir = input.run_dir.to_path_buf();
+        let v3_leaflet_target_rows = config.leaflet_rows;
+        let v3_leaf_target_rows = config.leaf_target_rows;
+        let v3_run_budget = config.effective_run_budget_mb() * 1024 * 1024;
+        let v3_sorted_commit_infos = input.sorted_commit_infos;
+        let v3_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
+        let v3_counter = merge_counter.clone();
+        // Read custom datatype IRIs from the on-disk datatypes.dict (binary predicate dict).
+        // Skip the first RESERVED_COUNT entries (well-known types).
+        let v3_datatype_iris = {
+            let dt_path = input.run_dir.join("datatypes.dict");
+            if dt_path.exists() {
+                let dict = fluree_db_indexer::run_index::dict_io::read_predicate_dict(&dt_path)?;
+                let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as u32;
+                (reserved..dict.len())
+                    .filter_map(|id| dict.resolve(id).map(String::from))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
 
-    config.emit_progress(ImportPhase::PreparingIndex {
-        stage: "Remapping commits → runs",
-    });
+        config.emit_progress(ImportPhase::PreparingIndex {
+            stage: "Building V3 columnar indexes",
+        });
 
-    // Phase D→E result: (secondary index results, optional stats hook).
-    type DeResult = (
-        Vec<(RunSortOrder, fluree_db_indexer::run_index::IndexBuildResult)>,
-        Option<fluree_db_indexer::stats::IdStatsHook>,
-    );
+        // Stats collection (optional): collect ID-based property stats during Phase D remap.
+        let v3_collect_id_stats = input.collect_id_stats;
+        let v3_dt_tags = input.dt_tags;
+        let v3_rdf_type_p_id = input.rdf_type_p_id;
 
-    let de_span = index_parent_span;
-    let de_handle = tokio::task::spawn_blocking(
-        move || -> std::result::Result<DeResult, ImportError> {
-            let _guard = de_span.enter();
-            use fluree_db_binary_index::RunSortOrder as RSO;
-            use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-            use fluree_db_indexer::run_index::{MultiOrderConfig, MultiOrderRunWriter};
+        // Type alias for the aggregate stats output from finalize_with_aggregate_properties.
+        // (IdStatsResult, agg_props, class_counts, class_properties, class_ref_targets)
+        type StatsOutput = (
+            fluree_db_indexer::stats::IdStatsResult,
+            Vec<fluree_db_core::GraphPropertyStatEntry>,
+            Vec<(fluree_db_core::GraphId, u64, u64)>,
+            std::collections::HashMap<
+                (fluree_db_core::GraphId, u64),
+                std::collections::HashSet<u32>,
+            >,
+            std::collections::HashMap<
+                (fluree_db_core::GraphId, u64),
+                std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
+            >,
+        );
 
-            // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
-            tracing::info!(
-                chunks = sorted_commit_infos.len(),
-                "starting parallel remap (secondary orders, concurrent with SPOT build)"
-            );
-            let remap_start = Instant::now();
+        let mut v3_handle = tokio::task::spawn_blocking(
+            move || -> std::result::Result<(_, Option<StatsOutput>), ImportError> {
+                let registry = fluree_db_core::OTypeRegistry::new(&v3_datatype_iris);
 
-            let worker_count = std::cmp::min(worker_cap, sorted_commit_infos.len().max(1));
-            tracing::info!(
-                heavy_worker_cap = worker_cap,
-                remap_workers = worker_count,
-                "derived remap worker count"
-            );
-            let per_thread_budget_bytes =
-                ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
-
-            let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
-            let mut total_remap_records: u64 = 0;
-
-            // Bounded remap parallelism: work distribution via atomic counter.
-            let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-            std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
-                let thread_parent = tracing::Span::current();
-                let mut handles = Vec::with_capacity(worker_count);
-                for _ in 0..worker_count {
-                    let commit_infos_ref = &sorted_commit_infos;
-                    let dt_tags_ref = &dt_tags;
-                    let lang_remaps_ref = &remap_lang_remaps;
-                    let remap_run_dir = remap_run_dir.clone();
-                    let remap_dir = remap_remap_dir.clone();
-                    let next_chunk = std::sync::Arc::clone(&next_chunk);
-                    let thread_span = thread_parent.clone();
-
-                    handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
-                    let _guard = thread_span.enter();
-                    let mut local_total = 0u64;
-                    let mut local_hooks = Vec::new();
-
-                    loop {
-                        let pos = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if pos >= commit_infos_ref.len() {
-                            break;
+                let commits: Vec<fluree_db_indexer::CommitInput> = v3_sorted_commit_infos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, info)| {
+                        let remap_dir = v3_run_dir.join("remap");
+                        fluree_db_indexer::CommitInput {
+                            commit_path: info.path.clone(),
+                            record_count: info.record_count,
+                            subject_remap_path: remap_dir.join(format!("subjects_{i:05}.rmp")),
+                            string_remap_path: remap_dir.join(format!("strings_{i:05}.rmp")),
+                            lang_remap: v3_lang_remaps.get(i).cloned().unwrap_or_default(),
                         }
-                        let commit_info = &commit_infos_ref[pos];
-                        let ci = commit_info.chunk_idx;
-                        let chunk_run_dir = remap_run_dir.join(format!("chunk_{ci}"));
-                        std::fs::create_dir_all(&chunk_run_dir)?;
+                    })
+                    .collect();
 
-                        // Load remap tables for this chunk.
-                        let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
-                        let str_path = remap_dir.join(format!("strings_{ci:05}.rmp"));
-                        let s_remap =
-                            MmapSubjectRemap::open(&subj_path).map_err(ImportError::Io)?;
-                        let str_remap =
-                            MmapStringRemap::open(&str_path).map_err(ImportError::Io)?;
+                let dt_tags = v3_collect_id_stats.then_some(v3_dt_tags.as_slice());
+                let mut stats_hook = v3_collect_id_stats.then(|| {
+                    let mut hook = fluree_db_indexer::stats::IdStatsHook::new();
+                    hook.set_rdf_type_p_id(v3_rdf_type_p_id);
+                    hook
+                });
 
-                        // Secondary orders only (PSOT/POST/OPST) — SPOT built from sorted commits in Phase C.
-                        let mo_config = MultiOrderConfig {
-                            total_budget_bytes: per_thread_budget_bytes,
-                            orders: RSO::secondary_orders().to_vec(),
-                            base_run_dir: chunk_run_dir,
-                        };
-                        let mut writer = MultiOrderRunWriter::new(mo_config)
-                            .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
-                        let mut lang_dict = fluree_db_indexer::run_index::LanguageTagDict::new();
+                // Build V3 indexes for:
+                // - g_id=0 (default graph) across all chunks
+                // - g_id=1 (txn-meta) from the dedicated meta chunk
+                //
+                // The meta chunk is appended as the final "chunk" during import so that
+                // `ledger#txn-meta` queries work immediately after import without re-reading
+                // commit blobs. We build g_id=1 separately to avoid a full second pass.
+                let v3_runs_g0 = v3_run_dir.join("v3_runs_g0");
+                let v3_runs_g1 = v3_run_dir.join("v3_runs_g1");
 
-                        let mut hook = if collect_id_stats {
-                            Some(fluree_db_indexer::stats::IdStatsHook::new())
-                        } else {
-                            None
-                        };
+                let cfg_g0 = fluree_db_indexer::BuildConfig {
+                    run_dir: v3_runs_g0,
+                    index_dir: v3_index_dir.clone(),
+                    g_id: 0,
+                    leaflet_target_rows: v3_leaflet_target_rows,
+                    leaf_target_rows: v3_leaf_target_rows,
+                    zstd_level: 1,
+                    run_budget_bytes: v3_run_budget,
+                    progress: Some(v3_counter),
+                };
+                std::fs::create_dir_all(&cfg_g0.run_dir)
+                    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-                        let chunk_lang_remap = lang_remaps_ref
-                            .get(pos)
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[0]);
+                let g0_result = fluree_db_indexer::build_indexes_from_commits(
+                    &commits,
+                    &registry,
+                    &cfg_g0,
+                    stats_hook.as_mut(),
+                    dt_tags,
+                )
+                .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-                        use fluree_db_indexer::run_index::spool::remap_commit_to_runs;
-                        let written = remap_commit_to_runs(
-                            &commit_info.path,
-                            commit_info.record_count,
-                            &s_remap,
-                            &str_remap,
-                            chunk_lang_remap,
-                            &mut writer,
-                            &mut lang_dict,
-                            hook.as_mut(),
-                            Some(dt_tags_ref),
+                let stats_output = stats_hook.map(|h| h.finalize_with_aggregate_properties());
+
+                // Meta chunk is always the last chunk when present.
+                let g1_result = if let Some(meta_commit) = commits.last() {
+                    let cfg_g1 = fluree_db_indexer::BuildConfig {
+                        run_dir: v3_runs_g1,
+                        index_dir: v3_index_dir,
+                        g_id: 1,
+                        leaflet_target_rows: v3_leaflet_target_rows,
+                        leaf_target_rows: v3_leaf_target_rows,
+                        zstd_level: 1,
+                        run_budget_bytes: v3_run_budget,
+                        progress: None,
+                    };
+                    std::fs::create_dir_all(&cfg_g1.run_dir)
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+                    Some(
+                        fluree_db_indexer::build_indexes_from_commits(
+                            std::slice::from_ref(meta_commit),
+                            &registry,
+                            &cfg_g1,
+                            None, // no stats in txn-meta build
+                            None, // no dt_tags
                         )
-                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
 
-                        writer
-                            .finish(&mut lang_dict)
-                            .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+                // Merge g_id=0 and g_id=1 results for upload/root assembly.
+                let mut order_results = g0_result.order_results;
+                let mut total_rows = g0_result.total_rows;
+                let mut total_remapped = g0_result.total_remapped;
+                let mut remap_elapsed = g0_result.remap_elapsed;
+                let mut build_elapsed = g0_result.build_elapsed;
 
-                        local_total += written;
-                        if let Some(h) = hook {
-                            local_hooks.push(h);
+                if let Some(g1) = g1_result {
+                    total_rows += g1.total_rows;
+                    total_remapped += g1.total_remapped;
+                    remap_elapsed += g1.remap_elapsed;
+                    build_elapsed += g1.build_elapsed;
+
+                    for (order, g1_order) in g1.order_results {
+                        if let Some((_, existing)) =
+                            order_results.iter_mut().find(|(o, _)| *o == order)
+                        {
+                            existing.graphs.extend(g1_order.graphs);
+                            existing.total_rows += g1_order.total_rows;
+                        } else {
+                            order_results.push((order, g1_order));
                         }
                     }
-
-                    Ok((local_total, local_hooks))
-                }));
                 }
 
-                for h in handles {
-                    let (written, mut hooks) = h.join().map_err(|_| {
-                        ImportError::RunGeneration("remap thread panicked".into())
-                    })??;
-                    total_remap_records += written;
-                    stats_hooks.append(&mut hooks);
-                }
+                let result = fluree_db_indexer::BuildResult {
+                    order_results,
+                    total_rows,
+                    total_remapped,
+                    remap_elapsed,
+                    build_elapsed,
+                };
 
-                Ok(())
-            })?;
+                tracing::info!(
+                    total_rows = result.total_rows,
+                    total_remapped = result.total_remapped,
+                    remap_elapsed = ?result.remap_elapsed,
+                    build_elapsed = ?result.build_elapsed,
+                    orders = result.order_results.len(),
+                    "V3 index build complete"
+                );
 
-            tracing::info!(
-                total_records = total_remap_records,
-                elapsed_ms = remap_start.elapsed().as_millis(),
-                "parallel remap complete"
-            );
-
-            // Merge stats hooks from all remap threads.
-            let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
-                let mut merged = stats_hooks.remove(0);
-                for hook in stats_hooks {
-                    merged.merge_from(hook);
-                }
-                Some(merged)
-            } else {
-                None
-            };
-
-            // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
-            // Chains after Phase D — needs the run files just written.
-            tracing::info!("starting secondary index build (PSOT/POST/OPST)");
-            let secondary_results = build_all_indexes(
-                &remap_run_dir,
-                &de_index_dir,
-                secondary_orders,
-                sec_leaflet_rows,
-                sec_leaflets_per_leaf,
-                1, // zstd_level
-                Some(secondary_counter),
-                true, // skip_dedup: fresh import, unique asserts only
-                true, // skip_region3: append-only, no history journal needed
-            )
-            .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
-
-            Ok((secondary_results, stats_hook))
-        },
-    );
-
-    // Poll the merge counter every 250ms and emit progress events.
-    let poll_progress = config.progress.clone();
-    let poll_counter = merge_counter.clone();
-    let poll_total = total_index_flakes;
-    let poll_start = build_start;
-    let poll_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
-        loop {
-            interval.tick().await;
-            let merged = poll_counter.load(std::sync::atomic::Ordering::Relaxed);
-            if let Some(ref cb) = poll_progress {
-                cb(ImportPhase::Indexing {
-                    merged_flakes: merged,
-                    total_flakes: poll_total,
-                    elapsed_secs: poll_start.elapsed().as_secs_f64(),
-                });
-            }
-            // Stop when build is complete (counter won't increase further)
-            if merged >= poll_total {
-                break;
-            }
-        }
-    });
-
-    // Wait for both concurrent pipelines to complete.
-    let (spot_result, spot_class_stats) = spot_handle
-        .await
-        .map_err(|e| ImportError::IndexBuild(format!("SPOT build task panicked: {}", e)))?
-        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
-
-    let (mut build_results, stats_hook) = de_handle
-        .await
-        .map_err(|e| ImportError::IndexBuild(format!("Phase D→E task panicked: {}", e)))??;
-
-    // Combine SPOT result with secondary results.
-    build_results.push((RunSortOrder::Spot, spot_result));
-
-    // Stop the polling task
-    poll_handle.abort();
-
-    // Emit final build progress
-    let merged = merge_counter.load(std::sync::atomic::Ordering::Relaxed);
-    config.emit_progress(ImportPhase::Indexing {
-        merged_flakes: merged,
-        total_flakes: total_index_flakes,
-        elapsed_secs: build_start.elapsed().as_secs_f64(),
-    });
-
-    tracing::info!(
-        elapsed = ?build_start.elapsed(),
-        "index build complete (SPOT from sorted commits + secondary)"
-    );
-
-    for (order, result) in &build_results {
-        tracing::info!(
-            order = order.dir_name().to_uppercase(),
-            graphs = result.graphs.len(),
-            total_rows = result.total_rows,
-            elapsed = ?result.elapsed,
-            "index order complete"
-        );
-    }
-
-    // Upload index segments to CAS (needs build_results).
-    // Dict upload may still be running — we overlap with it.
-    let uploaded_indexes = upload_indexes_to_cas(storage, alias, &build_results)
-        .await
-        .map_err(|e| ImportError::Upload(e.to_string()))?;
-
-    // Wait for dict upload to complete.
-    let uploaded_dicts = dict_upload_handle
-        .await
-        .map_err(|e| ImportError::Upload(format!("dict upload task panicked: {}", e)))?
-        .map_err(|e| ImportError::Upload(e.to_string()))?;
-
-    tracing::info!(
-        elapsed = ?build_start.elapsed(),
-        default_orders = uploaded_indexes.default_graph_orders.len(),
-        named_graphs = uploaded_indexes.named_graphs.len(),
-        "index build + CAS upload complete (overlapped)"
-    );
-
-    // ---- Build predicate SIDs via PrefixTrie (no BinaryIndexStore needed) ----
-    tracing::info!("post-upload: building predicate SIDs");
-    let trie = PrefixTrie::from_namespace_codes(input.namespace_codes);
-    let predicates_path = input.run_dir.join("predicates.json");
-    let predicate_sids: Vec<(u16, String)> = if predicates_path.exists() {
-        let bytes = std::fs::read(&predicates_path)?;
-        let by_id: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
-            ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        })?;
-        by_id
-            .iter()
-            .map(|iri| match trie.longest_match(iri) {
-                Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                None => (0, iri.clone()),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // ---- Build IndexStats directly ----
-    // Preferred: ID-based stats collected during commit resolution (per-graph property
-    // stats with datatype counts + HLL NDV). Includes HLL sketch persistence so
-    // incremental index refresh can merge registers. Fallback: SPOT build result for
-    // per-graph flake counts only.
-    tracing::info!("post-upload: predicate SIDs built, starting stats");
-    let (index_stats, sketch_ref, summary) = if let Some(hook) = stats_hook {
-        // Persist HLL sketches BEFORE finalize consumes the hook.
-        tracing::info!("post-upload: serializing HLL sketch blob");
-        let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
-            input.final_t,
-            hook.properties(),
-        );
-        let sketch_bytes = sketch_blob
-            .to_json_bytes()
-            .map_err(|e| ImportError::Upload(format!("serialize HLL sketch: {}", e)))?;
-        let sketch_write = storage
-            .content_write_bytes(ContentKind::StatsSketch, alias, &sketch_bytes)
-            .await
-            .map_err(|e| ImportError::Upload(format!("write HLL sketch: {}", e)))?;
-        let sketch_cid =
-            ContentId::from_hex_digest(CODEC_FLUREE_STATS_SKETCH, &sketch_write.content_hash)
-                .expect("valid SHA-256 hash from storage write");
-
-        tracing::info!(
-            "post-upload: HLL sketch written, calling finalize_with_aggregate_properties"
-        );
-        let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
-            hook.finalize_with_aggregate_properties();
-        tracing::info!("post-upload: finalize complete, building IndexStats");
-
-        // Per-graph stats (already the correct type).
-        let mut graphs = id_result.graphs;
-
-        // Aggregate properties: convert from p_id-keyed to SID-keyed.
-        let mut properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
-            .iter()
-            .filter_map(|p| {
-                let sid = predicate_sids.get(p.p_id as usize)?;
-                Some(fluree_db_core::index_stats::PropertyStatEntry {
-                    sid: (sid.0, sid.1.clone()),
-                    count: p.count,
-                    ndv_values: p.ndv_values,
-                    ndv_subjects: p.ndv_subjects,
-                    last_modified_t: p.last_modified_t,
-                    datatypes: p.datatypes.clone(),
-                })
-            })
-            .collect();
-        properties.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
-
-        // Class stats from SPOT merge (per-graph).
-        let language_tags: Vec<String> = input
-            .unified_lang_dict
-            .iter()
-            .map(|(_, tag)| tag.to_string())
-            .collect();
-        let mut per_graph_classes = if let Some(ref cs) = spot_class_stats {
-            fluree_db_indexer::stats::build_class_stat_entries(
-                cs,
-                &predicate_sids,
-                &dt_tags_for_classes,
-                &language_tags,
-                input.run_dir,
-                input.namespace_codes,
-            )
-            .map_err(ImportError::Io)?
-        } else {
-            HashMap::new()
-        };
-
-        // Inject per-graph class stats into each GraphStatsEntry.
-        for g in &mut graphs {
-            g.classes = per_graph_classes.remove(&g.g_id);
-        }
-
-        // Derive root-level classes as union of all per-graph classes.
-        let classes = fluree_db_core::index_stats::union_per_graph_classes(&graphs);
-
-        tracing::info!(
-            property_stats = properties.len(),
-            graph_count = graphs.len(),
-            class_count = classes.as_ref().map_or(0, |c| c.len()),
-            total_flakes = id_result.total_flakes,
-            "stats collected from IdStatsHook"
-        );
-
-        // Build CLI display summary from already-computed stats.
-        let summary = build_import_summary(
-            spot_class_stats.as_ref(),
-            &agg_props,
-            &predicate_sids,
-            input.namespace_codes,
-            input.run_dir,
-            input.prefix_map,
-        );
-
-        let stats = fluree_db_core::index_stats::IndexStats {
-            flakes: id_result.total_flakes,
-            size: 0,
-            properties: if properties.is_empty() {
-                None
-            } else {
-                Some(properties)
+                Ok((result, stats_output))
             },
-            classes,
-            graphs: Some(graphs),
+        );
+
+        // Poll the merge counter periodically so the CLI progress bar updates
+        // during the index build (which runs on a blocking thread).
+        let index_start = std::time::Instant::now();
+        let (v3_result, stats_output) = loop {
+            tokio::select! {
+                result = &mut v3_handle => {
+                    // Build finished — emit final progress and break.
+                    let elapsed = index_start.elapsed().as_secs_f64();
+                    config.emit_progress(ImportPhase::Indexing {
+                        merged_flakes: merge_counter.load(std::sync::atomic::Ordering::Relaxed),
+                        total_flakes: total_index_flakes,
+                        elapsed_secs: elapsed,
+                    });
+                    break result
+                        .map_err(|e| ImportError::IndexBuild(format!("build task panicked: {e}")))?
+                        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                    let elapsed = index_start.elapsed().as_secs_f64();
+                    config.emit_progress(ImportPhase::Indexing {
+                        merged_flakes: merge_counter.load(std::sync::atomic::Ordering::Relaxed),
+                        total_flakes: total_index_flakes,
+                        elapsed_secs: elapsed,
+                    });
+                }
+            }
         };
 
-        (stats, Some(sketch_cid), Some(summary))
-    } else {
-        // Fallback: flake counts only (no per-property / datatype breakdown).
-        let (_, spot_result) = build_results
-            .iter()
-            .find(|(order, _)| *order == RunSortOrder::Spot)
-            .expect("SPOT index must always be present in build results");
+        // Upload V3 artifacts to CAS.
+        let v3_uploaded = fluree_db_indexer::upload_indexes_to_cas(storage, alias, &v3_result)
+            .await
+            .map_err(|e| ImportError::Upload(e.to_string()))?;
 
-        let graphs: Vec<fluree_db_core::index_stats::GraphStatsEntry> = spot_result
-            .graphs
-            .iter()
-            .map(|g| fluree_db_core::index_stats::GraphStatsEntry {
-                g_id: g.g_id,
-                flakes: g.total_rows,
-                size: 0,
-                properties: Vec::new(),
-                classes: None,
-            })
-            .collect();
+        // Wait for dict upload to complete (shared with V2 path).
+        let uploaded_dicts = dict_upload_handle
+            .await
+            .map_err(|e| ImportError::Upload(format!("dict upload join: {e}")))?
+            .map_err(|e| ImportError::Upload(e.to_string()))?;
 
-        let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
+        // ── V3 FIR6 root assembly ──────────────────────────────────
+        use fluree_db_binary_index::format::index_root::DefaultGraphOrder;
+        use fluree_db_binary_index::{GraphArenaRefs, IndexRoot, VectorDictRef};
 
-        let stats = fluree_db_core::index_stats::IndexStats {
-            flakes: total_flakes,
-            size: 0,
-            properties: None,
-            classes: None,
-            graphs: Some(graphs),
-        };
+        tracing::info!("V3 path: assembling FIR6 root");
 
-        (stats, None, None)
-    };
+        // Extract DictRefs from uploaded dicts (arena refs are separate fields).
+        let dict_refs_v6 = uploaded_dicts.dict_refs;
 
-    // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
-    tracing::info!("post-upload: stats built, constructing IRB1 root");
-
-    // Convert DictRefs (string-keyed maps) → DictRefsV5 + GraphArenaRefsV5.
-    let (dict_refs_v5, graph_arenas) = {
-        let dr = uploaded_dicts.dict_refs;
-        use fluree_db_binary_index::format::index_root::{
-            DictRefsV5, GraphArenaRefsV5, VectorDictRefV5,
-        };
-
-        let dict_refs = DictRefsV5 {
-            forward_packs: dr.forward_packs,
-            subject_reverse: dr.subject_reverse,
-            string_reverse: dr.string_reverse,
-        };
-
-        // Collect all graph IDs that have numbig or vector arenas.
         let mut graph_ids = std::collections::BTreeSet::new();
-        for g_id_str in dr.numbig.keys() {
+        for g_id_str in uploaded_dicts.numbig.keys() {
             if let Ok(g_id) = g_id_str.parse::<u16>() {
                 graph_ids.insert(g_id);
             }
         }
-        for g_id_str in dr.vectors.keys() {
+        for g_id_str in uploaded_dicts.vectors.keys() {
             if let Ok(g_id) = g_id_str.parse::<u16>() {
                 graph_ids.insert(g_id);
             }
         }
-
-        let arenas: Vec<GraphArenaRefsV5> = graph_ids
+        let graph_arenas_v6: Vec<GraphArenaRefs> = graph_ids
             .into_iter()
             .map(|g_id| {
                 let g_id_str = g_id.to_string();
-                let numbig: Vec<(u32, ContentId)> = dr
+                let numbig: Vec<(u32, ContentId)> = uploaded_dicts
                     .numbig
                     .get(&g_id_str)
                     .map(|m| {
                         m.iter()
-                            .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                            .map(|(k, v): (&String, _)| (k.parse::<u32>().unwrap_or(0), v.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
-                let vectors: Vec<VectorDictRefV5> = dr
+                let vectors: Vec<VectorDictRef> = uploaded_dicts
                     .vectors
                     .get(&g_id_str)
                     .map(|m| {
                         m.iter()
-                            .map(|(k, v)| VectorDictRefV5 {
+                            .map(|(k, v): (&String, _)| VectorDictRef {
                                 p_id: k.parse::<u32>().unwrap_or(0),
                                 manifest: v.manifest.clone(),
                                 shards: v.shards.clone(),
@@ -3314,7 +2999,7 @@ where
                             .collect()
                     })
                     .unwrap_or_default();
-                GraphArenaRefsV5 {
+                GraphArenaRefs {
                     g_id,
                     numbig,
                     vectors,
@@ -3323,98 +3008,219 @@ where
                 }
             })
             .collect();
-        (dict_refs, arenas)
-    };
 
-    let ns_codes: std::collections::BTreeMap<u16, String> = input
-        .namespace_codes
-        .iter()
-        .map(|(&k, v)| (k, v.clone()))
-        .collect();
+        let ns_codes_v6: std::collections::BTreeMap<u16, String> = input
+            .namespace_codes
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
 
-    let root = IndexRootV5 {
-        ledger_id: alias.to_string(),
-        index_t: input.final_t,
-        base_t: 0, // fresh import
-        subject_id_encoding: uploaded_dicts.subject_id_encoding,
-        namespace_codes: ns_codes,
-        predicate_sids,
-        graph_iris: uploaded_dicts.graph_iris,
-        datatype_iris: uploaded_dicts.datatype_iris,
-        language_tags: uploaded_dicts.language_tags,
-        dict_refs: dict_refs_v5,
-        subject_watermarks: uploaded_dicts.subject_watermarks,
-        string_watermark: uploaded_dicts.string_watermark,
-        total_commit_size,
-        total_asserts,
-        total_retracts,
-        default_graph_orders: uploaded_indexes.default_graph_orders,
-        named_graphs: uploaded_indexes.named_graphs,
-        graph_arenas,
-        stats: Some(index_stats),
-        schema: None,
-        prev_index: None, // fresh import
-        garbage: None,    // fresh import
-        sketch_ref,
-    };
+        // Build predicate_sids (done inline here since
+        // the shared code runs after V3 would have already returned).
+        let trie_v6 = fluree_db_core::PrefixTrie::from_namespace_codes(input.namespace_codes);
+        let pred_path = input.run_dir.join("predicates.json");
+        let predicate_sids_v6: Vec<(u16, String)> = if pred_path.exists() {
+            let bytes = std::fs::read(&pred_path)?;
+            let by_id: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
+                ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
+            by_id
+                .iter()
+                .map(|iri| match trie_v6.longest_match(iri) {
+                    Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                    None => (0u16, iri.clone()),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-    tracing::info!("post-upload: IRB1 root constructed, encoding binary");
-    let root_bytes = root.encode();
-    tracing::info!(
-        root_bytes = root_bytes.len(),
-        "post-upload: root encoded, writing to CAS"
-    );
+        // Destructure the aggregate stats output for both IndexStats (root) and CLI summary.
+        let (id_stats_result, summary_agg_props, summary_class_counts, summary_class_ref_targets) =
+            match stats_output {
+                Some((ids, agg_props, class_counts, _class_props, class_ref_targets)) => {
+                    (Some(ids), agg_props, class_counts, class_ref_targets)
+                }
+                None => (None, Vec::new(), Vec::new(), HashMap::new()),
+            };
 
-    let write_result = storage
-        .content_write_bytes(ContentKind::IndexRoot, alias, &root_bytes)
-        .await
-        .map_err(|e| ImportError::Upload(format!("write IRB1 root: {}", e)))?;
+        let stats_v6: Option<fluree_db_core::IndexStats> = id_stats_result.map(|id_stats| {
+            use fluree_db_core::index_stats as is;
 
-    // Derive ContentId from the root's content hash
-    let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
-        .expect("valid SHA-256 hash from storage write");
+            // Aggregate across graphs by p_id (deprecated SID-keyed view).
+            struct PropAgg {
+                count: u64,
+                ndv_values: u64,
+                ndv_subjects: u64,
+                last_modified_t: i64,
+                datatypes: Vec<(u8, u64)>,
+            }
+            let mut agg: std::collections::HashMap<u32, PropAgg> = std::collections::HashMap::new();
+            for g in &id_stats.graphs {
+                for p in &g.properties {
+                    let e = agg.entry(p.p_id).or_insert(PropAgg {
+                        count: 0,
+                        ndv_values: 0,
+                        ndv_subjects: 0,
+                        last_modified_t: 0,
+                        datatypes: Vec::new(),
+                    });
+                    e.count += p.count;
+                    e.ndv_values = e.ndv_values.max(p.ndv_values);
+                    e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
+                    e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
+                    for &(dt, cnt) in &p.datatypes {
+                        if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
+                            existing.1 += cnt;
+                        } else {
+                            e.datatypes.push((dt, cnt));
+                        }
+                    }
+                }
+            }
 
-    tracing::info!(
-        root_id = %root_id,
-        index_t = input.final_t,
-        "IRB1 index root written to CAS"
-    );
+            let properties: Vec<is::PropertyStatEntry> = agg
+                .into_iter()
+                .map(|(p_id, pa)| {
+                    let (ns, name) = predicate_sids_v6
+                        .get(p_id as usize)
+                        .cloned()
+                        .unwrap_or((0u16, "".to_string()));
+                    is::PropertyStatEntry {
+                        sid: (ns, name),
+                        count: pa.count,
+                        ndv_values: pa.ndv_values,
+                        ndv_subjects: pa.ndv_subjects,
+                        last_modified_t: pa.last_modified_t,
+                        datatypes: pa.datatypes,
+                    }
+                })
+                .collect();
 
-    // ---- Phase 6: Publish ----
-    if config.publish {
-        nameservice
-            .publish_index(alias, input.final_t, &root_id)
+            is::IndexStats {
+                flakes: id_stats.total_flakes,
+                size: 0,
+                properties: Some(properties),
+                classes: None, // Class stats deferred
+                graphs: Some(id_stats.graphs),
+            }
+        });
+
+        // Build CLI import summary before IndexRoot consumes predicate_sids_v6.
+        let summary = if summary_agg_props.is_empty() && summary_class_counts.is_empty() {
+            None
+        } else {
+            Some(build_import_summary(
+                &summary_agg_props,
+                &summary_class_counts,
+                &summary_class_ref_targets,
+                &predicate_sids_v6,
+                input.namespace_codes,
+                input.run_dir,
+                input.prefix_map,
+            ))
+        };
+
+        // Build default_graph_orders from V3 upload result.
+        let default_graph_orders: Vec<DefaultGraphOrder> = v3_uploaded
+            .default_graph_orders
+            .into_iter()
+            .map(|(order, leaves)| DefaultGraphOrder { order, leaves })
+            .collect();
+
+        // Custom datatype IRIs (non-reserved only, for o_type table).
+        let custom_dt_iris: Vec<String> = uploaded_dicts
+            .datatype_iris
+            .iter()
+            .skip(fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize)
+            .cloned()
+            .collect();
+
+        let root_v6 = IndexRoot {
+            ledger_id: alias.to_string(),
+            index_t: input.final_t,
+            base_t: 0,
+            subject_id_encoding: uploaded_dicts.subject_id_encoding,
+            namespace_codes: ns_codes_v6,
+            predicate_sids: predicate_sids_v6,
+            graph_iris: uploaded_dicts.graph_iris,
+            datatype_iris: uploaded_dicts.datatype_iris,
+            language_tags: uploaded_dicts.language_tags.clone(),
+            dict_refs: dict_refs_v6,
+            subject_watermarks: uploaded_dicts.subject_watermarks,
+            string_watermark: uploaded_dicts.string_watermark,
+            // Bulk import assigns global string IDs via k-way merge over per-chunk
+            // sorted vocab files, so StringId order is lexicographic by UTF-8 bytes.
+            lex_sorted_string_ids: true,
+            total_commit_size,
+            total_asserts,
+            total_retracts,
+            graph_arenas: graph_arenas_v6,
+            o_type_table: IndexRoot::build_o_type_table(
+                &custom_dt_iris,
+                &uploaded_dicts.language_tags,
+            ),
+            default_graph_orders,
+            named_graphs: v3_uploaded.named_graphs,
+            stats: stats_v6,
+            schema: None,
+            prev_index: None,
+            garbage: None,
+            sketch_ref: None,
+        };
+
+        // Encode and upload FIR6 root.
+        let root_bytes = root_v6.encode();
+        let root_digest = fluree_db_core::sha256_hex(&root_bytes);
+        let root_cid = fluree_db_core::ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
+            &root_digest,
+        )
+        .expect("valid SHA-256 hex digest");
+
+        storage
+            .content_write_bytes_with_hash(
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_digest,
+                &root_bytes,
+            )
             .await
-            .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
-        tracing::info!(
-            index_t = input.final_t,
-            root_id = %root_id,
-            "index published to nameservice"
-        );
-    }
+            .map_err(|e| ImportError::Upload(format!("FIR6 root upload: {e}")))?;
 
-    Ok(IndexUploadResult {
-        root_id,
-        index_t: input.final_t,
-        summary,
-    })
+        tracing::info!(
+            root_cid = %root_cid,
+            root_bytes = root_bytes.len(),
+            o_type_entries = root_v6.o_type_table.len(),
+            default_orders = root_v6.default_graph_orders.len(),
+            named_graphs = root_v6.named_graphs.len(),
+            "FIR6 root assembled and uploaded"
+        );
+
+        Ok(IndexUploadResult {
+            root_id: root_cid,
+            index_t: input.final_t,
+            summary,
+        })
+    }
 }
 
 /// Build a lightweight import summary for CLI display.
 ///
-/// Extracts top-5 classes, properties, and connections from the already-computed
-/// stats data. Uses the subject dict files on disk for class IRI resolution.
+/// Extracts top-5 classes, properties, and connections from the aggregate
+/// stats produced by `IdStatsHook::finalize_with_aggregate_properties()`.
+/// Uses the subject dict files on disk for class IRI resolution.
+#[allow(clippy::type_complexity)]
 fn build_import_summary(
-    spot_class_stats: Option<&fluree_db_indexer::run_index::SpotClassStats>,
     agg_props: &[fluree_db_core::GraphPropertyStatEntry],
+    class_counts: &[(fluree_db_core::GraphId, u64, u64)],
+    class_ref_targets: &HashMap<(fluree_db_core::GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
     predicate_sids: &[(u16, String)],
     namespace_codes: &HashMap<u16, String>,
     run_dir: &Path,
     prefix_map: &HashMap<String, String>,
 ) -> ImportSummary {
     // Build IRI → compact form using turtle @prefix declarations + well-known builtins.
-    // prefix_map is IRI → short (e.g., "https://dblp.org/rdf/schema#" → "dblp").
-    // Builtins fill in common prefixes that may not appear in @prefix.
     let builtin_prefixes: &[(&str, &str)] = &[
         (fluree_vocab::rdf::NS, "rdf"),
         (fluree_vocab::rdfs::NS, "rdfs"),
@@ -3442,6 +3248,7 @@ fn build_import_summary(
         }
         full_iri.to_string()
     };
+
     // ---- Top 5 properties by count ----
     let mut props_sorted: Vec<_> = agg_props.iter().collect();
     props_sorted.sort_by(|a, b| b.count.cmp(&a.count));
@@ -3458,16 +3265,13 @@ fn build_import_summary(
         })
         .collect();
 
-    let cs = match spot_class_stats {
-        Some(cs) if !cs.class_counts.is_empty() => cs,
-        _ => {
-            return ImportSummary {
-                top_classes: Vec::new(),
-                top_properties,
-                top_connections: Vec::new(),
-            };
-        }
-    };
+    if class_counts.is_empty() {
+        return ImportSummary {
+            top_classes: Vec::new(),
+            top_properties,
+            top_connections: Vec::new(),
+        };
+    }
 
     // Build SID resolver from dict files on disk.
     use fluree_db_core::subject_id::SubjectId;
@@ -3480,7 +3284,6 @@ fn build_import_summary(
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        // Try to resolve via dict files; fall back to numeric representation.
         let sids_path = run_dir.join("subjects.sids");
         let idx_path = run_dir.join("subjects.idx");
         let fwd_path = run_dir.join("subjects.fwd");
@@ -3515,7 +3318,7 @@ fn build_import_summary(
 
     // ---- Top 5 classes by count (union across graphs) ----
     let mut class_totals: HashMap<u64, u64> = HashMap::new();
-    for (&(_g_id, class_sid64), &count) in &cs.class_counts {
+    for &(_g_id, class_sid64, count) in class_counts {
         *class_totals.entry(class_sid64).or_insert(0) += count;
     }
     let mut classes_sorted: Vec<_> = class_totals.iter().collect();
@@ -3528,10 +3331,12 @@ fn build_import_summary(
 
     // ---- Top 5 connections: Class → property → Class (union across graphs) ----
     let mut connections: Vec<(u64, u32, u64, u64)> = Vec::new();
-    for (&(_g_id, src_class), prop_map) in &cs.class_prop_refs {
+    for (&(_g_id, src_class), prop_map) in class_ref_targets {
         for (&p_id, target_map) in prop_map {
-            for (&target_class, &count) in target_map {
-                connections.push((src_class, p_id, target_class, count));
+            for (&target_class, &delta) in target_map {
+                if delta > 0 {
+                    connections.push((src_class, p_id, target_class, delta as u64));
+                }
             }
         }
     }

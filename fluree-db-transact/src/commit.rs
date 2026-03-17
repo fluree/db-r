@@ -7,13 +7,14 @@ use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
 use fluree_db_core::{
-    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, FlakeValue, Storage,
-    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN,
+    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
+    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
 };
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
-use fluree_db_novelty::generate_commit_flakes;
+use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
+use fluree_db_query::BinaryRangeProvider;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -35,7 +36,7 @@ pub struct CommitOpts {
     pub message: Option<String>,
     /// Optional author identity
     pub author: Option<String>,
-    /// Original transaction JSON for storage (Clojure parity)
+    /// Original transaction JSON for storage
     /// When present, the raw transaction JSON is stored separately and
     /// can be retrieved via history queries with `txn: true`.
     pub raw_txn: Option<serde_json::Value>,
@@ -88,7 +89,7 @@ impl CommitOpts {
         self
     }
 
-    /// Set the raw transaction JSON for storage (Clojure parity)
+    /// Set the raw transaction JSON for storage
     pub fn with_raw_txn(mut self, txn: serde_json::Value) -> Self {
         self.raw_txn = Some(txn);
         self
@@ -244,7 +245,7 @@ where
         // externally-sourced timestamps when needed.
         let timestamp = Utc::now().to_rfc3339();
 
-        // Store original transaction JSON if provided (Clojure parity)
+        // Store original transaction JSON if provided
         let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
             let (txn_bytes, res) = async {
                 let txn_bytes = serde_json::to_vec(txn_json)?;
@@ -333,13 +334,18 @@ where
             .instrument(tracing::debug_span!("commit_publish_nameservice"))
             .await?;
 
-        // 9. Generate commit metadata flakes (Clojure parity)
+        // 9. Generate commit metadata flakes
         // Note: We merge these into novelty only, not into commit_record.flakes
-        // (matching Clojure's behavior where metadata flakes are derived separately)
+        // (matching legacy behavior where metadata flakes are derived separately)
         let commit_metadata_flakes = {
             let span = tracing::debug_span!("commit_generate_metadata_flakes");
             let _g = span.enter();
-            generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
+            let mut flakes = generate_commit_flakes(&commit_record, base.ledger_id(), new_t);
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base.ledger_id());
+            if let Some(g_sid) = base.snapshot.encode_iri(&txn_meta_iri) {
+                stamp_graph_on_commit_flakes(&mut flakes, &g_sid);
+            }
+            flakes
         };
         tracing::info!(
             metadata_flakes = commit_metadata_flakes.len(),
@@ -362,12 +368,30 @@ where
         {
             let span = tracing::debug_span!("commit_apply_to_novelty");
             let _g = span.enter();
-            let reverse_graph = base.snapshot.build_reverse_graph()?;
+            let mut reverse_graph = base.snapshot.build_reverse_graph()?;
+            // Ensure txn-meta graph is always routable for commit metadata flakes.
+            let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(base.ledger_id());
+            if let Some(g_sid) = base.snapshot.encode_iri(&txn_meta_iri) {
+                reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+            }
             Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 
+        // If the snapshot has an attached BinaryRangeProvider, re-attach it with the
+        // updated `dict_novelty` so overlay translation can resolve newly-introduced
+        // subject/string IDs (otherwise the provider holds a stale Arc).
+        let mut snapshot = base.snapshot;
+        if let Some(provider) = snapshot.range_provider.as_ref() {
+            if let Some(brp) = provider.as_any().downcast_ref::<BinaryRangeProvider>() {
+                snapshot.range_provider = Some(Arc::new(BinaryRangeProvider::new(
+                    Arc::clone(brp.store()),
+                    Arc::clone(&dict_novelty),
+                )));
+            }
+        }
+
         let new_state = LedgerState {
-            snapshot: base.snapshot,
+            snapshot,
             novelty: new_novelty,
             dict_novelty,
             head_commit_id: Some(commit_cid.clone()),
@@ -401,29 +425,7 @@ where
 /// This is safe because `DictOverlay` checks the persisted tree first for reverse
 /// lookups (canonical ID wins).
 fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.ensure_initialized();
-
-    for flake in flakes {
-        // Subject
-        dict_novelty
-            .subjects
-            .assign_or_lookup(flake.s.namespace_code, &flake.s.name);
-
-        // Object references
-        if let FlakeValue::Ref(ref sid) = flake.o {
-            dict_novelty
-                .subjects
-                .assign_or_lookup(sid.namespace_code, &sid.name);
-        }
-
-        // String values
-        match &flake.o {
-            FlakeValue::String(s) | FlakeValue::Json(s) => {
-                dict_novelty.strings.assign_or_lookup(s);
-            }
-            _ => {}
-        }
-    }
+    dict_novelty.populate_from_flakes(flakes);
 }
 
 /// Verify that this commit follows the expected sequence

@@ -1,6 +1,5 @@
-//! Transact upsert integration tests (Clojure parity)
+//! Transact upsert integration tests
 //!
-//! Ports integration tests from `db-clojure/test/fluree/db/transact/upsert_test.clj`.
 //! Tests upsert functionality where existing data gets replaced rather than merged.
 
 mod support;
@@ -24,7 +23,7 @@ fn ctx() -> serde_json::Value {
 /// is now available in transactions after the parser unification refactor.
 #[tokio::test]
 async fn upsert_parsing() {
-    // Clojure parity: transactions with OPTIONAL patterns in WHERE clause.
+    // Transactions with OPTIONAL patterns in WHERE clause.
     // The key behavior is that OPTIONAL allows "delete if exists" semantics
     // without failing when the data doesn't exist.
 
@@ -44,7 +43,7 @@ async fn upsert_parsing() {
     let ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
 
     // Update with OPTIONAL pattern - should work even for fields that don't exist
-    // This is the Clojure upsert pattern: use OPTIONAL so missing fields don't fail
+    // Upsert pattern: use OPTIONAL so missing fields don't fail
     let update_txn = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "where": [

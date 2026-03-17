@@ -1,6 +1,5 @@
-//! Subquery integration tests (Clojure parity)
+//! Subquery integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/subquery_test.clj` using JSON inputs only.
 //! All inserts and queries are explicit with `@context`.
 
 mod support;
@@ -29,7 +28,7 @@ async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
 
 #[tokio::test]
 async fn subquery_basic_correlated_join() {
-    // Clojure: subquery-basics / "binding an IRI in the select"
+    // Scenario: subquery-basics / "binding an IRI in the select"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -65,7 +64,7 @@ async fn subquery_basic_correlated_join() {
 
 #[tokio::test]
 async fn subquery_unrelated_vars_cartesian_expand() {
-    // Clojure: subquery-basics / "with unrelated vars in subquery expand to all parent vals"
+    // Scenario: subquery-basics / "with unrelated vars in subquery expand to all parent vals"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -93,7 +92,7 @@ async fn subquery_unrelated_vars_cartesian_expand() {
         .unwrap()
         .to_jsonld(&ledger.snapshot)
         .unwrap();
-    // Order-insensitive parity; Clojure orders, but Rust is allowed to vary.
+    // Order-insensitive: result ordering may vary.
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -135,7 +134,7 @@ async fn subquery_unrelated_vars_cartesian_expand() {
 
 #[tokio::test]
 async fn subquery_limit_applies_inside_subquery() {
-    // Clojure: subquery-basics / "shorten results with subquery limit"
+    // Scenario: subquery-basics / "shorten results with subquery limit"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -153,7 +152,7 @@ async fn subquery_limit_applies_inside_subquery() {
                 "@context": ctx,
                 "select": ["?favNums"],
                 "where": {"ex:favNums":"?favNums"},
-                // Make the LIMIT deterministic (Clojure relies on deterministic index order;
+                // Make the LIMIT deterministic (depends on deterministic index order;
                 // in Rust we make the intended behavior explicit).
                 "orderBy": "?favNums",
                 "limit": 2
@@ -184,7 +183,7 @@ async fn subquery_limit_applies_inside_subquery() {
 
 #[tokio::test]
 async fn subquery_distinct_applies_to_subquery_select() {
-    // Clojure: subquery-basics / "obeys selectDistinct in subquery"
+    // Scenario: subquery-basics / "obeys selectDistinct in subquery"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -246,7 +245,7 @@ async fn subquery_distinct_applies_to_subquery_select() {
 
 #[tokio::test]
 async fn multiple_subqueries_parallel() {
-    // Clojure: multiple-subqueries / "in parallel gets all values"
+    // Scenario: multiple-subqueries / "in parallel gets all values"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -311,7 +310,7 @@ async fn multiple_subqueries_parallel() {
 
 #[tokio::test]
 async fn nested_subqueries_distinct() {
-    // Clojure: multiple-subqueries / "with nested subqueries"
+    // Scenario: multiple-subqueries / "with nested subqueries"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
 
@@ -352,7 +351,7 @@ async fn nested_subqueries_distinct() {
 
 #[tokio::test]
 async fn subquery_inside_union() {
-    // Clojure: subquery-unions
+    // Scenario: subquery-unions
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
     let ctx = context_ex_schema();
@@ -424,7 +423,7 @@ async fn subquery_union_branch_query_alone_has_results() {
 
 #[tokio::test]
 async fn subquery_with_values_filters_results() {
-    // Clojure: subquery-values
+    // Scenario: subquery-values
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "subquery:people").await;
     let ctx = context_ex_schema();

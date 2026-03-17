@@ -258,7 +258,7 @@ fn reorder_for_explain(
         return patterns;
     }
 
-    // Clojure parity: if *all* patterns are using fallback scoring (no relevant stats),
+    // If *all* patterns are using fallback scoring (no relevant stats),
     // don't reorder (optimization would be arbitrary/noisy).
     let all_fallback = patterns.iter().all(|p| {
         let ty = classify_pattern(p, &HashSet::new());
@@ -680,7 +680,7 @@ mod tests {
         let patterns = vec![p1, p2];
         let explain = explain_patterns(&patterns, None);
 
-        // Clojure parity: when *all* patterns are using fallback scoring (no relevant stats),
+        // When *all* patterns are using fallback scoring (no relevant stats),
         // we don't reorder to avoid noisy/unstable explain output.
         assert_eq!(explain.optimization, OptimizationStatus::Unchanged);
     }

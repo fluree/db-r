@@ -334,7 +334,7 @@ impl RunSortOrder {
     /// Canonical wire ID for binary index formats (branch headers, root routing).
     ///
     /// Single source of truth: 0=SPOT, 1=PSOT, 2=POST, 3=OPST.
-    /// All encoders/decoders in FBR2 and IRB1 must use this mapping.
+    /// All encoders/decoders in FBR3 and FIR6 must use this mapping.
     #[inline]
     pub fn to_wire_id(self) -> u8 {
         self as u8
@@ -403,24 +403,6 @@ pub struct FactKey {
 }
 
 impl FactKey {
-    /// Build a FactKey from a Region 3 entry.
-    pub fn from_region3(e: &super::leaflet::Region3Entry) -> Self {
-        let dt = DatatypeDictId::from_u16(e.dt);
-        let effective_lang_id = if dt == DatatypeDictId::LANG_STRING {
-            LangId::from_u16(e.lang_id)
-        } else {
-            LangId::none()
-        };
-        Self {
-            s_id: SubjectId::from_u64(e.s_id),
-            p_id: PredicateId::from_u32(e.p_id),
-            o: ObjPair::new(ObjKind::from_u8(e.o_kind), ObjKey::from_u64(e.o_key)),
-            dt,
-            lang_id: effective_lang_id,
-            i: ListIndex::from_i32(e.i),
-        }
-    }
-
     /// Build a FactKey from decoded Region 1+2 row data.
     ///
     /// `dt_raw` is `u32` (Region 2 decode output); truncated to `u16` here.

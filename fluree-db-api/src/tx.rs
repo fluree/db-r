@@ -667,6 +667,8 @@ pub struct TransactResultRef {
     pub receipt: CommitReceipt,
     /// Indexing status and hints
     pub indexing: IndexingStatus,
+    /// Tracking tally (fuel, time, policy) when tracking was requested
+    pub tally: Option<TrackingTally>,
 }
 
 /// Result of staging a transaction
@@ -871,6 +873,35 @@ where
         trig_meta: Option<&RawTrigMeta>,
         named_graphs: &[NamedGraphBlock],
     ) -> Result<StageResult> {
+        self.stage_transaction_with_named_graphs_tracked(
+            ledger,
+            txn_type,
+            txn_json,
+            txn_opts,
+            index_config,
+            trig_meta,
+            named_graphs,
+            None,
+        )
+        .await
+    }
+
+    /// Stage a transaction with optional TriG metadata, named graphs, and external tracker.
+    ///
+    /// When `external_tracker` is provided, it is used for fuel accounting instead of
+    /// the default limits-only tracker derived from the transaction body opts.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stage_transaction_with_named_graphs_tracked(
+        &self,
+        ledger: LedgerState,
+        txn_type: TxnType,
+        txn_json: &JsonValue,
+        txn_opts: TxnOpts,
+        index_config: Option<&IndexConfig>,
+        trig_meta: Option<&RawTrigMeta>,
+        named_graphs: &[NamedGraphBlock],
+        external_tracker: Option<&Tracker>,
+    ) -> Result<StageResult> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
         // Handle case where default graph is empty but named graphs are present
@@ -906,15 +937,22 @@ where
         let txn_meta = txn.txn_meta.clone();
         let graph_delta = txn.graph_delta.clone();
 
-        // Check for max-fuel in opts and create tracker if present (same pattern as queries)
-        let tracker = tracker_for_limits(txn_json);
+        // Use external tracker if provided, otherwise fall back to limits-only tracker
+        let limits_tracker;
+        let tracker = match external_tracker {
+            Some(t) => t,
+            None => {
+                limits_tracker = tracker_for_limits(txn_json);
+                &limits_tracker
+            }
+        };
 
         let mut options = match index_config {
             Some(cfg) => StageOptions::new().with_index_config(cfg),
             None => StageOptions::default(),
         };
         if tracker.is_enabled() {
-            options = options.with_tracker(&tracker);
+            options = options.with_tracker(tracker);
         }
 
         #[cfg(feature = "shacl")]
@@ -1159,7 +1197,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         //
         // This allows patterns like "delete if exists, then insert" to execute safely when
         // there are no matches, and supports conditional updates.
@@ -1256,7 +1294,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         let (receipt, ledger) =
             if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
                 let (base, flakes) = view.into_parts();
@@ -1354,7 +1392,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
-        // return success without committing (Clojure parity).
+        // return success without committing.
         let (receipt, ledger) =
             if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
                 let (base, flakes) = view.into_parts();
@@ -1774,7 +1812,7 @@ where
     // CREDENTIALED TRANSACTION METHODS
     // ========================================================================
 
-    /// Execute a credentialed transaction (Clojure: credential-transact!)
+    /// Execute a credentialed transaction
     ///
     /// Verifies the signed credential, extracts the identity (DID), and executes
     /// the transaction with policy enforcement based on the verified identity.
@@ -1883,7 +1921,7 @@ where
 {
     /// Update data using a transaction that specifies the ledger ID.
     ///
-    /// This mirrors Clojure's `update!` API where the transaction payload includes
+    /// Transaction update helper where the transaction payload includes
     /// a `ledger` field. The ledger is loaded by alias before executing the update.
     pub async fn update_with_ledger(&self, update_json: &JsonValue) -> Result<TransactResult> {
         let ledger_id = ledger_id_from_txn(update_json)?;

@@ -589,7 +589,7 @@ async fn datalog_chains_off_owl_entailments() {
 #[tokio::test]
 async fn datalog_filter_expression() {
     // Test: Filter expressions in rule bodies filter bindings based on conditions.
-    // This tests the ["filter", "(op ?var value)"] syntax from Clojure.
+    // This tests the ["filter", "(op ?var value)"] syntax.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "datalog/filter");
 

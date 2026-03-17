@@ -52,7 +52,7 @@ async fn file_backed_query_smoke_test() {
     assert!(!result.is_empty(), "expected results from test database");
 }
 
-/// Benchmark-style test comparing with Clojure.
+/// Benchmark-style test.
 ///
 /// Run with:
 /// `cargo test -p fluree-db-api --test it_file_backed -- --ignored --nocapture`

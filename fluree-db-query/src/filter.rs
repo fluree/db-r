@@ -24,10 +24,17 @@ use crate::execute::build_where_operators_seeded;
 use crate::ir::{Expression, FilterValue, Pattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::{EmptyOperator, SeedOperator};
+use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+use crate::fast_path_common::{
+    collect_subjects_for_predicate_set, fast_path_store, try_normalize_pred_sid,
+};
+use fluree_db_core::Sid;
 
 /// Filter rows from a batch using two-valued logic.
 ///
@@ -77,6 +84,115 @@ pub fn contains_exists(expr: &Expression) -> bool {
         Expression::Exists { .. } => true,
         Expression::Call { args, .. } => args.iter().any(contains_exists),
         Expression::Var(_) | Expression::Const(_) => false,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ExistsSemijoinKey {
+    subject_var: VarId,
+    pred: Sid,
+}
+
+/// Cached subject sets for simple correlated EXISTS patterns.
+///
+/// The cache maps (subject_var, p_id) -> set of matching subject IDs (s_id).
+#[derive(Default)]
+struct ExistsSemijoinCache {
+    subjects_by_key: FxHashMap<ExistsSemijoinKey, FxHashSet<u64>>,
+}
+
+fn allow_exists_semijoin_fast_path(ctx: &ExecutionContext<'_>) -> bool {
+    fast_path_store(ctx).is_some()
+}
+
+fn collect_simple_exists_keys(expr: &Expression, out: &mut Vec<(VarId, Ref)>) {
+    match expr {
+        Expression::Exists {
+            patterns,
+            negated: _,
+        } => {
+            // Only handle EXISTS { ?s <p> ?o } (single triple) here; more complex
+            // inner patterns keep the generic per-row seeded execution.
+            if patterns.len() != 1 {
+                return;
+            }
+            let Pattern::Triple(tp) = &patterns[0] else {
+                return;
+            };
+            let Ref::Var(sv) = &tp.s else {
+                return;
+            };
+            if !tp.p_bound() {
+                return;
+            }
+            if !matches!(tp.o, crate::triple::Term::Var(_)) {
+                return;
+            }
+            if tp.dtc.is_some() {
+                return;
+            }
+            out.push((*sv, tp.p.clone()));
+        }
+        Expression::Call { func: _, args } => {
+            for a in args {
+                collect_simple_exists_keys(a, out);
+            }
+        }
+        Expression::Var(_) | Expression::Const(_) => {}
+    }
+}
+
+fn build_exists_semijoin_cache(
+    expr: &Expression,
+    schema: &[VarId],
+    ctx: &ExecutionContext<'_>,
+) -> Result<Option<ExistsSemijoinCache>> {
+    if !allow_exists_semijoin_fast_path(ctx) {
+        return Ok(None);
+    }
+    let Some(store) = ctx.binary_store.as_ref() else {
+        return Ok(None);
+    };
+
+    let mut exists_nodes: Vec<(VarId, Ref)> = Vec::new();
+    collect_simple_exists_keys(expr, &mut exists_nodes);
+    if exists_nodes.is_empty() {
+        return Ok(None);
+    }
+
+    // Only cache EXISTS nodes whose correlated var is actually present in the batch schema.
+    let schema_vars: HashSet<VarId> = schema.iter().copied().collect();
+
+    let mut cache = ExistsSemijoinCache::default();
+    for (sv, pred_ref) in exists_nodes {
+        if !schema_vars.contains(&sv) {
+            continue;
+        }
+        let Some(pred_sid) = try_normalize_pred_sid(store, &pred_ref) else {
+            continue;
+        };
+        let key = ExistsSemijoinKey {
+            subject_var: sv,
+            pred: pred_sid.clone(),
+        };
+        if cache.subjects_by_key.contains_key(&key) {
+            continue;
+        }
+
+        // Resolve p_id once, then scan PSOT to collect matching subjects.
+        let Some(p_id) = store.sid_to_p_id(&pred_sid) else {
+            cache.subjects_by_key.insert(key, FxHashSet::default());
+            continue;
+        };
+
+        let subjects = collect_subjects_for_predicate_set(store, ctx.binary_g_id, p_id)?;
+        cache.subjects_by_key.insert(key, subjects);
+    }
+
+    if cache.subjects_by_key.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(cache))
     }
 }
 
@@ -177,6 +293,63 @@ fn pre_resolve_uncorrelated<'a>(
     })
 }
 
+fn try_eval_simple_exists_semijoin(
+    patterns: &[Pattern],
+    negated: bool,
+    batch: &Batch,
+    row_idx: usize,
+    ctx: &ExecutionContext<'_>,
+    cache: &ExistsSemijoinCache,
+) -> Result<Option<bool>> {
+    let Some(store) = ctx.binary_store.as_ref() else {
+        return Ok(None);
+    };
+    if patterns.len() != 1 {
+        return Ok(None);
+    }
+    let Pattern::Triple(tp) = &patterns[0] else {
+        return Ok(None);
+    };
+    let Ref::Var(subject_var) = &tp.s else {
+        return Ok(None);
+    };
+    if tp.dtc.is_some() {
+        return Ok(None);
+    }
+    if !tp.p_bound() {
+        return Ok(None);
+    }
+    if !matches!(tp.o, crate::triple::Term::Var(_)) {
+        return Ok(None);
+    }
+    let Some(pred_sid) = try_normalize_pred_sid(store, &tp.p) else {
+        return Ok(None);
+    };
+
+    let key = ExistsSemijoinKey {
+        subject_var: *subject_var,
+        pred: pred_sid,
+    };
+    let Some(subjects) = cache.subjects_by_key.get(&key) else {
+        return Ok(None);
+    };
+
+    let Some(binding) = batch.get(row_idx, *subject_var) else {
+        return Ok(Some(false));
+    };
+    let Binding::Sid(sid) = binding else {
+        // Only handle the common single-ledger SID binding here.
+        return Ok(None);
+    };
+
+    let s_id = store
+        .find_subject_id_by_parts(sid.namespace_code, sid.name.as_ref())
+        .map_err(|e| crate::error::QueryError::Internal(format!("sid->s_id: {e}")))?;
+
+    let has_match = s_id.is_some_and(|id| subjects.contains(&id));
+    Ok(Some(if negated { !has_match } else { has_match }))
+}
+
 /// Replace remaining (correlated) `Expression::Exists` nodes with per-row constants.
 ///
 /// Called once per row. Evaluates correlated EXISTS subqueries seeded with
@@ -186,17 +359,27 @@ fn resolve_exists_for_row<'a>(
     batch: &'a Batch,
     row_idx: usize,
     ctx: &'a ExecutionContext<'a>,
+    cache: Option<&'a ExistsSemijoinCache>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Expression>> + Send + 'a>> {
     Box::pin(async move {
         match expr {
             Expression::Exists { patterns, negated } => {
+                if let Some(c) = cache {
+                    if let Some(result) =
+                        try_eval_simple_exists_semijoin(patterns, *negated, batch, row_idx, ctx, c)?
+                    {
+                        return Ok(Expression::Const(FilterValue::Bool(result)));
+                    }
+                }
+
                 let result = eval_exists_for_row(patterns, *negated, batch, row_idx, ctx).await?;
                 Ok(Expression::Const(FilterValue::Bool(result)))
             }
             Expression::Call { func, args } => {
                 let mut resolved_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    resolved_args.push(resolve_exists_for_row(arg, batch, row_idx, ctx).await?);
+                    resolved_args
+                        .push(resolve_exists_for_row(arg, batch, row_idx, ctx, cache).await?);
                 }
                 Ok(Expression::Call {
                     func: func.clone(),
@@ -222,6 +405,7 @@ async fn filter_batch_with_exists(
     expr: &Expression,
     schema: &Arc<[VarId]>,
     ctx: &ExecutionContext<'_>,
+    cache: Option<&ExistsSemijoinCache>,
 ) -> Result<Option<Batch>> {
     // Phase 1: resolve uncorrelated EXISTS once for the whole batch
     let partially_resolved = pre_resolve_uncorrelated(expr, batch.schema(), ctx).await?;
@@ -236,7 +420,7 @@ async fn filter_batch_with_exists(
 
     for row_idx in 0..batch.len() {
         let resolved_expr =
-            resolve_exists_for_row(&partially_resolved, batch, row_idx, ctx).await?;
+            resolve_exists_for_row(&partially_resolved, batch, row_idx, ctx, cache).await?;
         let Some(row) = batch.row_view(row_idx) else {
             continue;
         };
@@ -280,6 +464,8 @@ pub struct FilterOperator {
     state: OperatorState,
     /// Whether the expression contains EXISTS subexpressions (cached)
     has_exists: bool,
+    /// Optional semijoin caches for simple correlated EXISTS patterns.
+    exists_semijoin: Option<ExistsSemijoinCache>,
 }
 
 impl FilterOperator {
@@ -293,6 +479,7 @@ impl FilterOperator {
             schema,
             state: OperatorState::Created,
             has_exists,
+            exists_semijoin: None,
         }
     }
 
@@ -310,6 +497,9 @@ impl Operator for FilterOperator {
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
+        if self.has_exists {
+            self.exists_semijoin = build_exists_semijoin_cache(&self.expr, &self.schema, ctx)?;
+        }
         self.state = OperatorState::Open;
         Ok(())
     }
@@ -333,7 +523,14 @@ impl Operator for FilterOperator {
             }
 
             let filtered = if self.has_exists {
-                filter_batch_with_exists(&batch, &self.expr, &self.schema, ctx).await?
+                filter_batch_with_exists(
+                    &batch,
+                    &self.expr,
+                    &self.schema,
+                    ctx,
+                    self.exists_semijoin.as_ref(),
+                )
+                .await?
             } else {
                 filter_batch(&batch, &self.expr, &self.schema, ctx)?
             };

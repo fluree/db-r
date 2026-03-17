@@ -1,7 +1,7 @@
 //! BM25 Index Data Structures
 //!
 //! This module defines the core data structures for BM25 full-text search
-//! with Clojure parity. Key design decisions:
+//! Key design decisions:
 //!
 //! - `DocKey` uses canonical IRI strings (not `Sid`) for multi-ledger safety
 //! - Inverted posting list representation for efficient query-time scoring
@@ -208,7 +208,7 @@ impl TermEntry {
 
 /// BM25 scoring parameters.
 ///
-/// Default values match Clojure implementation:
+/// Default values match the legacy implementation:
 /// - k1 = 1.2 (term frequency saturation)
 /// - b = 0.75 (document length normalization)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

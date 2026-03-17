@@ -1,6 +1,5 @@
-//! Property / predicate integration tests (Clojure parity)
+//! Property / predicate integration tests
 //!
-//! Mirrors `db-clojure/test/fluree/db/query/property_test.clj` using JSON inputs only.
 //! We keep `@context` explicit and compare results order-insensitively when ordering is not defined.
 
 mod support;
@@ -18,7 +17,7 @@ async fn seed_subject_as_predicate(fluree: &MemoryFluree, ledger_id: &str) -> Me
         "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
     });
 
-    // Insert predicate IRIs as subjects first (matches Clojure intent: "iri-cache lookups")
+    // Insert predicate IRIs as subjects first (matches intent: "iri-cache lookups")
     let db1 = fluree
         .insert(
             ledger0,
@@ -57,7 +56,7 @@ async fn seed_subject_as_predicate(fluree: &MemoryFluree, ledger_id: &str) -> Me
 
 #[tokio::test]
 async fn subjects_as_predicates_variable_predicate_scan() {
-    // Clojure: subjects-as-predicates / "via variable selector"
+    // Scenario: subjects-as-predicates / "via variable selector"
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_subject_as_predicate(&fluree, "property:subject-as-predicate").await;
 
@@ -85,7 +84,7 @@ async fn subjects_as_predicates_variable_predicate_scan() {
 
 #[tokio::test]
 async fn subjects_as_predicates_reverse_crawl_without_star() {
-    // Clojure: subjects-as-predicates / "via reverse no subgraph"
+    // Scenario: subjects-as-predicates / "via reverse no subgraph"
     //
     // NOTE: We intentionally avoid `["*"]` (graph crawl) here because select [*] graph crawl
     // parity is still in progress; this test validates reverse traversal + predicate-as-subject.
@@ -119,7 +118,7 @@ async fn subjects_as_predicates_reverse_crawl_without_star() {
 
 #[tokio::test]
 async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl() {
-    // Clojure: equivalent-properties-test
+    // Scenario: equivalent-properties-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "query/equivalent-properties");
 
@@ -238,7 +237,7 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
 
 #[tokio::test]
 async fn rdfs_subpropertyof_expansion() {
-    // Clojure: rdfs-subpropertyof-test
+    // Scenario: rdfs-subpropertyof-test
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "query/rdfs-subpropertyof");
 

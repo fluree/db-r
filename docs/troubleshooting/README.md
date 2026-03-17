@@ -100,8 +100,7 @@ curl http://localhost:8090/health
 **Quick Checks:**
 ```bash
 # Enable explain
-curl -X POST http://localhost:8090/v1/fluree/query \
-  -H "X-Fluree-Explain: true" \
+curl -X POST http://localhost:8090/v1/fluree/explain \
   -d '{...}'
 
 # Check query stats
@@ -215,8 +214,7 @@ curl -X POST http://localhost:8090/v1/fluree/query \
 ### Get Query Plan
 
 ```bash
-curl -X POST http://localhost:8090/v1/fluree/query \
-  -H "X-Fluree-Explain: true" \
+curl -X POST http://localhost:8090/v1/fluree/explain \
   -d '{...}'
 ```
 

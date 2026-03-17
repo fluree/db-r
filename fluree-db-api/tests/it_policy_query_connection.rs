@@ -1,7 +1,4 @@
-//! Policy + query-connection integration tests (Clojure parity)
-//!
-//! Ports high-signal view-policy enforcement cases from:
-//! - `db-clojure/test/fluree/db/policy/identity_based_test.clj`
+//! Policy + query-connection integration tests
 //!
 //! Focus:
 //! - identity-based policy loading via `f:policyClass` on the identity subject
@@ -22,7 +19,7 @@ async fn policy_inline_denies_restricted_property_in_direct_select() {
 
     // Inline policy: deny viewing `schema:ssn` for everyone.
     //
-    // We set `default-allow: true` so other properties remain visible (Clojure parity:
+    // We set `default-allow: true` so other properties remain visible:
     // default_allow only applies when *no* policies apply for a flake).
     // NOTE: Rust `opts.policy` expects **a policy object or array of policy objects**,
     // not a JSON-LD wrapper like `{"@graph":[...]}`.
@@ -124,7 +121,7 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
     );
 
     // Use the tracked connection query entrypoint, which performs **policy-aware**
-    // graph crawl formatting (Clojure parity).
+    // graph crawl formatting.
     let tracked = fluree
         .query_connection_tracked(&query)
         .await
