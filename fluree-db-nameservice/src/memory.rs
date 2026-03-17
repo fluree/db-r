@@ -126,6 +126,38 @@ impl NameService for MemoryNameService {
             .cloned()
             .collect())
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()> {
+        let new_id = format_ledger_id(ledger_name, new_branch);
+        let key = self.normalize_ledger_id(&new_id);
+
+        let source_key =
+            self.normalize_ledger_id(&format_ledger_id(ledger_name, &branch_point.source));
+
+        let mut records = self.records.write();
+
+        if records.contains_key(&key) {
+            return Err(crate::NameServiceError::ledger_already_exists(&key));
+        }
+
+        // Increment source branch's child count
+        if let Some(source) = records.get_mut(&source_key) {
+            source.branches += 1;
+        }
+
+        let mut record = NsRecord::new(ledger_name, new_branch);
+        record.commit_head_id = Some(branch_point.commit_id.clone());
+        record.commit_t = branch_point.t;
+        record.branch_point = Some(branch_point);
+        records.insert(key, record);
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -259,28 +291,6 @@ impl Publisher for MemoryNameService {
         let _ = self
             .event_tx
             .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
-        Ok(())
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: BranchPoint,
-    ) -> Result<()> {
-        let new_id = format_ledger_id(ledger_name, new_branch);
-        let key = self.normalize_ledger_id(&new_id);
-
-        if self.records.read().contains_key(&key) {
-            return Err(crate::NameServiceError::ledger_already_exists(&key));
-        }
-
-        let mut record = NsRecord::new(ledger_name, new_branch);
-        record.commit_head_id = Some(branch_point.commit_id.clone());
-        record.commit_t = branch_point.t;
-        record.branch_point = Some(branch_point);
-        self.records.write().insert(key, record);
-
         Ok(())
     }
 

@@ -539,6 +539,148 @@ impl NameService for DynamoDbNameService {
 
         Ok(records)
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = format_ledger_id(ledger_name, new_branch);
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        let base_item = |sk: &str| -> Item {
+            HashMap::from([
+                (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
+                (
+                    ATTR_UPDATED_AT_MS.to_string(),
+                    AttributeValue::N(now.clone()),
+                ),
+                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
+            ])
+        };
+
+        let cond = "attribute_not_exists(pk)";
+
+        // 1. Meta — includes branch point attributes
+        let mut meta = base_item(SK_META);
+        meta.insert(
+            ATTR_KIND.to_string(),
+            AttributeValue::S(KIND_LEDGER.to_string()),
+        );
+        meta.insert(
+            ATTR_NAME.to_string(),
+            AttributeValue::S(ledger_name.to_string()),
+        );
+        meta.insert(
+            ATTR_BRANCH.to_string(),
+            AttributeValue::S(new_branch.to_string()),
+        );
+        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
+        meta.insert(
+            ATTR_BP_SOURCE.to_string(),
+            AttributeValue::S(branch_point.source.clone()),
+        );
+        meta.insert(
+            ATTR_BP_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        meta.insert(
+            ATTR_BP_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 2. Head — starts at source commit
+        let mut head = base_item(SK_HEAD);
+        head.insert(
+            ATTR_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        head.insert(
+            ATTR_COMMIT_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 3. Index (unborn)
+        let mut index = base_item(SK_INDEX);
+        index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
+
+        // 4. Status (ready, v=1)
+        let mut status = base_item(SK_STATUS);
+        status.insert(
+            ATTR_STATUS.to_string(),
+            AttributeValue::S(STATUS_READY.to_string()),
+        );
+        status.insert(
+            ATTR_STATUS_V.to_string(),
+            AttributeValue::N("1".to_string()),
+        );
+
+        // 5. Config (unborn)
+        let mut config = base_item(SK_CONFIG);
+        config.insert(
+            ATTR_CONFIG_V.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        let make_put = |item: Item| -> TransactWriteItem {
+            TransactWriteItem::builder()
+                .put(
+                    Put::builder()
+                        .table_name(&self.table_name)
+                        .set_item(Some(item))
+                        .condition_expression(cond)
+                        .build()
+                        .expect("valid Put"),
+                )
+                .build()
+        };
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(make_put(meta))
+            .transact_items(make_put(head))
+            .transact_items(make_put(index))
+            .transact_items(make_put(status))
+            .transact_items(make_put(config))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => {}
+            Err(e) if Self::is_transaction_canceled(&e) => {
+                return Err(NameServiceError::ledger_already_exists(&pk));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB TransactWriteItems failed: {e}"
+                )));
+            }
+        }
+
+        // Increment source branch's child count atomically
+        let source_pk = format_ledger_id(ledger_name, &branch_point.source);
+        let _ = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(source_pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #b = if_not_exists(#b, :zero) + :one")
+            .expression_attribute_names("#b", ATTR_BRANCHES)
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .send()
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB increment branches failed: {e}"))
+            })?;
+
+        Ok(())
+    }
 }
 
 // ─── Publisher ──────────────────────────────────────────────────────────────
@@ -718,126 +860,6 @@ impl Publisher for DynamoDbNameService {
             .map_err(|e| NameServiceError::storage(format!("DynamoDB UpdateItem failed: {e}")))?;
 
         Ok(())
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), NameServiceError> {
-        let pk = format_ledger_id(ledger_name, new_branch);
-        let now = Self::now_epoch_ms().to_string();
-        let sv = SCHEMA_VERSION.to_string();
-
-        let base_item = |sk: &str| -> Item {
-            HashMap::from([
-                (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
-                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
-                (
-                    ATTR_UPDATED_AT_MS.to_string(),
-                    AttributeValue::N(now.clone()),
-                ),
-                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
-            ])
-        };
-
-        let cond = "attribute_not_exists(pk)";
-
-        // 1. Meta — includes branch point attributes
-        let mut meta = base_item(SK_META);
-        meta.insert(
-            ATTR_KIND.to_string(),
-            AttributeValue::S(KIND_LEDGER.to_string()),
-        );
-        meta.insert(
-            ATTR_NAME.to_string(),
-            AttributeValue::S(ledger_name.to_string()),
-        );
-        meta.insert(
-            ATTR_BRANCH.to_string(),
-            AttributeValue::S(new_branch.to_string()),
-        );
-        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
-        meta.insert(
-            ATTR_BP_SOURCE.to_string(),
-            AttributeValue::S(branch_point.source.clone()),
-        );
-        meta.insert(
-            ATTR_BP_COMMIT_ID.to_string(),
-            AttributeValue::S(branch_point.commit_id.to_string()),
-        );
-        meta.insert(
-            ATTR_BP_T.to_string(),
-            AttributeValue::N(branch_point.t.to_string()),
-        );
-
-        // 2. Head — starts at source commit
-        let mut head = base_item(SK_HEAD);
-        head.insert(
-            ATTR_COMMIT_ID.to_string(),
-            AttributeValue::S(branch_point.commit_id.to_string()),
-        );
-        head.insert(
-            ATTR_COMMIT_T.to_string(),
-            AttributeValue::N(branch_point.t.to_string()),
-        );
-
-        // 3. Index (unborn)
-        let mut index = base_item(SK_INDEX);
-        index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
-
-        // 4. Status (ready, v=1)
-        let mut status = base_item(SK_STATUS);
-        status.insert(
-            ATTR_STATUS.to_string(),
-            AttributeValue::S(STATUS_READY.to_string()),
-        );
-        status.insert(
-            ATTR_STATUS_V.to_string(),
-            AttributeValue::N("1".to_string()),
-        );
-
-        // 5. Config (unborn)
-        let mut config = base_item(SK_CONFIG);
-        config.insert(
-            ATTR_CONFIG_V.to_string(),
-            AttributeValue::N("0".to_string()),
-        );
-
-        let make_put = |item: Item| -> TransactWriteItem {
-            TransactWriteItem::builder()
-                .put(
-                    Put::builder()
-                        .table_name(&self.table_name)
-                        .set_item(Some(item))
-                        .condition_expression(cond)
-                        .build()
-                        .expect("valid Put"),
-                )
-                .build()
-        };
-
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(make_put(meta))
-            .transact_items(make_put(head))
-            .transact_items(make_put(index))
-            .transact_items(make_put(status))
-            .transact_items(make_put(config))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if Self::is_transaction_canceled(&e) => {
-                Err(NameServiceError::ledger_already_exists(&pk))
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB TransactWriteItems failed: {e}"
-            ))),
-        }
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {

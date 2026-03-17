@@ -169,6 +169,18 @@ impl NameService for ProxyNameService {
         // The peer maintains its own view of known ledgers via SSE events
         Ok(Vec::new())
     }
+
+    async fn create_branch(
+        &self,
+        _ledger_name: &str,
+        _new_branch: &str,
+        _branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> Result<()> {
+        // Proxy peers forward branch creation to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "create_branch not supported in proxy mode".to_string(),
+        ))
+    }
 }
 
 #[async_trait]

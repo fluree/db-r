@@ -379,6 +379,17 @@ impl fluree_db_nameservice::NameService for AnyNameService {
     > {
         self.0.all_records().await
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
 }
 
 #[async_trait]
@@ -413,17 +424,6 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.retract(alias).await
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .create_branch(ledger_name, new_branch, branch_point)
-            .await
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
@@ -502,6 +502,24 @@ where
     > {
         self.inner.all_records().await
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.inner.drop_branch(ledger_id).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -543,17 +561,6 @@ where
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.inner.retract(alias).await
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner
-            .create_branch(ledger_name, new_branch, branch_point)
-            .await
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {

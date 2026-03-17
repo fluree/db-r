@@ -376,6 +376,31 @@ pub trait NameService: Debug + Send + Sync {
             .filter(|r| r.name == ledger_name && !r.retracted)
             .collect())
     }
+
+    /// Create a new branch for a ledger.
+    ///
+    /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
+    /// [`branch_point`](NsRecord::branch_point) set to record the branch origin.
+    /// The new branch starts at the same commit head as the source, so
+    /// subsequent transactions on either branch will diverge independently.
+    ///
+    /// Also increments the source branch's `branches` count to track
+    /// the child reference for safe deletion.
+    ///
+    /// # Arguments
+    /// * `ledger_name` - The base ledger name (e.g., `"mydb"`)
+    /// * `new_branch` - The branch name to create (e.g., `"feature-x"`)
+    /// * `branch_point` - The source branch state at branch time
+    ///
+    /// # Errors
+    /// Returns [`LedgerAlreadyExists`](NameServiceError::LedgerAlreadyExists)
+    /// if the branch already exists.
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()>;
 }
 
 /// Publisher trait for writing nameservice records
@@ -439,28 +464,6 @@ pub trait Publisher: Debug + Send + Sync {
     async fn purge(&self, ledger_id: &str) -> Result<()> {
         self.retract(ledger_id).await
     }
-
-    /// Create a new branch for a ledger.
-    ///
-    /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
-    /// [`branch_point`](NsRecord::branch_point) set to record the branch origin.
-    /// The new branch starts at the same commit head as the source, so
-    /// subsequent transactions on either branch will diverge independently.
-    ///
-    /// # Arguments
-    /// * `ledger_name` - The base ledger name (e.g., `"mydb"`)
-    /// * `new_branch` - The branch name to create (e.g., `"feature-x"`)
-    /// * `branch_point` - The source branch state at branch time
-    ///
-    /// # Errors
-    /// Returns [`LedgerAlreadyExists`](NameServiceError::LedgerAlreadyExists)
-    /// if the branch already exists.
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: BranchPoint,
-    ) -> Result<()>;
 
     /// Get the publishing ledger ID for a ledger.
     ///

@@ -700,6 +700,62 @@ where
 
         Ok(records)
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let key = self.ns_key(ledger_name, new_branch);
+        let normalized_id = format_ledger_id(ledger_name, new_branch);
+
+        let bp_ref = BranchPointRef {
+            source: branch_point.source.clone(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            t: branch_point.t,
+        };
+
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_id.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.to_string(),
+            },
+            branch: new_branch.to_string(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            config_cid: None,
+            t: branch_point.t,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            status_v: Some(1),
+            status_meta: None,
+            config_v: Some(0),
+            config_meta: None,
+            branch_point: Some(bp_ref),
+            branches: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|e| NameServiceError::storage(e.to_string()))?;
+
+        let created = self.storage.insert(&key, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(&normalized_id));
+        }
+
+        // Increment source branch's child count
+        let source_key = self.ns_key(ledger_name, &branch_point.source);
+        self.cas_update::<NsFileV2, _>(&source_key, |existing| {
+            let mut file = existing?;
+            file.branches += 1;
+            Some(file)
+        })
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -856,52 +912,6 @@ where
             Some(file)
         })
         .await
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: crate::BranchPoint,
-    ) -> Result<()> {
-        let key = self.ns_key(ledger_name, new_branch);
-        let normalized_id = format_ledger_id(ledger_name, new_branch);
-
-        let bp_ref = BranchPointRef {
-            source: branch_point.source.clone(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
-            t: branch_point.t,
-        };
-
-        let file = NsFileV2 {
-            context: ns_context(),
-            id: normalized_id.clone(),
-            record_type: vec!["f:LedgerSource".to_string()],
-            ledger: LedgerRef {
-                id: ledger_name.to_string(),
-            },
-            branch: new_branch.to_string(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
-            config_cid: None,
-            t: branch_point.t,
-            index: None,
-            status: "ready".to_string(),
-            default_context_cid: None,
-            status_v: Some(1),
-            status_meta: None,
-            config_v: Some(0),
-            config_meta: None,
-            branch_point: Some(bp_ref),
-        };
-        let bytes = serde_json::to_vec_pretty(&file)
-            .map_err(|e| NameServiceError::storage(e.to_string()))?;
-
-        let created = self.storage.insert(&key, &bytes).await?;
-        if !created {
-            return Err(NameServiceError::ledger_already_exists(&normalized_id));
-        }
-
-        Ok(())
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {

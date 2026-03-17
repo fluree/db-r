@@ -78,6 +78,24 @@ impl NameService for AwsNameService {
             Self::Storage(ns) => ns.all_records().await,
         }
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -120,24 +138,6 @@ impl Publisher for AwsNameService {
         match self {
             Self::DynamoDb(ns) => ns.retract(ledger_id).await,
             Self::Storage(ns) => ns.retract(ledger_id).await,
-        }
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => {
-                ns.create_branch(ledger_name, new_branch, branch_point)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.create_branch(ledger_name, new_branch, branch_point)
-                    .await
-            }
         }
     }
 
