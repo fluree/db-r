@@ -308,7 +308,7 @@ where
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
 
         let storage = self.connection.storage().clone();
-        let method = storage.storage_method().to_string();
+        let method = storage.storage_method();
         let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
 
         // Read and parse the index root
