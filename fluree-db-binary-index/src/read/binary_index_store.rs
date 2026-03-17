@@ -2850,7 +2850,7 @@ async fn load_dict_tree_from_cas(
 ) -> io::Result<DictTreeReader> {
     fn leaf_digest_hex_from_address(address: &str) -> Option<&str> {
         // Branch leaf addresses are stored as Fluree CAS addresses for file storage, e.g.:
-        //   fluree:file://<ledger>/main/index/objects/dicts/<sha256>.dict
+        //   fluree:file://<ledger>/@shared/dicts/<sha256>.dict
         // Root leaf lists store ContentIds; for comparison we need just the digest hex.
         let path = parse_fluree_address(address)
             .map(|p| p.path)

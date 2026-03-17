@@ -293,8 +293,8 @@ where
     ///
     /// Copies the index root, fact leaves, branch manifests, and specialty
     /// arenas (numbig, vector, spatial, fulltext). Dictionary blobs are
-    /// **not** copied — they are append-only and shared across branches
-    /// via the `BranchedContentStore` fallback.
+    /// **not** copied — they are stored globally per ledger (not per branch),
+    /// so all branches already share the same dict artifacts.
     async fn copy_index_to_branch(
         &self,
         source_id: &str,
@@ -345,9 +345,8 @@ where
         // Add the root CID itself
         all_cids.push(index_cid.clone());
 
-        // Skip dictionary blobs — they are append-only and shared across
-        // branches via the BranchedContentStore fallback. Copying them
-        // would waste storage since they can grow large.
+        // Skip dictionary blobs — they are stored globally per ledger (not
+        // per branch), so all branches already share the same dict artifacts.
         all_cids.retain(|cid| cid.codec() != CODEC_FLUREE_DICT_BLOB);
 
         // Deduplicate

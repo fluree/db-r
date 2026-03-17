@@ -48,7 +48,7 @@
 //! }
 //! ```
 
-use crate::address_path::ledger_id_to_path_prefix;
+use crate::address_path::{ledger_id_to_path_prefix, shared_prefix_for_path};
 use crate::error::Result;
 use async_trait::async_trait;
 use sha2::Digest;
@@ -601,8 +601,11 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::DictBlob { dict } => {
+            // Dictionaries are global per ledger — shared across all branches.
+            // Use the @shared namespace (can't collide with branch names since @ is forbidden).
+            let shared = shared_prefix_for_path(ledger_id);
             let ext = dict_kind_extension(dict);
-            format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
+            format!("{}/dicts/{}.{}", shared, hash_hex, ext)
         }
         ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
