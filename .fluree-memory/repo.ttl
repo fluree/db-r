@@ -67,20 +67,6 @@ mem:constraint-01kjcyjgszs18b9h4jg7h3xpfj a mem:Constraint ;
     mem:sensitivity "public" ;
     mem:createdAt "2026-02-26T12:25:27.104151+00:00"^^xsd:dateTime .
 
-mem:constraint-01kjd0p1bpj6n5nw00ssap82h0 a mem:Constraint ;
-    mem:content "Memory hygiene when recalling: if memory_recall returns multiple overlapping/near-duplicate memories about the same concept, consolidate them into a single canonical memory. Prefer creating the canonical version via memory_update so it supersedes an older entry (superseded entries are filtered from \"current\" results). For any remaining duplicates, either forget them if they add no unique value, or rewrite them into a short pointer that links to the canonical memory ID." ;
-    mem:tag "agent-rules" ;
-    mem:tag "dedup" ;
-    mem:tag "hygiene" ;
-    mem:tag "memory" ;
-    mem:tag "recall" ;
-    mem:tag "supersedes" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:severity "should" ;
-    mem:artifactRef ".cursor/rules/fluree_rules.md" ;
-    mem:createdAt "2026-02-26T13:02:19.510395+00:00"^^xsd:dateTime .
-
 mem:constraint-01kjte29y3cp8mae56xy6yfv2n a mem:Constraint ;
     mem:content "SPARQL↔JSON-LD Parity: Must-Check When Adding SPARQL Features\n\nWhen implementing a new SPARQL feature from W3C compliance work (#55 sub-issues):\n\n1. **Shared IR change?** If adding a new Expression/Pattern/AggregateFn variant or modifying execution operators, it ALREADY affects JSON-LD query — ensure JSON-LD tests still pass.\n\n2. **Expressible in JSON-LD?** If the feature can be expressed in JSON-LD query syntax (new function, filter operator, aggregation mode), add JSON-LD query tests too — don't leave a parity gap.\n\n3. **Execution path missing entirely?** (e.g., VALUES, certain property path modes) — SPARQL lowering adds the IR pattern but JSON-LD lowering (`fluree-db-query/src/parse/lower.rs`) may not produce it yet. Track as a follow-up issue.\n\n4. **Test locations:**\n   - SPARQL integration: `fluree-db-api/tests/it_query_sparql.rs`\n   - JSON-LD integration: `fluree-db-api/tests/it_query.rs`, `it_query_analytical.rs`, `it_query_grouping.rs`\n   - Shared expression/execution unit tests: `fluree-db-query/src/` modules\n\n5. **Validation after shared-code changes:**\n   ```\n   cd testsuite-sparql &amp;&amp; make test-eval-cat CAT=&lt;category&gt;   # SPARQL W3C\n   cd .. &amp;&amp; cargo test -p fluree-db-api --test it_query        # JSON-LD\n   ```\n\nRationale: Both query languages compile to the same IR (fluree-db-query/src/ir.rs) and share the entire execution engine. A change to shared code that fixes SPARQL but breaks JSON-LD query is unacceptable." ;
     mem:tag "compliance" ;
@@ -98,22 +84,6 @@ mem:constraint-01kjte29y3cp8mae56xy6yfv2n a mem:Constraint ;
     mem:artifactRef "fluree-db-query/src/ir.rs" ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:20.611062+00:00"^^xsd:dateTime .
-
-mem:decision-01kjc0f2eze1q1sq7ke1b3z13c a mem:Decision ;
-    mem:content "memory_recall smart score filtering heuristic (MCP tool only):\n\nWhen the LLM calls memory_recall with NO explicit limit or offset, apply score-based trimming before returning results:\n- Fetch limit+1 candidates (the extra is a peek-ahead for reporting next score)\n- Threshold: top_score * 0.5 — drop any result below 50% of the top score\n- Always return at least 1 result (even if everything is below threshold)\n- Report the score of the first non-returned result in the <pagination> element so the LLM can decide whether to fetch more\n- Pagination hint: \"Results 1–N, next score: X.X. Use offset=N to retrieve more.\"\n\nWhen explicit limit or offset IS provided, bypass all smart filtering — honor the request exactly.\n\nKey files: fluree-db-memory/src/mcp.rs (use_smart_filter logic), fluree-db-memory/src/format.rs (next_score: Option<f64> param added to format_context_paged)" ;
-    mem:tag "bm25" ;
-    mem:tag "heuristic" ;
-    mem:tag "mcp" ;
-    mem:tag "memory" ;
-    mem:tag "recall" ;
-    mem:tag "scoring" ;
-    mem:tag "ux" ;
-    mem:scope mem:repo ;
-    mem:sensitivity "public" ;
-    mem:branch "feature/memory" ;
-    mem:createdAt "2026-02-26T03:39:16.831509+00:00"^^xsd:dateTime ;
-    mem:rationale "Without filtering, 3 results were always returned even when the 2nd and 3rd had scores far below the top hit (e.g., 69.4 / 26.8 / 7.0). Low-confidence memories waste context and can mislead the LLM. The 50% threshold is a natural gap detector: when a strong match exists, it dominates and only truly related memories pass the threshold." ;
-    mem:alternatives "Fixed limit reduction (e.g., always return 1); percentile-based cutoff; absolute score floor. The relative 50% threshold was chosen because BM25 scores are query-relative and unnormalized — a relative threshold adapts naturally to query strength." .
 
 mem:decision-01kje2pt9maxrxjw49ydgejmpe a mem:Decision ;
     mem:content "f:enforceUnique uses storage-layer value identity, NOT RDF strict equality. The uniqueness key is (graph, predicate, FlakeValue) — it ignores the RDF datatype IRI (flake.dt) and language tag (FlakeMeta.lang). This matches \"how humans think of the value\": if the bytes are the same, it's a duplicate regardless of what datatype or language annotation is attached. Callers cannot subvert uniqueness by asserting the same string with a different datatype IRI or lang tag. Different FlakeValue variants (e.g., FlakeValue::String(\"42\") vs FlakeValue::Long(42)) are naturally distinct at the storage layer and do NOT conflict. The RangeMatch query uses predicate_object(p, o) without .with_datatype(), which matches all datatypes for that (p, o) pair in the POST index." ;
@@ -593,6 +563,70 @@ mem:fact-01kjte2qeekkgz4dryv84sqq8e a mem:Fact ;
     mem:createdAt "2026-03-03T18:06:34.446036+00:00"^^xsd:dateTime ;
     mem:factKind "command" .
 
+mem:decision-01kkymgaynzn5mrgy21pw22tf6 a mem:Decision ;
+    mem:content "CLI write command naming taxonomy — \"transact\" vs \"update\" vs \"insert\" vs \"upsert\"\n\n**Terminology:**\n- \"Transact\" = any write operation (the umbrella). The API builder uses `.transact()` to start any write. The HTTP endpoint is `/transact` for all writes.\n- \"Insert\" = append-only data addition (`fluree insert`)\n- \"Upsert\" = replace by subject+predicate (`fluree upsert`)\n- \"Update\" = WHERE/DELETE/INSERT pattern (`fluree update`)\n\n**The CLI command is `update`, NOT `transact`.** This aligns with the API layer where `GraphTransactBuilder` has three distinct methods: `.insert()`, `.upsert()`, `.update()`.\n\n**Code naming convention:**\n- CLI: `Commands::Update`, `commands::update::run()`, `UpdateFormat` enum\n- Remote client: `update_jsonld()`, `update_sparql()` (both route to HTTP `/transact` endpoint)\n- API builder: `.transact().update(&json)` — `.transact()` is the umbrella, `.update()` is the specific operation\n- Internal types like `TransactCore`, `GraphTransactBuilder`, `fluree-db-transact` crate — all correctly use \"transact\" for the generic write concept" ;
+    mem:tag "api-alignment" ;
+    mem:tag "cli" ;
+    mem:tag "insert" ;
+    mem:tag "naming" ;
+    mem:tag "taxonomy" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:tag "upsert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/graph_transact_builder.rs" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:31.413037+00:00"^^xsd:dateTime ;
+    mem:rationale "The original CLI command was named `transact` but this conflicted with the established API naming where \"transact\" means any write operation. Renamed to `update` to match the API layer's `.transact().update()` pattern, where update specifically means WHERE/DELETE/INSERT." ;
+    mem:alternatives "Keep `transact` as CLI command name (rejected: confuses the umbrella concept with a specific operation type); use `where-delete-insert` or `wdi` (rejected: too verbose/obscure)" .
+
+mem:fact-01kkymgssnce3t5w8bmfdx4sbk a mem:Fact ;
+    mem:content "CLI `fluree update` command — WHERE/DELETE/INSERT transactions\n\n**Usage:** `fluree update [LEDGER] [DATA] [OPTIONS]`\n**Flags:** `-e` (inline expr), `-f` (file), `-m` (commit message), `--format` (jsonld|sparql), `--remote` (remote name), `--direct` (bypass server routing)\n\n**Supported formats:**\n- JSON-LD (default): body with `where`, `delete`, and/or `insert` keys\n- SPARQL UPDATE: `INSERT DATA`, `DELETE DATA`, `DELETE/INSERT WHERE` syntax\n\n**Format auto-detection priority:** explicit `--format` flag > file extension (.json/.jsonld → JSON-LD, .rq/.ru/.sparql → SPARQL) > content sniffing (full JSON parse → JSON-LD; starts with INSERT/DELETE/PREFIX/BASE → SPARQL)\n\n**SPARQL UPDATE gating:** SPARQL UPDATE requires the server's parsing pipeline (namespace registry). It works via auto-routing through a running local server or `--remote`. In `--direct` mode, SPARQL UPDATE returns a clear error with actionable guidance to use JSON-LD instead.\n\n**Local JSON-LD path:** `fluree.graph(&alias).transact().update(&json).commit_opts(opts).commit().await`\n**Remote path:** `client.update_jsonld()` or `client.update_sparql()` — both hit `/transact` HTTP endpoint\n\n**Implementation:** `fluree-db-cli/src/commands/update.rs` — reuses `resolve_positional_args` and `print_txn_result` from the `insert` module. `UpdateFormat` enum + `detect_update_format()` + `sniff_update_format()` handle format detection.\n\n**Tests:** 12 integration tests in `fluree-db-cli/tests/integration.rs` (update_where_delete_insert_json_ld, update_delete_only, update_insert_only_via_update, update_with_commit_message, update_from_json_file, update_sparql_update_in_direct_mode_fails, update_without_active_ledger_errors, update_without_init_errors, help_shows_update_command, update_help_shows_description, update_via_stdin) + 11 unit tests for format detection.\n\n**Docs:** `docs/cli/update.md`" ;
+    mem:tag "cli" ;
+    mem:tag "command" ;
+    mem:tag "format-detection" ;
+    mem:tag "json-ld" ;
+    mem:tag "sparql-update" ;
+    mem:tag "update" ;
+    mem:tag "where-delete-insert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/update.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/tests/integration.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:46.613521+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .
+
+mem:fact-01kkymh6g8k90t0c4pa43hfgmf a mem:Fact ;
+    mem:content "CLI write command shared infrastructure (insert, upsert, update)\n\nAll three CLI write commands share the same architecture:\n\n**Input resolution** (`resolve_positional_args` in `commands/insert.rs`, shared by all three):\n- 0 args: active ledger, data via `-e`/`-f`/stdin\n- 1 arg: auto-detected as inline data (JSON/Turtle/SPARQL), file path, or ledger name\n- 2 args: first = ledger, second = inline data\n- Priority: `-e` > positional inline > `-f` > positional file > stdin\n\n**Format detection:**\n- `insert`/`upsert`: use `detect::detect_data_format()` → `DataFormat::Turtle` or `DataFormat::JsonLd`\n- `update`: uses its own `detect_update_format()` → `UpdateFormat::JsonLd` or `UpdateFormat::SparqlUpdate` (no Turtle — use insert/upsert for that)\n- All follow: explicit flag > file extension > content sniffing\n\n**Ledger mode dispatch** (all three commands):\n- `--remote` → `LedgerMode::Tracked` (remote HTTP client)\n- Otherwise → `resolve_ledger_mode()` → `LedgerMode::Local` or auto-route through local server via `try_server_route()`\n- `--direct` flag bypasses auto-routing\n\n**Local execution:** All use `fluree.graph(&alias).transact().<operation>().commit_opts(opts).commit().await`\n- insert: `.insert(&json)` or `.insert_turtle(&content)`\n- upsert: `.upsert(&json)` or `.upsert_turtle(&content)`\n- update: `.update(&json)` (no Turtle variant)\n\n**Remote execution:** Each has dedicated `RemoteLedgerClient` methods:\n- insert: `insert_jsonld()`, `insert_turtle()`\n- upsert: `upsert_jsonld()`, `upsert_turtle()`\n- update: `update_jsonld()`, `update_sparql()`\n\n**Output:** Local prints `Committed t={t}, {n} flakes`. Remote prints full JSON via `print_txn_result()` (shared from insert module)." ;
+    mem:tag "architecture" ;
+    mem:tag "cli" ;
+    mem:tag "format-detection" ;
+    mem:tag "input-resolution" ;
+    mem:tag "insert" ;
+    mem:tag "ledger-mode" ;
+    mem:tag "shared-infrastructure" ;
+    mem:tag "update" ;
+    mem:tag "upsert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-cli/src/commands/insert.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/update.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/upsert.rs" ;
+    mem:artifactRef "fluree-db-cli/src/context.rs" ;
+    mem:artifactRef "fluree-db-cli/src/detect.rs" ;
+    mem:artifactRef "fluree-db-cli/src/input.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-17T19:31:59.624804+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+    
 mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
     mem:content "Issue #55 W3C SPARQL Compliance Status (measured 2026-03-09)\n\nMaster tracker: github.com/fluree/db-r/issues/55\n\nCurrent pass rate: 241/327 (73.7%)\n\nSPARQL 1.1 per-category:\n- bind: 10/10 (100%) — FIXED in #51\n- cast: 6/6 (100%) — PR #83\n- negation: 12/12 (100%)\n- bindings: 10/11 (91%) — FIXED in #51 (remaining: graph test needs named graph support)\n- syntax-query: 81/94 (86%)\n- functions: 59/75 (79%)\n- exists: 4/6 (67%)\n- subquery: 9/14 (64%) — #52\n- aggregates: 27/46 (59%)\n- project-expression: 4/7 (57%)\n- grouping: 3/6 (50%)\n- property-path: 16/33 (48%) — #47\n- construct: 0/7 (0%) — #53\n\nOpen issues: #47 (property paths), #50 (arithmetic), #52 (subqueries), #53 (CONSTRUCT eval), #61 (aggregate expr input), #62 (numeric type promotion)" ;
     mem:tag "compliance" ;

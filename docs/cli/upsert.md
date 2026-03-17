@@ -63,5 +63,6 @@ Committed t=2 (3 flakes)
 ## See Also
 
 - [insert](insert.md) - Insert without replacement
+- [update](update.md) - Full WHERE/DELETE/INSERT updates
 - [query](query.md) - Query data
 - [history](history.md) - View change history
