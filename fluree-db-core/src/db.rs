@@ -182,8 +182,14 @@ impl LedgerSnapshot {
 
     /// Extract metadata from raw index root bytes (FIR6 binary format).
     pub fn from_root_bytes(bytes: &[u8]) -> Result<Self> {
-        let meta = decode_fir6_metadata(bytes)
-            .map_err(|e| Error::invalid_index(format!("index root: FIR6 decode: {e}")))?;
+        let meta = decode_fir6_metadata(bytes).map_err(|e| {
+            let hint = if bytes.len() >= 4 && &bytes[0..4] == b"IRB1" {
+                " (found IRB1 magic — this ledger uses an older index format; re-indexing is required)"
+            } else {
+                ""
+            };
+            Error::invalid_index(format!("index root: FIR6 decode: {e}{hint}"))
+        })?;
         Self::new_meta(meta)
     }
 

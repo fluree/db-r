@@ -369,7 +369,7 @@ pub fn build_leaf_blob_raw_keys(
     let last_key = *last_key;
 
     // Pre-compute directory size.
-    let dir_size = compute_directory_size(leaflets, history_seg_refs);
+    let dir_size = compute_directory_size(leaflets);
     let payload_offset = LEAF_V3_HEADER_SIZE + dir_size;
 
     let mut buf = Vec::new();
@@ -452,11 +452,7 @@ pub fn build_leaf_blob_raw_keys(
     buf
 }
 
-pub fn compute_directory_size(
-    leaflets: &[EncodedLeaflet],
-    history_seg_refs: &[HistorySegmentRef],
-) -> usize {
-    let _ = history_seg_refs; // used for sizing, but fixed per entry
+pub fn compute_directory_size(leaflets: &[EncodedLeaflet]) -> usize {
     leaflets
         .iter()
         .map(|l| {
@@ -539,87 +535,7 @@ pub fn decode_leaf_dir_v3(
     data: &[u8],
     header: &LeafHeaderV3,
 ) -> io::Result<Vec<LeafletDirEntryV3>> {
-    let mut pos = LEAF_V3_HEADER_SIZE;
-    let mut entries = Vec::with_capacity(header.leaflet_count as usize);
-
-    for _ in 0..header.leaflet_count {
-        if pos + 80 > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "directory truncated",
-            ));
-        }
-
-        let row_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-        let lead_group_count = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        let mut first_key = [0u8; ORDERED_KEY_V2_SIZE];
-        first_key.copy_from_slice(&data[pos + 8..pos + 34]);
-        let mut last_key = [0u8; ORDERED_KEY_V2_SIZE];
-        last_key.copy_from_slice(&data[pos + 34..pos + 60]);
-        let p_const_raw = u32::from_le_bytes(data[pos + 60..pos + 64].try_into().unwrap());
-        let p_const = if p_const_raw == u32::MAX {
-            None
-        } else {
-            Some(p_const_raw)
-        };
-        let o_type_const_raw = u16::from_le_bytes(data[pos + 64..pos + 66].try_into().unwrap());
-        let o_type_const = if o_type_const_raw == u16::MAX {
-            None
-        } else {
-            Some(o_type_const_raw)
-        };
-        let flags = u32::from_le_bytes(data[pos + 66..pos + 70].try_into().unwrap());
-        let payload_offset = u32::from_le_bytes(data[pos + 70..pos + 74].try_into().unwrap());
-        let payload_len = u32::from_le_bytes(data[pos + 74..pos + 78].try_into().unwrap());
-        let column_count =
-            u16::from_le_bytes(data[pos + 78..pos + 80].try_into().unwrap()) as usize;
-        pos += 80;
-
-        let mut column_refs = Vec::with_capacity(column_count);
-        for _ in 0..column_count {
-            if pos + COLUMN_BLOCK_REF_SIZE > data.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "column ref truncated",
-                ));
-            }
-            let ref_buf: [u8; COLUMN_BLOCK_REF_SIZE] =
-                data[pos..pos + COLUMN_BLOCK_REF_SIZE].try_into().unwrap();
-            column_refs.push(ColumnBlockRef::read_le(&ref_buf));
-            pos += COLUMN_BLOCK_REF_SIZE;
-        }
-
-        if pos + 20 > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "history ref truncated",
-            ));
-        }
-        let history_offset = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-        let history_len = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
-        let history_min_t = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().unwrap());
-        let history_max_t = u32::from_le_bytes(data[pos + 16..pos + 20].try_into().unwrap());
-        pos += 20;
-
-        entries.push(LeafletDirEntryV3 {
-            row_count,
-            lead_group_count,
-            first_key,
-            last_key,
-            p_const,
-            o_type_const,
-            flags,
-            payload_offset,
-            payload_len,
-            column_refs,
-            history_offset,
-            history_len,
-            history_min_t,
-            history_max_t,
-        });
-    }
-
-    Ok(entries)
+    decode_leaf_dir_v3_with_base(data, header).map(|d| d.entries)
 }
 
 /// Decoded leaf directory plus the payload base offset.

@@ -228,8 +228,8 @@ impl MergeSource for StreamingRunReader {
 /// `buffer` and `op_buffer` vectors.
 // Kept for: rebuild path merge input (reads version-2 FRN2 files with op sideband).
 // Use when: incremental rebuild pipeline is wired in.
-// Note: #[allow] instead of #[expect] — see run_file.rs for rationale.
-#[allow(dead_code)]
+// Note: #[expect] will warn when this code is actually used.
+#[expect(dead_code)]
 pub(crate) struct StreamingRunReaderWithOp {
     file: BufReader<std::fs::File>,
     /// Kept for the sort_order accessor.
@@ -242,12 +242,12 @@ pub(crate) struct StreamingRunReaderWithOp {
     is_compressed: bool,
 }
 
-#[allow(dead_code)]
 impl StreamingRunReaderWithOp {
     /// Open a V2 run file with op sideband for streaming.
     ///
     /// The file must be version 2 (with-op). Returns an error if the
     /// file is version 1 (no-op).
+    #[allow(dead_code)] // Used when rebuild pipeline is wired in; #[expect] triggers unfulfilled in test targets.
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let raw = std::fs::File::open(path)?;
         let mut file = BufReader::with_capacity(FILE_BUF_BYTES, raw);

@@ -12,6 +12,7 @@ use fluree_db_binary_index::{DictRefs, GraphArenaRefs};
 use fluree_db_core::ContentId;
 use fluree_db_core::{IndexSchema, IndexStats};
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 /// Selective mutation builder for `IndexRoot`.
 ///
@@ -90,17 +91,20 @@ impl IncrementalRootBuilder {
 
     /// Replace dictionary references.
     pub fn set_dict_refs(&mut self, refs: DictRefs) {
-        // Record old dict CIDs as replaced.
-        self.replaced_cids
-            .push(self.root.dict_refs.subject_reverse.branch.clone());
-        for leaf in &self.root.dict_refs.subject_reverse.leaves {
-            self.replaced_cids.push(leaf.clone());
-        }
-        self.replaced_cids
-            .push(self.root.dict_refs.string_reverse.branch.clone());
-        for leaf in &self.root.dict_refs.string_reverse.leaves {
-            self.replaced_cids.push(leaf.clone());
-        }
+        // Record old dict CIDs as replaced **only if** they are not referenced by the new refs.
+        //
+        // This is critical for correctness when dictionaries are unchanged: callers may rebuild
+        // `DictRefs` from the base root even when novelty has no new subjects/strings. In that
+        // case, the new root still references the same dict CIDs, and GC must not delete them.
+        let old_cids: HashSet<ContentId> = collect_dict_cids(&self.root.dict_refs)
+            .into_iter()
+            .collect();
+        let new_cids: HashSet<ContentId> = collect_dict_cids(&refs).into_iter().collect();
+
+        let mut replaced: Vec<ContentId> = old_cids.difference(&new_cids).cloned().collect();
+        // Keep ordering deterministic for garbage manifest stability.
+        replaced.sort_by_key(|a| a.to_string());
+        self.replaced_cids.extend(replaced);
         self.root.dict_refs = refs;
     }
 
@@ -196,4 +200,26 @@ impl IncrementalRootBuilder {
     pub fn build(self) -> (IndexRoot, Vec<ContentId>) {
         (self.root, self.replaced_cids)
     }
+}
+
+fn collect_dict_cids(refs: &DictRefs) -> Vec<ContentId> {
+    let mut out: Vec<ContentId> = Vec::new();
+
+    // Forward packs (FPK1)
+    for entry in &refs.forward_packs.string_fwd_packs {
+        out.push(entry.pack_cid.clone());
+    }
+    for (_, ns_packs) in &refs.forward_packs.subject_fwd_ns_packs {
+        for entry in ns_packs {
+            out.push(entry.pack_cid.clone());
+        }
+    }
+
+    // Reverse trees (DTB1 + leaves)
+    out.push(refs.subject_reverse.branch.clone());
+    out.extend(refs.subject_reverse.leaves.iter().cloned());
+    out.push(refs.string_reverse.branch.clone());
+    out.extend(refs.string_reverse.leaves.iter().cloned());
+
+    out
 }

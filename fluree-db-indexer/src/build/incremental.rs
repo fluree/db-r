@@ -34,6 +34,51 @@ use crate::run_index::build::incremental_resolve::{
 use crate::run_index::build::incremental_root::IncrementalRootBuilder;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
+/// Run `update_branch` on a blocking thread.
+///
+/// Uses `spawn_blocking` instead of `block_in_place` so this works on both
+/// multi-threaded and current-thread tokio runtimes (the latter is used by
+/// `#[tokio::test]`).
+async fn run_update_branch(
+    branch_bytes: Vec<u8>,
+    sorted_records: Vec<RunRecordV2>,
+    sorted_ops: Vec<u8>,
+    branch_config: BranchUpdateConfig,
+    content_store: Arc<dyn fluree_db_core::storage::ContentStore>,
+) -> std::result::Result<BranchUpdateResult, IndexerError> {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let cs = content_store.clone();
+        let cs2 = content_store;
+        update_branch(
+            &branch_bytes,
+            &sorted_records,
+            &sorted_ops,
+            &branch_config,
+            &|cid| {
+                handle
+                    .block_on(async { cs.get(cid).await })
+                    .map_err(std::io::Error::other)
+            },
+            &|cid| {
+                handle
+                    .block_on(async { cs2.get(cid).await })
+                    .map(Some)
+                    .or_else(|e| match e {
+                        fluree_db_core::error::Error::NotFound(_) => {
+                            tracing::debug!("sidecar not found (treating as absent): {e}");
+                            Ok(None)
+                        }
+                        other => Err(std::io::Error::other(other)),
+                    })
+            },
+        )
+    })
+    .await
+    .map_err(|e| IndexerError::StorageWrite(format!("branch update task panicked: {e}")))?
+    .map_err(|e| IndexerError::StorageWrite(e.to_string()))
+}
+
 /// Entry point for incremental indexing.
 ///
 /// Called from `build_index_for_ledger` when an index exists and
@@ -153,32 +198,14 @@ where
                             .saturating_mul(config.leaflets_per_leaf.max(1)),
                     };
 
-                    let cs = content_store.clone();
-                    let cs2 = content_store.clone();
-                    let result = tokio::task::block_in_place(|| {
-                        update_branch(
-                            &branch_bytes,
-                            &sorted_records,
-                            &sorted_ops,
-                            &branch_config,
-                            &|cid| {
-                                tokio::runtime::Handle::current()
-                                    .block_on(async { cs.get(cid).await })
-                                    .map_err(std::io::Error::other)
-                            },
-                            &|cid| {
-                                tokio::runtime::Handle::current()
-                                    .block_on(async { cs2.get(cid).await })
-                                    .map(Some)
-                                    .or(Ok(None))
-                            },
-                        )
-                    })
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!(
-                            "V6 branch update g={g_id} {order:?}: {e}"
-                        ))
-                    })?;
+                    let result = run_update_branch(
+                        branch_bytes,
+                        sorted_records,
+                        sorted_ops,
+                        branch_config,
+                        content_store.clone(),
+                    )
+                    .await?;
 
                     // Upload new leaf + sidecar blobs.
                     upload_leaf_blobs(storage, ledger_id, &result).await?;
@@ -233,32 +260,14 @@ where
                             .saturating_mul(config.leaflets_per_leaf.max(1)),
                     };
 
-                    let cs = content_store.clone();
-                    let cs2 = content_store.clone();
-                    let result = tokio::task::block_in_place(|| {
-                        update_branch(
-                            &branch_bytes,
-                            &sorted_records,
-                            &sorted_ops,
-                            &branch_config,
-                            &|cid| {
-                                tokio::runtime::Handle::current()
-                                    .block_on(async { cs.get(cid).await })
-                                    .map_err(std::io::Error::other)
-                            },
-                            &|cid| {
-                                tokio::runtime::Handle::current()
-                                    .block_on(async { cs2.get(cid).await })
-                                    .map(Some)
-                                    .or(Ok(None))
-                            },
-                        )
-                    })
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!(
-                            "V6 branch update g={g_id} {order:?}: {e}"
-                        ))
-                    })?;
+                    let result = run_update_branch(
+                        branch_bytes,
+                        sorted_records,
+                        sorted_ops,
+                        branch_config,
+                        content_store.clone(),
+                    )
+                    .await?;
 
                     upload_leaf_blobs(storage, ledger_id, &result).await?;
 
@@ -2139,11 +2148,15 @@ where
 /// Build a fresh V3 branch from pure novelty for the default graph.
 fn build_fresh_default_graph_v3(
     sorted_records: &[RunRecordV2],
-    _sorted_ops: &[u8],
+    // Kept for: filtering retractions in fresh branches once the rebuild
+    // pipeline supports retraction-aware builds. Currently only assertions
+    // appear in fresh branches so ops are not consulted.
+    sorted_ops: &[u8],
     order: RunSortOrder,
     g_id: u16,
     config: &IndexerConfig,
 ) -> Result<BranchUpdateResult> {
+    let _ = sorted_ops;
     use crate::run_index::build::incremental_leaf::NewLeafBlob;
     use fluree_db_binary_index::format::branch::{build_branch_bytes, LeafEntry};
     use fluree_db_binary_index::format::leaf::LeafWriter;

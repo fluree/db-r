@@ -214,8 +214,16 @@ pub(crate) fn read_cid(data: &[u8], pos: &mut usize) -> io::Result<ContentId> {
 }
 
 /// Write a length-prefixed UTF-8 string as `len:u16(LE) + bytes`.
+///
+/// # Panics
+/// Debug-asserts that the string fits in a u16 length prefix (64 KiB).
 pub(crate) fn write_str(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
+    debug_assert!(
+        bytes.len() <= u16::MAX as usize,
+        "write_str: string length {} exceeds u16::MAX",
+        bytes.len()
+    );
     buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(bytes);
 }
@@ -232,7 +240,15 @@ pub(crate) fn read_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
 }
 
 /// Write a string array as `count:u16(LE) + [len:u16 + bytes]...`.
+///
+/// # Panics
+/// Debug-asserts that the array length fits in a u16 count.
 pub(crate) fn write_string_array(buf: &mut Vec<u8>, strings: &[String]) {
+    debug_assert!(
+        strings.len() <= u16::MAX as usize,
+        "write_string_array: count {} exceeds u16::MAX",
+        strings.len()
+    );
     buf.extend_from_slice(&(strings.len() as u16).to_le_bytes());
     for s in strings {
         write_str(buf, s);

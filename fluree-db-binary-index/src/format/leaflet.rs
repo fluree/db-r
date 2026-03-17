@@ -66,7 +66,12 @@ pub fn encode_leaflet(
     order: RunSortOrder,
     zstd_level: i32,
 ) -> std::io::Result<EncodedLeaflet> {
-    assert!(!records.is_empty(), "cannot encode empty leaflet");
+    if records.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cannot encode empty leaflet",
+        ));
+    }
 
     // Validate segmentation invariants.
     let first = &records[0];

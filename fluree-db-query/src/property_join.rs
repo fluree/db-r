@@ -25,7 +25,7 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::join::NestedLoopJoinOperator;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::EmptyOperator;
@@ -170,15 +170,18 @@ impl PropertyJoinOperator {
     /// * `patterns` - Triple patterns forming a property-join shape
     /// * `object_bounds` - Optional range bounds for object variables (filter pushdown)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if patterns don't form a valid property-join shape
-    /// (use `is_property_join_shape` to check first).
-    pub fn new(patterns: &[TriplePattern], object_bounds: HashMap<VarId, ObjectBounds>) -> Self {
-        assert!(
-            crate::planner::is_property_join(patterns),
-            "Patterns must form a property-join shape"
-        );
+    /// Returns `QueryError::Internal` if patterns don't form a valid property-join shape.
+    pub fn new(
+        patterns: &[TriplePattern],
+        object_bounds: HashMap<VarId, ObjectBounds>,
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(patterns) {
+            return Err(QueryError::Internal(
+                "Patterns must form a property-join shape".into(),
+            ));
+        }
 
         Self::new_with_needed_vars(patterns, object_bounds, None)
     }
@@ -189,35 +192,46 @@ impl PropertyJoinOperator {
         patterns: &[TriplePattern],
         object_bounds: HashMap<VarId, ObjectBounds>,
         needed_vars: Option<&std::collections::HashSet<VarId>>,
-    ) -> Self {
-        assert!(
-            crate::planner::is_property_join(patterns),
-            "Patterns must form a property-join shape"
-        );
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(patterns) {
+            return Err(QueryError::Internal(
+                "Patterns must form a property-join shape".into(),
+            ));
+        }
 
         // Extract subject var (guaranteed same for all by is_property_join)
         let subject_var = match &patterns[0].s {
             Ref::Var(v) => *v,
-            _ => panic!("Property-join requires variable subject"),
+            _ => {
+                return Err(QueryError::Internal(
+                    "Property-join requires variable subject".into(),
+                ))
+            }
         };
 
         // Extract (predicate_ref, object_var, dt, emit_object) tuples.
         // Predicate can be Ref::Sid or Ref::Iri depending on lowering
-        let predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>, bool)> = patterns
-            .iter()
-            .map(|p| {
-                let pred_ref = match &p.p {
-                    Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
-                    _ => panic!("Property-join requires bound predicates (Sid or Iri)"),
-                };
-                let obj_var = match &p.o {
-                    Term::Var(v) => *v,
-                    _ => panic!("Property-join requires variable objects"),
-                };
-                let emit_object = needed_vars.is_none_or(|n| n.contains(&obj_var));
-                (pred_ref, obj_var, p.dtc.clone(), emit_object)
-            })
-            .collect();
+        let mut predicates = Vec::with_capacity(patterns.len());
+        for p in patterns {
+            let pred_ref = match &p.p {
+                Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
+                _ => {
+                    return Err(QueryError::Internal(
+                        "Property-join requires bound predicates (Sid or Iri)".into(),
+                    ))
+                }
+            };
+            let obj_var = match &p.o {
+                Term::Var(v) => *v,
+                _ => {
+                    return Err(QueryError::Internal(
+                        "Property-join requires variable objects".into(),
+                    ))
+                }
+            };
+            let emit_object = needed_vars.is_none_or(|n| n.contains(&obj_var));
+            predicates.push((pred_ref, obj_var, p.dtc.clone(), emit_object));
+        }
 
         // Build output schema: [subject_var, obj_var_1, obj_var_2, ...] but only for emitted vars.
         let mut schema_vec = vec![subject_var];
@@ -242,7 +256,7 @@ impl PropertyJoinOperator {
             out
         };
 
-        Self {
+        Ok(Self {
             subject_var,
             predicates,
             output_schema,
@@ -252,7 +266,7 @@ impl PropertyJoinOperator {
             subject_idx: 0,
             object_bounds,
             emit_positions,
-        }
+        })
     }
 
     /// Get the subject variable
@@ -777,7 +791,7 @@ mod tests {
     #[test]
     fn test_property_join_creation() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         assert_eq!(op.subject_var(), VarId(0));
         assert_eq!(op.predicates.len(), 2);
@@ -787,7 +801,7 @@ mod tests {
     #[test]
     fn test_property_join_schema() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let schema = op.output_schema();
         assert_eq!(schema[0], VarId(0)); // subject
@@ -805,7 +819,7 @@ mod tests {
     #[test]
     fn test_generate_rows_single_values() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_sid = Sid::new(1, "alice");
         let subject_binding = Binding::Sid(subject_sid.clone());
@@ -827,7 +841,7 @@ mod tests {
     #[test]
     fn test_generate_rows_cartesian_product() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_binding = Binding::Sid(Sid::new(1, "alice"));
         let values = vec![
@@ -854,7 +868,7 @@ mod tests {
     #[test]
     fn test_generate_rows_empty_pred() {
         let patterns = make_property_join_patterns();
-        let op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
 
         let subject_binding = Binding::Sid(Sid::new(1, "alice"));
         let values = vec![
@@ -872,7 +886,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "property-join shape")]
     fn test_property_join_rejects_invalid_patterns() {
         // Different subjects - not a valid property-join
         let patterns = vec![
@@ -887,6 +900,10 @@ mod tests {
                 Term::Var(VarId(3)),
             ),
         ];
-        let _op = PropertyJoinOperator::new(&patterns, HashMap::new());
+        let result = PropertyJoinOperator::new(&patterns, HashMap::new());
+        assert!(
+            result.is_err(),
+            "should reject invalid property-join patterns"
+        );
     }
 }

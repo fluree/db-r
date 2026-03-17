@@ -112,7 +112,7 @@ pub fn update_leaf(input: &LeafUpdateInput<'_>) -> io::Result<LeafUpdateOutput> 
         // No novelty — return the leaf unchanged.
         // The caller should detect this and skip the update entirely,
         // but we handle it gracefully.
-        return Ok(passthrough_entire_leaf(input));
+        return passthrough_entire_leaf(input);
     }
 
     let header = decode_leaf_header_v3(input.leaf_bytes)?;
@@ -215,13 +215,13 @@ fn slice_novelty_to_leaflets<'a>(
 // ============================================================================
 
 /// Passthrough entire leaf when no novelty exists.
-fn passthrough_entire_leaf(input: &LeafUpdateInput<'_>) -> LeafUpdateOutput {
+fn passthrough_entire_leaf(input: &LeafUpdateInput<'_>) -> io::Result<LeafUpdateOutput> {
     // Re-wrap existing bytes as a single leaf blob.
     let leaf_bytes = input.leaf_bytes.to_vec();
     let leaf_cid = compute_cid_leaf(&leaf_bytes);
 
     // Decode header for routing keys.
-    let header = decode_leaf_header_v3(input.leaf_bytes).expect("valid FLI3 leaf");
+    let header = decode_leaf_header_v3(input.leaf_bytes)?;
 
     // Routing keys: placeholders (branch code reads leaf header directly).
     let first_key = zeroed_record();
@@ -236,7 +236,7 @@ fn passthrough_entire_leaf(input: &LeafUpdateInput<'_>) -> LeafUpdateOutput {
         None => (None, None),
     };
 
-    LeafUpdateOutput {
+    Ok(LeafUpdateOutput {
         leaves: vec![NewLeafBlob {
             info: LeafInfo {
                 leaf_cid,
@@ -248,7 +248,7 @@ fn passthrough_entire_leaf(input: &LeafUpdateInput<'_>) -> LeafUpdateOutput {
                 last_key,
             },
         }],
-    }
+    })
 }
 
 /// Passthrough a single untouched leaflet.
@@ -619,7 +619,7 @@ fn load_existing_history(
         min_t: entry.history_min_t,
         max_t: entry.history_max_t,
     };
-    Ok(decode_history_segment(sb, &seg_ref))
+    decode_history_segment(sb, &seg_ref)
 }
 
 /// Placeholder RunRecordV2 with all fields zeroed.
@@ -876,7 +876,7 @@ mod tests {
     /// Regression: when a leaflet splits into multiple chunks, history entries
     /// must be partitioned to the correct chunk (not all in chunk 0).
     #[test]
-    fn test_leaflet_split_partitions_history() {
+    fn test_leaflet_split_partitions_history() -> Result<(), Box<dyn std::error::Error>> {
         // Create a leaf with a few existing records.
         let existing = vec![rec2(1, 1, 10, 1), rec2(2, 1, 20, 1), rec2(3, 1, 30, 1)];
         let (leaf_bytes, sidecar) = build_test_leaf(&existing, RunSortOrder::Spot);
@@ -930,7 +930,7 @@ mod tests {
                     min_t: entry.history_min_t,
                     max_t: entry.history_max_t,
                 };
-                let entries = decode_history_segment(sc_bytes, &seg);
+                let entries = decode_history_segment(sc_bytes, &seg)?;
                 total_history += entries.len();
             }
         }
@@ -940,5 +940,6 @@ mod tests {
             total_history, 4,
             "expected 4 history entries total, got {total_history}"
         );
+        Ok(())
     }
 }

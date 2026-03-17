@@ -577,8 +577,8 @@ fn push_overlay_row(
     p_id.push(ov.p_id);
     o_type.push(ov.o_type);
     o_i.push(ov.o_i);
-    t.push(u32::try_from(ov.t).unwrap_or_else(|_| {
-        debug_assert!(false, "overlay t={} does not fit u32", ov.t);
+    t.push(u32::try_from(ov.t.max(0)).unwrap_or_else(|_| {
+        tracing::warn!(overlay_t = ov.t, "overlay t does not fit u32, clamping");
         u32::MAX
     }));
 }
@@ -601,10 +601,10 @@ fn batch_has_rows_above_t(batch: &ColumnBatch, t_target: u32) -> bool {
 fn filter_batch(filter: &BinaryFilter, batch: &ColumnBatch) -> ColumnBatch {
     let mut matching: Vec<usize> = Vec::new();
     for i in 0..batch.row_count {
-        let s_id = batch.s_id.get_or(i, 0);
+        let s_id = batch.s_id.get(i); // always present
+        let o_key = batch.o_key.get(i); // always present
         let p_id = batch.p_id.get_or(i, 0);
         let o_type = batch.o_type.get_or(i, 0);
-        let o_key = batch.o_key.get_or(i, 0);
         let o_i = batch.o_i.get_or(i, u32::MAX);
         if filter.matches(s_id, p_id, o_type, o_key, o_i) {
             matching.push(i);

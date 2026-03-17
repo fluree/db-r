@@ -149,6 +149,9 @@ pub trait StorageRead: Debug + Send + Sync {
     /// Backends that support native range reads (S3, HTTP) should override
     /// for efficiency.
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
         let full = self.read_bytes(address).await?;
         let start = range.start as usize;
         let end = (range.end as usize).min(full.len());
@@ -699,6 +702,9 @@ impl StorageRead for MemoryStorage {
     }
 
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
         let data = self.data.read().expect("RwLock poisoned");
         let full = data
             .get(address)
@@ -865,6 +871,9 @@ impl StorageRead for FileStorage {
 
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let path = self.resolve_path(address)?;
+        if range.end <= range.start {
+            return Ok(Vec::new());
+        }
         let len = (range.end - range.start) as usize;
         let offset = range.start;
         let address = address.to_owned();
@@ -880,14 +889,23 @@ impl StorageRead for FileStorage {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::FileExt;
-                let n = file.read_at(&mut buf, offset).map_err(|e| {
-                    crate::error::Error::io(format!(
-                        "Failed to read range from {}: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                buf.truncate(n);
+                let mut total = 0;
+                while total < len {
+                    let n = file
+                        .read_at(&mut buf[total..], offset + total as u64)
+                        .map_err(|e| {
+                            crate::error::Error::io(format!(
+                                "Failed to read range from {}: {}",
+                                path.display(),
+                                e
+                            ))
+                        })?;
+                    if n == 0 {
+                        break; // EOF
+                    }
+                    total += n;
+                }
+                buf.truncate(total);
             }
             #[cfg(not(unix))]
             {
@@ -896,14 +914,21 @@ impl StorageRead for FileStorage {
                 file.seek(SeekFrom::Start(offset)).map_err(|e| {
                     crate::error::Error::io(format!("Failed to seek {}: {}", path.display(), e))
                 })?;
-                let n = file.read(&mut buf).map_err(|e| {
-                    crate::error::Error::io(format!(
-                        "Failed to read range from {}: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                buf.truncate(n);
+                let mut total = 0;
+                while total < len {
+                    let n = file.read(&mut buf[total..]).map_err(|e| {
+                        crate::error::Error::io(format!(
+                            "Failed to read range from {}: {}",
+                            path.display(),
+                            e
+                        ))
+                    })?;
+                    if n == 0 {
+                        break; // EOF
+                    }
+                    total += n;
+                }
+                buf.truncate(total);
             }
             Ok(buf)
         })

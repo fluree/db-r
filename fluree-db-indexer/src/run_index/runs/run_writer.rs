@@ -247,10 +247,6 @@ impl MultiOrderRunWriter {
 ///
 /// Used by the rebuild path where assert/retract information must survive
 /// through the run-file stage into the merge pipeline.
-// Kept for: incremental rebuild path (not yet wired).
-// Use when: rebuild pipeline produces V2 run files with ops.
-// Note: #[allow] instead of #[expect] — see run_file.rs for rationale.
-#[allow(dead_code)]
 pub(crate) struct RunWriterWithOp {
     config: RunWriterConfig,
     buffer: Vec<RunRecordV2>,
@@ -265,14 +261,12 @@ pub(crate) struct RunWriterWithOp {
     spare_op_buffer: Option<Vec<u8>>,
 }
 
-#[allow(dead_code)]
 struct FlushResultV2WithOp {
     info: RunFileInfo,
     spare: Vec<RunRecordV2>,
     spare_ops: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl RunWriterWithOp {
     pub(crate) fn new(config: RunWriterConfig) -> Self {
         let cap = config.max_records().min(1_000_000);
@@ -416,14 +410,10 @@ impl RunWriterWithOp {
 // ============================================================================
 
 /// Fans out `(RunRecordV2, op)` pairs to per-order `RunWriterWithOp` instances.
-// Kept for: incremental rebuild path (not yet wired).
-// Use when: rebuild pipeline fans out records with ops to multiple orders.
-#[allow(dead_code)]
 pub(crate) struct MultiOrderRunWriterWithOp {
     writers: Vec<(RunSortOrder, RunWriterWithOp)>,
 }
 
-#[allow(dead_code)]
 impl MultiOrderRunWriterWithOp {
     pub(crate) fn new(config: MultiOrderConfig) -> io::Result<Self> {
         let per_order_budget = config.total_budget_bytes / config.orders.len().max(1);

@@ -741,6 +741,9 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
     /// Create a new iterator that only emits groups for subjects in `allowed_subjects`.
     ///
     /// `allowed_subjects` must be sorted ascending and must not contain duplicates.
+    // Kept for: filtered-subject weighted-sum fast path (e.g., COUNT with WHERE filter).
+    // Use when: fast-path COUNT(*) adds subject-filtering support.
+    #[expect(dead_code)]
     pub fn new_filtered_subjects(
         store: &'a BinaryIndexStore,
         g_id: GraphId,

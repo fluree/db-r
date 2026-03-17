@@ -300,7 +300,10 @@ pub async fn stage(
             flakes
         };
 
-        // Count fuel per staged non-schema flake (mirrors query-side fuel counting)
+        // Count fuel per staged non-schema flake (mirrors query-side fuel counting).
+        // NOTE: fuel exhaustion now returns an error (previously silently ignored).
+        // This is intentional — transactions exceeding fuel limits should fail
+        // before policy enforcement runs.
         if let Some(tracker) = options.tracker {
             for flake in &flakes {
                 if !is_schema_flake(&flake.p, &flake.o) {
@@ -399,7 +402,8 @@ pub async fn stage_flakes(
             }
         };
 
-        // 3. Count fuel per staged non-schema flake
+        // 3. Count fuel per staged non-schema flake.
+        // NOTE: fuel exhaustion now returns an error (previously silently ignored).
         if let Some(tracker) = options.tracker {
             for flake in &flakes {
                 if !is_schema_flake(&flake.p, &flake.o) {
@@ -661,10 +665,11 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                             "resolve_subject_iri: {e}"
                         )))
                     })?;
-                    let sid = ledger
-                        .snapshot
-                        .encode_iri(&iri)
-                        .expect("encode_iri always returns Some");
+                    let sid = ledger.snapshot.encode_iri(&iri).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "encode_iri returned None for subject IRI: {iri}"
+                        )))
+                    })?;
                     Binding::Sid(sid)
                 }
                 Binding::EncodedPid { p_id } => {
@@ -673,10 +678,11 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                             "unknown predicate id: {p_id}"
                         )))
                     })?;
-                    let sid = ledger
-                        .snapshot
-                        .encode_iri(iri)
-                        .expect("encode_iri always returns Some");
+                    let sid = ledger.snapshot.encode_iri(iri).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "encode_iri returned None for predicate IRI: {iri}"
+                        )))
+                    })?;
                     Binding::Sid(sid)
                 }
                 Binding::EncodedLit {
@@ -705,10 +711,11 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                                 .cloned()
                                 .unwrap_or_else(|| Sid::new(0, ""));
                             let dt_iri = store_ref.sid_to_iri(&dt_sid);
-                            let dt = ledger
-                                .snapshot
-                                .encode_iri(&dt_iri)
-                                .expect("encode_iri always returns Some");
+                            let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
+                                TransactError::Query(fluree_db_query::QueryError::Internal(
+                                    format!("encode_iri returned None for datatype IRI: {dt_iri}"),
+                                ))
+                            })?;
                             let meta = store_ref.decode_meta(*lang_id, *i_val);
                             let dtc = meta
                                 .as_ref()

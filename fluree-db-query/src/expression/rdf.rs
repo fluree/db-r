@@ -9,7 +9,6 @@ use crate::ir::Expression;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::DatatypeDictId;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use uuid::Uuid;
 
 use super::helpers::{check_arity, format_datatype_sid};
@@ -126,21 +125,10 @@ pub fn eval_same_term<R: RowAccess>(
     check_arity(args, 2, "SAMETERM")?;
 
     // Fast path: avoid decoding EncodedSid/EncodedPid to IRI strings.
-    {
-        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let disabled = *DISABLED.get_or_init(|| {
-            std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
-                .ok()
-                .as_deref()
-                == Some("1")
-        });
-        if !disabled {
-            if let Some(ctx) = ctx {
-                if let Some(store) = ctx.binary_store.as_deref() {
-                    if let Some(b) = fast_same_term_encoded_ids(args, row, ctx, store)? {
-                        return Ok(Some(ComparableValue::Bool(b)));
-                    }
-                }
+    if let Some(ctx) = ctx {
+        if let Some(store) = ctx.binary_store.as_deref() {
+            if let Some(b) = fast_same_term_encoded_ids(args, row, ctx, store)? {
+                return Ok(Some(ComparableValue::Bool(b)));
             }
         }
     }
@@ -227,19 +215,12 @@ fn fast_same_term_encoded_ids<R: RowAccess>(
 }
 
 fn log_same_term_fastpath_hit_once(kind: &'static str) {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    let enabled = *ENABLED.get_or_init(|| {
-        std::env::var("FLUREE_LOG_FILTER_FASTPATH_HIT")
-            .ok()
-            .as_deref()
-            == Some("1")
-    });
-    if !enabled {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
         return;
     }
     static HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !HIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        tracing::debug!(kind, "sameterm encoded-id fast path hit");
+        tracing::debug!(kind, "SAMETERM: used encoded-id fast path (logged once)");
     }
 }
 

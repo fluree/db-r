@@ -1638,7 +1638,7 @@ pub fn build_triple_operators(
             &triples_for_exec,
             object_bounds.clone(),
             Some(&needed),
-        );
+        )?;
         return Ok(Box::new(pj));
     }
 

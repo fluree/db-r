@@ -132,7 +132,7 @@ impl LeafHandle for FullBlobLeafHandle {
             min_t: entry.history_min_t,
             max_t: entry.history_max_t,
         };
-        Ok(decode_history_segment(sc_bytes, &seg))
+        decode_history_segment(sc_bytes, &seg)
     }
 
     fn sidecar_bytes(&self) -> Option<&[u8]> {
@@ -547,7 +547,8 @@ impl LeafHandle for RangeReadLeafHandle {
             if pos + HIST_ENTRY_V2_SIZE > bytes.len() {
                 break;
             }
-            entries.push(HistEntryV2::read_le(&bytes[pos..]));
+            entries.push(HistEntryV2::read_le(&bytes[pos..])?);
+
             pos += HIST_ENTRY_V2_SIZE;
         }
         Ok(entries)

@@ -257,8 +257,11 @@ impl StorageRead for S3Storage {
         address: &str,
         range: std::ops::Range<u64>,
     ) -> std::result::Result<Vec<u8>, CoreError> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
         let key = self.to_key(address)?;
-        let range_header = format!("bytes={}-{}", range.start, range.end.saturating_sub(1));
+        let range_header = format!("bytes={}-{}", range.start, range.end - 1);
 
         let response = self
             .client

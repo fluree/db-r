@@ -1661,7 +1661,7 @@ impl NestedLoopJoinOperator {
 
             let branch = store
                 .branch_for_order(ctx.binary_g_id, RunSortOrder::Psot)
-                .expect("PSOT index must exist for every graph");
+                .ok_or_else(|| QueryError::Internal("PSOT index not found for graph".into()))?;
             let leaf_range = Self::find_psot_leaf_range(
                 branch,
                 ctx.binary_g_id,

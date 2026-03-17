@@ -20,25 +20,20 @@ use crate::error::{QueryError, Result};
 use crate::ir::{CompareOp, Expression};
 use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
-use std::sync::OnceLock;
 
 use super::helpers::check_min_arity;
 use super::value::{ComparableValue, ComparisonError};
 
 fn log_fastpath_hit_once(kind: &'static str) {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    let enabled = *ENABLED.get_or_init(|| {
-        std::env::var("FLUREE_LOG_FILTER_FASTPATH_HIT")
-            .ok()
-            .as_deref()
-            == Some("1")
-    });
-    if !enabled {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
         return;
     }
     static HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !HIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        tracing::debug!(kind, "filter encoded-id fast path hit");
+        tracing::debug!(
+            kind,
+            "FILTER: used encoded-id equality fast path (logged once)"
+        );
     }
 }
 
@@ -50,17 +45,6 @@ fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
 ) -> Result<Option<bool>> {
     if !matches!(op, CompareOp::Eq | CompareOp::Ne) || args.len() != 2 {
         return Ok(None);
-    }
-    {
-        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *DISABLED.get_or_init(|| {
-            std::env::var("FLUREE_DISABLE_FILTER_ENCODED_ID_FASTPATH")
-                .ok()
-                .as_deref()
-                == Some("1")
-        }) {
-            return Ok(None);
-        }
     }
     let Some(ctx) = ctx else {
         return Ok(None);

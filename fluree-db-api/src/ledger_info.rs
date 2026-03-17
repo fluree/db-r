@@ -641,7 +641,7 @@ fn merge_graph_property_novelty(
     if size_delta >= 0 {
         graph_entry.size = graph_entry.size.saturating_add(size_delta as u64);
     } else {
-        graph_entry.size = graph_entry.size.saturating_sub((-size_delta) as u64);
+        graph_entry.size = graph_entry.size.saturating_sub(size_delta.unsigned_abs());
     }
 
     if deltas.is_empty() {

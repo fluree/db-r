@@ -78,9 +78,21 @@ impl HistEntryV2 {
     }
 
     /// Read from wire format (31 bytes, little-endian).
-    pub fn read_le(buf: &[u8]) -> Self {
-        debug_assert!(buf.len() >= HIST_ENTRY_V2_SIZE);
-        Self {
+    ///
+    /// # Errors
+    /// Returns `io::Error` if `buf` is shorter than [`HIST_ENTRY_V2_SIZE`] bytes.
+    pub fn read_le(buf: &[u8]) -> std::io::Result<Self> {
+        if buf.len() < HIST_ENTRY_V2_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "HistEntryV2 requires {} bytes, got {}",
+                    HIST_ENTRY_V2_SIZE,
+                    buf.len()
+                ),
+            ));
+        }
+        Ok(Self {
             s_id: SubjectId(u64::from_le_bytes(buf[0..8].try_into().unwrap())),
             p_id: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
             o_type: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
@@ -88,7 +100,7 @@ impl HistEntryV2 {
             o_i: u32::from_le_bytes(buf[22..26].try_into().unwrap()),
             t: u32::from_le_bytes(buf[26..30].try_into().unwrap()),
             op: buf[30],
-        }
+        })
     }
 }
 
@@ -210,16 +222,40 @@ impl Default for HistSidecarBuilder {
 /// Decode a history segment at the given offset.
 ///
 /// Returns the entries in the order they appear (t descending).
-pub fn decode_history_segment(data: &[u8], seg: &HistorySegmentRef) -> Vec<HistEntryV2> {
+pub fn decode_history_segment(
+    data: &[u8],
+    seg: &HistorySegmentRef,
+) -> std::io::Result<Vec<HistEntryV2>> {
     let offset = seg.offset as usize;
+    if offset + 4 > data.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!(
+                "history segment offset {} + 4 exceeds data length {}",
+                offset,
+                data.len()
+            ),
+        ));
+    }
     let entry_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+    let required = offset + 4 + entry_count * HIST_ENTRY_V2_SIZE;
+    if required > data.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!(
+                "history segment needs {} bytes but data has {}",
+                required,
+                data.len()
+            ),
+        ));
+    }
     let mut entries = Vec::with_capacity(entry_count);
     let mut pos = offset + 4;
     for _ in 0..entry_count {
-        entries.push(HistEntryV2::read_le(&data[pos..]));
+        entries.push(HistEntryV2::read_le(&data[pos..])?);
         pos += HIST_ENTRY_V2_SIZE;
     }
-    entries
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -253,7 +289,7 @@ mod tests {
         };
         let mut buf = [0u8; HIST_ENTRY_V2_SIZE];
         entry.write_le(&mut buf);
-        let decoded = HistEntryV2::read_le(&buf);
+        let decoded = HistEntryV2::read_le(&buf).unwrap();
         assert_eq!(entry, decoded);
     }
 
@@ -295,7 +331,7 @@ mod tests {
         assert_eq!(refs.len(), 3);
 
         // Leaflet 0: sorted by t descending → t=5 first, t=3 second.
-        let entries0 = decode_history_segment(&bytes, &refs[0]);
+        let entries0 = decode_history_segment(&bytes, &refs[0]).unwrap();
         assert_eq!(entries0.len(), 2);
         assert_eq!(entries0[0].t, 5);
         assert_eq!(entries0[1].t, 3);
@@ -303,11 +339,11 @@ mod tests {
         assert_eq!(refs[0].max_t, 5);
 
         // Leaflet 1: empty.
-        let entries1 = decode_history_segment(&bytes, &refs[1]);
+        let entries1 = decode_history_segment(&bytes, &refs[1]).unwrap();
         assert!(entries1.is_empty());
 
         // Leaflet 2: single entry.
-        let entries2 = decode_history_segment(&bytes, &refs[2]);
+        let entries2 = decode_history_segment(&bytes, &refs[2]).unwrap();
         assert_eq!(entries2.len(), 1);
         assert_eq!(entries2[0].t, 7);
         assert_eq!(refs[2].min_t, 7);
