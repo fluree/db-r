@@ -20,7 +20,6 @@ use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
 use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions};
-use fluree_db_connection::{Connection, ConnectionConfig};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -592,7 +591,7 @@ impl AppState {
         // Convert PathBuf to String for FlureeBuilder
         let path_str = path.to_string_lossy().to_string();
 
-        let mut builder = FlureeBuilder::file(&path_str).with_ledger_caching(); // Enable connection-level ledger caching
+        let mut builder = FlureeBuilder::file(&path_str);
 
         if let Some(max_mb) = config.cache_max_mb {
             builder = builder.cache_max_mb(max_mb);
@@ -622,18 +621,10 @@ impl AppState {
             fluree_db_api::ApiError::internal(format!("Failed to load storage proxy token: {}", e))
         })?;
 
-        // Create proxy storage and nameservice
         let storage = ProxyStorage::new(tx_url.clone(), token.clone());
         let nameservice = ProxyNameService::new(tx_url, token);
 
-        // Create connection with proxy storage
-        let connection = Connection::new(ConnectionConfig::default(), storage);
-
-        // Create Fluree instance with proxy components
-        //
-        // Important: enable connection-level ledger caching so peers can keep
-        // cached ledger state hot (refresh-on-events) even in proxy mode.
-        let fluree = Fluree::new(connection, nameservice).enable_ledger_caching();
+        let fluree = FlureeBuilder::memory().build_with(storage, nameservice);
 
         tracing::info!("Initialized peer with proxy storage mode");
         let fluree = Arc::new(fluree);

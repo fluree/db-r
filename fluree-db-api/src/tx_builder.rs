@@ -1108,7 +1108,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ref_builder_insert() {
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
         let handle = fluree.ledger_cached("testdb:main").await.unwrap();
 

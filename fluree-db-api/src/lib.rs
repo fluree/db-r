@@ -1452,7 +1452,7 @@ impl FlureeBuilder {
             config: ConnectionConfig::file(path.clone()),
             storage_path: Some(path),
             encryption_key: None,
-            ledger_cache_config: None,
+            ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
         }
     }
@@ -1464,7 +1464,7 @@ impl FlureeBuilder {
             #[cfg(feature = "native")]
             storage_path: None,
             encryption_key: None,
-            ledger_cache_config: None,
+            ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
         }
     }
@@ -1527,7 +1527,7 @@ impl FlureeBuilder {
             #[cfg(feature = "native")]
             storage_path: None,
             encryption_key: None,
-            ledger_cache_config: None,
+            ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
         }
     }
@@ -1686,7 +1686,7 @@ impl FlureeBuilder {
             config,
             storage_path,
             encryption_key,
-            ledger_cache_config: None,
+            ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
         })
     }
@@ -1725,23 +1725,23 @@ impl FlureeBuilder {
         self
     }
 
-    /// Enable ledger caching with default configuration
+    /// Disable ledger caching.
     ///
-    /// When enabled, loaded ledgers are cached at the connection level,
-    /// avoiding per-request ledger reloading. This significantly improves
-    /// performance for both queries and transactions.
+    /// By default, ledger caching is enabled. Loaded ledgers are cached at
+    /// the connection level, avoiding per-request ledger reloading. This
+    /// is useful for long-running processes (servers, MCP, etc.).
     ///
-    /// Default configuration:
-    /// - Idle TTL: 30 minutes
-    /// - Sweep interval: 1 minute
-    pub fn with_ledger_caching(mut self) -> Self {
-        self.ledger_cache_config = Some(LedgerManagerConfig::default());
+    /// For one-shot CLI commands or short-lived processes, disabling the
+    /// cache avoids unnecessary overhead (sweep task, bookkeeping).
+    pub fn without_ledger_caching(mut self) -> Self {
+        self.ledger_cache_config = None;
         self
     }
 
-    /// Enable ledger caching with custom configuration
+    /// Configure ledger caching with custom settings.
     ///
-    /// Allows fine-tuning the caching behavior:
+    /// Ledger caching is enabled by default with sensible defaults (30min TTL,
+    /// 1min sweep). Use this to fine-tune:
     /// - `idle_ttl`: How long a ledger stays cached after last access
     /// - `sweep_interval`: How often the cache is checked for idle entries
     pub fn with_ledger_cache_config(mut self, config: LedgerManagerConfig) -> Self {
@@ -1839,6 +1839,39 @@ impl FlureeBuilder {
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         })
+    }
+
+    /// Build a Fluree instance with custom storage and nameservice.
+    ///
+    /// Use this when you need a storage or nameservice backend that isn't
+    /// covered by the built-in `build()` / `build_memory()` / `build_s3()`
+    /// methods (e.g. proxy storage for peer mode).
+    ///
+    /// Honors the builder's cache and indexing settings.
+    pub fn build_with<S, N>(self, storage: S, nameservice: N) -> Fluree<S, N>
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + Clone + Send + Sync + 'static,
+    {
+        let connection = Connection::new(self.config, storage.clone());
+        let leaflet_cache = make_leaflet_cache(connection.config());
+
+        let ledger_manager = self.ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
+            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
+        });
+
+        Fluree {
+            connection,
+            nameservice,
+            leaflet_cache,
+            indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
+            ledger_manager,
+        }
     }
 
     /// Build a file-backed Fluree instance with AES-256-GCM encryption.
@@ -2221,10 +2254,10 @@ pub struct Fluree<S: Storage + 'static, N> {
     index_config: IndexConfig,
     /// R2RML cache for compiled mappings and table metadata
     r2rml_cache: std::sync::Arc<graph_source::R2rmlCache>,
-    /// Optional ledger manager for connection-level caching
+    /// Ledger manager for connection-level caching (enabled by default).
     ///
-    /// When enabled via `FlureeBuilder::with_ledger_caching()`, loaded ledgers
-    /// are cached for reuse across queries and transactions.
+    /// Loaded ledgers are cached for reuse across queries and transactions.
+    /// Disabled via `FlureeBuilder::without_ledger_caching()` for one-shot use.
     ledger_manager: Option<Arc<LedgerManager<S, N>>>,
 }
 
@@ -2323,9 +2356,7 @@ where
         self.connection.config().cache.max_mb
     }
 
-    /// Check if ledger caching is enabled
-    ///
-    /// Returns true if `with_ledger_caching()` was called on the builder.
+    /// Check if ledger caching is enabled (true by default).
     pub fn is_caching_enabled(&self) -> bool {
         self.ledger_manager.is_some()
     }
@@ -2523,42 +2554,11 @@ where
         Ok(self.nameservice.lookup(ledger_id).await?.is_some())
     }
 
-    /// Enable connection-level ledger caching on an already-constructed Fluree instance.
+    /// Get a cached ledger handle (loads if not cached).
     ///
-    /// This is primarily intended for servers/peers that construct Fluree with custom
-    /// storage or nameservice implementations (e.g. proxy mode) where `FlureeBuilder`
-    /// is not used.
-    ///
-    /// If caching is already enabled, this is a no-op.
-    pub fn enable_ledger_caching(self) -> Self {
-        self.enable_ledger_cache_config(LedgerManagerConfig::default())
-    }
-
-    /// Enable connection-level ledger caching with a custom configuration.
-    ///
-    /// If caching is already enabled, this is a no-op.
-    pub fn enable_ledger_cache_config(mut self, mut config: LedgerManagerConfig) -> Self {
-        if self.ledger_manager.is_some() {
-            return self;
-        }
-
-        if config.leaflet_cache.is_none() {
-            config.leaflet_cache = Some(std::sync::Arc::clone(&self.leaflet_cache));
-        }
-
-        let storage = self.connection.storage().clone();
-        let nameservice = self.nameservice.clone();
-
-        self.ledger_manager = Some(Arc::new(LedgerManager::new(storage, nameservice, config)));
-
-        self
-    }
-
-    /// Get a cached ledger handle (loads if not cached)
-    ///
-    /// If caching is disabled (no `with_ledger_caching()` on builder),
-    /// returns an ephemeral handle that wraps a fresh load.
-    /// Server code should assert caching is enabled if it expects reuse.
+    /// Ledger caching is enabled by default. If disabled via
+    /// `FlureeBuilder::without_ledger_caching()`, returns an ephemeral
+    /// handle that wraps a fresh load.
     pub async fn ledger_cached(&self, ledger_id: &str) -> Result<LedgerHandle> {
         match &self.ledger_manager {
             Some(mgr) => mgr.get_or_load(ledger_id).await,
@@ -2871,7 +2871,7 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_returns_none_when_no_ns_record() {
         // Build with caching enabled
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
 
         // Refresh unknown ledger should return None (not in nameservice)
         let result = fluree.refresh("nonexistent:main").await.unwrap();
@@ -2883,7 +2883,7 @@ mod tests {
         use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_nameservice::Publisher;
 
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish a record to nameservice directly (without caching the ledger)
@@ -2901,7 +2901,9 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_noop_when_caching_disabled() {
         // Build WITHOUT caching
-        let fluree = FlureeBuilder::memory().build_memory();
+        let fluree = FlureeBuilder::memory()
+            .without_ledger_caching()
+            .build_memory();
 
         // Refresh should return NotLoaded (caching disabled = no-op)
         let result = fluree.refresh("mydb:main").await.unwrap();
@@ -2913,7 +2915,7 @@ mod tests {
         use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_nameservice::Publisher;
 
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish with canonical alias
@@ -2935,7 +2937,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_current_when_up_to_date() {
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
 
         // Create a ledger (this publishes to NS and returns state)
         let ledger = fluree.create_ledger("testdb").await.unwrap();
@@ -2959,7 +2961,7 @@ mod tests {
     async fn test_refresh_after_stage_update() {
         use serde_json::json;
 
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
 
         // Create a ledger (genesis at t=0)
         let _ledger = fluree.create_ledger("txdb").await.unwrap();
@@ -2993,7 +2995,7 @@ mod tests {
         // This verifies that caching via "mydb" and refreshing via "mydb" works
         // (the cache key must be canonical, not the raw input alias)
 
-        let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let fluree = FlureeBuilder::memory().build_memory();
 
         // Create ledger
         let _ledger = fluree.create_ledger("shortdb").await.unwrap();

@@ -423,9 +423,7 @@ use fluree_db_api::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Get a cached ledger handle
     let handle = fluree.ledger_cached("mydb:main").await?;
@@ -573,17 +571,15 @@ async fn main() -> Result<()> {
 
 ### Ledger Caching
 
-When using the Fluree HTTP server, ledger caching is enabled by default to avoid reloading ledger state on every request. You can also enable caching when using Fluree as a library:
+Ledger caching is enabled by default on all `FlureeBuilder` constructors. When caching is active, `fluree.ledger()` returns a cached handle and subsequent calls avoid reloading from storage:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Enable ledger caching for connection-level reuse
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    // Caching is on by default — no extra call needed
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // First call loads from storage
     let ledger = fluree.ledger("mydb:main").await?;
@@ -595,6 +591,14 @@ async fn main() -> Result<()> {
 }
 ```
 
+To **disable** caching (e.g., for a CLI tool that runs once and exits):
+
+```rust
+let fluree = FlureeBuilder::file("./data")
+    .without_ledger_caching()
+    .build()?;
+```
+
 #### Disconnecting Ledgers
 
 Use `disconnect_ledger` to release a ledger from the connection cache. This forces a fresh load on the next access:
@@ -604,9 +608,7 @@ use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Load and use ledger
     let ledger = fluree.ledger("mydb:main").await?;
@@ -629,7 +631,7 @@ async fn main() -> Result<()> {
 - **Clean shutdown**: Release resources before application exit
 - **Testing**: Reset state between test cases
 
-**Note:** If caching is disabled (no `with_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
+**Note:** If caching is disabled (via `without_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
 
 #### Checking Ledger Existence
 
@@ -674,9 +676,7 @@ use fluree_db_api::{FlureeBuilder, DropMode, DropStatus, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Soft drop: retract from nameservice, preserve files
     let report = fluree.drop_ledger("mydb:main", DropMode::Soft).await?;
@@ -746,9 +746,7 @@ use fluree_db_api::{FlureeBuilder, NotifyResult, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Load ledger into cache
     let _ledger = fluree.ledger_cached("mydb:main").await?;
@@ -1055,6 +1053,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+If you need full control over both storage and nameservice (e.g., for proxy mode or custom backends), use `build_with()`:
+
+```rust
+let storage = MyStorage;
+let nameservice = MyNameService;
+
+let fluree = FlureeBuilder::memory()
+    .build_with(storage, nameservice);
+```
+
+`build_with()` respects the builder's caching configuration — caching is on by default, or call `.without_ledger_caching()` before `build_with()` to disable it.
 
 ## Error Handling
 
@@ -1396,10 +1406,8 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Enable ledger caching (required for stage)
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    // Caching is on by default (required for stage)
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Get a cached handle
     let handle = fluree.ledger_cached("mydb:main").await?;
@@ -1458,7 +1466,7 @@ async fn main() -> Result<()> {
 
 **Why use `stage_owned(ledger)`:**
 - **Simple ownership**: Good for linear workflows (load → transact → done)
-- **No caching required**: Works without `with_ledger_caching()`
+- **No caching required**: Works even with `without_ledger_caching()`
 - **Test-friendly**: Each test manages its own state
 
 ### Choosing Between Them
