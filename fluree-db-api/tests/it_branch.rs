@@ -84,6 +84,31 @@ async fn create_branch_duplicate_fails() {
     );
 }
 
+/// Invalid branch names are rejected.
+#[tokio::test]
+async fn create_branch_invalid_name() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    // Empty name
+    assert!(fluree.create_branch("mydb", "", None).await.is_err());
+
+    // Contains colon
+    assert!(fluree.create_branch("mydb", "foo:bar", None).await.is_err());
+
+    // Contains @
+    assert!(fluree.create_branch("mydb", "foo@bar", None).await.is_err());
+
+    // Path traversal
+    assert!(fluree.create_branch("mydb", "..", None).await.is_err());
+}
+
 /// Creating a branch from a non-existent source returns not-found.
 #[tokio::test]
 async fn create_branch_missing_source() {

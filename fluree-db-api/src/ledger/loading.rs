@@ -216,8 +216,13 @@ where
         new_branch: &str,
         source_branch: Option<&str>,
     ) -> Result<NsRecord> {
-        use fluree_db_core::ledger_id::format_ledger_id;
+        use fluree_db_core::ledger_id::{format_ledger_id, validate_branch_name};
         use tracing::info;
+
+        validate_branch_name(new_branch).map_err(|e| ApiError::Http {
+            status: 400,
+            message: e.to_string(),
+        })?;
 
         let source = source_branch.unwrap_or("main");
         let source_id = format_ledger_id(ledger_name, source);

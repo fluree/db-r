@@ -98,7 +98,8 @@ pub use index_stats::{
 };
 pub use ledger_id::{
     format_ledger_id, normalize_ledger_id, parse_ledger_id_with_time, split_ledger_id,
-    split_time_travel_suffix, LedgerIdParseError, LedgerIdTimeSpec, ParsedLedgerId, DEFAULT_BRANCH,
+    split_time_travel_suffix, validate_branch_name, LedgerIdParseError, LedgerIdTimeSpec,
+    ParsedLedgerId, DEFAULT_BRANCH,
 };
 pub use namespaces::{
     default_namespace_codes, is_owl_equivalent_class, is_owl_equivalent_property,

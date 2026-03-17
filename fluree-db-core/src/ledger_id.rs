@@ -144,6 +144,50 @@ pub fn split_time_travel_suffix(
     }
 }
 
+/// Maximum allowed length for a branch name.
+const MAX_BRANCH_NAME_LEN: usize = 128;
+
+/// Validate a branch name for use in `create_branch`.
+///
+/// Branch names must:
+/// - Not be empty or purely whitespace
+/// - Not contain `:` (reserved as ledger ID separator)
+/// - Not contain `@` (reserved for time-travel suffixes)
+/// - Not contain null bytes
+/// - Not be or contain `..` (path traversal)
+/// - Be at most 128 characters
+pub fn validate_branch_name(name: &str) -> Result<(), LedgerIdParseError> {
+    if name.is_empty() || name.trim().is_empty() {
+        return Err(LedgerIdParseError::new("Branch name cannot be empty"));
+    }
+    if name.len() > MAX_BRANCH_NAME_LEN {
+        return Err(LedgerIdParseError::new(format!(
+            "Branch name exceeds maximum length of {MAX_BRANCH_NAME_LEN} characters"
+        )));
+    }
+    if name.contains(':') {
+        return Err(LedgerIdParseError::new(
+            "Branch name cannot contain ':'",
+        ));
+    }
+    if name.contains('@') {
+        return Err(LedgerIdParseError::new(
+            "Branch name cannot contain '@'",
+        ));
+    }
+    if name.contains('\0') {
+        return Err(LedgerIdParseError::new(
+            "Branch name cannot contain null bytes",
+        ));
+    }
+    if name == ".." || name.contains("../") || name.contains("/..") {
+        return Err(LedgerIdParseError::new(
+            "Branch name cannot contain path traversal (..)",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +228,44 @@ mod tests {
         assert_eq!(parsed.name, "ledger");
         assert_eq!(parsed.branch, DEFAULT_BRANCH);
         assert!(matches!(parsed.time, Some(LedgerIdTimeSpec::AtCommit(_))));
+    }
+
+    #[test]
+    fn test_validate_branch_name_valid() {
+        assert!(validate_branch_name("dev").is_ok());
+        assert!(validate_branch_name("feature-x").is_ok());
+        assert!(validate_branch_name("release/v1.0").is_ok());
+        assert!(validate_branch_name("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_branch_name_empty() {
+        assert!(validate_branch_name("").is_err());
+        assert!(validate_branch_name("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_colon() {
+        assert!(validate_branch_name("foo:bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_at_sign() {
+        assert!(validate_branch_name("foo@bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_path_traversal() {
+        assert!(validate_branch_name("..").is_err());
+        assert!(validate_branch_name("../etc").is_err());
+        assert!(validate_branch_name("foo/..").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_too_long() {
+        let long = "a".repeat(MAX_BRANCH_NAME_LEN + 1);
+        assert!(validate_branch_name(&long).is_err());
+        let ok = "a".repeat(MAX_BRANCH_NAME_LEN);
+        assert!(validate_branch_name(&ok).is_ok());
     }
 }
