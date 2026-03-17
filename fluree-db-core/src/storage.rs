@@ -402,7 +402,7 @@ impl<S: Storage> StorageContentStore<S> {
         }
     }
 
-    /// Map a CID to a legacy address string using the existing layout.
+    /// Map a CID to an address string using the current layout.
     fn cid_to_address(&self, id: &ContentId) -> Result<String> {
         let kind = id.content_kind().ok_or_else(|| {
             crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
@@ -411,18 +411,46 @@ impl<S: Storage> StorageContentStore<S> {
         let addr = content_address(&self.method, kind, &self.ledger_id, &hex_digest);
         Ok(addr)
     }
+
+    /// For dict blobs, return the pre-global-dicts address where dicts lived
+    /// under the per-branch namespace (`mydb/main/index/objects/dicts/{sha}.dict`).
+    /// Returns `None` for non-dict CIDs.
+    fn legacy_dict_address(&self, id: &ContentId) -> Option<String> {
+        if id.codec() != crate::CODEC_FLUREE_DICT_BLOB {
+            return None;
+        }
+        let prefix = ledger_id_prefix_for_path(&self.ledger_id);
+        let hex = id.digest_hex();
+        Some(format!("fluree:{}://{}/index/objects/dicts/{}.dict", self.method, prefix, hex))
+    }
 }
 
 #[async_trait]
 impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     async fn has(&self, id: &ContentId) -> Result<bool> {
         let address = self.cid_to_address(id)?;
-        self.storage.exists(&address).await
+        if self.storage.exists(&address).await? {
+            return Ok(true);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.exists(&legacy).await;
+        }
+        Ok(false)
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         let address = self.cid_to_address(id)?;
-        self.storage.read_bytes(&address).await
+        match self.storage.read_bytes(&address).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(crate::error::Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.read_bytes(&legacy).await;
+        }
+        Err(crate::error::Error::not_found(address))
     }
 
     async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
@@ -447,7 +475,12 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
         let address = self.cid_to_address(id).ok()?;
-        self.storage.resolve_local_path(&address)
+        if let Some(path) = self.storage.resolve_local_path(&address) {
+            return Some(path);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        let legacy = self.legacy_dict_address(id)?;
+        self.storage.resolve_local_path(&legacy)
     }
 }
 
