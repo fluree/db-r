@@ -1015,6 +1015,7 @@ All items share:
 | `name` | String | Base name |
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
+| `branches` | Number | Child branch reference count (0 for leaf branches, omitted when 0 in JSON-LD) |
 | `dependencies` | List\<String\> \| null | Graph-source dependencies (optional) |
 | `source_type` | String \| null | Graph-source type (e.g., `f:Bm25Index`) |
 | `created_at` | Number | Creation timestamp (epoch seconds, optional) |

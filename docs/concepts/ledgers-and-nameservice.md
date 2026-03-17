@@ -531,7 +531,38 @@ fluree branch create feature-x --from dev --ledger mydb
 fluree branch list --ledger mydb
 ```
 
-See [POST /fluree/branch](../api/endpoints.md#post-flureebranch) and [GET /fluree/branch/{ledger}](../api/endpoints.md#get-flureebranchledger) for full endpoint details.
+#### Dropping a Branch
+
+Branches can be deleted with `drop_branch`. The `main` branch cannot be dropped.
+
+Branches use **reference counting** (`branches` field on `NsRecord`) to track child branches. This enables safe deletion:
+
+- **Leaf branch** (no children, `branches == 0`): Fully dropped — storage artifacts are deleted, the NsRecord is purged, and the parent's child count is decremented. If the parent was previously retracted and its count reaches 0, it is cascade-dropped.
+- **Branch with children** (`branches > 0`): Retracted (hidden from listings, transactions rejected) but storage is preserved so children can still read parent data via `BranchedContentStore` fallback. When the last child is dropped and the count reaches 0, the retracted branch is automatically cascade-purged.
+
+**Rust API:**
+```rust
+// Drop a leaf branch
+let report = fluree.drop_branch("mydb", "dev").await?;
+
+// report.deferred == false for leaf branches
+// report.deferred == true for branches with children
+// report.cascaded contains any ancestor branches that were cascade-dropped
+```
+
+**HTTP API:**
+```bash
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+```
+
+**CLI:**
+```bash
+fluree branch drop dev --ledger mydb
+```
+
+See [POST /fluree/branch](../api/endpoints.md#post-flureebranch), [GET /fluree/branch/{ledger}](../api/endpoints.md#get-flureebranchledger), and [POST /fluree/drop-branch](../api/endpoints.md#post-flureedrop-branch) for full endpoint details.
 
 ## Architecture Deep Dive
 

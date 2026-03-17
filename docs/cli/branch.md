@@ -101,6 +101,70 @@ fluree branch list mydb --remote origin
  feature-x  8   dev
 ```
 
+### fluree branch drop
+
+Drop a branch from a ledger.
+
+**Usage:**
+
+```bash
+fluree branch drop <NAME> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<NAME>` | Branch name to drop (e.g., "dev", "feature-x") |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--ledger <LEDGER>` | Ledger name (defaults to active ledger) |
+| `--remote <REMOTE>` | Execute against a remote server |
+
+**Description:**
+
+Drops a branch from a ledger. The `main` branch cannot be dropped.
+
+- **Leaf branches** (no children) are fully deleted — storage artifacts are removed and the NsRecord is purged.
+- **Branches with children** are retracted (hidden from listings, reject new transactions) but storage is preserved so that child branches continue to work. When the last child is eventually dropped, the retracted parent is automatically cascade-purged.
+
+**Examples:**
+
+```bash
+# Drop a branch
+fluree branch drop dev
+
+# Drop a branch for a specific ledger
+fluree branch drop dev --ledger mydb
+
+# Drop a branch on a remote server
+fluree branch drop staging --ledger mydb --remote origin
+```
+
+**Output (leaf branch):**
+
+```
+Dropped branch 'dev'.
+  Artifacts deleted: 5
+```
+
+**Output (branch with children):**
+
+```
+Branch 'dev' retracted (has children, storage preserved).
+```
+
+**Output (cascade):**
+
+```
+Dropped branch 'feature'.
+  Artifacts deleted: 3
+  Cascaded drops: mydb:dev
+```
+
 ## See Also
 
 - [create](create.md) - Create a new ledger
