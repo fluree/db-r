@@ -13,6 +13,7 @@ use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
+use fluree_db_nameservice::NsRecord;
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
 use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
@@ -370,26 +371,9 @@ where
         }
 
         // Leaf branch — full drop
-        // 1. Cancel indexing
-        if let IndexingMode::Background(handle) = &self.indexing_mode {
-            handle.cancel(&ledger_id).await;
-            handle.wait_for_idle(&ledger_id).await;
-        }
+        let parent_new_count = self.purge_branch(&ledger_id, Some(&record), &mut report).await?;
 
-        // 2. Delete storage artifacts
-        let (count, warnings) = self.drop_artifacts(&ledger_id, Some(&record)).await;
-        report.artifacts_deleted = count;
-        report.warnings.extend(warnings);
-
-        // 3. Purge from nameservice + decrement parent's count
-        let parent_new_count = self.nameservice.drop_branch(&ledger_id).await?;
-
-        // 4. Disconnect from cache
-        if let Some(mgr) = &self.ledger_manager {
-            mgr.disconnect(&ledger_id).await;
-        }
-
-        // 5. Cascade upward if parent is retracted with zero children
+        // Cascade upward if parent is retracted with zero children
         if let (Some(0), Some(bp)) = (parent_new_count, &record.branch_point) {
             let parent_id = format_ledger_id(ledger_name, &bp.source);
             self.try_cascade_drop(ledger_name, &parent_id, &mut report)
@@ -405,6 +389,32 @@ where
         Ok(report)
     }
 
+    /// Cancel indexing, delete storage artifacts, purge nameservice record,
+    /// and disconnect from cache. Returns the parent's new child count.
+    async fn purge_branch(
+        &self,
+        ledger_id: &str,
+        record: Option<&NsRecord>,
+        report: &mut BranchDropReport,
+    ) -> Result<Option<u32>> {
+        if let IndexingMode::Background(handle) = &self.indexing_mode {
+            handle.cancel(ledger_id).await;
+            handle.wait_for_idle(ledger_id).await;
+        }
+
+        let (count, warnings) = self.drop_artifacts(ledger_id, record).await;
+        report.artifacts_deleted += count;
+        report.warnings.extend(warnings);
+
+        let parent_new_count = self.nameservice.drop_branch(ledger_id).await?;
+
+        if let Some(mgr) = &self.ledger_manager {
+            mgr.disconnect(ledger_id).await;
+        }
+
+        Ok(parent_new_count)
+    }
+
     /// Recursively drop retracted ancestor branches that have zero children.
     async fn try_cascade_drop(
         &self,
@@ -416,46 +426,27 @@ where
             return;
         };
 
-        // Only cascade if the ancestor is retracted AND has no remaining children
         if !ancestor.retracted || ancestor.branches > 0 {
             return;
         }
 
         info!(ledger_id = %ancestor_id, "Cascading drop to retracted ancestor");
 
-        // Cancel indexing
-        if let IndexingMode::Background(handle) = &self.indexing_mode {
-            handle.cancel(ancestor_id).await;
-            handle.wait_for_idle(ancestor_id).await;
-        }
-
-        // Delete artifacts
-        let (count, warnings) = self.drop_artifacts(ancestor_id, Some(&ancestor)).await;
-        report.artifacts_deleted += count;
-        report.warnings.extend(warnings);
-
-        // Purge + decrement parent
-        let parent_new_count = match self.nameservice.drop_branch(ancestor_id).await {
+        let parent_new_count = match self.purge_branch(ancestor_id, Some(&ancestor), report).await
+        {
             Ok(c) => c,
             Err(e) => {
                 report
                     .warnings
-                    .push(format!("Cascade purge of {}: {}", ancestor_id, e));
+                    .push(format!("Cascade purge of {ancestor_id}: {e}"));
                 return;
             }
         };
 
-        // Disconnect from cache
-        if let Some(mgr) = &self.ledger_manager {
-            mgr.disconnect(ancestor_id).await;
-        }
-
         report.cascaded.push(ancestor_id.to_string());
 
-        // Continue cascade if this ancestor's parent is also now at zero children
         if let (Some(0), Some(bp)) = (parent_new_count, &ancestor.branch_point) {
             let next_ancestor = format_ledger_id(ledger_name, &bp.source);
-            // Use Box::pin for recursive async
             Box::pin(self.try_cascade_drop(ledger_name, &next_ancestor, report)).await;
         }
     }
