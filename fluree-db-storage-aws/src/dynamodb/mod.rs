@@ -741,7 +741,6 @@ impl DynamoDbNameService {
             .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
             .update_expression("SET #ii = :iid, #it = :t, #ua = :now")
             .condition_expression(full_condition)
-            .expression_attribute_names("#pk", ATTR_PK)
             .expression_attribute_names("#ii", ATTR_INDEX_ID)
             .expression_attribute_names("#it", ATTR_INDEX_T)
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
