@@ -409,7 +409,24 @@ let store = BranchedContentStore::with_parents(storage, "mydb:dev", vec![parent]
 |----------|---------|--------|
 | **Commits** | No | Immutable chain, never deleted; read via fallback |
 | **Index structure files** (root, leaves, branches, arenas) | Yes | Source may GC old indexes after reindexing |
-| **String dictionaries** | No | Append-only, never deleted; can be large; shared via fallback |
+| **String dictionaries** | No | Stored globally in the `@shared` namespace; all branches read from the same location |
+
+### Global Dictionary Storage (`@shared` Namespace)
+
+String dictionaries (mappings between IRIs/strings and compact integer IDs) are the largest index artifact. Rather than copying them per-branch or relying on `BranchedContentStore` fallback reads, dictionaries are stored in a **global namespace** shared by all branches of a ledger.
+
+The `content_path` function routes all `DictBlob` CIDs to a shared path:
+
+```text
+mydb/@shared/dicts/<sha256hex>.subject    # Subject dict
+mydb/@shared/dicts/<sha256hex>.string     # String dict
+mydb/@shared/dicts/<sha256hex>.predicate  # Predicate dict
+...
+```
+
+The `@shared` prefix uses the `@` character, which is forbidden in branch names by `validate_branch_name`, so it cannot collide with any branch namespace. The constant is defined as `SHARED_NAMESPACE` in `fluree-db-core::address_path`.
+
+**Legacy fallback:** Existing deployments may have dictionaries stored at the old per-branch path (e.g., `mydb/main/index/objects/dicts/<sha>.dict`). `StorageContentStore` automatically falls back to the legacy path when a dict CID is not found at the new `@shared` location. After the next index build, new writes go to the `@shared` path — no manual migration is needed.
 
 ### Building the Store Tree
 

@@ -480,7 +480,7 @@ Branches share storage efficiently through a **`BranchedContentStore`** — a re
 
 - **Commits are not copied** — historical commits are read from the source namespace via fallback
 - **Index files are copied** — protects the branch from garbage collection on the source after reindexing
-- **String dictionaries are not copied** — they are append-only and shared across branches via fallback
+- **String dictionaries are globally shared** — stored in a per-ledger `@shared` namespace (e.g., `mydb/@shared/dicts/`) rather than per-branch paths, so all branches read and write to the same location without copying or fallback. The `@` prefix cannot collide with branch names. See [Storage Traits — Global Dictionary Storage](../design/storage-traits.md#global-dictionary-storage-shared-namespace) for details.
 
 Each branch is a fully independent `LedgerState` with its own snapshot, novelty layer, commit chain, storage namespace, and `t` sequence.
 
