@@ -698,30 +698,46 @@ impl NameService for DynamoDbNameService {
             .and_then(|v| v.as_s().ok())
             .cloned();
 
-        let branch_name = meta
+        let ledger_name = meta
             .get(ATTR_NAME)
             .and_then(|v| v.as_s().ok())
             .cloned()
             .unwrap_or_default();
 
-        // Delete all items for this branch
-        for item in &items {
-            if let Some(sk_val) = item.get(ATTR_SK).and_then(|v| v.as_s().ok()) {
-                let _ = self
-                    .client
-                    .delete_item()
-                    .table_name(&self.table_name)
-                    .key(ATTR_PK, AttributeValue::S(pk.clone()))
-                    .key(ATTR_SK, AttributeValue::S(sk_val.to_string()))
-                    .send()
-                    .await;
-            }
+        // Delete all items for this branch via BatchWriteItem
+        let delete_requests: Vec<_> = items
+            .iter()
+            .filter_map(|item| {
+                let sk_val = item.get(ATTR_SK)?.as_s().ok()?;
+                Some(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(
+                            aws_sdk_dynamodb::types::DeleteRequest::builder()
+                                .key(ATTR_PK, AttributeValue::S(pk.clone()))
+                                .key(ATTR_SK, AttributeValue::S(sk_val.to_string()))
+                                .build()
+                                .expect("delete request keys set"),
+                        )
+                        .build(),
+                )
+            })
+            .collect();
+
+        for chunk in delete_requests.chunks(25) {
+            self.client
+                .batch_write_item()
+                .request_items(&self.table_name, chunk.to_vec())
+                .send()
+                .await
+                .map_err(|e| {
+                    NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
+                })?;
         }
 
         // Decrement parent's child count if this branch had a parent
         match parent_source {
             Some(source) => {
-                let parent_pk = format_ledger_id(&branch_name, &source);
+                let parent_pk = format_ledger_id(&ledger_name, &source);
                 let result = self
                     .client
                     .update_item()
