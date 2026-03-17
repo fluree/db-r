@@ -3214,10 +3214,7 @@ where
 fn build_import_summary(
     agg_props: &[fluree_db_core::GraphPropertyStatEntry],
     class_counts: &[(fluree_db_core::GraphId, u64, u64)],
-    class_ref_targets: &HashMap<
-        (fluree_db_core::GraphId, u64),
-        HashMap<u32, HashMap<u64, i64>>,
-    >,
+    class_ref_targets: &HashMap<(fluree_db_core::GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
     predicate_sids: &[(u16, String)],
     namespace_codes: &HashMap<u16, String>,
     run_dir: &Path,
