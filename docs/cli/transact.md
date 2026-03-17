@@ -25,6 +25,7 @@ fluree transact [LEDGER] [DATA] [OPTIONS]
 | `-m, --message <MSG>` | Commit message |
 | `--format <FORMAT>` | Data format: `jsonld` or `sparql` (auto-detected if omitted) |
 | `--remote <NAME>` | Execute against a remote server (by remote name) |
+| `--direct` | Bypass auto-routing through a local server (global flag; see note on SPARQL UPDATE below) |
 
 ## Description
 
@@ -125,11 +126,15 @@ With remote mode, the full server response is printed as JSON.
 
 ## Format Detection
 
-The format is auto-detected:
-- Valid JSON (starts with `{` or `[`) → JSON-LD
-- Starts with `INSERT`, `DELETE`, `PREFIX`, or `BASE` → SPARQL UPDATE
-- `.json` or `.jsonld` file extension → JSON-LD
-- `.rq`, `.ru`, or `.sparql` file extension → SPARQL UPDATE
+The format is auto-detected using this priority:
+
+1. **Explicit flag** (`--format`) — always wins
+2. **File extension** (when using `-f` or a positional file path):
+   - `.json`, `.jsonld` → JSON-LD
+   - `.rq`, `.ru`, `.sparql` → SPARQL UPDATE
+3. **Content sniffing**:
+   - Valid JSON (full parse, not just first character) → JSON-LD
+   - Starts with `INSERT`, `DELETE`, `PREFIX`, or `BASE` → SPARQL UPDATE
 
 Override with `--format jsonld` or `--format sparql`.
 
