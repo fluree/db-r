@@ -20,6 +20,7 @@ pub mod server;
 pub mod sync;
 pub mod token;
 pub mod track;
+pub mod transact;
 pub mod upsert;
 pub mod upstream;
 pub mod use_cmd;

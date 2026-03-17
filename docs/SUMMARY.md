@@ -11,6 +11,7 @@
   - [drop](cli/drop.md)
   - [insert](cli/insert.md)
   - [upsert](cli/upsert.md)
+  - [transact](cli/transact.md)
   - [query](cli/query.md)
   - [history](cli/history.md)
   - [export](cli/export.md)

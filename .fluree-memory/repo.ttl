@@ -639,3 +639,20 @@ mem:fact-01kk9grz482xg3p6krjbpb1whk a mem:Fact ;
     mem:supersedes mem:fact-01kk20kbgep6w9wdw6tvs8tgsn ;
     mem:createdAt "2026-03-09T14:42:16.841273+00:00"^^xsd:dateTime ;
     mem:factKind "api" .
+    
+mem:fact-01kkczgb2b53zdb14517garj10 a mem:Fact ;
+    mem:content "CLI `fluree transact` command added (feature/cli-transact-command branch).\n\nSupports full WHERE/DELETE/INSERT transaction semantics — the missing piece alongside `insert` and `upsert`.\n\n**Formats:**\n- JSON-LD: full support in local + remote modes (where/delete/insert keys)\n- SPARQL UPDATE: supported via remote mode and auto-routing through running server; NOT supported in `--direct` local mode (requires server's namespace registry pipeline)\n\n**Key files:**\n- `fluree-db-cli/src/commands/transact.rs` — command implementation + format detection + unit tests (10)\n- `fluree-db-cli/src/cli.rs` — `Commands::Transact` variant (between Insert and Upsert)\n- `fluree-db-cli/tests/integration.rs` — 10 integration tests\n- `docs/cli/transact.md` — full documentation\n\n**Architecture:**\n- Reuses `resolve_positional_args` and `print_txn_result` from insert module\n- Local mode: `fluree.graph(&alias).transact().update(&json).commit_opts(...).commit().await`\n- Remote mode: `client.transact_jsonld()` / `client.transact_sparql()` (already existed)\n- Format detection: explicit flag > file extension > content sniffing" ;
+    mem:tag "cli" ;
+    mem:tag "command" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:tag "where-delete-insert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/transact.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/transact.rs" ;
+    mem:artifactRef "fluree-db-cli/src/lib.rs" ;
+    mem:branch "feature/cli-transact-command" ;
+    mem:createdAt "2026-03-10T22:57:26.091366+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
