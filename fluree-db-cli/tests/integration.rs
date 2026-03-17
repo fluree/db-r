@@ -1461,10 +1461,7 @@ fn create_from_unsupported_files_only_fails() {
 fn transact_where_delete_insert_json_ld() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp)
-        .args(["create", "txdb"])
-        .assert()
-        .success();
+    fluree_cmd(&tmp).args(["create", "txdb"]).assert().success();
 
     // Seed data
     fluree_cmd(&tmp)
@@ -1614,10 +1611,7 @@ fn transact_from_json_file() {
 fn transact_sparql_update_in_direct_mode_fails() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp)
-        .args(["create", "spdb"])
-        .assert()
-        .success();
+    fluree_cmd(&tmp).args(["create", "spdb"]).assert().success();
 
     // SPARQL UPDATE in direct local mode should give a helpful error
     fluree_cmd(&tmp)
@@ -1629,7 +1623,9 @@ fn transact_sparql_update_in_direct_mode_fails() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("SPARQL UPDATE is not supported in direct local mode"));
+        .stderr(predicate::str::contains(
+            "SPARQL UPDATE is not supported in direct local mode",
+        ));
 }
 
 #[test]
@@ -1670,4 +1666,22 @@ fn transact_help_shows_description() {
         .assert()
         .success()
         .stdout(predicate::str::contains("WHERE/DELETE/INSERT"));
+}
+
+#[test]
+fn transact_via_stdin() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "stdindb"])
+        .assert()
+        .success();
+
+    // Pipe JSON-LD transaction body via stdin (no -e, -f, or positional data)
+    fluree_cmd(&tmp)
+        .arg("transact")
+        .write_stdin(r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:alice", "ex:name": "Alice"}]}"#)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed t=1"));
 }
