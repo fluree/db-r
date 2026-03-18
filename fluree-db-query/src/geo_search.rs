@@ -353,7 +353,7 @@ impl Operator for GeoSearchOperator {
         // Overlay translation + DictOverlay setup (matches ScanOperator's binary path).
         let g_id = ctx.binary_g_id;
         if let Some(ovl) = ctx.overlay {
-            let mut ops = crate::binary_scan::translate_overlay_flakes(
+            let (mut ops, _ephemeral_preds) = crate::binary_scan::translate_overlay_flakes(
                 ovl,
                 store,
                 ctx.dict_novelty.as_ref(),

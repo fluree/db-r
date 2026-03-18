@@ -44,13 +44,6 @@ pub async fn run(
         ));
     }
 
-    if at.is_some() {
-        return Err(CliError::Usage(
-            "--at is not yet supported for export (time-travel export is planned for a future release)"
-                .to_string(),
-        ));
-    }
-
     let fluree = context::build_fluree(dirs)?;
 
     // Parse format string → ExportFormat
@@ -65,6 +58,10 @@ pub async fn run(
 
     if let Some(iri) = graph {
         builder = builder.graph(iri);
+    }
+
+    if let Some(at_str) = at {
+        builder = builder.as_of(crate::commands::query::parse_time_spec(at_str));
     }
 
     // Resolve context override (--context or --context-file)

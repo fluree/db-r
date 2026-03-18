@@ -13,7 +13,7 @@
 //! ```
 
 use crate::export::{self, ExportConfig, ExportFormat, ExportStats, PrefixMap};
-use crate::{ApiError, Fluree, Result};
+use crate::{time_resolve, ApiError, Fluree, Result, TimeSpec};
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{GraphRegistry, Storage};
 use fluree_db_nameservice::{ConfigPublisher, NameService};
@@ -28,6 +28,7 @@ pub struct ExportBuilder<'a, S: Storage + 'static, N> {
     all_graphs: bool,
     graph_iri: Option<String>,
     context_override: Option<serde_json::Value>,
+    time_spec: Option<TimeSpec>,
 }
 
 impl<'a, S, N> ExportBuilder<'a, S, N>
@@ -43,6 +44,7 @@ where
             all_graphs: false,
             graph_iri: None,
             context_override: None,
+            time_spec: None,
         }
     }
 
@@ -75,6 +77,16 @@ where
     /// default context (from the nameservice) is used for Turtle/TriG.
     pub fn context(mut self, ctx: &serde_json::Value) -> Self {
         self.context_override = Some(ctx.clone());
+        self
+    }
+
+    /// Export data as of a specific point in time.
+    ///
+    /// Accepts any [`TimeSpec`]: transaction number, ISO-8601 datetime,
+    /// or commit CID prefix. If not set, exports at the latest committed
+    /// time (including committed-but-not-yet-indexed data in novelty).
+    pub fn as_of(mut self, spec: TimeSpec) -> Self {
+        self.time_spec = Some(spec);
         self
     }
 
@@ -158,6 +170,16 @@ where
             None
         };
 
+        // Resolve time-travel bound: explicit TimeSpec, or current ledger time
+        let to_t = match &self.time_spec {
+            Some(spec) => time_resolve::resolve_time_spec(&ledger, spec).await?,
+            None => ledger.t(),
+        };
+
+        // Novelty overlay — always include so export sees committed-but-not-yet-indexed data
+        let overlay: &dyn fluree_db_core::OverlayProvider = ledger.novelty.as_ref();
+        let dict_novelty = &ledger.dict_novelty;
+
         let mut total_stats = ExportStats::default();
 
         match self.format {
@@ -165,15 +187,12 @@ where
                 let prefixes = self.resolve_prefixes().await?;
                 export::write_prefix_declarations(&prefixes, writer).map_err(io_err)?;
 
-                let config = match &target_graph {
-                    Some((g_id, _)) => ExportConfig {
-                        g_id: *g_id,
-                        graph_iri: None,
-                    },
-                    None => ExportConfig {
-                        g_id: 0,
-                        graph_iri: None,
-                    },
+                let config = ExportConfig {
+                    g_id: target_graph.as_ref().map_or(0, |(g_id, _)| *g_id),
+                    graph_iri: None,
+                    to_t,
+                    overlay: Some(overlay),
+                    dict_novelty: Some(dict_novelty),
                 };
                 let stats = export::export_graph_turtle(&binary_store, &config, &prefixes, writer)
                     .map_err(io_err)?;
@@ -182,15 +201,12 @@ where
             }
 
             ExportFormat::NTriples => {
-                let config = match &target_graph {
-                    Some((g_id, _)) => ExportConfig {
-                        g_id: *g_id,
-                        graph_iri: None,
-                    },
-                    None => ExportConfig {
-                        g_id: 0,
-                        graph_iri: None,
-                    },
+                let config = ExportConfig {
+                    g_id: target_graph.as_ref().map_or(0, |(g_id, _)| *g_id),
+                    graph_iri: None,
+                    to_t,
+                    overlay: Some(overlay),
+                    dict_novelty: Some(dict_novelty),
                 };
                 let stats = export::export_graph_ntriples(&binary_store, &config, writer)
                     .map_err(io_err)?;
@@ -204,6 +220,9 @@ where
                     let config = ExportConfig {
                         g_id: *g_id,
                         graph_iri: Some(iri.clone()),
+                        to_t,
+                        overlay: Some(overlay),
+                        dict_novelty: Some(dict_novelty),
                     };
                     let stats = export::export_graph_ntriples(&binary_store, &config, writer)
                         .map_err(io_err)?;
@@ -214,6 +233,9 @@ where
                     let config = ExportConfig {
                         g_id: 0,
                         graph_iri: None,
+                        to_t,
+                        overlay: Some(overlay),
+                        dict_novelty: Some(dict_novelty),
                     };
                     let stats = export::export_graph_ntriples(&binary_store, &config, writer)
                         .map_err(io_err)?;
@@ -225,6 +247,9 @@ where
                             let config = ExportConfig {
                                 g_id,
                                 graph_iri: Some(iri.to_string()),
+                                to_t,
+                                overlay: Some(overlay),
+                                dict_novelty: Some(dict_novelty),
                             };
                             let stats =
                                 export::export_graph_ntriples(&binary_store, &config, writer)
@@ -249,6 +274,9 @@ where
                     let config = ExportConfig {
                         g_id: *g_id,
                         graph_iri: None,
+                        to_t,
+                        overlay: Some(overlay),
+                        dict_novelty: Some(dict_novelty),
                     };
                     let stats =
                         export::export_graph_turtle(&binary_store, &config, &prefixes, writer)
@@ -262,6 +290,9 @@ where
                     let config = ExportConfig {
                         g_id: 0,
                         graph_iri: None,
+                        to_t,
+                        overlay: Some(overlay),
+                        dict_novelty: Some(dict_novelty),
                     };
                     let stats =
                         export::export_graph_turtle(&binary_store, &config, &prefixes, writer)
@@ -279,6 +310,9 @@ where
                             let config = ExportConfig {
                                 g_id,
                                 graph_iri: None,
+                                to_t,
+                                overlay: Some(overlay),
+                                dict_novelty: Some(dict_novelty),
                             };
                             let stats = export::export_graph_turtle(
                                 &binary_store,
@@ -300,15 +334,12 @@ where
                 let prefixes = self.resolve_prefixes().await?;
                 export::write_jsonld_header(&prefixes, writer).map_err(io_err)?;
 
-                let config = match &target_graph {
-                    Some((g_id, _)) => ExportConfig {
-                        g_id: *g_id,
-                        graph_iri: None,
-                    },
-                    None => ExportConfig {
-                        g_id: 0,
-                        graph_iri: None,
-                    },
+                let config = ExportConfig {
+                    g_id: target_graph.as_ref().map_or(0, |(g_id, _)| *g_id),
+                    graph_iri: None,
+                    to_t,
+                    overlay: Some(overlay),
+                    dict_novelty: Some(dict_novelty),
                 };
                 let stats = export::export_graph_jsonld(&binary_store, &config, &prefixes, writer)
                     .map_err(io_err)?;

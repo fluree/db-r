@@ -23,13 +23,13 @@ fluree export [LEDGER] [OPTIONS]
 | `--graph <IRI>` | Export a specific named graph by IRI. Mutually exclusive with `--all-graphs`. |
 | `--context <JSON>` | JSON-LD context for prefix declarations. Overrides the ledger's default context. |
 | `--context-file <FILE>` | Read context from a JSON file. Overrides the ledger's default context. |
-| `--at <TIME>` | *(not yet implemented)* Export at a specific point in time. |
+| `--at <TIME>` | Export data as of a specific point in time. Accepts a transaction number (`5`), ISO-8601 datetime (`2024-01-15T10:30:00Z`), or commit CID prefix (`abc123def456`). If omitted, exports at the latest committed time (including data committed but not yet persisted to index). |
 
 ## Description
 
 Exports all data from a ledger in the specified format. Output goes to stdout so it can be redirected to a file or piped to other tools.
 
-All formats (Turtle, N-Triples, N-Quads, TriG, JSON-LD) read directly from the binary SPOT index, keeping memory usage constant regardless of dataset size. JSON-LD streams one subject at a time, so memory is O(largest subject), not O(dataset).
+All formats (Turtle, N-Triples, N-Quads, TriG, JSON-LD) read directly from the binary SPOT index with a novelty overlay, so export always includes the latest committed transactions — even those not yet persisted to index. Memory usage stays constant regardless of dataset size. JSON-LD streams one subject at a time, so memory is O(largest subject), not O(dataset).
 
 ### Prefixes / Context
 
@@ -75,6 +75,15 @@ fluree export --all-graphs --format nquads > backup.nq
 
 # Export a specific named graph
 fluree export --graph "http://example.org/g1" --format turtle > g1.ttl
+
+# Export data as of a specific transaction number
+fluree export --at 5 > snapshot-at-t5.ttl
+
+# Export data as of an ISO-8601 datetime
+fluree export --at "2024-06-15T12:00:00Z" > snapshot.ttl
+
+# Export data as of a specific commit
+fluree export --at abc123def456 > at-commit.ttl
 
 # Export specific ledger
 fluree export production > prod-backup.ttl
@@ -190,6 +199,20 @@ let stats = fluree.export("mydb")
 let stats = fluree.export("mydb")
     .format(ExportFormat::Turtle)
     .graph("http://example.org/g1")
+    .write_to(&mut writer)
+    .await?;
+
+// Time-travel: export as of transaction t=5
+let stats = fluree.export("mydb")
+    .format(ExportFormat::Turtle)
+    .as_of(TimeSpec::at_t(5))
+    .write_to(&mut writer)
+    .await?;
+
+// Time-travel: export as of an ISO-8601 datetime
+let stats = fluree.export("mydb")
+    .format(ExportFormat::Turtle)
+    .as_of(TimeSpec::at_time("2024-06-15T12:00:00Z"))
     .write_to(&mut writer)
     .await?;
 

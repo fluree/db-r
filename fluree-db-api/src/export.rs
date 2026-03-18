@@ -3,14 +3,17 @@
 //! Writes N-Triples, Turtle, N-Quads, or TriG directly to a `Write` sink,
 //! one leaflet-batch at a time.  Memory usage is O(leaflet_size), not O(dataset).
 
+use fluree_db_binary_index::read::types::sort_overlay_ops;
 use fluree_db_binary_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, ColumnBatch, ColumnProjection, ColumnSet,
     RunSortOrder,
 };
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::GraphId;
+use fluree_db_core::{DecodeKind, GraphId, OType, OverlayProvider};
+use fluree_db_query::binary_scan::{translate_overlay_flakes, EphemeralPredicateMap};
 use fluree_vocab::xsd;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -19,11 +22,17 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 /// Configuration for a single-graph streaming export.
-pub struct ExportConfig {
+pub struct ExportConfig<'a> {
     /// Target graph ID (0 = default graph).
     pub g_id: GraphId,
     /// If `Some`, emit as N-Quads with this graph IRI as the 4th term.
     pub graph_iri: Option<String>,
+    /// Time bound for the export. Rows with `t > to_t` are excluded.
+    pub to_t: i64,
+    /// Novelty overlay provider (committed-but-not-yet-indexed transactions).
+    pub overlay: Option<&'a dyn OverlayProvider>,
+    /// Dictionary novelty for resolving IDs from committed-but-not-yet-indexed transactions.
+    pub dict_novelty: Option<&'a Arc<DictNovelty>>,
 }
 
 /// Counters returned after export completes.
@@ -55,6 +64,159 @@ pub const SYSTEM_GRAPH_CONFIG: GraphId = 2;
 /// Returns `true` if `g_id` is a system-internal graph.
 pub fn is_system_graph(g_id: GraphId) -> bool {
     g_id == SYSTEM_GRAPH_TXN_META || g_id == SYSTEM_GRAPH_CONFIG
+}
+
+/// Configure a `BinaryCursor` with time-travel bounds and novelty overlay.
+///
+/// Returns the ephemeral predicate map for novelty-only predicates.
+fn apply_time_travel(
+    cursor: &mut BinaryCursor,
+    config: &ExportConfig,
+    store: &BinaryIndexStore,
+) -> EphemeralPredicateMap {
+    cursor.set_to_t(config.to_t);
+    if let Some(overlay) = config.overlay {
+        let (mut ops, ephemeral_preds) = translate_overlay_flakes(
+            overlay,
+            store,
+            config.dict_novelty,
+            config.to_t,
+            config.g_id,
+        );
+        if !ops.is_empty() {
+            sort_overlay_ops(&mut ops, RunSortOrder::Spot);
+            cursor.set_overlay_ops(ops);
+            cursor.set_epoch(overlay.epoch());
+        }
+        ephemeral_preds
+    } else {
+        HashMap::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExportResolver — novelty-aware ID resolution for export
+// ---------------------------------------------------------------------------
+
+/// Wraps `BinaryIndexStore` with fallback to `DictNovelty` and an ephemeral
+/// predicate map, so that export can resolve IDs for data that has been
+/// committed but not yet persisted to the binary index.
+struct ExportResolver<'a> {
+    store: &'a Arc<BinaryIndexStore>,
+    dict_novelty: Option<&'a Arc<DictNovelty>>,
+    /// Reverse map: ephemeral p_id → IRI (inverted from translate_overlay_flakes).
+    ephemeral_preds_reverse: HashMap<u32, String>,
+}
+
+impl<'a> ExportResolver<'a> {
+    fn new(
+        store: &'a Arc<BinaryIndexStore>,
+        dict_novelty: Option<&'a Arc<DictNovelty>>,
+        ephemeral_preds: &EphemeralPredicateMap,
+    ) -> Self {
+        // Invert the IRI→p_id map to p_id→IRI for O(1) reverse lookup.
+        let ephemeral_preds_reverse: HashMap<u32, String> = ephemeral_preds
+            .iter()
+            .map(|(iri, &pid)| (pid, iri.clone()))
+            .collect();
+        Self {
+            store,
+            dict_novelty,
+            ephemeral_preds_reverse,
+        }
+    }
+
+    /// Resolve a subject ID to an IRI string.
+    ///
+    /// Falls back to `DictNovelty` for IDs above the persisted watermark.
+    fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
+        match self.store.resolve_subject_iri(s_id) {
+            Ok(iri) => Ok(iri),
+            Err(_) => {
+                if let Some(dn) = self.dict_novelty {
+                    if dn.is_initialized() {
+                        if let Some((ns_code, suffix)) = dn.subjects.resolve_subject(s_id) {
+                            // NS_OVERFLOW (0xFFFF): suffix is the full IRI, no prefix lookup.
+                            if ns_code == 0xFFFF {
+                                return Ok(suffix.to_string());
+                            }
+                            let prefix = self.store.namespace_prefix(ns_code)?;
+                            return Ok(format!("{}{}", prefix, suffix));
+                        }
+                    }
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("subject s_id {} not found in store or DictNovelty", s_id),
+                ))
+            }
+        }
+    }
+
+    /// Resolve a predicate ID to an IRI string.
+    ///
+    /// Falls back to the ephemeral predicate map for novelty-only predicates.
+    fn resolve_predicate_iri(&self, p_id: u32) -> Option<&str> {
+        if let Some(iri) = self.store.resolve_predicate_iri(p_id) {
+            return Some(iri);
+        }
+        self.ephemeral_preds_reverse.get(&p_id).map(|s| s.as_str())
+    }
+
+    /// Decode an object value from its binary representation.
+    ///
+    /// Falls back to `DictNovelty` for string-dict and IRI-ref values
+    /// that are not in the persisted index.
+    fn decode_value(
+        &self,
+        o_type: u16,
+        o_key: u64,
+        p_id: u32,
+        g_id: GraphId,
+    ) -> io::Result<FlakeValue> {
+        match self.store.decode_value_v3(o_type, o_key, p_id, g_id) {
+            Ok(val) => Ok(val),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // The persisted store couldn't find a dict entry. Try DictNovelty
+                // for the decode kinds that use subject/string dictionaries.
+                let ot = OType::from_u16(o_type);
+                match ot.decode_kind() {
+                    DecodeKind::StringDict | DecodeKind::JsonArena => {
+                        self.decode_string_novelty(ot.decode_kind(), o_key)
+                    }
+                    DecodeKind::IriRef => self.decode_iri_ref_novelty(o_key),
+                    _ => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fallback for StringDict / JsonArena: resolve via DictNovelty.
+    fn decode_string_novelty(&self, kind: DecodeKind, o_key: u64) -> io::Result<FlakeValue> {
+        let str_id = o_key as u32;
+        if let Some(dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                if let Some(value) = dn.strings.resolve_string(str_id) {
+                    return Ok(match kind {
+                        DecodeKind::JsonArena => FlakeValue::Json(value.to_string()),
+                        _ => FlakeValue::String(value.to_string()),
+                    });
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("string id {} not found in store or DictNovelty", str_id),
+        ))
+    }
+
+    /// Fallback for IriRef: resolve subject ID via DictNovelty.
+    fn decode_iri_ref_novelty(&self, o_key: u64) -> io::Result<FlakeValue> {
+        let iri = self.resolve_subject_iri(o_key)?;
+        let sid = self.store.encode_iri(&iri);
+        Ok(FlakeValue::Ref(sid))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +331,7 @@ pub fn write_prefix_declarations<W: Write>(prefixes: &PrefixMap, writer: &mut W)
 /// and prefixed names where possible.
 pub fn export_graph_turtle<W: Write>(
     store: &Arc<BinaryIndexStore>,
-    config: &ExportConfig,
+    config: &ExportConfig<'_>,
     prefixes: &PrefixMap,
     writer: &mut W,
 ) -> io::Result<ExportStats> {
@@ -192,13 +354,15 @@ pub fn export_graph_turtle<W: Write>(
         filter,
         projection,
     );
+    let ephemeral_preds = apply_time_travel(&mut cursor, config, store);
+    let resolver = ExportResolver::new(store, config.dict_novelty, &ephemeral_preds);
 
     let mut stats = ExportStats::default();
     let mut prev_subject: Option<String> = None;
 
     while let Some(batch) = cursor.next_batch()? {
         write_turtle_batch(
-            store,
+            &resolver,
             &batch,
             config.g_id,
             prefixes,
@@ -218,7 +382,7 @@ pub fn export_graph_turtle<W: Write>(
 
 /// Write a batch of rows as Turtle, grouping by subject.
 fn write_turtle_batch<W: Write>(
-    store: &BinaryIndexStore,
+    resolver: &ExportResolver,
     batch: &ColumnBatch,
     g_id: GraphId,
     prefixes: &PrefixMap,
@@ -232,15 +396,15 @@ fn write_turtle_batch<W: Write>(
         let o_type = batch.o_type.get_or(row, 0);
         let o_key = batch.o_key.get(row);
 
-        let s_iri = store.resolve_subject_iri(s_id)?;
-        let p_iri = match store.resolve_predicate_iri(p_id) {
+        let s_iri = resolver.resolve_subject_iri(s_id)?;
+        let p_iri = match resolver.resolve_predicate_iri(p_id) {
             Some(p) => p,
             None => {
                 stats.rows_skipped += 1;
                 continue;
             }
         };
-        let value = store.decode_value_v3(o_type, o_key, p_id, g_id)?;
+        let value = resolver.decode_value(o_type, o_key, p_id, g_id)?;
         if matches!(value, FlakeValue::Null) {
             stats.rows_skipped += 1;
             continue;
@@ -271,7 +435,7 @@ fn write_turtle_batch<W: Write>(
         writer.write_all(b" ")?;
 
         // Write object
-        write_turtle_object(writer, &value, store, o_type, prefixes)?;
+        write_turtle_object(writer, &value, resolver.store, o_type, prefixes)?;
 
         stats.triples_written += 1;
     }
@@ -342,7 +506,7 @@ fn write_turtle_object<W: Write>(
 /// - Single-cardinality properties are unwrapped (not in `[]`)
 pub fn export_graph_jsonld<W: Write>(
     store: &Arc<BinaryIndexStore>,
-    config: &ExportConfig,
+    config: &ExportConfig<'_>,
     prefixes: &PrefixMap,
     writer: &mut W,
 ) -> io::Result<ExportStats> {
@@ -365,6 +529,8 @@ pub fn export_graph_jsonld<W: Write>(
         filter,
         projection,
     );
+    let ephemeral_preds = apply_time_travel(&mut cursor, config, store);
+    let resolver = ExportResolver::new(store, config.dict_novelty, &ephemeral_preds);
 
     let mut stats = ExportStats::default();
 
@@ -381,15 +547,15 @@ pub fn export_graph_jsonld<W: Write>(
             let o_type = batch.o_type.get_or(row, 0);
             let o_key = batch.o_key.get(row);
 
-            let s_iri = store.resolve_subject_iri(s_id)?;
-            let p_iri = match store.resolve_predicate_iri(p_id) {
+            let s_iri = resolver.resolve_subject_iri(s_id)?;
+            let p_iri = match resolver.resolve_predicate_iri(p_id) {
                 Some(p) => p.to_string(),
                 None => {
                     stats.rows_skipped += 1;
                     continue;
                 }
             };
-            let value = store.decode_value_v3(o_type, o_key, p_id, config.g_id)?;
+            let value = resolver.decode_value(o_type, o_key, p_id, config.g_id)?;
             if matches!(value, FlakeValue::Null) {
                 stats.rows_skipped += 1;
                 continue;
@@ -740,11 +906,10 @@ fn escape_json_string(s: &str) -> String {
 
 /// Stream triples/quads from the SPOT index of one graph to `writer`.
 ///
-/// Milestone 1: no novelty overlay, no time-travel.  The cursor reads
-/// only the persisted binary index.
+/// Includes novelty overlay and respects `to_t` for time-travel export.
 pub fn export_graph_ntriples<W: Write>(
     store: &Arc<BinaryIndexStore>,
-    config: &ExportConfig,
+    config: &ExportConfig<'_>,
     writer: &mut W,
 ) -> io::Result<ExportStats> {
     let branch_ref = match store.branch_for_order(config.g_id, RunSortOrder::Spot) {
@@ -766,6 +931,8 @@ pub fn export_graph_ntriples<W: Write>(
         filter,
         projection,
     );
+    let ephemeral_preds = apply_time_travel(&mut cursor, config, store);
+    let resolver = ExportResolver::new(store, config.dict_novelty, &ephemeral_preds);
 
     let mut stats = ExportStats::default();
     let graph_term = config.graph_iri.as_deref().map(|iri| {
@@ -778,7 +945,7 @@ pub fn export_graph_ntriples<W: Write>(
 
     while let Some(batch) = cursor.next_batch()? {
         write_batch(
-            store,
+            &resolver,
             &batch,
             config.g_id,
             graph_term.as_deref(),
@@ -795,7 +962,7 @@ pub fn export_graph_ntriples<W: Write>(
 // ---------------------------------------------------------------------------
 
 fn write_batch<W: Write>(
-    store: &BinaryIndexStore,
+    resolver: &ExportResolver,
     batch: &ColumnBatch,
     g_id: GraphId,
     graph_term: Option<&str>,
@@ -809,10 +976,10 @@ fn write_batch<W: Write>(
         let o_key = batch.o_key.get(row);
 
         // Resolve subject
-        let s_iri = store.resolve_subject_iri(s_id)?;
+        let s_iri = resolver.resolve_subject_iri(s_id)?;
 
         // Resolve predicate
-        let p_iri = match store.resolve_predicate_iri(p_id) {
+        let p_iri = match resolver.resolve_predicate_iri(p_id) {
             Some(p) => p,
             None => {
                 stats.rows_skipped += 1;
@@ -821,7 +988,7 @@ fn write_batch<W: Write>(
         };
 
         // Resolve object value
-        let value = store.decode_value_v3(o_type, o_key, p_id, g_id)?;
+        let value = resolver.decode_value(o_type, o_key, p_id, g_id)?;
         if matches!(value, FlakeValue::Null) {
             stats.rows_skipped += 1;
             continue;
@@ -837,7 +1004,7 @@ fn write_batch<W: Write>(
         writer.write_all(b"> ")?;
 
         // Write object
-        write_object(writer, &value, store, o_type)?;
+        write_object(writer, &value, resolver.store, o_type)?;
 
         // Write optional graph term (N-Quads)
         if let Some(g) = graph_term {
