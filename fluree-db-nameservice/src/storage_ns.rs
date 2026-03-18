@@ -747,12 +747,22 @@ where
 
         // Increment source branch's child count
         let source_key = self.ns_key(ledger_name, &branch_point.source);
+        let source_branch = branch_point.source.clone();
         self.cas_update::<NsFileV2, _>(&source_key, |existing| {
             let mut file = existing?;
             file.branches += 1;
             Some(file)
         })
         .await?;
+
+        // Verify the increment actually happened (cas_update treats abort as Ok)
+        let parent = self.load_record(ledger_name, &source_branch).await?;
+        if parent.is_none() {
+            return Err(NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, source_branch
+            )));
+        }
 
         Ok(())
     }
@@ -786,7 +796,7 @@ where
                 .await?;
                 // Re-read the parent to get the updated count
                 let parent_record = self.load_record(&ledger_name, &bp.source).await?;
-                Ok(Some(parent_record.map(|r| r.branches).unwrap_or(0)))
+                Ok(parent_record.map(|r| r.branches))
             }
             None => Ok(None),
         }

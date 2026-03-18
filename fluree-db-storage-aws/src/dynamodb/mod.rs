@@ -761,10 +761,9 @@ impl NameService for DynamoDbNameService {
                     .attributes()
                     .and_then(|attrs| attrs.get(ATTR_BRANCHES))
                     .and_then(|v| v.as_n().ok())
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
+                    .and_then(|s| s.parse().ok());
 
-                Ok(Some(new_count))
+                Ok(new_count)
             }
             None => Ok(None),
         }

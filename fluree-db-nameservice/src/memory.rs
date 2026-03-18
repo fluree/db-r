@@ -146,9 +146,13 @@ impl NameService for MemoryNameService {
         }
 
         // Increment source branch's child count
-        if let Some(source) = records.get_mut(&source_key) {
-            source.branches += 1;
-        }
+        let source = records.get_mut(&source_key).ok_or_else(|| {
+            crate::NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, branch_point.source
+            ))
+        })?;
+        source.branches += 1;
 
         let mut record = NsRecord::new(ledger_name, new_branch);
         record.commit_head_id = Some(branch_point.commit_id.clone());

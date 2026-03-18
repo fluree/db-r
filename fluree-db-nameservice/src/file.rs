@@ -653,7 +653,8 @@ impl NameService for FileNameService {
 
         // Increment source branch's child count
         let source_address = Self::ns_address(ledger_name, &branch_point.source);
-        self.storage
+        let outcome = self
+            .storage
             .compare_and_swap(&source_address, |bytes| {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
@@ -664,6 +665,13 @@ impl NameService for FileNameService {
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, branch_point.source
+            )));
+        }
 
         Ok(())
     }
@@ -689,7 +697,8 @@ impl NameService for FileNameService {
         match parent_branch_point {
             Some(bp) => {
                 let parent_address = Self::ns_address(&ledger_name, &bp.source);
-                self.storage
+                let outcome = self
+                    .storage
                     .compare_and_swap(&parent_address, |bytes| {
                         let Some(data) = bytes else {
                             return Ok(CasAction::Abort(()));
@@ -701,9 +710,15 @@ impl NameService for FileNameService {
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
+
+                if matches!(outcome, CasOutcome::Aborted(())) {
+                    // Parent was already deleted — nothing to decrement
+                    return Ok(None);
+                }
+
                 // Re-read the parent to get the updated count
                 let parent_record = self.load_record(&ledger_name, &bp.source).await?;
-                Ok(Some(parent_record.map(|r| r.branches).unwrap_or(0)))
+                Ok(parent_record.map(|r| r.branches))
             }
             None => Ok(None),
         }
