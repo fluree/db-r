@@ -33,7 +33,7 @@ fluree-db-api = "0.1"
 Available feature flags:
 
 - `native` (default) - File storage support
-- `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `connect_s3` and `connect_json_ld` configs that use S3.
+- `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()` and S3-based JSON-LD configs.
 - `vector` - Embedded vector similarity search (HNSW indexes via usearch)
 - `credential` - DID/JWS/VerifiableCredential support for signed queries and transactions (pulls in crypto dependencies like `ed25519-dalek`, `bs58`). Off by default to reduce compile times.
 - `iceberg` - Apache Iceberg/R2RML graph source support (pulls in AWS SDK + native deps)
@@ -147,20 +147,19 @@ async fn main() -> Result<()> {
 }
 ```
 
-**S3 Express One Zone note:** for directory buckets (`--x-s3` suffix), prefer using `connect_json_ld`
-and omit `s3Endpoint`. (If you call `connect_s3` with an Express bucket, Rust will omit `s3Endpoint`
-automatically.)
+**S3 Express One Zone note:** for directory buckets (`--x-s3` suffix), omit `s3Endpoint` in JSON-LD config and let the SDK handle it.
 
 ## Connection Configuration (JSON-LD)
 
-All connection features are available through **JSON-LD configuration**. Convenience helpers
-(`connect_memory`, `connect_filesystem`, `connect_s3`) are just thin wrappers that generate JSON-LD
-and call `connect_json_ld`.
+For advanced configuration (tiered storage, address identifier routing, DynamoDB nameservice,
+environment variable indirection), use `FlureeBuilder::from_json_ld()` to parse a JSON-LD config
+and build from it. All convenience helpers (`connect_memory`, `connect_filesystem`, `connect_s3`)
+delegate to `FlureeBuilder` internally.
 
 See also: [JSON-LD connection configuration reference](../reference/connection-config-jsonld.md).
 
 ```rust
-use fluree_db_api::{connect_json_ld, Result};
+use fluree_db_api::{FlureeBuilder, Result};
 use serde_json::json;
 
 #[tokio::main]
@@ -172,7 +171,9 @@ async fn main() -> Result<()> {
             {"@id": "conn", "@type": "Connection", "indexStorage": {"@id": "s3Index"}}
         ]
     });
-    let fluree = connect_json_ld(&cfg).await?;
+    // from_json_ld parses the config into builder settings; build_client() constructs
+    // a type-erased FlureeClient suitable for runtime-determined backends.
+    let fluree = FlureeBuilder::from_json_ld(&cfg)?.build_client().await?;
     Ok(())
 }
 ```
@@ -423,9 +424,7 @@ use fluree_db_api::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Get a cached ledger handle
     let handle = fluree.ledger_cached("mydb:main").await?;
@@ -573,17 +572,15 @@ async fn main() -> Result<()> {
 
 ### Ledger Caching
 
-When using the Fluree HTTP server, ledger caching is enabled by default to avoid reloading ledger state on every request. You can also enable caching when using Fluree as a library:
+Ledger caching is enabled by default on all `FlureeBuilder` constructors. When caching is active, `fluree.ledger()` returns a cached handle and subsequent calls avoid reloading from storage:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Enable ledger caching for connection-level reuse
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    // Caching is on by default — no extra call needed
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // First call loads from storage
     let ledger = fluree.ledger("mydb:main").await?;
@@ -595,6 +592,14 @@ async fn main() -> Result<()> {
 }
 ```
 
+To **disable** caching (e.g., for a CLI tool that runs once and exits):
+
+```rust
+let fluree = FlureeBuilder::file("./data")
+    .without_ledger_caching()
+    .build()?;
+```
+
 #### Disconnecting Ledgers
 
 Use `disconnect_ledger` to release a ledger from the connection cache. This forces a fresh load on the next access:
@@ -604,9 +609,7 @@ use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Load and use ledger
     let ledger = fluree.ledger("mydb:main").await?;
@@ -629,7 +632,7 @@ async fn main() -> Result<()> {
 - **Clean shutdown**: Release resources before application exit
 - **Testing**: Reset state between test cases
 
-**Note:** If caching is disabled (no `with_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
+**Note:** If caching is disabled (via `without_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
 
 #### Checking Ledger Existence
 
@@ -674,9 +677,7 @@ use fluree_db_api::{FlureeBuilder, DropMode, DropStatus, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Soft drop: retract from nameservice, preserve files
     let report = fluree.drop_ledger("mydb:main", DropMode::Soft).await?;
@@ -746,9 +747,7 @@ use fluree_db_api::{FlureeBuilder, NotifyResult, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Load ledger into cache
     let _ledger = fluree.ledger_cached("mydb:main").await?;
@@ -1055,6 +1054,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+If you need full control over both storage and nameservice (e.g., for proxy mode or custom backends), use `build_with()`:
+
+```rust
+let storage = MyStorage;
+let nameservice = MyNameService;
+
+let fluree = FlureeBuilder::memory()
+    .build_with(storage, nameservice);
+```
+
+`build_with()` respects the builder's caching configuration — caching is on by default, or call `.without_ledger_caching()` before `build_with()` to disable it.
 
 ## Error Handling
 
@@ -1396,10 +1407,8 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Enable ledger caching (required for stage)
-    let fluree = FlureeBuilder::file("./data")
-        .with_ledger_caching()
-        .build()?;
+    // Caching is on by default (required for stage)
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Get a cached handle
     let handle = fluree.ledger_cached("mydb:main").await?;
@@ -1458,7 +1467,7 @@ async fn main() -> Result<()> {
 
 **Why use `stage_owned(ledger)`:**
 - **Simple ownership**: Good for linear workflows (load → transact → done)
-- **No caching required**: Works without `with_ledger_caching()`
+- **No caching required**: Works even with `without_ledger_caching()`
 - **Test-friendly**: Each test manages its own state
 
 ### Choosing Between Them

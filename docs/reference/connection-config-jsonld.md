@@ -6,11 +6,15 @@ This config uses the same `@context` + `@graph` model as other Fluree JSON-LD co
 
 ## Entry points
 
-- `connect_json_ld(&json).await`: **single source of truth** (parses and instantiates backends)
-- Convenience helpers (just generate JSON-LD and delegate):
-  - `connect_memory().await`
-  - `connect_filesystem(path).await` (requires `native`)
-  - `connect_s3(bucket, endpoint).await` (requires `aws`)
+All construction flows through `FlureeBuilder`:
+
+- `FlureeBuilder::from_json_ld(&json)?` — parses JSON-LD config into builder settings
+  - Then call `.build_client().await` for a type-erased `FlureeClient`
+  - Or use typed terminal methods (`.build()`, `.build_memory()`, `.build_s3()`) for compile-time type safety
+- Convenience helpers (delegate to `FlureeBuilder` directly):
+  - `connect_memory().await` → `FlureeBuilder::memory().build_client().await`
+  - `connect_filesystem(path).await` → `FlureeBuilder::file(path).build_client().await` (requires `native`)
+  - `connect_s3(bucket, endpoint).await` → `FlureeBuilder::s3(bucket, endpoint).build_client().await` (requires `aws`)
 
 ## JSON-LD shape
 
@@ -177,10 +181,10 @@ detection (`--x-s3` + `-azN`) for diagnostics.
 }
 ```
 
-Note: some legacy docs recommend omitting `s3Endpoint` for Express; Rust supports that when using
-`connect_json_ld`. For compatibility with the helper surface area, Rust also exposes
-`connect_s3(bucket, endpoint)`, but it **omits** `s3Endpoint` automatically when the bucket name
-looks like an Express directory bucket (to avoid `SignatureDoesNotMatch` / endpoint issues).
+Note: omit `s3Endpoint` for Express directory buckets and let the AWS SDK handle endpoint
+resolution. The `connect_s3()` convenience helper is designed for standard and LocalStack
+endpoints; for Express buckets, use `FlureeBuilder::from_json_ld()` with a config that omits
+`s3Endpoint`.
 
 Guidance:
 - **Standard S3 in AWS**: omit `s3Endpoint` (let the SDK pick defaults)
@@ -198,7 +202,7 @@ carry an explicit storage identifier.
 
 ## Split commit vs index storage (tiered S3)
 
-Rust supports the tiered `commitStorage` + `indexStorage` format **when using JSON-LD**.
+Rust supports the tiered `commitStorage` + `indexStorage` format via `FlureeBuilder::from_json_ld()` / `build_client()`.
 Internally, Rust routes:
 - `.../commit/...` and `.../txn/...` → commit storage
 - everything else → index storage

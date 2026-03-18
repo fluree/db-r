@@ -239,10 +239,20 @@ async fn wait_for_dynamodb(sdk_config: &aws_config::SdkConfig) {
     panic!("DynamoDB did not become ready in time");
 }
 
-/// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService).
+/// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService, sdk_config).
 async fn setup_localstack_ns() -> (
     testcontainers::ContainerAsync<GenericImage>,
     DynamoDbNameService,
+) {
+    let (_container, ns, _sdk_config) = setup_localstack_ns_with_config().await;
+    (_container, ns)
+}
+
+/// Like `setup_localstack_ns` but also returns the SDK config for direct DynamoDB access in tests.
+async fn setup_localstack_ns_with_config() -> (
+    testcontainers::ContainerAsync<GenericImage>,
+    DynamoDbNameService,
+    aws_config::SdkConfig,
 ) {
     let image = GenericImage::new("localstack/localstack", "latest")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
@@ -266,7 +276,7 @@ async fn setup_localstack_ns() -> (
 
     let client = aws_sdk_dynamodb::Client::new(&sdk_config);
     let ns = DynamoDbNameService::from_client(client, table.to_string());
-    (container, ns)
+    (container, ns, sdk_config)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -400,6 +410,83 @@ async fn nameservice_admin_publisher() {
         Some(&index_id_5_rebuild),
         "allow_equal should reject lower t"
     );
+}
+
+/// Regression test: publish_index must succeed when the ledger is initialized
+/// but the sk="index" item is missing (e.g., older migration paths that
+/// pre-date create_ledger_with_ref).
+///
+/// Before the fix, `update_index_item` used `attribute_exists(#pk) AND #it < :t`
+/// which required the index item to already exist. If it was missing, the
+/// condition failed and the ConditionalCheckFailedException was silently
+/// swallowed — publish_index returned Ok(()) without writing anything.
+#[tokio::test]
+async fn publish_index_without_preexisting_index_item() {
+    let (_container, ns, sdk_config) = setup_localstack_ns_with_config().await;
+
+    let alias = "missing-index-item:main";
+
+    // 1. Initialize ledger — creates meta, head, index, status, config items
+    ns.publish_ledger_init(alias).await.unwrap();
+
+    // Sanity: publish_index works on a fully initialized ledger
+    let index_id_1 = test_index_id("index:1");
+    ns.publish_index(alias, 1, &index_id_1).await.unwrap();
+    let rec = ns.lookup(alias).await.unwrap().unwrap();
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_1));
+    assert_eq!(rec.index_t, 1);
+
+    // 2. Manually delete the sk="index" item to simulate the bug condition
+    let ddb = aws_sdk_dynamodb::Client::new(&sdk_config);
+    ddb.delete_item()
+        .table_name("fluree-ns-test")
+        .key(
+            "pk",
+            aws_sdk_dynamodb::types::AttributeValue::S("missing-index-item:main".to_string()),
+        )
+        .key(
+            "sk",
+            aws_sdk_dynamodb::types::AttributeValue::S("index".to_string()),
+        )
+        .send()
+        .await
+        .expect("delete_item should succeed");
+
+    // Verify the index item is gone
+    let rec = ns.lookup(alias).await.unwrap().unwrap();
+    assert!(
+        rec.index_head_id.is_none(),
+        "index should be gone after manual deletion"
+    );
+
+    // 3. publish_index should succeed — this was the bug
+    let index_id_2 = test_index_id("index:2");
+    ns.publish_index(alias, 2, &index_id_2)
+        .await
+        .expect("publish_index must succeed even when sk=index item is missing");
+
+    // 4. Verify the index was written correctly
+    let rec = ns.lookup(alias).await.unwrap().unwrap();
+    assert_eq!(
+        rec.index_head_id.as_ref(),
+        Some(&index_id_2),
+        "index should be restored after publish"
+    );
+    assert_eq!(rec.index_t, 2);
+
+    // 5. Subsequent publishes should still work normally (monotonic)
+    let index_id_3 = test_index_id("index:3");
+    ns.publish_index(alias, 3, &index_id_3).await.unwrap();
+    let rec = ns.lookup(alias).await.unwrap().unwrap();
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_3));
+    assert_eq!(rec.index_t, 3);
+
+    // Stale publish ignored
+    ns.publish_index(alias, 1, &test_index_id("stale"))
+        .await
+        .unwrap();
+    let rec = ns.lookup(alias).await.unwrap().unwrap();
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_3));
 }
 
 #[tokio::test]

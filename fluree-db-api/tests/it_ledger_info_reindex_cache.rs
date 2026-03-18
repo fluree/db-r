@@ -15,8 +15,7 @@ use support::genesis_ledger_for_fluree;
 
 #[tokio::test]
 async fn ledger_info_cache_busts_on_reindex_allow_equal() {
-    // Enable ledger caching so ledger-info uses the API-level cache.
-    let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+    let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/ledger-info-reindex-cache:main";
 
     // Create a dataset large enough that different indexer configs produce
