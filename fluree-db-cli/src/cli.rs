@@ -332,14 +332,39 @@ pub enum Commands {
         action: ContextAction,
     },
 
-    /// Export ledger data as Turtle or JSON-LD
+    /// Export ledger data as Turtle, N-Triples, N-Quads, TriG, or JSON-LD
     Export {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
 
-        /// Output format: turtle or jsonld (default: turtle)
+        /// Output format: turtle (ttl), ntriples (nt), jsonld, trig, or nquads (default: turtle)
+        ///
+        /// Note: exporting all graphs requires a dataset-capable format
+        /// (`trig` or `nquads`).
         #[arg(long, default_value = "turtle")]
         format: String,
+
+        /// Export all named graphs (dataset export), including system graphs.
+        ///
+        /// Use `--format trig` or `--format nquads` when this flag is set.
+        #[arg(long)]
+        all_graphs: bool,
+
+        /// Export a specific named graph by IRI.
+        ///
+        /// Mutually exclusive with `--all-graphs`.
+        #[arg(long)]
+        graph: Option<String>,
+
+        /// JSON-LD context for prefix declarations (overrides ledger default).
+        ///
+        /// Pass as inline JSON: `--context '{"ex": "http://example.org/"}'`
+        #[arg(long)]
+        context: Option<String>,
+
+        /// Read context from a JSON file (overrides ledger default).
+        #[arg(long, value_name = "FILE")]
+        context_file: Option<std::path::PathBuf>,
 
         /// Query at a specific point in time
         #[arg(long)]

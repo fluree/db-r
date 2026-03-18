@@ -1,17 +1,41 @@
+//! `fluree export` — streaming RDF export via the API builder.
+
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_db_api::export::ExportFormat;
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_vocab::xsd;
+use std::io::{self, BufWriter};
+use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     explicit_ledger: Option<&str>,
     format_str: &str,
+    all_graphs: bool,
+    graph: Option<&str>,
+    context_expr: Option<&str>,
+    context_file: Option<&Path>,
     at: Option<&str>,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     // Check for tracked ledger — export requires local data
     let store = crate::config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let alias = context::resolve_ledger(explicit_ledger, dirs)?;
+
+    // Reject ledger#fragment syntax — use --graph instead
+    if alias.contains('#') {
+        return Err(CliError::Usage(
+            "export does not support 'ledger#fragment' syntax; use --graph <IRI> to export a specific named graph"
+                .to_string(),
+        ));
+    }
+
+    if all_graphs && graph.is_some() {
+        return Err(CliError::Usage(
+            "cannot use both --all-graphs and --graph; choose one".to_string(),
+        ));
+    }
+
     if store.get_tracked(&alias).is_some()
         || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
     {
@@ -20,102 +44,86 @@ pub async fn run(
         ));
     }
 
+    if at.is_some() {
+        return Err(CliError::Usage(
+            "--at is not yet supported for export (time-travel export is planned for a future release)"
+                .to_string(),
+        ));
+    }
+
     let fluree = context::build_fluree(dirs)?;
 
-    let graph = match at {
-        Some(at_str) => {
-            let spec = super::query::parse_time_spec(at_str);
-            fluree.graph_at(&alias, spec)
-        }
-        None => fluree.graph(&alias),
-    };
+    // Parse format string → ExportFormat
+    let format = parse_format(format_str)?;
 
-    let ledger = fluree.ledger(&alias).await?;
+    // Build the export
+    let mut builder = fluree.export(&alias).format(format);
 
-    match format_str.to_lowercase().as_str() {
-        "jsonld" | "json-ld" | "json" => {
-            // CONSTRUCT all triples as JSON-LD graph
-            let result = graph
-                .query()
-                .sparql("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")
-                .execute()
-                .await?;
-            let json = result.to_construct(&ledger.snapshot)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string())
-            );
-        }
-        "turtle" | "ttl" => {
-            // SELECT all triples and format as N-Triples
-            let result = graph
-                .query()
-                .sparql("SELECT ?s ?p ?o WHERE { ?s ?p ?o }")
-                .execute()
-                .await?;
-            let json = result.to_sparql_json(&ledger.snapshot)?;
-            let output = format_ntriples(&json);
-            print!("{output}");
-        }
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown export format '{other}'; valid formats: turtle, jsonld"
-            )));
-        }
+    if all_graphs {
+        builder = builder.all_graphs();
     }
+
+    if let Some(iri) = graph {
+        builder = builder.graph(iri);
+    }
+
+    // Resolve context override (--context or --context-file)
+    if let Some(ctx) = resolve_context_override(context_expr, context_file)? {
+        builder = builder.context(&ctx);
+    }
+
+    let stdout = io::stdout().lock();
+    let mut writer = BufWriter::new(stdout);
+    builder.write_to(&mut writer).await?;
 
     Ok(())
 }
 
-/// Format SPARQL JSON bindings as N-Triples.
-fn format_ntriples(json: &serde_json::Value) -> String {
-    let bindings = match json.pointer("/results/bindings").and_then(|v| v.as_array()) {
-        Some(b) => b,
-        None => return String::new(),
-    };
-
-    let mut lines = Vec::new();
-    for row in bindings {
-        let s = extract_ntriples_term(row.get("s"));
-        let p = extract_ntriples_term(row.get("p"));
-        let o = extract_ntriples_term(row.get("o"));
-        if !s.is_empty() && !p.is_empty() && !o.is_empty() {
-            lines.push(format!("{s} {p} {o} ."));
-        }
+/// Parse a CLI format string into an `ExportFormat`.
+fn parse_format(s: &str) -> CliResult<ExportFormat> {
+    match s.to_lowercase().as_str() {
+        "turtle" | "ttl" => Ok(ExportFormat::Turtle),
+        "ntriples" | "nt" => Ok(ExportFormat::NTriples),
+        "nquads" | "n-quads" => Ok(ExportFormat::NQuads),
+        "trig" => Ok(ExportFormat::TriG),
+        "jsonld" | "json-ld" | "json" => Ok(ExportFormat::JsonLd),
+        other => Err(CliError::Usage(format!(
+            "unknown export format '{other}'; valid formats: turtle, ntriples, nquads, trig, jsonld"
+        ))),
     }
-    if !lines.is_empty() {
-        lines.push(String::new()); // trailing newline
-    }
-    lines.join("\n")
 }
 
-/// Convert a SPARQL JSON binding value to N-Triples term syntax.
-fn extract_ntriples_term(binding: Option<&serde_json::Value>) -> String {
-    let b = match binding {
-        Some(v) => v,
-        None => return String::new(),
+/// Parse an optional context override from `--context` or `--context-file`.
+fn resolve_context_override(
+    expr: Option<&str>,
+    file: Option<&Path>,
+) -> CliResult<Option<serde_json::Value>> {
+    let json_str = if let Some(e) = expr {
+        Some(e.to_string())
+    } else if let Some(path) = file {
+        let s = std::fs::read_to_string(path).map_err(|e| {
+            CliError::Usage(format!(
+                "failed to read context file '{}': {e}",
+                path.display()
+            ))
+        })?;
+        Some(s)
+    } else {
+        None
     };
 
-    let value = b.get("value").and_then(|v| v.as_str()).unwrap_or("");
-    let typ = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match typ {
-        "uri" => format!("<{value}>"),
-        "literal" => {
-            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-            if let Some(lang) = b.get("xml:lang").and_then(|v| v.as_str()) {
-                format!("\"{escaped}\"@{lang}")
-            } else if let Some(dt) = b.get("datatype").and_then(|v| v.as_str()) {
-                if dt == xsd::STRING {
-                    format!("\"{escaped}\"")
-                } else {
-                    format!("\"{escaped}\"^^<{dt}>")
-                }
+    match json_str {
+        Some(s) => {
+            let val: serde_json::Value = serde_json::from_str(&s)
+                .map_err(|e| CliError::Usage(format!("invalid context JSON: {e}")))?;
+            // Accept either { "@context": {...} } wrapper or bare object
+            let ctx = if let Some(inner) = val.get("@context") {
+                inner.clone()
             } else {
-                format!("\"{escaped}\"")
-            }
+                val
+            };
+            Ok(Some(ctx))
         }
-        "bnode" => format!("_:{value}"),
-        _ => format!("<{value}>"),
+        None => Ok(None),
     }
 }

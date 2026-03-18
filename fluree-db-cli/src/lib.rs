@@ -231,9 +231,27 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             }
         }
 
-        Commands::Export { ledger, format, at } => {
+        Commands::Export {
+            ledger,
+            format,
+            all_graphs,
+            graph,
+            context,
+            context_file,
+            at,
+        } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::export::run(ledger.as_deref(), &format, at.as_deref(), &fluree_dir).await
+            commands::export::run(
+                ledger.as_deref(),
+                &format,
+                all_graphs,
+                graph.as_deref(),
+                context.as_deref(),
+                context_file.as_deref(),
+                at.as_deref(),
+                &fluree_dir,
+            )
+            .await
         }
 
         Commands::Log {

@@ -43,6 +43,8 @@ pub mod credential;
 pub mod dataset;
 mod error;
 pub mod explain;
+pub mod export;
+pub mod export_builder;
 pub mod format;
 pub mod graph;
 pub mod graph_query_builder;
@@ -2753,6 +2755,22 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + ConfigPublisher + Clone + Send + Sync + 'static,
 {
+    /// Create an export builder for streaming RDF data from a ledger.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use fluree_db_api::export::ExportFormat;
+    ///
+    /// let stats = fluree.export("mydb")
+    ///     .format(ExportFormat::Turtle)
+    ///     .write_to(&mut writer)
+    ///     .await?;
+    /// ```
+    pub fn export(&self, ledger_id: &str) -> export_builder::ExportBuilder<'_, S, N> {
+        export_builder::ExportBuilder::new(self, ledger_id.to_string())
+    }
+
     /// Get the default JSON-LD context for a ledger.
     ///
     /// Reads the context CID from nameservice config and fetches the blob
