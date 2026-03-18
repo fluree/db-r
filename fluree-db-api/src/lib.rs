@@ -1167,9 +1167,12 @@ fn make_leaflet_cache(
 }
 
 impl FlureeBuilder {
-    /// Create a new builder with default settings (memory storage)
+    /// Create a new builder with default settings (memory storage).
+    ///
+    /// Equivalent to [`FlureeBuilder::memory()`] — ledger caching is enabled
+    /// by default.
     pub fn new() -> Self {
-        Self::default()
+        Self::memory()
     }
 
     /// Configure for file-based storage
@@ -1595,7 +1598,9 @@ impl FlureeBuilder {
     /// covered by the built-in `build()` / `build_memory()` / `build_s3()`
     /// methods (e.g. proxy storage for peer mode).
     ///
-    /// Honors the builder's cache and indexing settings.
+    /// Honors the builder's cache settings. Background indexing is **not**
+    /// supported through this method — use `build()` or `build_s3()` if you
+    /// need `IndexingMode::Background`.
     pub fn build_with<S, N>(self, storage: S, nameservice: N) -> Fluree<S, N>
     where
         S: Storage + Clone + Send + Sync + 'static,

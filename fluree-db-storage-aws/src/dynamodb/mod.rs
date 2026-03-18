@@ -701,10 +701,12 @@ impl Publisher for DynamoDbNameService {
 impl DynamoDbNameService {
     /// Shared helper for publish_index and publish_index_allow_equal.
     ///
-    /// Uses `attribute_not_exists(#it) OR {condition}` so that missing index
-    /// items are created (fixing ledgers where `sk="index"` was never written
-    /// by older migration paths), while existing items are only updated when
-    /// the monotonicity condition is met.
+    /// First attempts the update with only the monotonicity `condition`
+    /// (e.g., `#it < :t`). If the item doesn't exist yet (legacy ledgers
+    /// where `sk="index"` was never written), the condition check fails;
+    /// in that case we retry with `attribute_not_exists(#it) OR {condition}`
+    /// to create the missing item. This keeps the common (item-exists) path
+    /// free of the extra `attribute_not_exists` evaluation.
     ///
     /// A `meta_exists` pre-check guards against publishing to a completely
     /// uninitialized alias — matching the `publish_commit` contract.
@@ -726,43 +728,70 @@ impl DynamoDbNameService {
 
         let now = Self::now_epoch_ms().to_string();
 
-        // `attribute_not_exists(#it)` is true when the item is absent
-        // (DynamoDB UpdateItem creates items by default), while `{condition}`
-        // (e.g., "#it < :t") gates updates to existing items. This handles
-        // ledgers where the sk="index" record was never created (e.g., older
-        // migration paths that pre-date create_ledger_with_ref).
-        let full_condition = format!("attribute_not_exists(#it) OR {condition}");
-
+        // Fast path: assume the index item already exists (common case).
         let result = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_PK, AttributeValue::S(pk.clone()))
-            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
-            .update_expression("SET #ii = :iid, #it = :t, #ua = :now")
-            .condition_expression(full_condition)
-            .expression_attribute_names("#ii", ATTR_INDEX_ID)
-            .expression_attribute_names("#it", ATTR_INDEX_T)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-            .expression_attribute_values(":iid", AttributeValue::S(index_id.to_string()))
-            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now))
-            .send()
+            .send_index_update(&pk, index_id, index_t, &now, condition)
             .await;
 
         match result {
             Ok(_) => Ok(()),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                // With the condition `attribute_not_exists(#it) OR #it < :t`,
-                // ConditionalCheckFailedException means the index item exists
-                // and its index_t >= the incoming t. This is a stale/duplicate
-                // publish — safe to ignore.
-                Ok(())
+                // Either (a) the item exists and index_t >= incoming t
+                // (stale/duplicate — safe to ignore), or (b) the item is
+                // absent so the condition on `#it` failed because the
+                // attribute doesn't exist. Retry with the fallback
+                // condition to disambiguate.
+                let fallback = format!("attribute_not_exists(#it) OR {condition}");
+                let retry = self
+                    .send_index_update(&pk, index_id, index_t, &now, &fallback)
+                    .await;
+
+                match retry {
+                    Ok(_) => Ok(()),
+                    Err(e) if Self::is_conditional_check_failed(&e) => {
+                        // Item exists and index_t >= incoming t — stale publish.
+                        Ok(())
+                    }
+                    Err(e) => Err(NameServiceError::storage(format!(
+                        "DynamoDB UpdateItem failed: {e}"
+                    ))),
+                }
             }
             Err(e) => Err(NameServiceError::storage(format!(
                 "DynamoDB UpdateItem failed: {e}"
             ))),
         }
+    }
+
+    /// Send a single DynamoDB UpdateItem for the index record.
+    async fn send_index_update(
+        &self,
+        pk: &str,
+        index_id: &ContentId,
+        index_t: i64,
+        now: &str,
+        condition_expression: &str,
+    ) -> std::result::Result<
+        aws_sdk_dynamodb::operation::update_item::UpdateItemOutput,
+        aws_sdk_dynamodb::error::SdkError<
+            aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+        >,
+    > {
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.to_string()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .update_expression("SET #ii = :iid, #it = :t, #ua = :now")
+            .condition_expression(condition_expression)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":iid", AttributeValue::S(index_id.to_string()))
+            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
+            .send()
+            .await
     }
 
     /// Create a new ledger via TransactWriteItems with one ref pre-set.
