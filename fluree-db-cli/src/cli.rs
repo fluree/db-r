@@ -326,6 +326,12 @@ pub enum Commands {
         format: String,
     },
 
+    /// Manage the default JSON-LD context for a ledger
+    Context {
+        #[command(subcommand)]
+        action: ContextAction,
+    },
+
     /// Export ledger data as Turtle or JSON-LD
     Export {
         /// Ledger name (defaults to active ledger)
@@ -804,6 +810,34 @@ pub enum ConfigAction {
         /// Path to origins config JSON file
         #[arg(long)]
         file: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ContextAction {
+    /// Show the default JSON-LD context for a ledger
+    Get {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
+    /// Set (replace) the default JSON-LD context for a ledger
+    ///
+    /// Accepts a JSON object mapping prefixes to IRIs, either inline or from a file.
+    /// Examples:
+    ///   fluree context set mydb '{"ex": "http://example.org/"}'
+    ///   fluree context set mydb -f context.json
+    Set {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// Inline JSON context (prefix → IRI mappings)
+        #[arg(long, short = 'e')]
+        expr: Option<String>,
+
+        /// Read context from a JSON file
+        #[arg(long, short = 'f')]
+        file: Option<std::path::PathBuf>,
     },
 }
 
