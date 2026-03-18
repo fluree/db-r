@@ -412,3 +412,266 @@ async fn upsert_and_commit() {
         ]))
     );
 }
+
+/// Upsert with @json typed values should replace (retract old + assert new),
+/// not append. This is the same "replace mode" semantics as for scalar values.
+///
+/// Regression test: upsert was observed to append @json values instead of
+/// replacing them, while the explicit where+delete+insert pattern worked.
+#[tokio::test]
+async fn upsert_json_type_replaces_not_appends() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree.create_ledger("tx/upsert-json:main").await.unwrap();
+
+    // Insert initial @json data
+    let initial_txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": true, "version": 1}, "@type": "@json"}
+        }]
+    });
+    let ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
+
+    // Upsert with a different @json value — should replace, not append
+    let upsert_txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": false, "version": 2}, "@type": "@json"}
+        }]
+    });
+    let ledger2 = fluree.upsert(ledger1, &upsert_txn).await.unwrap().ledger;
+
+    // Query the result
+    let query = json!({
+        "@context": ctx(),
+        "select": {"ex:config": ["*"]}
+    });
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let config = &result[0];
+    let data = &config["ex:data"];
+
+    // After upsert, there should be exactly ONE @json value (the new one),
+    // not an array of [old, new].
+    assert!(
+        !data.is_array(),
+        "ex:data should be a single value after upsert, not an array. Got: {data}"
+    );
+
+    // Verify it's the NEW value
+    assert_eq!(data["version"], 2, "should have new version after upsert");
+    assert_eq!(
+        data["seed"], false,
+        "should have new seed value after upsert"
+    );
+}
+
+/// Same scenario as above, but using explicit where+delete+insert (update).
+/// This is the control case — the user reports this pattern works correctly.
+#[tokio::test]
+async fn update_json_type_replaces_via_where_delete_insert() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree.create_ledger("tx/update-json:main").await.unwrap();
+
+    // Insert initial @json data
+    let initial_txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": true, "version": 1}, "@type": "@json"}
+        }]
+    });
+    let ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
+
+    // Update with explicit where+delete+insert pattern
+    let update_txn = json!({
+        "@context": ctx(),
+        "where": {"@id": "ex:config", "ex:data": "?old"},
+        "delete": {"@id": "ex:config", "ex:data": "?old"},
+        "insert": {
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": false, "version": 2}, "@type": "@json"}
+        }
+    });
+    let ledger2 = fluree.update(ledger1, &update_txn).await.unwrap().ledger;
+
+    // Query the result
+    let query = json!({
+        "@context": ctx(),
+        "select": {"ex:config": ["*"]}
+    });
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let config = &result[0];
+    let data = &config["ex:data"];
+
+    // After update, there should be exactly ONE @json value (the new one)
+    assert!(
+        !data.is_array(),
+        "ex:data should be a single value after update, not an array. Got: {data}"
+    );
+
+    // Verify it's the NEW value
+    assert_eq!(data["version"], 2, "should have new version after update");
+    assert_eq!(
+        data["seed"], false,
+        "should have new seed value after update"
+    );
+}
+
+/// Upsert idempotence for @json values: upserting the same @json value twice
+/// should produce identical results (no duplicates).
+#[tokio::test]
+async fn upsert_json_type_idempotent() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree
+        .create_ledger("tx/upsert-json-idem:main")
+        .await
+        .unwrap();
+
+    let txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"key": "val"}, "@type": "@json"}
+        }]
+    });
+
+    let ledger1 = fluree.insert(ledger0, &txn).await.unwrap().ledger;
+    let ledger2 = fluree.upsert(ledger1.clone(), &txn).await.unwrap().ledger;
+
+    let query = json!({
+        "@context": ctx(),
+        "select": {"ex:config": ["*"]}
+    });
+
+    let result1 = support::query_jsonld(&fluree, &ledger1, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    let result2 = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        normalize_rows(&result1),
+        normalize_rows(&result2),
+        "upserting the same @json value should be idempotent"
+    );
+}
+
+/// Upsert with @json values after data has been indexed (binary store path).
+///
+/// When data lives in the binary index (not just novelty), the query engine may
+/// return `EncodedLit` bindings for @json values. If `binding_to_flake_object`
+/// doesn't handle these, the retraction is silently skipped → append instead of replace.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn upsert_json_type_replaces_after_reindex() {
+    use fluree_db_api::ReindexOptions;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "tx/upsert-json-indexed:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    // Insert initial @json data
+    let initial_txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": true, "version": 1}, "@type": "@json"}
+        }]
+    });
+    let _ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
+
+    // Build a binary index so data moves out of novelty-only
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex");
+
+    // Load a fresh LedgerState with binary range_provider
+    let handle = fluree.ledger_cached(ledger_id).await.unwrap();
+    let ledger_indexed = handle.snapshot().await.to_ledger_state();
+
+    // Verify the loaded state has binary range provider
+    assert!(
+        ledger_indexed.snapshot.range_provider.is_some(),
+        "loaded state should have binary range provider after reindex"
+    );
+
+    // Upsert with a different @json value — should replace, not append
+    let upsert_txn = json!({
+        "@context": ctx(),
+        "@graph": [{
+            "@id": "ex:config",
+            "ex:data": {"@value": {"seed": false, "version": 2}, "@type": "@json"}
+        }]
+    });
+    let ledger2 = fluree
+        .upsert(ledger_indexed, &upsert_txn)
+        .await
+        .unwrap()
+        .ledger;
+
+    // Query the result
+    let query = json!({
+        "@context": ctx(),
+        "select": {"ex:config": ["*"]}
+    });
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let config = &result[0];
+    let data = &config["ex:data"];
+
+    // After upsert, there should be exactly ONE @json value (the new one)
+    assert!(
+        !data.is_array(),
+        "ex:data should be a single value after upsert (indexed path), not an array. Got: {data}"
+    );
+
+    // The @json value may come back as either:
+    // - Unwrapped object: {"seed": false, "version": 2}  (novelty path)
+    // - Wrapped: {"@value": "{...}", "@type": "rdf:JSON"} (indexed path)
+    // Handle both by parsing the inner value if wrapped.
+    let inner = if let Some(at_value) = data.get("@value") {
+        if let Some(s) = at_value.as_str() {
+            serde_json::from_str::<serde_json::Value>(s).expect("parse @json @value string")
+        } else {
+            at_value.clone()
+        }
+    } else {
+        data.clone()
+    };
+
+    assert_eq!(
+        inner["version"], 2,
+        "should have new version after upsert (indexed path)"
+    );
+    assert_eq!(
+        inner["seed"], false,
+        "should have new seed value after upsert (indexed path)"
+    );
+}
