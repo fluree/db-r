@@ -53,6 +53,7 @@ use crate::error::Result;
 use async_trait::async_trait;
 use sha2::Digest;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
@@ -1242,38 +1243,159 @@ impl ContentAddressedWrite for FileStorage {
 }
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+impl FileStorage {
+    /// Atomic file insert inside `spawn_blocking`.
+    ///
+    /// Uses `O_CREAT | O_EXCL` for atomic create-if-not-exists.
+    async fn blocking_insert(&self, path: PathBuf, bytes: Vec<u8>) -> StorageExtResult<bool> {
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageExtError::io(format!("mkdir {}: {}", parent.display(), e))
+                })?;
+            }
+
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(&bytes).map_err(|e| {
+                        StorageExtError::io(format!("write {}: {}", path.display(), e))
+                    })?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(StorageExtError::io(format!(
+                    "open {}: {}",
+                    path.display(),
+                    e
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+
+    /// Atomic locked read inside `spawn_blocking`.
+    ///
+    /// Acquires an exclusive flock on a sidecar `.lock` file, reads the data
+    /// file, and returns the current bytes. The lock is held across the
+    /// returned guard so the caller can write back atomically.
+    ///
+    /// Returns `(current_bytes, lock_guard_and_path)` — drop the second
+    /// element to release the lock.
+    async fn blocking_locked_read(
+        &self,
+        path: PathBuf,
+    ) -> StorageExtResult<(Option<Vec<u8>>, LockedFile)> {
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageExtError::io(format!("mkdir {}: {}", parent.display(), e))
+                })?;
+            }
+
+            // Use a separate lock file so that the atomic rename of the data
+            // file doesn't invalidate the lock (rename replaces the directory
+            // entry, creating a new inode on Linux — the lock on the old inode
+            // would no longer protect the new file).
+            let lock_path = path.with_extension("lock");
+            let lock_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .map_err(|e| {
+                    StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e))
+                })?;
+
+            fs2::FileExt::lock_exclusive(&lock_file)
+                .map_err(|e| StorageExtError::io(format!("lock {}: {}", lock_path.display(), e)))?;
+
+            let current = match std::fs::read(&path) {
+                Ok(buf) if buf.is_empty() => None,
+                Ok(buf) => Some(buf),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    return Err(StorageExtError::io(format!(
+                        "read {}: {}",
+                        path.display(),
+                        e
+                    )))
+                }
+            };
+
+            Ok((
+                current,
+                LockedFile {
+                    path,
+                    _lock_file: lock_file,
+                },
+            ))
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+
+    /// Atomic locked write inside `spawn_blocking`.
+    ///
+    /// Writes `new_bytes` to a temp file and renames into place while the
+    /// flock from `blocking_locked_read` is still held. The lock is released
+    /// when the `LockedFile` guard is dropped at the end.
+    async fn blocking_locked_write(
+        &self,
+        locked: LockedFile,
+        new_bytes: Vec<u8>,
+    ) -> StorageExtResult<()> {
+        tokio::task::spawn_blocking(move || {
+            let tmp_path = locked.path.with_extension("tmp");
+            {
+                use std::io::Write;
+                let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| {
+                    StorageExtError::io(format!("create {}: {}", tmp_path.display(), e))
+                })?;
+                tmp.write_all(&new_bytes).map_err(|e| {
+                    StorageExtError::io(format!("write {}: {}", tmp_path.display(), e))
+                })?;
+            }
+            std::fs::rename(&tmp_path, &locked.path).map_err(|e| {
+                StorageExtError::io(format!(
+                    "rename {} -> {}: {}",
+                    tmp_path.display(),
+                    locked.path.display(),
+                    e
+                ))
+            })?;
+            Ok(())
+            // lock released when `locked._lock_file` is dropped
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+}
+
+/// Holds an exclusive flock and the data file path for the duration of a CAS.
+///
+/// The lock is released when this struct is dropped (the `_lock_file` field's
+/// `Drop` impl calls `flock(LOCK_UN)`).
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+struct LockedFile {
+    path: PathBuf,
+    _lock_file: std::fs::File,
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl StorageCas for FileStorage {
     async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
         let path = self
             .resolve_path(address)
             .map_err(|e| StorageExtError::io(e.to_string()))?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| StorageExtError::io(format!("mkdir {}: {}", parent.display(), e)))?;
-        }
-
-        // O_CREAT | O_EXCL: atomic create-if-not-exists
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(bytes)
-                    .map_err(|e| StorageExtError::io(format!("write {}: {}", path.display(), e)))?;
-                Ok(true)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(StorageExtError::io(format!(
-                "open {}: {}",
-                path.display(),
-                e
-            ))),
-        }
+        self.blocking_insert(path, bytes.to_vec()).await
     }
 
     async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
@@ -1285,73 +1407,19 @@ impl StorageCas for FileStorage {
             .resolve_path(address)
             .map_err(|e| StorageExtError::io(e.to_string()))?;
 
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| StorageExtError::io(format!("mkdir {}: {}", parent.display(), e)))?;
-        }
+        // Phase 1: acquire lock + read (blocking)
+        let (current, locked) = self.blocking_locked_read(path).await?;
 
-        // Use a separate lock file so that the atomic rename of the data
-        // file doesn't invalidate the lock (rename replaces the directory
-        // entry, creating a new inode on Linux — the lock on the old inode
-        // would no longer protect the new file).
-        let lock_path = path.with_extension("lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| {
-                StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e))
-            })?;
-
-        use fs2::FileExt;
-        lock_file
-            .lock_exclusive()
-            .map_err(|e| StorageExtError::io(format!("lock {}: {}", lock_path.display(), e)))?;
-
-        // Read current data file contents (missing file = absent)
-        let current = match std::fs::read(&path) {
-            Ok(buf) if buf.is_empty() => None,
-            Ok(buf) => Some(buf),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                return Err(StorageExtError::io(format!(
-                    "read {}: {}",
-                    path.display(),
-                    e
-                )))
-            }
-        };
-
+        // Phase 2: call closure on async task
         match f(current.as_deref())? {
             CasAction::Write(new_bytes) => {
-                // Write to a temporary file, then atomically rename into place.
-                // This avoids partial writes on crash/power loss.
-                let tmp_path = path.with_extension("tmp");
-                {
-                    use std::io::Write;
-                    let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| {
-                        StorageExtError::io(format!("create {}: {}", tmp_path.display(), e))
-                    })?;
-                    tmp.write_all(&new_bytes).map_err(|e| {
-                        StorageExtError::io(format!("write {}: {}", tmp_path.display(), e))
-                    })?;
-                }
-                std::fs::rename(&tmp_path, &path).map_err(|e| {
-                    StorageExtError::io(format!(
-                        "rename {} -> {}: {}",
-                        tmp_path.display(),
-                        path.display(),
-                        e
-                    ))
-                })?;
+                // Phase 3: write under same lock (blocking)
+                self.blocking_locked_write(locked, new_bytes).await?;
                 Ok(CasOutcome::Written)
             }
             CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
         }
-        // Lock released when lock_file is dropped
+        // Lock released when `locked` is dropped (on Abort path, dropped here)
     }
 }
 
@@ -1577,7 +1645,6 @@ pub trait StorageCas: Debug + Send + Sync {
         F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
         T: Send;
 }
-
 // ============================================================================
 // Tests
 // ============================================================================
