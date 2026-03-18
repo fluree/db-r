@@ -139,7 +139,7 @@ struct NsFileV2 {
 }
 
 /// JSON-LD representation of a branch point in an ns@v2 file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BranchPointRef {
     #[serde(rename = "f:source")]
     source: String,
