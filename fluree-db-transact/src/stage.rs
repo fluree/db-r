@@ -814,16 +814,30 @@ pub fn generate_txn_id() -> String {
 ///
 /// Returns `None` for non-materializable bindings (Unbound, Poisoned, Grouped, Iri).
 /// This is used when generating retraction flakes from query results.
-fn binding_to_flake_object(binding: &Binding) -> Option<(FlakeValue, Sid)> {
+///
+/// When a `Materializer` is provided, encoded bindings (`EncodedLit`, `EncodedSid`)
+/// are decoded via the binary index store before conversion. Without a materializer,
+/// encoded bindings return `None` (this can cause upsert to silently skip retractions
+/// for values that live in the binary index — see issue #88).
+fn binding_to_flake_object(
+    binding: &Binding,
+    materializer: Option<&mut fluree_db_query::Materializer>,
+) -> Option<(FlakeValue, Sid)> {
     match binding {
         Binding::Sid(sid) => Some((FlakeValue::Ref(sid.clone()), Sid::new(1, "id"))),
         Binding::IriMatch { primary_sid, .. } => {
             Some((FlakeValue::Ref(primary_sid.clone()), Sid::new(1, "id")))
         }
         Binding::Lit { val, dtc, .. } => Some((val.clone(), dtc.datatype().clone())),
-        Binding::EncodedLit { .. } => None,
-        Binding::EncodedSid { .. } => None, // Requires materialization
-        Binding::EncodedPid { .. } => None, // Requires materialization
+        Binding::EncodedLit { .. } | Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            match materializer {
+                Some(mat) => {
+                    let materialized = mat.to_term(binding);
+                    binding_to_flake_object(&materialized, None)
+                }
+                None => None,
+            }
+        }
         // Non-materializable bindings
         Binding::Unbound | Binding::Poisoned => None,
         Binding::Grouped(_) => {
@@ -885,7 +899,10 @@ async fn generate_upsert_deletions(
     new_t: i64,
     graph_sids: &std::collections::HashMap<u16, Sid>,
 ) -> Result<Vec<fluree_db_core::Flake>> {
+    use fluree_db_binary_index::BinaryGraphView;
     use fluree_db_core::Flake;
+    use fluree_db_query::materializer::JoinKeyMode;
+    use fluree_db_query::{BinaryRangeProvider, Materializer};
 
     // Collect unique (subject, predicate, graph_id) tuples from insert templates
     // Include graph_id to ensure retractions are created in the correct graph
@@ -902,6 +919,17 @@ async fn generate_upsert_deletions(
     if spg_tuples.is_empty() {
         return Ok(Vec::new());
     }
+
+    // Extract the binary index store (if present) so we can materialize
+    // EncodedLit/EncodedSid bindings returned by the binary scan path.
+    // Without this, upsert silently skips retractions for @json, vector,
+    // and other string-dictionary-backed values (issue #88).
+    let binary_store = ledger
+        .snapshot
+        .range_provider
+        .as_ref()
+        .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+        .map(|brp| Arc::clone(brp.store()));
 
     let mut retractions = Vec::new();
 
@@ -977,9 +1005,20 @@ async fn generate_upsert_deletions(
             ),
         };
 
+        // Create a materializer for this graph context if a binary store exists.
+        // The graph_id determines which graph partition to decode from.
+        let effective_g_id = ledger_g_id.unwrap_or(0);
+        let mut materializer = binary_store.as_ref().map(|store| {
+            let view = BinaryGraphView::new(Arc::clone(store), effective_g_id);
+            Materializer::new(view, JoinKeyMode::SingleLedger)
+        });
+
         for batch in batches.iter() {
             for row in 0..batch.len() {
-                if let Some((o, dt)) = batch.get(row, o_var).and_then(binding_to_flake_object) {
+                let flake_obj = batch
+                    .get(row, o_var)
+                    .and_then(|b| binding_to_flake_object(b, materializer.as_mut()));
+                if let Some((o, dt)) = flake_obj {
                     let flake = match graph_sid.clone() {
                         Some(g) => Flake::new_in_graph(
                             g,
