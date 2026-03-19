@@ -317,6 +317,13 @@ impl FileNameService {
         }
     }
 
+    /// Emit a `NameServiceEvent` if the CAS outcome was `Written`.
+    fn emit_on_write<T>(&self, outcome: &CasOutcome<T>, event: NameServiceEvent) {
+        if matches!(outcome, CasOutcome::Written) {
+            let _ = self.event_tx.send(event);
+        }
+    }
+
     /// Build a `fluree:file://` address for the main ns record.
     fn ns_address(ledger_name: &str, branch: &str) -> String {
         format!("fluree:file://{NS_VERSION}/{ledger_name}/{branch}.json")
@@ -697,13 +704,14 @@ impl Publisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerCommitPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 commit_id: commit_id_for_event,
                 commit_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -741,13 +749,14 @@ impl Publisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 index_id: index_id_for_event,
                 index_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -775,11 +784,12 @@ impl Publisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerRetracted {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -844,13 +854,14 @@ impl AdminPublisher for FileNameService {
             .await?;
 
         // Only emit event if update actually happened
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 index_id: index_id_for_event,
                 index_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -915,15 +926,14 @@ impl GraphSourcePublisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceConfigPublished {
-                    graph_source_id: gs_id_for_event,
-                    source_type: source_type_for_event,
-                    dependencies: dependencies_for_event,
-                });
-        }
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceConfigPublished {
+                graph_source_id: gs_id_for_event,
+                source_type: source_type_for_event,
+                dependencies: dependencies_for_event,
+            },
+        );
 
         Ok(())
     }
@@ -966,15 +976,14 @@ impl GraphSourcePublisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceIndexPublished {
-                    graph_source_id: gs_id_for_event,
-                    index_id: index_id_for_event,
-                    index_t,
-                });
-        }
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceIndexPublished {
+                graph_source_id: gs_id_for_event,
+                index_id: index_id_for_event,
+                index_t,
+            },
+        );
 
         Ok(())
     }
@@ -999,11 +1008,12 @@ impl GraphSourcePublisher for FileNameService {
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceRetracted {
                 graph_source_id: gs_id_for_event,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
