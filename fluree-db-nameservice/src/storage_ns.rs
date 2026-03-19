@@ -18,16 +18,17 @@
 //! Under contention, operations will retry with exponential backoff.
 
 use crate::{
-    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
-    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
+    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
+    StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
 use fluree_db_core::{
-    CasAction, CasOutcome, ContentId, Error as CoreError, StorageCas, StorageExtError, StorageList,
-    StorageRead, StorageWrite,
+    CasAction, CasOutcome, ContentId, Error as CoreError, StorageCas, StorageList, StorageRead,
+    StorageWrite,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -486,18 +487,11 @@ where
         let outcome = self
             .storage
             .compare_and_swap(key, |current_bytes| {
-                let current: Option<T> = current_bytes
-                    .map(|b| {
-                        serde_json::from_slice(b)
-                            .map_err(|e| StorageExtError::other(format!("JSON parse error: {}", e)))
-                    })
-                    .transpose()?;
+                let current: Option<T> = current_bytes.map(deserialize_json).transpose()?;
 
                 match update_fn(current) {
                     Some(value) => {
-                        let bytes = serde_json::to_vec_pretty(&value).map_err(|e| {
-                            StorageExtError::other(format!("JSON serialize error: {}", e))
-                        })?;
+                        let bytes = serialize_json(&value)?;
                         Ok(CasAction::Write(bytes))
                     }
                     None => Ok(CasAction::Abort(())),
@@ -529,18 +523,11 @@ where
         let outcome = self
             .storage
             .compare_and_swap(key, |current_bytes| {
-                let current: Option<T> = current_bytes
-                    .map(|b| {
-                        serde_json::from_slice(b)
-                            .map_err(|e| StorageExtError::other(format!("JSON parse error: {}", e)))
-                    })
-                    .transpose()?;
+                let current: Option<T> = current_bytes.map(deserialize_json).transpose()?;
 
                 match update_fn(current) {
                     CasUpdateDecision::Apply(value) => {
-                        let bytes = serde_json::to_vec_pretty(&value).map_err(|e| {
-                            StorageExtError::other(format!("JSON serialize error: {}", e))
-                        })?;
+                        let bytes = serialize_json(&value)?;
                         Ok(CasAction::Write(bytes))
                     }
                     CasUpdateDecision::Skip(result) => Ok(CasAction::Abort(result)),
@@ -1366,8 +1353,7 @@ where
                     return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
                 };
 
-                let mut file: NsFileV2 = serde_json::from_slice(bytes)
-                    .map_err(|e| StorageExtError::other(format!("JSON parse error: {}", e)))?;
+                let mut file: NsFileV2 = deserialize_json(bytes)?;
 
                 // Build current StatusValue
                 let current = {
@@ -1412,8 +1398,7 @@ where
                     Some(new.payload.extra.clone())
                 };
 
-                let new_bytes = serde_json::to_vec_pretty(&file)
-                    .map_err(|e| StorageExtError::other(format!("JSON serialize error: {}", e)))?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await
@@ -1508,8 +1493,7 @@ where
                     return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
                 };
 
-                let mut file: NsFileV2 = serde_json::from_slice(bytes)
-                    .map_err(|e| StorageExtError::other(format!("JSON parse error: {}", e)))?;
+                let mut file: NsFileV2 = deserialize_json(bytes)?;
 
                 // Build current ConfigValue
                 let current = {
@@ -1592,8 +1576,7 @@ where
                     file.config_meta = None;
                 }
 
-                let new_bytes = serde_json::to_vec_pretty(&file)
-                    .map_err(|e| StorageExtError::other(format!("JSON serialize error: {}", e)))?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await
@@ -1609,6 +1592,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::StorageExtError;
 
     #[test]
     fn test_ns_key_with_prefix() {

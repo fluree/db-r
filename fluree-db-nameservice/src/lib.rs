@@ -27,6 +27,27 @@ pub mod tracking_file;
 pub use error::{NameServiceError, Result};
 pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 
+use fluree_db_core::StorageExtError;
+
+/// Convert a serde_json error to a StorageExtError for use inside CAS closures.
+fn json_ext_err(e: serde_json::Error) -> StorageExtError {
+    StorageExtError::other(e.to_string())
+}
+
+/// Deserialize JSON bytes inside a CAS closure.
+pub(crate) fn deserialize_json<T: for<'de> Deserialize<'de>>(
+    data: &[u8],
+) -> std::result::Result<T, StorageExtError> {
+    serde_json::from_slice(data).map_err(json_ext_err)
+}
+
+/// Serialize a value to pretty-printed JSON bytes inside a CAS closure.
+pub(crate) fn serialize_json<T: Serialize>(
+    value: &T,
+) -> std::result::Result<Vec<u8>, StorageExtError> {
+    serde_json::to_vec_pretty(value).map_err(json_ext_err)
+}
+
 /// Storage path segment for graph source artifacts.
 ///
 /// Used when constructing storage addresses for BM25, vector, and other graph

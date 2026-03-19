@@ -24,15 +24,15 @@
 //! - A database with transactions
 
 use crate::{
-    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
-    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
-    StatusPublisher, StatusValue, Subscription,
+    deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
+    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NameServiceEvent,
+    NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher, RefValue, Result,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
-use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas, StorageExtError};
+use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -330,23 +330,6 @@ const NS_VERSION: &str = "ns@v2";
 /// Uses object format with the `"f"` prefix mapping to the Fluree DB namespace.
 fn ns_context() -> serde_json::Value {
     serde_json::json!({"f": fluree_vocab::fluree::DB})
-}
-
-/// Convert a serde_json error to a StorageExtError for use inside CAS closures.
-fn json_ext_err(e: serde_json::Error) -> StorageExtError {
-    StorageExtError::other(e.to_string())
-}
-
-/// Deserialize JSON bytes inside a CAS closure.
-fn deserialize_json<T: for<'de> Deserialize<'de>>(
-    data: &[u8],
-) -> std::result::Result<T, StorageExtError> {
-    serde_json::from_slice(data).map_err(json_ext_err)
-}
-
-/// Serialize a value to pretty-printed JSON bytes inside a CAS closure.
-fn serialize_json<T: Serialize>(value: &T) -> std::result::Result<Vec<u8>, StorageExtError> {
-    serde_json::to_vec_pretty(value).map_err(json_ext_err)
 }
 
 impl FileNameService {
