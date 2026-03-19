@@ -1013,8 +1013,6 @@ fn overlay_only_flakes(
     let mut skipped = 0usize;
     let mut collected = 0usize;
     let mut flakes = Vec::new();
-    let mut _dbg_total = 0usize;
-    let mut _dbg_s_mismatch = 0usize;
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -1024,7 +1022,6 @@ fn overlay_only_flakes(
         true,
         effective_to_t,
         &mut |flake| {
-            _dbg_total += 1;
             // Early exit: already have enough results.
             if collected >= limit {
                 return;
@@ -1038,16 +1035,6 @@ fn overlay_only_flakes(
             // Filter by match components.
             if let Some(ref s_sid) = match_val.s {
                 if flake.s != *s_sid {
-                    if _dbg_s_mismatch < 3 && flake.s.name.contains("CrawlTest") {
-                        tracing::debug!(
-                            flake_ns = flake.s.namespace_code,
-                            flake_name = %flake.s.name,
-                            query_ns = s_sid.namespace_code,
-                            query_name = %s_sid.name,
-                            "overlay_only_flakes: SID MISMATCH on matching name"
-                        );
-                    }
-                    _dbg_s_mismatch += 1;
                     return;
                 }
             }
