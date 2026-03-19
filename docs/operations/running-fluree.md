@@ -275,14 +275,14 @@ let fluree = FlureeBuilder::from_json_ld(&json!({
 }))?.build_client().await?;
 ```
 
-Convenience helpers are also available for quick setup:
+Quick setup with typed builders:
 
 ```rust
-use fluree_db_api::prelude::*;
+use fluree_db_api::FlureeBuilder;
 
-let fluree = connect_memory().await?;           // In-memory
-let fluree = connect_filesystem("./data").await?; // File-based
-let fluree = connect_s3("bucket", "endpoint").await?; // S3
+let fluree = FlureeBuilder::memory().build_memory();                               // In-memory
+let fluree = FlureeBuilder::file("./data").build()?;                               // File-based
+let fluree = FlureeBuilder::s3("bucket", "endpoint").build_client().await?;        // S3
 ```
 
 ### Creating & Querying Ledgers
@@ -358,7 +358,7 @@ fluree query mydb query.rq
 
 ```rust
 // Rust: fully offline, memory-only
-let fluree = connect_memory().await?;
+let fluree = FlureeBuilder::memory().build_memory();
 fluree.create_ledger("test").await?;
 // ... use normally, no network calls
 ```

@@ -39,7 +39,7 @@ use fluree_db_core::{
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
-    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Novelty,
+    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Commit, Novelty,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -490,7 +490,10 @@ impl LedgerState {
         );
         // Re-populate dict_novelty with any remaining novelty flakes (t > index_t)
         // so overlay translation can resolve newly-introduced subject/string IDs.
-        if !new_novelty.is_empty() {
+        // Note: use `size > 0` not `is_empty()` — after clear_up_to the arena still
+        // holds dead flakes, but `size` tracks only active bytes.
+        let has_remaining_novelty = new_novelty.size > 0;
+        if has_remaining_novelty {
             new_dict_novelty.populate_from_flakes_iter(
                 new_novelty
                     .iter_index(fluree_db_core::IndexType::Post)
@@ -498,8 +501,34 @@ impl LedgerState {
             );
         }
 
+        // Preserve namespace codes and graph IRIs from commits still in novelty.
+        // The new snapshot from the index root only has codes/IRIs up to index_t.
+        // Post-index commits may have introduced new ones that the remaining
+        // novelty flakes still reference for encoding/decoding and graph routing.
+        let mut merged_snapshot = new_snapshot;
+        if has_remaining_novelty {
+            // Collect old graph IRIs before moving self.snapshot
+            let old_graph_iris: Vec<String> = self
+                .snapshot
+                .graph_registry
+                .iter_entries()
+                .map(|(_, iri)| iri.to_string())
+                .collect();
+
+            // Merge namespace codes: old entries not in new → carried forward
+            for (code, prefix) in &self.snapshot.namespace_codes {
+                merged_snapshot
+                    .namespace_codes
+                    .entry(*code)
+                    .or_insert_with(|| prefix.clone());
+            }
+
+            // Merge graph IRIs via apply_delta (idempotent — skips already-registered)
+            merged_snapshot.graph_registry.apply_delta(&old_graph_iris);
+        }
+
         // Update state
-        self.snapshot = new_snapshot;
+        self.snapshot = merged_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
         self.head_index_id = index_id.cloned();
@@ -508,6 +537,83 @@ impl LedgerState {
         if let Some(ref mut record) = self.ns_record {
             record.index_head_id = index_id.cloned();
             record.index_t = self.snapshot.t;
+        }
+
+        Ok(())
+    }
+
+    /// Apply a single commit to the existing ledger state (incremental update).
+    ///
+    /// This is the fast path for `UpdatePlan::CommitCatchUp` — loads one commit's
+    /// flakes and merges them into the existing novelty without re-walking the
+    /// entire commit chain.
+    ///
+    /// Reuses the same delta-accumulation logic as `load_novelty()` but for a
+    /// single commit, avoiding the stream/batch machinery.
+    pub fn apply_single_commit(&mut self, commit: Commit, ledger_id: &str) -> Result<()> {
+        let commit_t = commit.t;
+        let current_t = self.t();
+
+        // Guard: commit must have a valid CID
+        let commit_id = commit.id.clone().ok_or_else(|| {
+            LedgerError::InvalidData(format!(
+                "Cannot apply commit at t={commit_t}: missing content ID"
+            ))
+        })?;
+
+        // Guard: commit.t must be exactly current_t + 1 (monotonic, no gaps)
+        if commit_t != current_t + 1 {
+            return Err(LedgerError::InvalidData(format!(
+                "Cannot apply commit at t={commit_t}: expected t={}, current t={current_t}",
+                current_t + 1
+            )));
+        }
+
+        // Collect graph IRIs from graph_delta
+        let graph_iris: std::collections::HashSet<String> =
+            commit.graph_delta.values().cloned().collect();
+
+        // Apply namespace + graph deltas to snapshot
+        self.snapshot
+            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris);
+
+        // Generate commit metadata flakes
+        let mut meta_flakes = generate_commit_flakes(&commit, ledger_id, commit_t);
+
+        // Stamp txn-meta graph SID on metadata flakes
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+        if let Some(g_sid) = self.snapshot.encode_iri(&txn_meta_iri) {
+            stamp_graph_on_commit_flakes(&mut meta_flakes, &g_sid);
+        }
+
+        // Combine data flakes + metadata flakes
+        let mut all_flakes = commit.flakes;
+        all_flakes.extend(meta_flakes);
+
+        // Build reverse_graph for per-graph novelty routing
+        let mut reverse_graph = self.snapshot.build_reverse_graph()?;
+        // Ensure txn-meta graph is always routable
+        if let Some(g_sid) = self.snapshot.encode_iri(&txn_meta_iri) {
+            reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+        }
+
+        // Clone and extend dict_novelty (existing entries still valid)
+        let mut new_dict_novelty = (*self.dict_novelty).clone();
+        new_dict_novelty.populate_from_flakes(&all_flakes);
+
+        // Clone and extend novelty
+        let mut new_novelty = (*self.novelty).clone();
+        new_novelty.apply_commit(all_flakes, commit_t, &reverse_graph)?;
+
+        // Update state
+        self.novelty = Arc::new(new_novelty);
+        self.dict_novelty = Arc::new(new_dict_novelty);
+        self.head_commit_id = Some(commit_id.clone());
+
+        // Update ns_record
+        if let Some(ref mut record) = self.ns_record {
+            record.commit_head_id = Some(commit_id);
+            record.commit_t = commit_t;
         }
 
         Ok(())
@@ -1023,5 +1129,350 @@ mod tests {
         // Above max threshold - should require
         let result = state.require_index(&config);
         assert_eq!(result, Some("test:main"));
+    }
+
+    // ========================================================================
+    // apply_single_commit tests
+    // ========================================================================
+
+    fn make_test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
+    }
+
+    #[test]
+    fn test_apply_single_commit_happy_path() {
+        use fluree_db_core::IndexType;
+
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+        assert_eq!(state.t(), 0);
+
+        // Build a commit at t=1
+        let commit = Commit::new(1, vec![make_flake(10, 1, 100, 1)])
+            .with_id(make_test_commit_id("commit:1"));
+
+        state.apply_single_commit(commit, "test:main").unwrap();
+
+        assert_eq!(state.t(), 1);
+        assert_eq!(state.head_commit_id, Some(make_test_commit_id("commit:1")));
+        // Should have at least our data flake plus commit metadata flakes
+        assert!(state.novelty.iter_index(IndexType::Spot).count() >= 1);
+    }
+
+    #[test]
+    fn test_apply_single_commit_multiple_sequential() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Apply t=1
+        let c1 = Commit::new(1, vec![make_flake(10, 1, 100, 1)])
+            .with_id(make_test_commit_id("commit:1"));
+        state.apply_single_commit(c1, "test:main").unwrap();
+        assert_eq!(state.t(), 1);
+
+        // Apply t=2
+        let c2 = Commit::new(2, vec![make_flake(11, 1, 200, 2)])
+            .with_id(make_test_commit_id("commit:2"));
+        state.apply_single_commit(c2, "test:main").unwrap();
+        assert_eq!(state.t(), 2);
+        assert_eq!(state.head_commit_id, Some(make_test_commit_id("commit:2")));
+    }
+
+    #[test]
+    fn test_apply_single_commit_rejects_missing_cid() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Commit without an id
+        let commit = Commit::new(1, vec![make_flake(10, 1, 100, 1)]);
+        let result = state.apply_single_commit(commit, "test:main");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, LedgerError::InvalidData(_)),
+            "expected InvalidData, got: {err}"
+        );
+        assert!(err.to_string().contains("missing content ID"));
+        // State should not have changed
+        assert_eq!(state.t(), 0);
+    }
+
+    #[test]
+    fn test_apply_single_commit_rejects_non_monotonic_skip() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Try to apply t=3 when current is t=0 (should be t=1)
+        let commit = Commit::new(3, vec![make_flake(10, 1, 100, 3)])
+            .with_id(make_test_commit_id("commit:3"));
+        let result = state.apply_single_commit(commit, "test:main");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, LedgerError::InvalidData(_)),
+            "expected InvalidData, got: {err}"
+        );
+        assert!(err.to_string().contains("expected t=1"));
+        assert_eq!(state.t(), 0);
+    }
+
+    #[test]
+    fn test_apply_single_commit_rejects_duplicate_t() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Apply t=1 successfully
+        let c1 = Commit::new(1, vec![make_flake(10, 1, 100, 1)])
+            .with_id(make_test_commit_id("commit:1"));
+        state.apply_single_commit(c1, "test:main").unwrap();
+
+        // Try to apply t=1 again
+        let c1_dup = Commit::new(1, vec![make_flake(11, 1, 200, 1)])
+            .with_id(make_test_commit_id("commit:1-dup"));
+        let result = state.apply_single_commit(c1_dup, "test:main");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected t=2"));
+        assert_eq!(state.t(), 1); // unchanged
+    }
+
+    #[test]
+    fn test_apply_single_commit_updates_ns_record() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Set up an ns_record
+        state.ns_record = Some(NsRecord::new("test", "main"));
+
+        let commit = Commit::new(1, vec![make_flake(10, 1, 100, 1)])
+            .with_id(make_test_commit_id("commit:1"));
+        state.apply_single_commit(commit, "test:main").unwrap();
+
+        let record = state.ns_record.as_ref().unwrap();
+        assert_eq!(record.commit_t, 1);
+        assert_eq!(record.commit_head_id, Some(make_test_commit_id("commit:1")));
+    }
+
+    #[test]
+    fn test_apply_single_commit_with_namespace_delta() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Commit that introduces a new namespace code
+        let mut ns_delta = HashMap::new();
+        ns_delta.insert(100u16, "http://example.org/ns/".to_string());
+
+        let mut commit = Commit::new(1, vec![make_flake(10, 1, 100, 1)])
+            .with_id(make_test_commit_id("commit:1"))
+            .with_namespace_delta(ns_delta);
+        // Also add a graph_delta to test graph routing
+        commit
+            .graph_delta
+            .insert(3, "http://example.org/graph/test".to_string());
+
+        state.apply_single_commit(commit, "test:main").unwrap();
+
+        // Namespace code should be in snapshot
+        assert_eq!(
+            state.snapshot.namespace_codes.get(&100),
+            Some(&"http://example.org/ns/".to_string())
+        );
+        // Graph should be registered
+        assert!(state
+            .snapshot
+            .graph_registry
+            .iter_entries()
+            .any(|(_, iri)| iri == "http://example.org/graph/test"));
+    }
+
+    #[test]
+    fn test_apply_single_commit_populates_dict_novelty() {
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Commit with a string flake
+        let s = Sid::new(0, "ex:s1");
+        let p = Sid::new(0, "ex:p1");
+        let dt = Sid::new(2, "string");
+        let flake = Flake::new(
+            s,
+            p,
+            FlakeValue::String("hello world".to_string()),
+            dt,
+            1,
+            true,
+            None,
+        );
+
+        let commit = Commit::new(1, vec![flake]).with_id(make_test_commit_id("commit:1"));
+        state.apply_single_commit(commit, "test:main").unwrap();
+
+        // dict_novelty should have the string
+        assert!(state
+            .dict_novelty
+            .strings
+            .find_string("hello world")
+            .is_some());
+    }
+
+    // ========================================================================
+    // apply_loaded_db envelope delta preservation tests
+    // ========================================================================
+
+    #[test]
+    fn test_apply_loaded_db_preserves_namespace_codes_from_remaining_novelty() {
+        // Scenario:
+        // - Genesis snapshot has default namespace codes
+        // - Commit at t=1 introduces namespace code 100 → "http://example.org/ns/"
+        // - Commit at t=2 adds data using that namespace
+        // - An index arrives at t=1 (new snapshot without code 100)
+        // - After apply_loaded_db, code 100 must still be in snapshot for t=2 novelty
+
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot.t = 0;
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Simulate commit t=1: add namespace code + flake
+        state
+            .snapshot
+            .namespace_codes
+            .insert(100, "http://example.org/ns/".to_string());
+        let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
+        let flakes_t1 = vec![make_flake(10, 1, 100, 1)];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t1);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t1, 1, &reverse_graph)
+            .unwrap();
+
+        // Simulate commit t=2: another flake
+        let flakes_t2 = vec![make_flake(11, 1, 200, 2)];
+        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t2);
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t2, 2, &reverse_graph)
+            .unwrap();
+
+        assert_eq!(state.t(), 2);
+
+        // Apply index at t=1 — new snapshot won't have code 100
+        let mut new_snapshot = LedgerSnapshot::genesis("test:main");
+        new_snapshot.t = 1;
+        state.apply_loaded_db(new_snapshot, None).unwrap();
+
+        // Novelty at t=1 cleared, t=2 remains
+        assert_eq!(state.index_t(), 1);
+
+        // Key assertion: namespace code 100 must be preserved because
+        // remaining novelty (t=2) may reference subjects/predicates using it
+        assert_eq!(
+            state.snapshot.namespace_codes.get(&100),
+            Some(&"http://example.org/ns/".to_string()),
+            "namespace code from post-index commit should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_apply_loaded_db_preserves_graph_iris_from_remaining_novelty() {
+        use fluree_db_core::IndexType;
+
+        // Scenario:
+        // - Commit at t=1 introduces a named graph "http://example.org/graph/test"
+        // - Commit at t=2 adds data to that graph
+        // - Index arrives at t=1 (new snapshot without the custom graph)
+        // - After apply_loaded_db, the graph must still be registered for t=2 routing
+
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot.t = 0;
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Register a custom graph in the old snapshot (simulating commit t=1)
+        let graph_iri = "http://example.org/graph/test";
+        state
+            .snapshot
+            .graph_registry
+            .apply_delta(&[graph_iri.to_string()]);
+
+        // Verify graph was registered
+        let has_graph_before = state
+            .snapshot
+            .graph_registry
+            .iter_entries()
+            .any(|(_, iri)| iri == graph_iri);
+        assert!(has_graph_before, "graph should be registered before index");
+
+        // Add novelty at t=1 and t=2
+        let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
+        let flakes_t1 = vec![make_flake(10, 1, 100, 1)];
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t1, 1, &reverse_graph)
+            .unwrap();
+        let flakes_t2 = vec![make_flake(11, 1, 200, 2)];
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t2, 2, &reverse_graph)
+            .unwrap();
+
+        // Apply index at t=1 — new snapshot won't have the custom graph
+        let mut new_snapshot = LedgerSnapshot::genesis("test:main");
+        new_snapshot.t = 1;
+        state.apply_loaded_db(new_snapshot, None).unwrap();
+
+        // Remaining novelty at t=2 exists
+        assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 1);
+
+        // Key assertion: graph IRI must survive for t=2 routing
+        let has_graph_after = state
+            .snapshot
+            .graph_registry
+            .iter_entries()
+            .any(|(_, iri)| iri == graph_iri);
+        assert!(
+            has_graph_after,
+            "graph IRI from post-index commit should be preserved in registry"
+        );
+    }
+
+    #[test]
+    fn test_apply_loaded_db_does_not_merge_when_novelty_empty() {
+        use fluree_db_core::IndexType;
+
+        // When all novelty is absorbed by the new index, no merging of old
+        // snapshot namespace codes/graph IRIs should occur.
+
+        let mut snapshot = LedgerSnapshot::genesis("test:main");
+        snapshot.t = 0;
+        let mut state = LedgerState::new(snapshot, Novelty::new(0));
+
+        // Add custom namespace to old snapshot
+        state
+            .snapshot
+            .namespace_codes
+            .insert(200, "http://old.example.org/".to_string());
+
+        // Add novelty at t=1 only
+        let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
+        let flakes_t1 = vec![make_flake(10, 1, 100, 1)];
+        Arc::make_mut(&mut state.novelty)
+            .apply_commit(flakes_t1, 1, &reverse_graph)
+            .unwrap();
+
+        // Apply index at t=1 — absorbs all novelty
+        let mut new_snapshot = LedgerSnapshot::genesis("test:main");
+        new_snapshot.t = 1;
+        state.apply_loaded_db(new_snapshot, None).unwrap();
+
+        // All novelty at t<=1 should be cleared (no active flakes remain)
+        assert_eq!(
+            state.novelty.iter_index(IndexType::Spot).count(),
+            0,
+            "all novelty should be absorbed by the index"
+        );
+
+        // Old namespace code 200 should NOT be carried forward since
+        // there's no remaining novelty that needs it
+        assert!(
+            !state.snapshot.namespace_codes.contains_key(&200),
+            "old namespace codes should not leak into new snapshot when novelty is empty"
+        );
     }
 }

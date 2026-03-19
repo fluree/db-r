@@ -318,7 +318,7 @@ impl PeerSubscriptionTask {
             Ok(
                 result @ (NotifyResult::Reloaded
                 | NotifyResult::IndexUpdated
-                | NotifyResult::CommitApplied),
+                | NotifyResult::CommitsApplied { .. }),
             ) => {
                 tracing::info!(ledger_id = %record.ledger_id, ?result, "Refreshed cached ledger from SSE update");
             }

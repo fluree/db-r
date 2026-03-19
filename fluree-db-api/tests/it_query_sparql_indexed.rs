@@ -891,3 +891,336 @@ async fn indexed_overlay_group_by_count_topk_reflects_overlay() {
         })
         .await;
 }
+
+// =============================================================================
+// Regression: novelty-only subject/string/ref equality after index
+// =============================================================================
+//
+// These tests exercise `binary_range_eq_v3` when a match component (subject,
+// string object, ref object) exists only in novelty — not in the persisted
+// binary index. Before the fix, DictNovelty would resolve a novelty ID, the
+// cursor filter would be set to that ID, but no persisted leaflet contained it,
+// so the cursor produced zero batches and overlay ops were silently dropped.
+//
+// The correct behavior is: when the persisted store can't resolve a value,
+// `overlay_only_flakes` must be used instead of the cursor path.
+// =============================================================================
+
+/// Regression: querying a novelty-only subject by IRI must return its data.
+///
+/// Exercises the SPOT path in `binary_range_eq_v3` where `store.sid_to_s_id()`
+/// returns None and the code must fall through to `overlay_only_flakes`.
+#[tokio::test]
+async fn indexed_novelty_only_subject_returns_data() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/novelty-only-subject:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Phase 1: Seed baseline data and index it.
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:name": "Alice", "ex:age": 30}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            // Phase 2: Insert a NEW subject (novelty-only, not in index).
+            let novelty_insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:bob", "ex:name": "Bob", "ex:age": 25}
+                ]
+            });
+            let result = fluree
+                .insert(ledger, &novelty_insert)
+                .await
+                .expect("novelty insert");
+            let _ledger = result.ledger;
+
+            // Phase 3: Query the novelty-only subject by IRI.
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            let query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?p ?o
+                WHERE { ex:bob ?p ?o . }
+                ORDER BY ?p
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query))
+                .await
+                .expect("query novelty-only subject");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+
+            // ex:bob has ex:age, ex:name, and rdf:type — at least 2 explicit triples.
+            assert!(
+                rows.len() >= 2,
+                "novelty-only subject ex:bob should return data; got: {jsonld:?}"
+            );
+
+            // Verify the indexed subject (ex:alice) still works too.
+            let query_alice = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?p ?o
+                WHERE { ex:alice ?p ?o . }
+                ORDER BY ?p
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query_alice))
+                .await
+                .expect("query indexed subject");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+            assert!(
+                rows.len() >= 2,
+                "indexed subject ex:alice should still return data; got: {jsonld:?}"
+            );
+        })
+        .await;
+}
+
+/// Regression: filtering by a novelty-only string value must return matches.
+///
+/// Exercises the string-object path in `binary_range_eq_v3` where
+/// `store.find_string_id()` returns None and the code must fall through to
+/// `overlay_only_flakes`.
+#[tokio::test]
+async fn indexed_novelty_only_string_object_returns_data() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/novelty-only-string:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Phase 1: Seed baseline and index.
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:name": "Alice"},
+                    {"@id": "ex:bob", "ex:name": "Bob"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            // Phase 2: Insert data with a NEW string value (novelty-only).
+            let novelty_insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:charlie", "ex:name": "Charlie"}
+                ]
+            });
+            let result = fluree
+                .insert(ledger, &novelty_insert)
+                .await
+                .expect("novelty insert");
+            let _ledger = result.ledger;
+
+            // Phase 3: Query filtering on the novelty-only string value.
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            let query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s
+                WHERE { ?s ex:name "Charlie" . }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query))
+                .await
+                .expect("query novelty-only string value");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "novelty-only string 'Charlie' should match 1 subject; got: {jsonld:?}"
+            );
+
+            // Verify indexed string value still works.
+            let query_indexed = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s
+                WHERE { ?s ex:name "Alice" . }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query_indexed))
+                .await
+                .expect("query indexed string value");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "indexed string 'Alice' should still match; got: {jsonld:?}"
+            );
+        })
+        .await;
+}
+
+/// Regression: filtering by a novelty-only ref object must return matches.
+///
+/// Exercises the ref-object path in `binary_range_eq_v3` where
+/// `store.sid_to_s_id()` for the object returns None and the code must fall
+/// through to `overlay_only_flakes`.
+#[tokio::test]
+async fn indexed_novelty_only_ref_object_returns_data() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/novelty-only-ref:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Phase 1: Seed baseline and index.
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:knows": {"@id": "ex:bob"}},
+                    {"@id": "ex:bob", "ex:name": "Bob"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            // Phase 2: Insert a reference to a NEW subject (novelty-only ref target).
+            let novelty_insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:charlie", "ex:knows": {"@id": "ex:diana"}},
+                    {"@id": "ex:diana", "ex:name": "Diana"}
+                ]
+            });
+            let result = fluree
+                .insert(ledger, &novelty_insert)
+                .await
+                .expect("novelty insert");
+            let _ledger = result.ledger;
+
+            // Phase 3: Query filtering on the novelty-only ref object.
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            let query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s
+                WHERE { ?s ex:knows ex:diana . }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query))
+                .await
+                .expect("query novelty-only ref object");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "novelty-only ref ex:diana should match 1 subject; got: {jsonld:?}"
+            );
+
+            // Verify indexed ref object still works.
+            let query_indexed = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s
+                WHERE { ?s ex:knows ex:bob . }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query_indexed))
+                .await
+                .expect("query indexed ref object");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "indexed ref ex:bob should still match; got: {jsonld:?}"
+            );
+        })
+        .await;
+}

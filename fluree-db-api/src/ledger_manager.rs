@@ -29,10 +29,12 @@ use std::path::PathBuf;
 use fluree_db_binary_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage};
+use fluree_db_core::{
+    content_store_for, ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage,
+};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
-use fluree_db_novelty::Novelty;
+use fluree_db_novelty::{trace_commits_by_id, Novelty};
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::error::{ApiError, Result};
@@ -171,6 +173,11 @@ impl LedgerWriteGuard<'_> {
     /// Clone current state for passing to stage (which consumes by value)
     pub fn clone_state(&self) -> LedgerState {
         self.guard.clone()
+    }
+
+    /// Get mutable reference to current state for in-place updates
+    pub fn state_mut(&mut self) -> &mut LedgerState {
+        &mut self.guard
     }
 
     /// Replace state with new state after successful commit
@@ -363,14 +370,10 @@ impl LedgerHandle {
             storage.clone(),
             &ledger_id,
         ));
-        let store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
-            .await
-            .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
-        let arc_store = Arc::new(store);
-        let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
-        let te_store = TypeErasedStore(te_store);
-        let dn = Arc::new(DictNovelty::new_uninitialized());
-        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
+        let mut store =
+            BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
+                .await
+                .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
         // Build metadata-only LedgerSnapshot from FIR6 root.
         let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
@@ -385,19 +388,42 @@ impl LedgerHandle {
             string_watermark: root.string_watermark,
             graph_iris: root.graph_iris,
         };
-        let mut db = LedgerSnapshot::new_meta(meta)
+        let db = LedgerSnapshot::new_meta(meta)
             .map_err(|e| ApiError::internal(format!("graph registry from root: {e}")))?;
-        db.range_provider = Some(Arc::new(provider));
 
-        // Brief lock: swap state + binary_store atomically.
+        // Brief lock: apply snapshot (trims novelty, rebuilds dict_novelty),
+        // then wire up range_provider with the correct dict_novelty.
         // Lock ordering: state → binary_store (same as snapshot()).
         {
             let mut state = self.inner.state.lock().await;
+
+            // apply_loaded_db: validates, trims novelty, rebuilds dict_novelty
             state
                 .apply_loaded_db(db, Some(index_id))
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
+
+            // Augment store's namespace codes with entries from novelty commits
+            store.augment_namespace_codes(&state.snapshot.namespace_codes);
+
+            // Copy store's namespace codes back to snapshot for result formatting
+            for (code, prefix) in store.namespace_codes() {
+                state
+                    .snapshot
+                    .namespace_codes
+                    .entry(*code)
+                    .or_insert_with(|| prefix.clone());
+            }
+
+            let arc_store = Arc::new(store);
+
+            // Build range_provider with the real dict_novelty (rebuilt by apply_loaded_db)
+            let provider =
+                BinaryRangeProvider::new(Arc::clone(&arc_store), Arc::clone(&state.dict_novelty));
+            state.snapshot.range_provider = Some(Arc::new(provider));
+
+            let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+            state.binary_store = Some(TypeErasedStore(te_store));
             *self.inner.binary_store.lock().await = Some(arc_store);
-            state.binary_store = Some(te_store);
         }
 
         Ok(())
@@ -1075,6 +1101,11 @@ where
 // Notify Types - Update Plan
 // ============================================================================
 
+/// Maximum number of commits to catch up incrementally before falling back to
+/// full reload. For gaps larger than this, the cost of N individual commit loads
+/// exceeds the cost of a single full reload.
+const MAX_INCREMENTAL_COMMITS: i64 = 5;
+
 /// Decision from comparing cached state to nameservice record
 ///
 /// Based on the legacy `plan-ns-update` behavior:
@@ -1096,19 +1127,22 @@ pub enum UpdatePlan {
         index_t: i64,
     },
 
-    /// Next commit available (fast path)
-    /// (ns.commit_t == local.t() + 1)
-    /// Action: load and apply single commit to novelty
-    /// Note: v1 falls back to Reload for simplicity
-    CommitNext {
-        /// CID of the next commit head
+    /// Small commit gap — catch up incrementally
+    /// (ns.commit_t > local.t() AND gap <= MAX_INCREMENTAL_COMMITS)
+    /// Action: walk backward from commit_head to local_t, apply in oldest→newest order
+    CommitCatchUp {
+        /// CID of the remote commit head
         commit_head_id: ContentId,
-        /// Expected commit_t
+        /// Remote commit_t
         commit_t: i64,
+        /// Number of commits to catch up (1 = single commit fast path)
+        gap: i64,
+        /// If the index also advanced, apply after commits
+        index_update: Option<(ContentId, i64)>,
     },
 
-    /// Stale - remote is more than one commit ahead
-    /// (ns.commit_t > local.t() + 1)
+    /// Stale - remote is too many commits ahead for incremental catch-up
+    /// (ns.commit_t - local.t() > MAX_INCREMENTAL_COMMITS)
     /// Action: full reload from nameservice
     Reload,
 }
@@ -1153,17 +1187,34 @@ impl UpdatePlan {
                 }
                 _ => UpdatePlan::Noop,
             }
-        } else if ns.commit_t == local_t + 1 {
-            // Exactly one commit ahead - fast path possible
+        } else if ns.commit_t > local_t && (ns.commit_t - local_t) <= MAX_INCREMENTAL_COMMITS {
+            // Small gap — catch up incrementally
+            let gap = ns.commit_t - local_t;
             match &ns.commit_head_id {
-                Some(cid) => UpdatePlan::CommitNext {
-                    commit_head_id: cid.clone(),
-                    commit_t: ns.commit_t,
-                },
-                None => UpdatePlan::Reload, // Shouldn't happen, but be safe
+                Some(cid) => {
+                    // Check if index also advanced
+                    let index_update = match (&ns.index_head_id, local_index_id) {
+                        (Some(ns_idx), Some(local_idx))
+                            if ns_idx != local_idx && ns.index_t > local_index_t =>
+                        {
+                            Some((ns_idx.clone(), ns.index_t))
+                        }
+                        (Some(ns_idx), None) if ns.index_t > local_index_t => {
+                            Some((ns_idx.clone(), ns.index_t))
+                        }
+                        _ => None,
+                    };
+                    UpdatePlan::CommitCatchUp {
+                        commit_head_id: cid.clone(),
+                        commit_t: ns.commit_t,
+                        gap,
+                        index_update,
+                    }
+                }
+                None => UpdatePlan::Reload,
             }
         } else if ns.commit_t > local_t {
-            // More than one commit ahead - stale
+            // Large gap — full reload
             UpdatePlan::Reload
         } else {
             // ns.commit_t < local_t - shouldn't happen (time travel?)
@@ -1203,10 +1254,13 @@ pub enum NotifyResult {
     NotLoaded,
     /// Already up to date, no action taken (Noop plan)
     Current,
-    /// Index was updated (trimmed novelty) - v1 falls back to Reload
+    /// Index was updated incrementally (trimmed novelty, loaded new index root)
     IndexUpdated,
-    /// Applied next commit to novelty - v1 falls back to Reload
-    CommitApplied,
+    /// Applied commits incrementally to novelty
+    CommitsApplied {
+        /// Number of commits applied
+        count: i64,
+    },
     /// Was stale, reloaded in-place via reload()
     Reloaded,
 }
@@ -1220,9 +1274,9 @@ where
     ///
     /// Uses update planning to determine minimal action:
     /// - Noop: nothing to do
-    /// - IndexOnly: index advanced, trim novelty (v1: falls back to Reload)
-    /// - CommitNext: apply single commit (v1: falls back to Reload)
-    /// - Reload: full reload needed
+    /// - IndexOnly: load new index root, trim novelty (incremental)
+    /// - CommitCatchUp: load 1-5 commits, merge into novelty (incremental)
+    /// - Reload: full reload from storage (large gaps)
     pub async fn notify(&self, input: NsNotify) -> Result<NotifyResult> {
         // Check if ledger is cached
         let handle = {
@@ -1266,32 +1320,107 @@ where
                 index_head_id,
                 index_t,
             } => {
-                // v1: Fall back to full reload
-                // Future: reload index root at index_head_id, rebuild novelty for commits > index_t
                 tracing::debug!(
                     alias = %input.ledger_id,
-                    index_head_id = %index_head_id,
-                    index_t = index_t,
-                    "notify: IndexOnly plan - falling back to reload in v1"
+                    %index_head_id, index_t,
+                    "notify: applying index update (incremental)"
                 );
-                self.reload(&input.ledger_id).await?;
+                handle
+                    .apply_index_v2(
+                        &index_head_id,
+                        &self.storage,
+                        &self.config.cache_dir,
+                        self.config.leaflet_cache.clone(),
+                    )
+                    .await?;
                 Ok(NotifyResult::IndexUpdated)
             }
 
-            UpdatePlan::CommitNext {
+            UpdatePlan::CommitCatchUp {
                 commit_head_id,
                 commit_t,
+                gap,
+                index_update,
             } => {
-                // v1: Fall back to full reload
-                // Future: load single commit at commit_head_id, apply to novelty
                 tracing::debug!(
                     alias = %input.ledger_id,
-                    commit_head_id = %commit_head_id,
-                    commit_t = commit_t,
-                    "notify: CommitNext plan - falling back to reload in v1"
+                    %commit_head_id, commit_t, gap,
+                    has_index_update = index_update.is_some(),
+                    "notify: catching up commits (incremental)"
                 );
-                self.reload(&input.ledger_id).await?;
-                Ok(NotifyResult::CommitApplied)
+
+                let ledger_id_canonical = handle.ledger_id().to_string();
+                let cs = content_store_for(self.storage.clone(), &ledger_id_canonical);
+
+                // Load commits outside any lock.
+                // trace_commits_by_id walks HEAD → oldest, stopping at local_t.
+                // Collect then reverse to apply oldest → newest.
+                let mut commits = Vec::with_capacity(gap as usize);
+                {
+                    let stream = trace_commits_by_id(cs, commit_head_id.clone(), local_t);
+                    futures::pin_mut!(stream);
+                    while let Some(result) = futures::StreamExt::next(&mut stream).await {
+                        let commit = result.map_err(|e| {
+                            ApiError::internal(format!("load commit during catch-up: {e}"))
+                        })?;
+                        commits.push(commit);
+                    }
+                }
+
+                // Verify we got the expected number of commits.
+                // If the chain is broken or shorter than expected, fall back to reload.
+                let loaded = commits.len() as i64;
+                if loaded != gap {
+                    tracing::warn!(
+                        alias = %input.ledger_id,
+                        expected = gap,
+                        loaded,
+                        "incremental catch-up: commit count mismatch, falling back to reload"
+                    );
+                    self.reload(&input.ledger_id).await?;
+                    return Ok(NotifyResult::Reloaded);
+                }
+
+                commits.reverse(); // oldest → newest
+
+                // Apply commits under write lock (brief — all sync).
+                // Re-check state.t() under lock to guard against concurrent updates.
+                {
+                    let mut write_guard = handle.lock_for_write().await;
+                    let current_t = write_guard.state().t();
+                    if current_t != local_t {
+                        // State advanced while we were loading commits — re-plan
+                        // by falling through to a reload (safe, not optimal).
+                        tracing::debug!(
+                            alias = %input.ledger_id,
+                            local_t, current_t,
+                            "incremental catch-up: state advanced concurrently, falling back to reload"
+                        );
+                        drop(write_guard);
+                        self.reload(&input.ledger_id).await?;
+                        return Ok(NotifyResult::Reloaded);
+                    }
+                    for commit in commits {
+                        write_guard
+                            .state_mut()
+                            .apply_single_commit(commit, &ledger_id_canonical)
+                            .map_err(|e| ApiError::internal(format!("apply commit: {e}")))?;
+                    }
+                }
+
+                // Apply index update if present (after commits so novelty has latest flakes)
+                if let Some((index_head_id, _index_t)) = index_update {
+                    handle
+                        .apply_index_v2(
+                            &index_head_id,
+                            &self.storage,
+                            &self.config.cache_dir,
+                            self.config.leaflet_cache.clone(),
+                        )
+                        .await?;
+                }
+
+                Ok(NotifyResult::CommitsApplied { count: gap })
             }
 
             UpdatePlan::Reload => {
@@ -1450,26 +1579,73 @@ mod tests {
     }
 
     #[test]
-    fn test_update_plan_commit_next_when_one_ahead() {
-        // ns.commit_t == local.t() + 1 -> CommitNext
+    fn test_update_plan_commit_catch_up_when_one_ahead() {
+        // ns.commit_t == local.t() + 1 -> CommitCatchUp with gap=1
         let local_idx = make_index_cid("index:5");
         let ns = make_ns_record(11, 5, Some(make_cid("commit:11")), Some(local_idx.clone()));
         let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
-        assert!(matches!(plan, UpdatePlan::CommitNext { commit_t: 11, .. }));
+        assert!(matches!(
+            plan,
+            UpdatePlan::CommitCatchUp {
+                commit_t: 11,
+                gap: 1,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_update_plan_reload_when_stale() {
-        // ns.commit_t > local.t() + 1 -> Reload
+        // ns.commit_t far ahead of local -> Reload (gap > MAX_INCREMENTAL_COMMITS)
         let local_idx = make_index_cid("index:5");
         let ns = make_ns_record(
+            20,
             15,
-            10,
-            Some(make_cid("commit:15")),
-            Some(make_index_cid("index:10")),
+            Some(make_cid("commit:20")),
+            Some(make_index_cid("index:15")),
         );
         let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert_eq!(plan, UpdatePlan::Reload);
+    }
+
+    #[test]
+    fn test_update_plan_catch_up_when_small_gap() {
+        // ns.commit_t a few ahead -> CommitCatchUp (gap <= MAX_INCREMENTAL_COMMITS)
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(13, 5, Some(make_cid("commit:13")), Some(local_idx.clone()));
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
+        assert!(matches!(
+            plan,
+            UpdatePlan::CommitCatchUp {
+                commit_t: 13,
+                gap: 3,
+                index_update: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_update_plan_catch_up_with_index_update() {
+        // Commit + index both advanced
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(
+            11,
+            10,
+            Some(make_cid("commit:11")),
+            Some(make_index_cid("index:10")),
+        );
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
+        match plan {
+            UpdatePlan::CommitCatchUp {
+                gap: 1,
+                index_update: Some((_, idx_t)),
+                ..
+            } => {
+                assert_eq!(idx_t, 10);
+            }
+            other => panic!("expected CommitCatchUp with index_update, got {:?}", other),
+        }
     }
 
     #[test]

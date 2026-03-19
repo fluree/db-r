@@ -11,11 +11,6 @@ All construction flows through `FlureeBuilder`:
 - `FlureeBuilder::from_json_ld(&json)?` — parses JSON-LD config into builder settings
   - Then call `.build_client().await` for a type-erased `FlureeClient`
   - Or use typed terminal methods (`.build()`, `.build_memory()`, `.build_s3()`) for compile-time type safety
-- Convenience helpers (delegate to `FlureeBuilder` directly):
-  - `connect_memory().await` → `FlureeBuilder::memory().build_client().await`
-  - `connect_filesystem(path).await` → `FlureeBuilder::file(path).build_client().await` (requires `native`)
-  - `connect_s3(bucket, endpoint).await` → `FlureeBuilder::s3(bucket, endpoint).build_client().await` (requires `aws`)
-
 ## JSON-LD shape
 
 At minimum, your document contains:
@@ -182,7 +177,7 @@ detection (`--x-s3` + `-azN`) for diagnostics.
 ```
 
 Note: omit `s3Endpoint` for Express directory buckets and let the AWS SDK handle endpoint
-resolution. The `connect_s3()` convenience helper is designed for standard and LocalStack
+resolution. `FlureeBuilder::s3()` is designed for standard and LocalStack
 endpoints; for Express buckets, use `FlureeBuilder::from_json_ld()` with a config that omits
 `s3Endpoint`.
 

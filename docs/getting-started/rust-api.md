@@ -47,12 +47,12 @@ Available feature flags:
 ### Basic Setup
 
 ```rust
-use fluree_db_api::{connect_memory, Result};
+use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Create a memory-backed Fluree instance (JSON-LD under the hood)
-    let fluree = connect_memory().await?;
+    // Create a memory-backed Fluree instance
+    let fluree = FlureeBuilder::memory().build_memory();
 
     // Create a new ledger
     let ledger = fluree.create_ledger("mydb").await?;
@@ -66,12 +66,12 @@ async fn main() -> Result<()> {
 ### With File Storage
 
 ```rust
-use fluree_db_api::{connect_filesystem, Result};
+use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Use file-backed storage for persistence
-    let fluree = connect_filesystem("./data").await?;
+    let fluree = FlureeBuilder::file("./data").build()?;
 
     // Create a new ledger (or load an existing one)
     let ledger = fluree.create_ledger("mydb").await?;
@@ -134,12 +134,14 @@ session directory and logs its path for debugging.
 Requires `fluree-db-api` feature `aws` and standard AWS credential/region configuration.
 
 ```rust
-use fluree_db_api::{connect_s3, Result};
+use fluree_db_api::{FlureeBuilder, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // LocalStack/MinIO: endpoint is required
-    let fluree = connect_s3("my-bucket", "http://localhost:4566").await?;
+    let fluree = FlureeBuilder::s3("my-bucket", "http://localhost:4566")
+        .build_client()
+        .await?;
 
     let ledger = fluree.create_ledger("mydb").await?;
     println!("Ledger created at t={}", ledger.t());
@@ -153,8 +155,8 @@ async fn main() -> Result<()> {
 
 For advanced configuration (tiered storage, address identifier routing, DynamoDB nameservice,
 environment variable indirection), use `FlureeBuilder::from_json_ld()` to parse a JSON-LD config
-and build from it. All convenience helpers (`connect_memory`, `connect_filesystem`, `connect_s3`)
-delegate to `FlureeBuilder` internally.
+and build from it. The typed builder methods (`build()`, `build_memory()`, `build_s3()`) and
+the type-erased `build_client()` all share the same underlying construction logic.
 
 See also: [JSON-LD connection configuration reference](../reference/connection-config-jsonld.md).
 
