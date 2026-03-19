@@ -48,6 +48,10 @@ pub enum LedgerError {
         earliest_t: i64,
     },
 
+    /// Invalid data encountered during incremental update
+    #[error("{0}")]
+    InvalidData(String),
+
     /// Target time is in the future (beyond current head)
     #[error("Target t={target_t} is beyond current head t={head_t} for '{ledger_id}'")]
     FutureTime {

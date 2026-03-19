@@ -1094,32 +1094,6 @@ fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
     }
 }
 
-/// Convenience helper: connect with in-memory storage.
-pub async fn connect_memory() -> Result<FlureeClient> {
-    FlureeBuilder::memory().build_client().await
-}
-
-/// Convenience helper: connect with filesystem storage.
-#[cfg(feature = "native")]
-pub async fn connect_filesystem(path: impl AsRef<str>) -> Result<FlureeClient> {
-    FlureeBuilder::file(path.as_ref()).build_client().await
-}
-
-/// Convenience helper: connect with S3 storage.
-///
-/// Notes:
-/// - Requires the `aws` feature on `fluree-db-api`.
-/// - For LocalStack/MinIO/custom endpoints, `endpoint` should be provided.
-#[cfg(feature = "aws")]
-pub async fn connect_s3(
-    bucket: impl AsRef<str>,
-    endpoint: impl AsRef<str>,
-) -> Result<FlureeClient> {
-    FlureeBuilder::s3(bucket.as_ref(), endpoint.as_ref())
-        .build_client()
-        .await
-}
-
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
@@ -1541,55 +1515,24 @@ impl FlureeBuilder {
     /// When indexing is enabled via `with_indexing()`, a `BackgroundIndexerWorker`
     /// is spawned on the tokio runtime. This must be called within a tokio context.
     #[cfg(feature = "native")]
-    pub fn build(self) -> Result<Fluree<FileStorage, FileNameService>> {
+    pub fn build(mut self) -> Result<Fluree<FileStorage, FileNameService>> {
         let path = self
             .storage_path
+            .take()
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
 
         let storage = FileStorage::new(&path);
-        let connection = Connection::new(self.config, storage.clone());
-
         let nameservice = FileNameService::new(&path);
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(
-                storage.clone(),
-                nameservice.clone(),
-                config,
-            ))
-        });
-
-        // Start background indexing if configured
-        let (indexing_mode, index_config) = if let Some(idx_config) = self.indexing_config {
-            let (worker, handle) = BackgroundIndexerWorker::new(
-                storage,
-                Arc::new(nameservice.clone()),
-                idx_config.indexer_config,
-            );
-            tokio::spawn(worker.run());
-            (
-                tx::IndexingMode::Background(handle),
-                idx_config.index_config,
-            )
-        } else {
-            (tx::IndexingMode::Disabled, IndexConfig::default())
-        };
-
-        Ok(Fluree {
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
             indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        })
+        ))
     }
 
     /// Build a Fluree instance with custom storage and nameservice.
@@ -1598,33 +1541,21 @@ impl FlureeBuilder {
     /// covered by the built-in `build()` / `build_memory()` / `build_s3()`
     /// methods (e.g. proxy storage for peer mode).
     ///
-    /// Honors the builder's cache settings. Background indexing is **not**
-    /// supported through this method — use `build()` or `build_s3()` if you
-    /// need `IndexingMode::Background`.
+    /// Honors the builder's cache and indexing settings.
     pub fn build_with<S, N>(self, storage: S, nameservice: N) -> Fluree<S, N>
     where
         S: Storage + Clone + Send + Sync + 'static,
         N: NameService + Clone + Send + Sync + 'static,
     {
-        let connection = Connection::new(self.config, storage.clone());
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
-        });
-
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        }
+            tx::IndexingMode::Disabled,
+            index_config,
+        )
     }
 
     /// Build a file-backed Fluree instance with AES-256-GCM encryption.
@@ -1704,39 +1635,29 @@ impl FlureeBuilder {
     /// Internal helper to build encrypted storage
     #[cfg(feature = "native")]
     fn build_encrypted_internal(
-        self,
+        mut self,
         key: [u8; 32],
     ) -> Result<Fluree<EncryptedStorage<FileStorage, StaticKeyProvider>, FileNameService>> {
         let path = self
             .storage_path
+            .take()
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
 
         let file_storage = FileStorage::new(&path);
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(file_storage, key_provider);
-
-        let connection = Connection::new(self.config, storage);
-
         let nameservice = FileNameService::new(&path);
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        // Note: Ledger caching not yet supported for encrypted storage
-        Ok(Fluree {
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+        ))
     }
 
     /// Check if this builder has an encryption key configured.
@@ -1750,33 +1671,16 @@ impl FlureeBuilder {
     /// to enable background indexing.
     pub fn build_memory(self) -> Fluree<MemoryStorage, MemoryNameService> {
         let storage = MemoryStorage::new();
-        let connection = Connection::new(self.config, storage.clone());
         let nameservice = MemoryNameService::new();
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
-        });
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            tx::IndexingMode::Disabled,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        }
+        )
     }
 
     /// Build a memory-backed Fluree instance with AES-256-GCM encryption
@@ -1794,27 +1698,16 @@ impl FlureeBuilder {
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(mem_storage, key_provider);
-
-        let connection = Connection::new(self.config, storage);
         let nameservice = MemoryNameService::new();
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        // Note: Ledger caching not yet supported for encrypted storage
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            tx::IndexingMode::Disabled,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        }
+        )
     }
 
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
@@ -1824,7 +1717,7 @@ impl FlureeBuilder {
     /// Notes:
     /// - Requires the `aws` feature.
     /// - Uses the AWS default credential/region chain.
-    /// - Ledger caching is currently not enabled for this builder path.
+    /// - Ledger caching is enabled when `ledger_cache_config` is set on the builder.
     #[cfg(feature = "aws")]
     pub async fn build_s3(
         self,
@@ -1871,27 +1764,18 @@ impl FlureeBuilder {
         .await
         .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
 
-        let connection = Connection::new(self.config, storage.clone());
-
         // Empty prefix: S3Storage already applies its own key prefix.
-        let nameservice = StorageNameService::new(storage, "");
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        Ok(Fluree {
+        let nameservice = StorageNameService::new(storage.clone(), "");
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+        ))
     }
 
     /// Build an S3-backed Fluree instance with AES-256-GCM encryption.
@@ -1902,7 +1786,7 @@ impl FlureeBuilder {
     /// Notes:
     /// - Requires the `aws` feature.
     /// - Uses the AWS default credential/region chain.
-    /// - Ledger caching is currently not enabled for this builder path.
+    /// - Ledger caching is enabled when `ledger_cache_config` is set on the builder.
     ///
     /// # Arguments
     ///
@@ -1959,27 +1843,98 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(s3_storage, key_provider);
 
-        let connection = Connection::new(self.config, storage.clone());
-
         // Empty prefix: S3Storage already applies its own key prefix.
-        let nameservice = StorageNameService::new(storage, "");
+        let nameservice = StorageNameService::new(storage.clone(), "");
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
+            connection,
+            nameservice,
+            indexing_mode,
+            index_config,
+        ))
+    }
 
+    // ========================================================================
+    // Shared finalization — single source of truth for caching + assembly
+    // ========================================================================
+
+    /// Extract the `IndexConfig` from builder settings (no runtime required).
+    fn derive_indexing(&self) -> IndexConfig {
+        self.indexing_config
+            .as_ref()
+            .map(|c| c.index_config.clone())
+            .unwrap_or_default()
+    }
+
+    /// Spawn the background indexer worker if configured.
+    ///
+    /// Must be called within a tokio runtime context.
+    fn start_background_indexing<S, N>(&self, storage: &S, nameservice: &N) -> tx::IndexingMode
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + fluree_db_nameservice::Publisher + Clone + 'static,
+    {
+        if let Some(ref idx_config) = self.indexing_config {
+            let (worker, handle) = BackgroundIndexerWorker::new(
+                storage.clone(),
+                Arc::new(nameservice.clone()),
+                idx_config.indexer_config.clone(),
+            );
+            tokio::spawn(worker.run());
+            tx::IndexingMode::Background(handle)
+        } else {
+            tx::IndexingMode::Disabled
+        }
+    }
+
+    /// Assemble a `Fluree<S, N>` with the builder's caching config.
+    ///
+    /// This is the **single source of truth** for:
+    /// - LeafletCache creation
+    /// - LedgerManager wiring (from `ledger_cache_config`)
+    /// - R2RML cache creation
+    /// - Final struct assembly
+    ///
+    /// Callers are responsible for starting background indexing (if applicable)
+    /// and passing the result as `indexing`. This separation exists because
+    /// indexing requires `N: Publisher`, which not all callers can guarantee
+    /// (e.g., `build_with()` accepts arbitrary `N: NameService`).
+    fn finalize<S, N>(
+        ledger_cache_config: Option<LedgerManagerConfig>,
+        connection: Connection<S>,
+        nameservice: N,
+        indexing_mode: tx::IndexingMode,
+        index_config: IndexConfig,
+    ) -> Fluree<S, N>
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + Clone + Send + Sync + 'static,
+    {
         let leaflet_cache = make_leaflet_cache(connection.config());
 
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
+        let ledger_manager = ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
+            Arc::new(LedgerManager::new(
+                connection.storage().clone(),
+                nameservice.clone(),
+                config,
+            ))
+        });
 
-        Ok(Fluree {
+        Fluree {
             connection,
             nameservice,
             leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+            ledger_manager,
+        }
     }
 
     /// Build a type-erased `FlureeClient` from the builder configuration.
@@ -2025,17 +1980,20 @@ impl FlureeBuilder {
         // Wrap with address identifier routing if configured
         let storage = self.wrap_address_identifiers(base_storage)?;
 
-        let connection = Connection::new(self.config, storage);
         let nameservice_inner = MemoryNameService::new();
         let nameservice =
             AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
-        Self::finalize_client(
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            self.indexing_config,
-            self.ledger_cache_config,
-        )
+            indexing_mode,
+            index_config,
+        ))
     }
 
     /// Build a type-erased file-backed client.
@@ -2068,17 +2026,20 @@ impl FlureeBuilder {
             // Wrap with address identifier routing if configured
             let storage = self.wrap_address_identifiers(base_storage)?;
 
-            let connection = Connection::new(self.config, storage);
             let nameservice_inner = FileNameService::new(path.as_ref());
             let nameservice =
                 AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
-            Self::finalize_client(
+            let index_config = self.derive_indexing();
+            let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+            let connection = Connection::new(self.config, storage);
+            Ok(Self::finalize(
+                self.ledger_cache_config,
                 connection,
                 nameservice,
-                self.indexing_config,
-                self.ledger_cache_config,
-            )
+                indexing_mode,
+                index_config,
+            ))
         }
     }
 
@@ -2109,18 +2070,20 @@ impl FlureeBuilder {
             .wrap_address_identifiers_aws(base_storage, aws_handle.config())
             .await?;
 
-        let connection = Connection::new(aws_handle.config().clone(), storage);
-
         let nameservice_inner = aws_handle.nameservice().clone();
         let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
-        Self::finalize_client(
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(aws_handle.config().clone(), storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            self.indexing_config,
-            self.ledger_cache_config,
-        )
+            indexing_mode,
+            index_config,
+        ))
     }
 
     /// Wrap base storage with address identifier routing for local backends.
@@ -2167,55 +2130,6 @@ impl FlureeBuilder {
         } else {
             Ok(AnyStorage::new(base_storage))
         }
-    }
-
-    /// Shared finalization: create leaflet cache, ledger manager, indexing, and
-    /// assemble the `FlureeClient`.
-    fn finalize_client(
-        connection: Connection<AnyStorage>,
-        nameservice: AnyNameService,
-        indexing_config: Option<IndexingBuilderConfig>,
-        ledger_cache_config: Option<LedgerManagerConfig>,
-    ) -> Result<FlureeClient> {
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Start background indexing if configured
-        let (indexing_mode, index_config) = if let Some(idx_config) = indexing_config {
-            let (worker, handle) = BackgroundIndexerWorker::new(
-                connection.storage().clone(),
-                Arc::new(nameservice.clone()),
-                idx_config.indexer_config,
-            );
-            tokio::spawn(worker.run());
-            (
-                tx::IndexingMode::Background(handle),
-                idx_config.index_config,
-            )
-        } else {
-            (tx::IndexingMode::Disabled, IndexConfig::default())
-        };
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(
-                connection.storage().clone(),
-                nameservice.clone(),
-                config,
-            ))
-        });
-
-        Ok(Fluree {
-            connection,
-            nameservice,
-            leaflet_cache,
-            indexing_mode,
-            index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        })
     }
 }
 
@@ -2652,8 +2566,8 @@ where
     /// - `Ok(None)` - Nameservice lookup returned no record (ledger doesn't exist)
     /// - `Ok(Some(NotifyResult::NotLoaded))` - Record exists but ledger not cached
     /// - `Ok(Some(NotifyResult::Current))` - Ledger is already up to date
-    /// - `Ok(Some(NotifyResult::IndexUpdated))` - Index was refreshed (v1: via reload)
-    /// - `Ok(Some(NotifyResult::CommitApplied))` - Single commit applied (v1: via reload)
+    /// - `Ok(Some(NotifyResult::IndexUpdated))` - Index was refreshed incrementally
+    /// - `Ok(Some(NotifyResult::CommitsApplied { count }))` - Commits applied incrementally
     /// - `Ok(Some(NotifyResult::Reloaded))` - Full reload was performed
     ///
     /// # Use Cases

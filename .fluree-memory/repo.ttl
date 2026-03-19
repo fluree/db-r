@@ -966,3 +966,22 @@ mem:fact-01kkvp4tyedrqvbxqfnyhabav7 a mem:Fact ;
     mem:artifactRef "fluree-db-api/tests/it_ledger_info_reindex_cache.rs" ;
     mem:artifactRef "fluree-db-api/tests/it_ledger_info_reindex_size.rs" ;
     mem:createdAt "2026-03-16T16:02:28.430817+00:00"^^xsd:dateTime .
+
+mem:fact-01km33dyv5wxhrxt4gnqra4xwb a mem:Fact ;
+    mem:content "Ledger cache incremental refresh gotchas:\n- `LedgerState::apply_loaded_db(new_snapshot, ...)` replaces `snapshot` and trims `novelty` via `clear_up_to(new_snapshot.t)` but **does not reapply commit envelope deltas** (namespace_codes + graph_registry) for any remaining novelty commits with `t > new_snapshot.t`. If you keep novelty after an index advance, you must preserve/merge those deltas (or re-trace remaining commits) or queries/commit-apply may fail due to missing namespace prefixes / graph routing.\n- When wiring binary v2 index via `BinaryRangeProvider`, the provider's `DictNovelty` must be the same `state.dict_novelty` that is reset/populated after index application. Using `DictNovelty::new_uninitialized()` (or any detached Arc) can break overlay translation for subject/string IDs introduced in novelty.\n- Likewise, `BinaryIndexStore::augment_namespace_codes(&snapshot.namespace_codes)` is needed when novelty introduces new namespace codes not in the index root (prefix trie + decode correctness)." ;
+    mem:tag "binary-index" ;
+    mem:tag "caching" ;
+    mem:tag "dict-novelty" ;
+    mem:tag "gotcha" ;
+    mem:tag "graph-registry" ;
+    mem:tag "indexing" ;
+    mem:tag "ledger-manager" ;
+    mem:tag "namespace" ;
+    mem:tag "range-provider" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-core/src/db.rs" ;
+    mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
+    mem:createdAt "2026-03-19T13:09:19.845735+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

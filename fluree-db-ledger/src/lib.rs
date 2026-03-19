@@ -39,7 +39,7 @@ use fluree_db_core::{
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
-    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Novelty,
+    generate_commit_flakes, stamp_graph_on_commit_flakes, trace_commits_by_id, Commit, Novelty,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -498,8 +498,34 @@ impl LedgerState {
             );
         }
 
+        // Preserve namespace codes and graph IRIs from commits still in novelty.
+        // The new snapshot from the index root only has codes/IRIs up to index_t.
+        // Post-index commits may have introduced new ones that the remaining
+        // novelty flakes still reference for encoding/decoding and graph routing.
+        let mut merged_snapshot = new_snapshot;
+        if !new_novelty.is_empty() {
+            // Collect old graph IRIs before moving self.snapshot
+            let old_graph_iris: Vec<String> = self
+                .snapshot
+                .graph_registry
+                .iter_entries()
+                .map(|(_, iri)| iri.to_string())
+                .collect();
+
+            // Merge namespace codes: old entries not in new → carried forward
+            for (code, prefix) in &self.snapshot.namespace_codes {
+                merged_snapshot
+                    .namespace_codes
+                    .entry(*code)
+                    .or_insert_with(|| prefix.clone());
+            }
+
+            // Merge graph IRIs via apply_delta (idempotent — skips already-registered)
+            merged_snapshot.graph_registry.apply_delta(&old_graph_iris);
+        }
+
         // Update state
-        self.snapshot = new_snapshot;
+        self.snapshot = merged_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
         self.head_index_id = index_id.cloned();
@@ -508,6 +534,83 @@ impl LedgerState {
         if let Some(ref mut record) = self.ns_record {
             record.index_head_id = index_id.cloned();
             record.index_t = self.snapshot.t;
+        }
+
+        Ok(())
+    }
+
+    /// Apply a single commit to the existing ledger state (incremental update).
+    ///
+    /// This is the fast path for `UpdatePlan::CommitCatchUp` — loads one commit's
+    /// flakes and merges them into the existing novelty without re-walking the
+    /// entire commit chain.
+    ///
+    /// Reuses the same delta-accumulation logic as `load_novelty()` but for a
+    /// single commit, avoiding the stream/batch machinery.
+    pub fn apply_single_commit(&mut self, commit: Commit, ledger_id: &str) -> Result<()> {
+        let commit_t = commit.t;
+        let current_t = self.t();
+
+        // Guard: commit must have a valid CID
+        let commit_id = commit.id.clone().ok_or_else(|| {
+            LedgerError::InvalidData(format!(
+                "Cannot apply commit at t={commit_t}: missing content ID"
+            ))
+        })?;
+
+        // Guard: commit.t must be exactly current_t + 1 (monotonic, no gaps)
+        if commit_t != current_t + 1 {
+            return Err(LedgerError::InvalidData(format!(
+                "Cannot apply commit at t={commit_t}: expected t={}, current t={current_t}",
+                current_t + 1
+            )));
+        }
+
+        // Collect graph IRIs from graph_delta
+        let graph_iris: std::collections::HashSet<String> =
+            commit.graph_delta.values().cloned().collect();
+
+        // Apply namespace + graph deltas to snapshot
+        self.snapshot
+            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris);
+
+        // Generate commit metadata flakes
+        let mut meta_flakes = generate_commit_flakes(&commit, ledger_id, commit_t);
+
+        // Stamp txn-meta graph SID on metadata flakes
+        let txn_meta_iri = fluree_db_core::txn_meta_graph_iri(ledger_id);
+        if let Some(g_sid) = self.snapshot.encode_iri(&txn_meta_iri) {
+            stamp_graph_on_commit_flakes(&mut meta_flakes, &g_sid);
+        }
+
+        // Combine data flakes + metadata flakes
+        let mut all_flakes = commit.flakes;
+        all_flakes.extend(meta_flakes);
+
+        // Build reverse_graph for per-graph novelty routing
+        let mut reverse_graph = self.snapshot.build_reverse_graph()?;
+        // Ensure txn-meta graph is always routable
+        if let Some(g_sid) = self.snapshot.encode_iri(&txn_meta_iri) {
+            reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
+        }
+
+        // Clone and extend dict_novelty (existing entries still valid)
+        let mut new_dict_novelty = (*self.dict_novelty).clone();
+        new_dict_novelty.populate_from_flakes(&all_flakes);
+
+        // Clone and extend novelty
+        let mut new_novelty = (*self.novelty).clone();
+        new_novelty.apply_commit(all_flakes, commit_t, &reverse_graph)?;
+
+        // Update state
+        self.novelty = Arc::new(new_novelty);
+        self.dict_novelty = Arc::new(new_dict_novelty);
+        self.head_commit_id = Some(commit_id.clone());
+
+        // Update ns_record
+        if let Some(ref mut record) = self.ns_record {
+            record.commit_head_id = Some(commit_id);
+            record.commit_t = commit_t;
         }
 
         Ok(())

@@ -42,6 +42,15 @@ pub struct StorageNameService<S> {
     prefix: String,
 }
 
+impl<S: Clone> Clone for StorageNameService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            prefix: self.prefix.clone(),
+        }
+    }
+}
+
 impl<S: Debug> Debug for StorageNameService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StorageNameService")

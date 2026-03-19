@@ -322,7 +322,7 @@ impl PeerSyncTask {
             Ok(
                 result @ (NotifyResult::Reloaded
                 | NotifyResult::IndexUpdated
-                | NotifyResult::CommitApplied),
+                | NotifyResult::CommitsApplied { .. }),
             ) => {
                 tracing::info!(
                     alias = %record.ledger_id,
