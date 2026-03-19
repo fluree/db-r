@@ -807,8 +807,8 @@ mod tests {
         assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis
         assert_eq!(state.t(), 1); // From commit
-                                  // 1 data flake + 3 commit metadata flakes (db#address, db#alias, db#t)
-        assert_eq!(state.novelty.len(), 4);
+                                  // 1 data flake + 6 commit metadata flakes (db#address, db#alias, db#t, db#asserts, db#retracts, db#size)
+        assert_eq!(state.novelty.len(), 7);
     }
 
     #[tokio::test]

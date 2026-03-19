@@ -389,11 +389,7 @@ async fn drop_ledger_disconnects_from_cache() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    // Build with ledger caching enabled
-    let fluree = FlureeBuilder::file(&path)
-        .with_ledger_caching()
-        .build()
-        .expect("build");
+    let fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let ledger_id = "drop-cache-test:main";
 

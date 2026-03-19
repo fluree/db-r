@@ -23,16 +23,19 @@
 //! - DynamoDB with conditional expressions
 //! - A database with transactions
 
+use crate::ns_format::{
+    ns_context, BranchPointRef, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION,
+};
 use crate::{
-    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
-    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
-    StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
+    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
+    RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
-use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas, StorageExtError};
+use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -53,129 +56,6 @@ impl Debug for FileNameService {
             .field("storage", &self.storage)
             .finish()
     }
-}
-
-/// JSON structure for main ns@v2 record file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "@type")]
-    record_type: Vec<String>,
-
-    #[serde(rename = "f:ledger")]
-    ledger: LedgerRef,
-
-    #[serde(rename = "f:branch")]
-    branch: String,
-
-    /// Content identifier for the head commit (CID string, e.g. "bafy...").
-    /// This is the authoritative identity for the commit head pointer.
-    #[serde(
-        rename = "f:commitCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    commit_cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-
-    #[serde(rename = "f:ledgerIndex", skip_serializing_if = "Option::is_none")]
-    index: Option<IndexRef>,
-
-    #[serde(rename = "f:status")]
-    status: String,
-
-    /// Content identifier for the default JSON-LD context (new CID format).
-    #[serde(
-        rename = "f:defaultContextCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    default_context_cid: Option<String>,
-
-    // V2 extension fields (optional for backward compatibility)
-    /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
-    status_v: Option<i64>,
-
-    /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
-    status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
-    config_v: Option<i64>,
-
-    /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
-    config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Content identifier for the ledger config object (origin discovery)
-    #[serde(
-        rename = "f:configCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    config_cid: Option<String>,
-
-    /// Branch point metadata recording where this branch was created from
-    #[serde(
-        rename = "f:branchPoint",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    branch_point: Option<BranchPointRef>,
-
-    /// Number of child branches created from this branch
-    #[serde(rename = "f:branches", default, skip_serializing_if = "crate::is_zero")]
-    branches: u32,
-}
-
-/// JSON-LD representation of a branch point in an ns@v2 file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BranchPointRef {
-    #[serde(rename = "f:source")]
-    source: String,
-
-    #[serde(rename = "f:commitCid", skip_serializing_if = "Option::is_none")]
-    commit_cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-}
-
-/// JSON structure for index-only ns@v2 file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsIndexFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "f:ledgerIndex")]
-    index: IndexRef,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct IndexRef {
-    /// Content identifier for this index root (CID string).
-    #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
-    cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
 }
 
 /// JSON structure for graph source ns@v2 config record file
@@ -253,19 +133,6 @@ struct GraphSourceIndexFileV2WithT {
     index_t: i64,
 }
 
-const NS_VERSION: &str = "ns@v2";
-
-/// Create the standard ns@v2 context as JSON value.
-/// Uses object format with the `"f"` prefix mapping to the Fluree DB namespace.
-fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": fluree_vocab::fluree::DB})
-}
-
-/// Convert a serde_json error to a StorageExtError for use inside CAS closures.
-fn json_ext_err(e: serde_json::Error) -> StorageExtError {
-    StorageExtError::other(e.to_string())
-}
-
 impl FileNameService {
     /// Create a new file-based nameservice
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
@@ -274,6 +141,13 @@ impl FileNameService {
         Self {
             storage: FileStorage::new(base_path),
             event_tx,
+        }
+    }
+
+    /// Emit a `NameServiceEvent` if the CAS outcome was `Written`.
+    fn emit_on_write<T>(&self, outcome: &CasOutcome<T>, event: NameServiceEvent) {
+        if matches!(outcome, CasOutcome::Written) {
+            let _ = self.event_tx.send(event);
         }
     }
 
@@ -659,9 +533,9 @@ impl NameService for FileNameService {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
                 };
-                let mut file: NsFileV2 = serde_json::from_slice(data).map_err(json_ext_err)?;
+                let mut file: NsFileV2 = deserialize_json(data)?;
                 file.branches += 1;
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -703,10 +577,9 @@ impl NameService for FileNameService {
                         let Some(data) = bytes else {
                             return Ok(CasAction::Abort(()));
                         };
-                        let mut file: NsFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let mut file: NsFileV2 = deserialize_json(data)?;
                         file.branches = file.branches.saturating_sub(1);
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
@@ -786,14 +659,12 @@ impl Publisher for FileNameService {
 
                 match bytes {
                     Some(data) => {
-                        let mut file: NsFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let mut file: NsFileV2 = deserialize_json(data)?;
                         // Strictly monotonic update
                         if commit_t > file.t {
                             file.commit_cid = cid_val;
                             file.t = commit_t;
-                            let new_bytes =
-                                serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                            let new_bytes = serialize_json(&file)?;
                             Ok(CasAction::Write(new_bytes))
                         } else {
                             Ok(CasAction::Abort(()))
@@ -823,20 +694,21 @@ impl Publisher for FileNameService {
                             branch_point: None,
                             branches: 0,
                         };
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     }
                 }
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerCommitPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 commit_id: commit_id_for_event,
                 commit_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -856,8 +728,7 @@ impl Publisher for FileNameService {
             .storage
             .compare_and_swap(&address, |bytes| {
                 if let Some(data) = bytes {
-                    let existing: NsIndexFileV2 =
-                        serde_json::from_slice(data).map_err(json_ext_err)?;
+                    let existing: NsIndexFileV2 = deserialize_json(data)?;
                     if index_t <= existing.index.t {
                         return Ok(CasAction::Abort(()));
                     }
@@ -870,18 +741,19 @@ impl Publisher for FileNameService {
                         t: index_t,
                     },
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 index_id: index_id_for_event,
                 index_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -896,7 +768,7 @@ impl Publisher for FileNameService {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
                 };
-                let mut file: NsFileV2 = serde_json::from_slice(data).map_err(json_ext_err)?;
+                let mut file: NsFileV2 = deserialize_json(data)?;
                 if file.status == "retracted" {
                     return Ok(CasAction::Abort(()));
                 }
@@ -904,16 +776,17 @@ impl Publisher for FileNameService {
                 // Advance status_v when retracting
                 let current_v = file.status_v.unwrap_or(1);
                 file.status_v = Some(current_v + 1);
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerRetracted {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -955,8 +828,7 @@ impl AdminPublisher for FileNameService {
             .compare_and_swap(&address, |bytes| {
                 let should_update = match bytes {
                     Some(data) => {
-                        let existing: NsIndexFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let existing: NsIndexFileV2 = deserialize_json(data)?;
                         index_t >= existing.index.t // Allow equal
                     }
                     None => true,
@@ -970,7 +842,7 @@ impl AdminPublisher for FileNameService {
                             t: index_t,
                         },
                     };
-                    let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                    let new_bytes = serialize_json(&file)?;
                     Ok(CasAction::Write(new_bytes))
                 } else {
                     Ok(CasAction::Abort(()))
@@ -979,13 +851,14 @@ impl AdminPublisher for FileNameService {
             .await?;
 
         // Only emit event if update actually happened
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
                 index_id: index_id_for_event,
                 index_t,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -1023,8 +896,7 @@ impl GraphSourcePublisher for FileNameService {
                 // Only preserve retracted status if already set
                 let status = match bytes {
                     Some(data) => {
-                        let existing: GraphSourceNsFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let existing: GraphSourceNsFileV2 = deserialize_json(data)?;
                         if existing.status == "retracted" {
                             "retracted".to_string()
                         } else {
@@ -1046,20 +918,19 @@ impl GraphSourcePublisher for FileNameService {
                     dependencies: dependencies_c.clone(),
                     status,
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::<()>::Write(new_bytes))
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceConfigPublished {
-                    graph_source_id: gs_id_for_event,
-                    source_type: source_type_for_event,
-                    dependencies: dependencies_for_event,
-                });
-        }
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceConfigPublished {
+                graph_source_id: gs_id_for_event,
+                source_type: source_type_for_event,
+                dependencies: dependencies_for_event,
+            },
+        );
 
         Ok(())
     }
@@ -1083,8 +954,7 @@ impl GraphSourcePublisher for FileNameService {
             .compare_and_swap(&address, |bytes| {
                 // Strictly monotonic: only update if new_t > existing_t
                 if let Some(data) = bytes {
-                    let existing: GraphSourceIndexFileV2WithT =
-                        serde_json::from_slice(data).map_err(json_ext_err)?;
+                    let existing: GraphSourceIndexFileV2WithT = deserialize_json(data)?;
                     if index_t <= existing.index_t {
                         return Ok(CasAction::Abort(()));
                     }
@@ -1098,20 +968,19 @@ impl GraphSourcePublisher for FileNameService {
                     },
                     index_t,
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceIndexPublished {
-                    graph_source_id: gs_id_for_event,
-                    index_id: index_id_for_event,
-                    index_t,
-                });
-        }
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceIndexPublished {
+                graph_source_id: gs_id_for_event,
+                index_id: index_id_for_event,
+                index_t,
+            },
+        );
 
         Ok(())
     }
@@ -1126,22 +995,22 @@ impl GraphSourcePublisher for FileNameService {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
                 };
-                let mut file: GraphSourceNsFileV2 =
-                    serde_json::from_slice(data).map_err(json_ext_err)?;
+                let mut file: GraphSourceNsFileV2 = deserialize_json(data)?;
                 if file.status == "retracted" {
                     return Ok(CasAction::Abort(()));
                 }
                 file.status = "retracted".to_string();
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
 
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceRetracted {
                 graph_source_id: gs_id_for_event,
-            });
-        }
+            },
+        );
 
         Ok(())
     }
@@ -1328,9 +1197,8 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsFileV2> = bytes
-                            .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
-                            .transpose()?;
+                        let existing: Option<NsFileV2> =
+                            bytes.map(deserialize_json).transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1340,30 +1208,14 @@ impl RefPublisher for FileNameService {
                             t: f.t,
                         });
 
-                        // Validate expected matches current.
-                        match (&expected_clone, &current_ref) {
-                            (None, None) => {} // OK: creating new
-                            (None, Some(actual)) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                }));
-                            }
-                            (Some(_), None) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict { actual: None }));
-                            }
-                            (Some(exp), Some(actual)) => {
-                                // Compare on ContentId identity.
-                                let identity_matches = match (&exp.id, &actual.id) {
-                                    (Some(a), Some(b)) => a == b,
-                                    (None, None) => true,
-                                    _ => false,
-                                };
-                                if !identity_matches {
-                                    return Ok(CasAction::Abort(CasResult::Conflict {
-                                        actual: Some(actual.clone()),
-                                    }));
-                                }
-                            }
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
 
                         // Monotonic guard: CommitHead requires strict new.t > current.t
@@ -1403,7 +1255,7 @@ impl RefPublisher for FileNameService {
                         file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
                         file.t = new_clone.t;
 
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
@@ -1431,9 +1283,8 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsIndexFileV2> = bytes
-                            .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
-                            .transpose()?;
+                        let existing: Option<NsIndexFileV2> =
+                            bytes.map(deserialize_json).transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1444,30 +1295,14 @@ impl RefPublisher for FileNameService {
                             t: f.index.t,
                         });
 
-                        // Validate expected matches current.
-                        match (&expected_clone, &current_ref) {
-                            (None, None) => {}
-                            (None, Some(actual)) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                }));
-                            }
-                            (Some(_), None) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict { actual: None }));
-                            }
-                            (Some(exp), Some(actual)) => {
-                                // Compare on ContentId identity.
-                                let identity_matches = match (&exp.id, &actual.id) {
-                                    (Some(a), Some(b)) => a == b,
-                                    (None, None) => true,
-                                    _ => false,
-                                };
-                                if !identity_matches {
-                                    return Ok(CasAction::Abort(CasResult::Conflict {
-                                        actual: Some(actual.clone()),
-                                    }));
-                                }
-                            }
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
 
                         // Monotonic guard: IndexHead allows new.t >= current.t
@@ -1487,7 +1322,7 @@ impl RefPublisher for FileNameService {
                                 t: new_clone.t,
                             },
                         };
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
@@ -1543,22 +1378,7 @@ impl StatusPublisher for FileNameService {
 
         let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                // Build StatusPayload from status field and status_meta
-                let extra = f.status_meta.unwrap_or_default();
-                let payload = StatusPayload {
-                    state: f.status.clone(),
-                    extra,
-                };
-
-                // status_v defaults to 1 if missing (for backward compatibility)
-                let v = f.status_v.unwrap_or(1);
-
-                Ok(Some(StatusValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_status_value()))
     }
 
     async fn push_status(
@@ -1577,43 +1397,19 @@ impl StatusPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> = bytes
-                    .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
-                    .transpose()?;
+                let existing: Option<NsFileV2> =
+                    bytes.map(deserialize_json).transpose()?;
 
-                let current = match &existing {
-                    None => None,
-                    Some(f) => {
-                        let extra = f.status_meta.clone().unwrap_or_default();
-                        let payload = StatusPayload {
-                            state: f.status.clone(),
-                            extra,
-                        };
-                        let v = f.status_v.unwrap_or(1);
-                        Some(StatusValue { v, payload })
-                    }
-                };
+                let current = existing.as_ref().map(NsFileV2::to_status_value);
 
-                // Compare expected with current
-                match (&expected_clone, &current) {
-                    (None, None) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
-                    }
-                    (None, Some(actual)) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        }));
-                    }
-                    (Some(_), None) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
-                    }
-                    (Some(exp), Some(actual)) => {
-                        if exp.v != actual.v || exp.payload != actual.payload {
-                            return Ok(CasAction::Abort(StatusCasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            }));
-                        }
-                    }
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| StatusCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
                 }
 
                 // Monotonic guard: new.v > current.v
@@ -1634,7 +1430,7 @@ impl StatusPublisher for FileNameService {
                     Some(new_clone.payload.extra.clone())
                 };
 
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -1654,49 +1450,7 @@ impl ConfigPublisher for FileNameService {
 
         let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                let has_default_ctx = f.default_context_cid.is_some();
-
-                // config_v defaults based on whether default_context exists:
-                // - If default_context exists but config_v is missing, treat as v=1 (legacy record with config)
-                // - If neither exists, treat as v=0 (unborn)
-                let v = f.config_v.unwrap_or_else(|| {
-                    if has_default_ctx || f.config_meta.is_some() {
-                        1 // Legacy record with config data
-                    } else {
-                        0 // Unborn
-                    }
-                });
-
-                let resolved_ctx = f
-                    .default_context_cid
-                    .as_deref()
-                    .and_then(parse_default_context_value);
-
-                // Build ConfigPayload if we have any config data
-                let payload = if v == 0
-                    && resolved_ctx.is_none()
-                    && f.config_meta.is_none()
-                    && f.config_cid.is_none()
-                {
-                    None
-                } else {
-                    let extra = f.config_meta.unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: resolved_ctx,
-                        config_id: f
-                            .config_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        extra,
-                    })
-                };
-
-                Ok(Some(ConfigValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_config_value()))
     }
 
     async fn push_config(
@@ -1715,69 +1469,19 @@ impl ConfigPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> = bytes
-                    .map(|data| serde_json::from_slice(data).map_err(json_ext_err))
-                    .transpose()?;
+                let existing: Option<NsFileV2> =
+                    bytes.map(deserialize_json).transpose()?;
 
-                let current = match &existing {
-                    None => None,
-                    Some(f) => {
-                        let has_default_ctx = f.default_context_cid.is_some();
+                let current = existing.as_ref().map(NsFileV2::to_config_value);
 
-                        let v = f.config_v.unwrap_or_else(|| {
-                            if has_default_ctx || f.config_meta.is_some() {
-                                1 // Legacy record with config data
-                            } else {
-                                0 // Unborn
-                            }
-                        });
-
-                        let resolved_ctx = f
-                            .default_context_cid
-                            .as_deref()
-                            .and_then(parse_default_context_value);
-
-                        let payload = if v == 0
-                            && resolved_ctx.is_none()
-                            && f.config_meta.is_none()
-                            && f.config_cid.is_none()
-                        {
-                            None
-                        } else {
-                            let extra = f.config_meta.clone().unwrap_or_default();
-                            Some(ConfigPayload {
-                                default_context: resolved_ctx,
-                                config_id: f
-                                    .config_cid
-                                    .as_deref()
-                                    .and_then(|s| s.parse::<ContentId>().ok()),
-                                extra,
-                            })
-                        };
-                        Some(ConfigValue { v, payload })
-                    }
-                };
-
-                // Compare expected with current
-                match (&expected_clone, &current) {
-                    (None, None) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
-                    }
-                    (None, Some(actual)) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        }));
-                    }
-                    (Some(_), None) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
-                    }
-                    (Some(exp), Some(actual)) => {
-                        if exp.v != actual.v || exp.payload != actual.payload {
-                            return Ok(CasAction::Abort(ConfigCasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            }));
-                        }
-                    }
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| ConfigCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
                 }
 
                 // Monotonic guard: new.v > current.v
@@ -1808,7 +1512,7 @@ impl ConfigPublisher for FileNameService {
                     file.config_cid = None;
                 }
 
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;

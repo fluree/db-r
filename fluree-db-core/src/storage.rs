@@ -51,10 +51,11 @@
 use crate::address_path::{ledger_id_to_path_prefix, shared_prefix_for_path};
 use crate::error::Result;
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use sha2::Digest;
 use std::fmt::Debug;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use thiserror::Error;
 
 // ============================================================================
@@ -372,13 +373,12 @@ impl MemoryContentStore {
 #[async_trait]
 impl ContentStore for MemoryContentStore {
     async fn has(&self, id: &ContentId) -> Result<bool> {
-        Ok(self.data.read().expect("RwLock poisoned").contains_key(id))
+        Ok(self.data.read().contains_key(id))
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         self.data
             .read()
-            .expect("RwLock poisoned")
             .get(id)
             .cloned()
             .ok_or_else(|| crate::error::Error::not_found(id.to_string()))
@@ -386,10 +386,7 @@ impl ContentStore for MemoryContentStore {
 
     async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
         let id = ContentId::new(kind, bytes);
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(id.clone(), bytes.to_vec());
+        self.data.write().insert(id.clone(), bytes.to_vec());
         Ok(id)
     }
 
@@ -400,15 +397,12 @@ impl ContentStore for MemoryContentStore {
                 id
             )));
         }
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(id.clone(), bytes.to_vec());
+        self.data.write().insert(id.clone(), bytes.to_vec());
         Ok(())
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         let full = data
             .get(id)
             .ok_or_else(|| crate::error::Error::not_found(id.to_string()))?;
@@ -780,10 +774,7 @@ impl MemoryStorage {
     ///
     /// Note: This method takes `&self` (not `&mut self`) due to interior mutability.
     pub fn insert(&self, address: impl Into<String>, data: Vec<u8>) {
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(address.into(), data);
+        self.data.write().insert(address.into(), data);
     }
 
     /// Insert JSON data at the given address
@@ -805,22 +796,17 @@ impl StorageRead for MemoryStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
         self.data
             .read()
-            .expect("RwLock poisoned")
             .get(address)
             .cloned()
             .ok_or_else(|| crate::error::Error::not_found(address))
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {
-        Ok(self
-            .data
-            .read()
-            .expect("RwLock poisoned")
-            .contains_key(address))
+        Ok(self.data.read().contains_key(address))
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         Ok(data
             .keys()
             .filter(|k| k.starts_with(prefix))
@@ -832,7 +818,7 @@ impl StorageRead for MemoryStorage {
         if range.start >= range.end {
             return Ok(Vec::new());
         }
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         let full = data
             .get(address)
             .ok_or_else(|| crate::error::Error::not_found(address))?;
@@ -850,14 +836,13 @@ impl StorageWrite for MemoryStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
         self.data
             .write()
-            .expect("RwLock poisoned")
             .insert(address.to_string(), bytes.to_vec());
         Ok(())
     }
 
     async fn delete(&self, address: &str) -> Result<()> {
         // Idempotent: ok even if not found
-        self.data.write().expect("RwLock poisoned").remove(address);
+        self.data.write().remove(address);
         Ok(())
     }
 }
@@ -890,7 +875,7 @@ impl ContentAddressedWrite for MemoryStorage {
 #[async_trait]
 impl StorageCas for MemoryStorage {
     async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
-        let mut data = self.data.write().expect("RwLock poisoned");
+        let mut data = self.data.write();
         if data.contains_key(address) {
             Ok(false)
         } else {
@@ -904,7 +889,7 @@ impl StorageCas for MemoryStorage {
         F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
         T: Send,
     {
-        let mut data = self.data.write().expect("RwLock poisoned");
+        let mut data = self.data.write();
         let current = data.get(address).map(|v| v.as_slice());
         match f(current)? {
             CasAction::Write(new_bytes) => {

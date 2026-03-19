@@ -249,23 +249,40 @@ tokio = { version = "1", features = ["full"] }
 
 ### Connecting
 
+All construction goes through `FlureeBuilder`:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+use serde_json::json;
+
+// In-memory (no persistence) — typed
+let fluree = FlureeBuilder::memory().build_memory();
+
+// File-based persistence — typed
+let fluree = FlureeBuilder::file("./data").build()?;
+
+// AWS S3 (requires `aws` feature) — typed
+let fluree = FlureeBuilder::s3("my-bucket", "https://s3.us-east-1.amazonaws.com")
+    .build_s3().await?;
+
+// From JSON-LD config — type-erased (FlureeClient)
+let fluree = FlureeBuilder::from_json_ld(&json!({
+    "@context": {"@base": "https://ns.flur.ee/config/connection/", "@vocab": "https://ns.flur.ee/system#"},
+    "@graph": [
+        {"@id": "storage", "@type": "Storage"},
+        {"@id": "conn", "@type": "Connection", "indexStorage": {"@id": "storage"}, "cacheMaxMb": 2048}
+    ]
+}))?.build_client().await?;
+```
+
+Convenience helpers are also available for quick setup:
+
 ```rust
 use fluree_db_api::prelude::*;
 
-// In-memory (no persistence)
-let fluree = connect_memory().await?;
-
-// File-based persistence
-let fluree = connect_filesystem("./data").await?;
-
-// AWS S3 (requires `aws` feature)
-let fluree = connect_s3("my-bucket", "https://s3.us-east-1.amazonaws.com").await?;
-
-// Full control via JSON-LD config
-let fluree = connect_json_ld(&json!({
-    "@context": {"@vocab": "https://ns.flur.ee/system#"},
-    "@graph": [{"@id": "conn", "@type": "Connection", "cacheMaxMb": 2048}]
-})).await?;
+let fluree = connect_memory().await?;           // In-memory
+let fluree = connect_filesystem("./data").await?; // File-based
+let fluree = connect_s3("bucket", "endpoint").await?; // S3
 ```
 
 ### Creating & Querying Ledgers

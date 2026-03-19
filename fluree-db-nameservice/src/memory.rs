@@ -5,10 +5,11 @@
 //! async runtimes.
 
 use crate::{
-    AdminPublisher, BranchPoint, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent,
-    NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher, RefValue, Result,
-    StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, ref_values_match, AdminPublisher, BranchPoint, CasResult,
+    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord,
+    GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
+    StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::format_ledger_id;
@@ -462,13 +463,7 @@ impl RefPublisher for MemoryNameService {
                 return Ok(CasResult::Conflict { actual: None });
             }
             (Some(exp), Some(actual)) => {
-                // Compare `id` (ContentId) for identity.
-                let identity_matches = match (&exp.id, &actual.id) {
-                    (Some(a), Some(b)) => a == b,
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !identity_matches {
+                if !ref_values_match(exp, actual) {
                     return Ok(CasResult::Conflict {
                         actual: Some(actual.clone()),
                     });
@@ -705,30 +700,14 @@ impl StatusPublisher for MemoryNameService {
             }
         };
 
-        // Compare expected with current
-        match (&expected, &current) {
-            (None, None) => {
-                // Cannot create status without record
-                return Ok(StatusCasResult::Conflict { actual: None });
-            }
-            (None, Some(actual)) => {
-                // Expected None but status exists → conflict
-                return Ok(StatusCasResult::Conflict {
-                    actual: Some(actual.clone()),
-                });
-            }
-            (Some(_), None) => {
-                // Expected a value but record doesn't exist → conflict
-                return Ok(StatusCasResult::Conflict { actual: None });
-            }
-            (Some(exp), Some(actual)) => {
-                // Both exist — compare watermarks and payloads
-                if exp.v != actual.v || exp.payload != actual.payload {
-                    return Ok(StatusCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    });
-                }
-            }
+        if let Some(conflict) = check_cas_expectation(
+            &expected.cloned(),
+            &current,
+            false,
+            |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+            |actual| StatusCasResult::Conflict { actual },
+        ) {
+            return Ok(conflict);
         }
 
         // Validate monotonic constraint: new.v > current.v
@@ -788,30 +767,14 @@ impl ConfigPublisher for MemoryNameService {
             }
         };
 
-        // Compare expected with current
-        match (&expected, &current) {
-            (None, None) => {
-                // Cannot create config without record
-                return Ok(ConfigCasResult::Conflict { actual: None });
-            }
-            (None, Some(actual)) => {
-                // Expected None but config exists (even unborn) → conflict
-                return Ok(ConfigCasResult::Conflict {
-                    actual: Some(actual.clone()),
-                });
-            }
-            (Some(_), None) => {
-                // Expected a value but record doesn't exist → conflict
-                return Ok(ConfigCasResult::Conflict { actual: None });
-            }
-            (Some(exp), Some(actual)) => {
-                // Both exist — compare watermarks and payloads
-                if exp.v != actual.v || exp.payload != actual.payload {
-                    return Ok(ConfigCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    });
-                }
-            }
+        if let Some(conflict) = check_cas_expectation(
+            &expected.cloned(),
+            &current,
+            false,
+            |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+            |actual| ConfigCasResult::Conflict { actual },
+        ) {
+            return Ok(conflict);
         }
 
         // Validate monotonic constraint: new.v > current.v
