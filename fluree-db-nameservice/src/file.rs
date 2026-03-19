@@ -24,11 +24,11 @@
 //! - A database with transactions
 
 use crate::{
-    deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
-    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NameServiceEvent,
-    NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher, RefValue, Result,
-    StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, deserialize_json, parse_default_context_value, serialize_json,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
+    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -287,40 +287,6 @@ fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
         (Some(x), Some(y)) => x == y,
         (None, None) => true,
         _ => false,
-    }
-}
-
-/// Check CAS expectation against the current value.
-///
-/// Returns `Some(conflict_result)` if there is a mismatch, `None` if the
-/// expectation is satisfied and the caller should proceed with the write.
-///
-/// `allow_create` controls the `(None, None)` case: if `true`, creating a
-/// new record when none exists is allowed; if `false`, it's a conflict.
-fn check_cas_expectation<T: Clone, R>(
-    expected: &Option<T>,
-    current: &Option<T>,
-    allow_create: bool,
-    eq: impl Fn(&T, &T) -> bool,
-    conflict: impl Fn(Option<T>) -> R,
-) -> Option<R> {
-    match (expected, current) {
-        (None, None) => {
-            if allow_create {
-                None
-            } else {
-                Some(conflict(None))
-            }
-        }
-        (None, Some(actual)) => Some(conflict(Some(actual.clone()))),
-        (Some(_), None) => Some(conflict(None)),
-        (Some(exp), Some(actual)) => {
-            if eq(exp, actual) {
-                None
-            } else {
-                Some(conflict(Some(actual.clone())))
-            }
-        }
     }
 }
 

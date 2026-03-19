@@ -48,6 +48,40 @@ pub(crate) fn serialize_json<T: Serialize>(
     serde_json::to_vec_pretty(value).map_err(json_ext_err)
 }
 
+/// Check CAS expectation against the current value.
+///
+/// Returns `Some(conflict_result)` if there is a mismatch, `None` if the
+/// expectation is satisfied and the caller should proceed with the write.
+///
+/// `allow_create` controls the `(None, None)` case: if `true`, creating a
+/// new record when none exists is allowed; if `false`, it's a conflict.
+pub(crate) fn check_cas_expectation<T: Clone, R>(
+    expected: &Option<T>,
+    current: &Option<T>,
+    allow_create: bool,
+    eq: impl Fn(&T, &T) -> bool,
+    conflict: impl Fn(Option<T>) -> R,
+) -> Option<R> {
+    match (expected, current) {
+        (None, None) => {
+            if allow_create {
+                None
+            } else {
+                Some(conflict(None))
+            }
+        }
+        (None, Some(actual)) => Some(conflict(Some(actual.clone()))),
+        (Some(_), None) => Some(conflict(None)),
+        (Some(exp), Some(actual)) => {
+            if eq(exp, actual) {
+                None
+            } else {
+                Some(conflict(Some(actual.clone())))
+            }
+        }
+    }
+}
+
 /// Storage path segment for graph source artifacts.
 ///
 /// Used when constructing storage addresses for BM25, vector, and other graph
