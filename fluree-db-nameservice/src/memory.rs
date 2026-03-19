@@ -5,10 +5,11 @@
 //! async runtimes.
 
 use crate::{
-    check_cas_expectation, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher,
-    ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, ref_values_match, AdminPublisher, CasResult, ConfigCasResult,
+    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id as core_ledger_id;
@@ -395,13 +396,7 @@ impl RefPublisher for MemoryNameService {
                 return Ok(CasResult::Conflict { actual: None });
             }
             (Some(exp), Some(actual)) => {
-                // Compare `id` (ContentId) for identity.
-                let identity_matches = match (&exp.id, &actual.id) {
-                    (Some(a), Some(b)) => a == b,
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !identity_matches {
+                if !ref_values_match(exp, actual) {
                     return Ok(CasResult::Conflict {
                         actual: Some(actual.clone()),
                     });

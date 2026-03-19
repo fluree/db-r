@@ -19,6 +19,7 @@ mod error;
 pub mod file;
 pub mod ledger_config;
 pub mod memory;
+pub(crate) mod ns_format;
 pub mod storage_ns;
 pub mod tracking;
 #[cfg(feature = "native")]
@@ -79,6 +80,15 @@ pub(crate) fn check_cas_expectation<T: Clone, R>(
                 Some(conflict(Some(actual.clone())))
             }
         }
+    }
+}
+
+/// Compare two `RefValue`s by ContentId identity (ignoring `t`).
+pub(crate) fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
+    match (&a.id, &b.id) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
     }
 }
 

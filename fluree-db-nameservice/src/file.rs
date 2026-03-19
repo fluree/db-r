@@ -23,12 +23,13 @@
 //! - DynamoDB with conditional expressions
 //! - A database with transactions
 
+use crate::ns_format::{ns_context, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION};
 use crate::{
-    check_cas_expectation, deserialize_json, parse_default_context_value, serialize_json,
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
+    check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
+    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
     GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
     NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
+    RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -53,104 +54,6 @@ impl Debug for FileNameService {
             .field("storage", &self.storage)
             .finish()
     }
-}
-
-/// JSON structure for main ns@v2 record file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "@type")]
-    record_type: Vec<String>,
-
-    #[serde(rename = "f:ledger")]
-    ledger: LedgerRef,
-
-    #[serde(rename = "f:branch")]
-    branch: String,
-
-    /// Content identifier for the head commit (CID string, e.g. "bafy...").
-    /// This is the authoritative identity for the commit head pointer.
-    #[serde(
-        rename = "f:commitCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    commit_cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-
-    #[serde(rename = "f:ledgerIndex", skip_serializing_if = "Option::is_none")]
-    index: Option<IndexRef>,
-
-    #[serde(rename = "f:status")]
-    status: String,
-
-    /// Content identifier for the default JSON-LD context (new CID format).
-    #[serde(
-        rename = "f:defaultContextCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    default_context_cid: Option<String>,
-
-    // V2 extension fields (optional for backward compatibility)
-    /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
-    status_v: Option<i64>,
-
-    /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
-    status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
-    config_v: Option<i64>,
-
-    /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
-    config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Content identifier for the ledger config object (origin discovery)
-    #[serde(
-        rename = "f:configCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    config_cid: Option<String>,
-}
-
-/// JSON structure for index-only ns@v2 file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsIndexFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "f:ledgerIndex")]
-    index: IndexRef,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct IndexRef {
-    /// Content identifier for this index root (CID string).
-    #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
-    cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
 }
 
 /// JSON structure for graph source ns@v2 config record file
@@ -226,76 +129,6 @@ struct GraphSourceIndexFileV2WithT {
 
     #[serde(rename = "f:graphSourceIndexT")]
     index_t: i64,
-}
-
-impl NsFileV2 {
-    /// Extract the current `StatusValue` from this record's status fields.
-    /// Defaults `status_v` to 1 if missing (backward compatibility with v1 records).
-    fn to_status_value(&self) -> StatusValue {
-        let extra = self.status_meta.clone().unwrap_or_default();
-        let payload = StatusPayload {
-            state: self.status.clone(),
-            extra,
-        };
-        let v = self.status_v.unwrap_or(1);
-        StatusValue { v, payload }
-    }
-
-    /// Extract the current `ConfigValue` from this record's config fields.
-    /// Infers `config_v` from field presence when missing: 1 if any config
-    /// data exists (legacy record), 0 otherwise (unborn).
-    fn to_config_value(&self) -> ConfigValue {
-        let has_default_ctx = self.default_context_cid.is_some();
-        let v = self.config_v.unwrap_or_else(|| {
-            if has_default_ctx || self.config_meta.is_some() {
-                1
-            } else {
-                0
-            }
-        });
-
-        let resolved_ctx = self
-            .default_context_cid
-            .as_deref()
-            .and_then(parse_default_context_value);
-
-        let payload = if v == 0
-            && resolved_ctx.is_none()
-            && self.config_meta.is_none()
-            && self.config_cid.is_none()
-        {
-            None
-        } else {
-            let extra = self.config_meta.clone().unwrap_or_default();
-            Some(ConfigPayload {
-                default_context: resolved_ctx,
-                config_id: self
-                    .config_cid
-                    .as_deref()
-                    .and_then(|s| s.parse::<ContentId>().ok()),
-                extra,
-            })
-        };
-
-        ConfigValue { v, payload }
-    }
-}
-
-/// Compare two `RefValue`s by ContentId identity (ignoring `t`).
-fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
-    match (&a.id, &b.id) {
-        (Some(x), Some(y)) => x == y,
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-const NS_VERSION: &str = "ns@v2";
-
-/// Create the standard ns@v2 context as JSON value.
-/// Uses object format with the `"f"` prefix mapping to the Fluree DB namespace.
-fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": fluree_vocab::fluree::DB})
 }
 
 impl FileNameService {
