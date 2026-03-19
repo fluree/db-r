@@ -394,7 +394,10 @@ where
 
         // Skip dictionary blobs — they are stored globally per ledger (not
         // per branch), so all branches already share the same dict artifacts.
-        all_cids.retain(|cid| cid.codec() != CODEC_FLUREE_DICT_BLOB);
+        // Also filter out CIDs with no recognized content kind.
+        all_cids.retain(|cid| {
+            cid.codec() != CODEC_FLUREE_DICT_BLOB && cid.content_kind().is_some()
+        });
 
         // Deduplicate
         all_cids.sort();
@@ -405,17 +408,17 @@ where
 
         const COPY_CONCURRENCY: usize = 32;
 
-        let source_label: Arc<str> = source_id.into();
+        let source_label = source_id.to_string();
 
-        stream::iter(all_cids.iter().filter_map(|cid| {
-            let kind = cid.content_kind()?;
+        stream::iter(all_cids.iter().map(|cid| {
+            let kind = cid.content_kind().expect("filtered above");
             let hex = cid.digest_hex();
             let src_addr = content_address(method, kind, source_id, &hex);
             let dst_addr = content_address(method, kind, target_id, &hex);
             let storage = storage.clone();
             let cid_display = cid.to_string();
-            let source_label = Arc::clone(&source_label);
-            Some(async move {
+            let source_label = source_label.clone();
+            async move {
                 let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read index artifact {} from {}: {}",
@@ -426,7 +429,7 @@ where
                     .write_bytes(&dst_addr, &bytes)
                     .await
                     .map_err(ApiError::from)
-            })
+            }
         }))
         .buffer_unordered(COPY_CONCURRENCY)
         .try_for_each(|()| async { Ok(()) })
