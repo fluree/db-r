@@ -138,19 +138,24 @@ fn binary_range_eq_v3(
     let mut filter = BinaryFilter::default();
 
     if let Some(s_sid) = &match_val.s {
-        // Prefer persisted reverse dict. If the subject is not in the persisted
-        // dictionary, no base index rows can exist for it — fall straight to
-        // overlay_only_flakes which filters by Sid equality (not numeric s_id).
-        //
-        // We intentionally do NOT consult DictNovelty here: DictNovelty may
-        // resolve a novelty-only subject to a numeric s_id, but BinaryCursor
-        // cannot emit overlay-only rows for subjects absent from all leaflets
-        // (slice_overlay_for_leaf silently advances past ops whose sort keys
-        // precede the first indexed leaf). See issue #95.
+        // Prefer persisted reverse dict, then DictNovelty. If neither can map
+        // this subject to an s_id, there are no base rows to scan; return
+        // overlay-only matches.
         match store.sid_to_s_id(s_sid)? {
             Some(id) => filter.s_id = Some(id),
             None => {
-                return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                if dict_novelty.is_initialized() {
+                    if let Some(id) = dict_novelty
+                        .subjects
+                        .find_subject(s_sid.namespace_code, &s_sid.name)
+                    {
+                        filter.s_id = Some(id);
+                    } else {
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                    }
+                } else {
+                    return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                }
             }
         }
     }
@@ -167,27 +172,76 @@ fn binary_range_eq_v3(
     if let Some(o_val) = &match_val.o {
         match o_val {
             fluree_db_core::FlakeValue::Ref(sid) => {
-                // Resolve ref object to an s_id (persisted only — same rationale
-                // as subject resolution above; see issue #95).
+                // Resolve ref object to an s_id (persisted → DictNovelty).
                 let o_id = match store.sid_to_s_id(sid)? {
                     Some(id) => id,
                     None => {
-                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty
+                                .subjects
+                                .find_subject(sid.namespace_code, &sid.name)
+                            {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
                     }
                 };
                 filter.o_type = Some(OType::IRI_REF.as_u16());
                 filter.o_key = Some(o_id);
             }
             fluree_db_core::FlakeValue::String(s) => {
-                // Resolve string dict id (persisted only — same rationale
-                // as subject resolution above; see issue #95).
+                // Resolve string dict id (persisted → DictNovelty).
                 let str_id = match store.find_string_id(s)? {
                     Some(id) => id,
                     None => {
-                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty.strings.find_string(s) {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
                     }
                 };
                 filter.o_type = Some(OType::XSD_STRING.as_u16());
+                filter.o_key = Some(str_id as u64);
+            }
+            fluree_db_core::FlakeValue::Json(s) => {
+                // JSON values share the string dictionary but use OType::RDF_JSON.
+                // Same persisted → DictNovelty resolution as strings.
+                let str_id = match store.find_string_id(s)? {
+                    Some(id) => id,
+                    None => {
+                        if dict_novelty.is_initialized() {
+                            if let Some(id) = dict_novelty.strings.find_string(s) {
+                                id
+                            } else {
+                                return overlay_only_flakes(
+                                    store, g_id, index, match_val, opts, overlay,
+                                );
+                            }
+                        } else {
+                            return overlay_only_flakes(
+                                store, g_id, index, match_val, opts, overlay,
+                            );
+                        }
+                    }
+                };
+                filter.o_type = Some(OType::RDF_JSON.as_u16());
                 filter.o_key = Some(str_id as u64);
             }
             _ => {
@@ -210,9 +264,47 @@ fn binary_range_eq_v3(
         }
     };
 
-    // Create cursor: full scan with filter.
+    // Create cursor: use range-narrowed scan when any filter field is bound,
+    // matching the pattern in BinaryScanOperator::open. For novelty-only subjects
+    // this yields an empty leaf_range, so the cursor drains overlay ops directly
+    // with zero leaf I/O.
     let projection = ColumnProjection::all();
-    let mut cursor = BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection);
+    let use_range = filter.s_id.is_some()
+        || filter.p_id.is_some()
+        || filter.o_type.is_some()
+        || filter.o_key.is_some();
+
+    let mut cursor = if use_range {
+        let min_key = RunRecordV2 {
+            s_id: SubjectId(filter.s_id.unwrap_or(0)),
+            o_key: filter.o_key.unwrap_or(0),
+            p_id: filter.p_id.unwrap_or(0),
+            t: 0,
+            o_i: 0,
+            o_type: filter.o_type.unwrap_or(0),
+            g_id,
+        };
+        let max_key = RunRecordV2 {
+            s_id: SubjectId(filter.s_id.unwrap_or(u64::MAX)),
+            o_key: filter.o_key.unwrap_or(u64::MAX),
+            p_id: filter.p_id.unwrap_or(u32::MAX),
+            t: u32::MAX,
+            o_i: u32::MAX,
+            o_type: filter.o_type.unwrap_or(u16::MAX),
+            g_id,
+        };
+        BinaryCursor::new(
+            Arc::clone(store),
+            order,
+            branch,
+            &min_key,
+            &max_key,
+            filter,
+            projection,
+        )
+    } else {
+        BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection)
+    };
 
     // Apply overlay.
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
