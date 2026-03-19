@@ -3,6 +3,7 @@ use crate::context::{self, LedgerMode};
 use crate::error::{CliError, CliResult};
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
+use fluree_db_core::ledger_id::split_ledger_id;
 
 pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliResult<()> {
     match action {
@@ -47,9 +48,9 @@ async fn run_create(
 ) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
         let alias = context::resolve_ledger(ledger, dirs)?;
-        let ledger_name = extract_ledger_name(&alias);
+        let (ledger_name, _) = split_ledger_id(&alias)?;
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let result = client.create_branch(ledger_name, name, from).await?;
+        let result = client.create_branch(&ledger_name, name, from).await?;
 
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
@@ -73,16 +74,16 @@ async fn run_create(
             remote_name,
             ..
         } => {
-            let ledger_name = extract_ledger_name(&remote_alias);
-            let result = client.create_branch(ledger_name, name, from).await?;
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client.create_branch(&ledger_name, name, from).await?;
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             print_branch_created(&result)?;
         }
         LedgerMode::Local { fluree, alias } => {
-            let ledger_name = extract_ledger_name(&alias);
-            let record = fluree.create_branch(ledger_name, name, from).await?;
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+            let record = fluree.create_branch(&ledger_name, name, from).await?;
 
             let source = record
                 .branch_point
@@ -131,9 +132,9 @@ async fn run_list(
 ) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
         let alias = context::resolve_ledger(ledger, dirs)?;
-        let ledger_name = extract_ledger_name(&alias);
+        let (ledger_name, _) = split_ledger_id(&alias)?;
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let result = client.list_branches(ledger_name).await?;
+        let result = client.list_branches(&ledger_name).await?;
 
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
@@ -156,16 +157,16 @@ async fn run_list(
             remote_name,
             ..
         } => {
-            let ledger_name = extract_ledger_name(&remote_alias);
-            let result = client.list_branches(ledger_name).await?;
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client.list_branches(&ledger_name).await?;
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             print_branch_list_json(&result)?;
         }
         LedgerMode::Local { fluree, alias } => {
-            let ledger_name = extract_ledger_name(&alias);
-            let records = fluree.list_branches(ledger_name).await?;
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+            let records = fluree.list_branches(&ledger_name).await?;
 
             if records.is_empty() {
                 println!("No branches found for '{}'.", ledger_name);
@@ -246,9 +247,9 @@ async fn run_drop(
 ) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
         let alias = context::resolve_ledger(ledger, dirs)?;
-        let ledger_name = extract_ledger_name(&alias);
+        let (ledger_name, _) = split_ledger_id(&alias)?;
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let result = client.drop_branch(ledger_name, name).await?;
+        let result = client.drop_branch(&ledger_name, name).await?;
 
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
@@ -272,16 +273,16 @@ async fn run_drop(
             remote_name,
             ..
         } => {
-            let ledger_name = extract_ledger_name(&remote_alias);
-            let result = client.drop_branch(ledger_name, name).await?;
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client.drop_branch(&ledger_name, name).await?;
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             print_branch_dropped(&result)?;
         }
         LedgerMode::Local { fluree, alias } => {
-            let ledger_name = extract_ledger_name(&alias);
-            let report = fluree.drop_branch(ledger_name, name).await?;
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+            let report = fluree.drop_branch(&ledger_name, name).await?;
 
             if report.deferred {
                 println!(
@@ -346,7 +347,3 @@ fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
     Ok(())
 }
 
-/// Extract the ledger name (without branch suffix) from a ledger alias.
-fn extract_ledger_name(alias: &str) -> &str {
-    alias.split(':').next().unwrap_or(alias)
-}
