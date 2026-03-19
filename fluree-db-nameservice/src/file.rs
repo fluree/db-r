@@ -294,6 +294,18 @@ fn json_ext_err(e: serde_json::Error) -> StorageExtError {
     StorageExtError::other(e.to_string())
 }
 
+/// Deserialize JSON bytes inside a CAS closure.
+fn deserialize_json<T: for<'de> Deserialize<'de>>(
+    data: &[u8],
+) -> std::result::Result<T, StorageExtError> {
+    serde_json::from_slice(data).map_err(json_ext_err)
+}
+
+/// Serialize a value to pretty-printed JSON bytes inside a CAS closure.
+fn serialize_json<T: Serialize>(value: &T) -> std::result::Result<Vec<u8>, StorageExtError> {
+    serde_json::to_vec_pretty(value).map_err(json_ext_err)
+}
+
 impl FileNameService {
     /// Create a new file-based nameservice
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
@@ -645,14 +657,12 @@ impl Publisher for FileNameService {
 
                 match bytes {
                     Some(data) => {
-                        let mut file: NsFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let mut file: NsFileV2 = deserialize_json(data)?;
                         // Strictly monotonic update
                         if commit_t > file.t {
                             file.commit_cid = cid_val;
                             file.t = commit_t;
-                            let new_bytes =
-                                serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                            let new_bytes = serialize_json(&file)?;
                             Ok(CasAction::Write(new_bytes))
                         } else {
                             Ok(CasAction::Abort(()))
@@ -680,7 +690,7 @@ impl Publisher for FileNameService {
                             config_v: Some(0),
                             config_meta: None,
                         };
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     }
                 }
@@ -713,8 +723,7 @@ impl Publisher for FileNameService {
             .storage
             .compare_and_swap(&address, |bytes| {
                 if let Some(data) = bytes {
-                    let existing: NsIndexFileV2 =
-                        serde_json::from_slice(data).map_err(json_ext_err)?;
+                    let existing: NsIndexFileV2 = deserialize_json(data)?;
                     if index_t <= existing.index.t {
                         return Ok(CasAction::Abort(()));
                     }
@@ -727,7 +736,7 @@ impl Publisher for FileNameService {
                         t: index_t,
                     },
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -753,7 +762,7 @@ impl Publisher for FileNameService {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
                 };
-                let mut file: NsFileV2 = serde_json::from_slice(data).map_err(json_ext_err)?;
+                let mut file: NsFileV2 = deserialize_json(data)?;
                 if file.status == "retracted" {
                     return Ok(CasAction::Abort(()));
                 }
@@ -761,7 +770,7 @@ impl Publisher for FileNameService {
                 // Advance status_v when retracting
                 let current_v = file.status_v.unwrap_or(1);
                 file.status_v = Some(current_v + 1);
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -812,8 +821,7 @@ impl AdminPublisher for FileNameService {
             .compare_and_swap(&address, |bytes| {
                 let should_update = match bytes {
                     Some(data) => {
-                        let existing: NsIndexFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let existing: NsIndexFileV2 = deserialize_json(data)?;
                         index_t >= existing.index.t // Allow equal
                     }
                     None => true,
@@ -827,7 +835,7 @@ impl AdminPublisher for FileNameService {
                             t: index_t,
                         },
                     };
-                    let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                    let new_bytes = serialize_json(&file)?;
                     Ok(CasAction::Write(new_bytes))
                 } else {
                     Ok(CasAction::Abort(()))
@@ -880,8 +888,7 @@ impl GraphSourcePublisher for FileNameService {
                 // Only preserve retracted status if already set
                 let status = match bytes {
                     Some(data) => {
-                        let existing: GraphSourceNsFileV2 =
-                            serde_json::from_slice(data).map_err(json_ext_err)?;
+                        let existing: GraphSourceNsFileV2 = deserialize_json(data)?;
                         if existing.status == "retracted" {
                             "retracted".to_string()
                         } else {
@@ -903,7 +910,7 @@ impl GraphSourcePublisher for FileNameService {
                     dependencies: dependencies_c.clone(),
                     status,
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::<()>::Write(new_bytes))
             })
             .await?;
@@ -940,8 +947,7 @@ impl GraphSourcePublisher for FileNameService {
             .compare_and_swap(&address, |bytes| {
                 // Strictly monotonic: only update if new_t > existing_t
                 if let Some(data) = bytes {
-                    let existing: GraphSourceIndexFileV2WithT =
-                        serde_json::from_slice(data).map_err(json_ext_err)?;
+                    let existing: GraphSourceIndexFileV2WithT = deserialize_json(data)?;
                     if index_t <= existing.index_t {
                         return Ok(CasAction::Abort(()));
                     }
@@ -955,7 +961,7 @@ impl GraphSourcePublisher for FileNameService {
                     },
                     index_t,
                 };
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -983,13 +989,12 @@ impl GraphSourcePublisher for FileNameService {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
                 };
-                let mut file: GraphSourceNsFileV2 =
-                    serde_json::from_slice(data).map_err(json_ext_err)?;
+                let mut file: GraphSourceNsFileV2 = deserialize_json(data)?;
                 if file.status == "retracted" {
                     return Ok(CasAction::Abort(()));
                 }
                 file.status = "retracted".to_string();
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -1186,7 +1191,7 @@ impl RefPublisher for FileNameService {
                     .storage
                     .compare_and_swap(&address, |bytes| {
                         let existing: Option<NsFileV2> = match bytes {
-                            Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
+                            Some(data) => Some(deserialize_json(data)?),
                             None => None,
                         };
 
@@ -1259,7 +1264,7 @@ impl RefPublisher for FileNameService {
                         file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
                         file.t = new_clone.t;
 
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
@@ -1288,7 +1293,7 @@ impl RefPublisher for FileNameService {
                     .storage
                     .compare_and_swap(&address, |bytes| {
                         let existing: Option<NsIndexFileV2> = match bytes {
-                            Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
+                            Some(data) => Some(deserialize_json(data)?),
                             None => None,
                         };
 
@@ -1344,7 +1349,7 @@ impl RefPublisher for FileNameService {
                                 t: new_clone.t,
                             },
                         };
-                        let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                        let new_bytes = serialize_json(&file)?;
                         Ok(CasAction::Write(new_bytes))
                     })
                     .await?;
@@ -1420,7 +1425,7 @@ impl StatusPublisher for FileNameService {
             .storage
             .compare_and_swap(&address, |bytes| {
                 let existing: Option<NsFileV2> = match bytes {
-                    Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
+                    Some(data) => Some(deserialize_json(data)?),
                     None => None,
                 };
 
@@ -1466,7 +1471,7 @@ impl StatusPublisher for FileNameService {
                     Some(new_clone.payload.extra.clone())
                 };
 
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
@@ -1506,7 +1511,7 @@ impl ConfigPublisher for FileNameService {
             .storage
             .compare_and_swap(&address, |bytes| {
                 let existing: Option<NsFileV2> = match bytes {
-                    Some(data) => Some(serde_json::from_slice(data).map_err(json_ext_err)?),
+                    Some(data) => Some(deserialize_json(data)?),
                     None => None,
                 };
 
@@ -1596,7 +1601,7 @@ impl ConfigPublisher for FileNameService {
                     file.config_cid = None;
                 }
 
-                let new_bytes = serde_json::to_vec_pretty(&file).map_err(json_ext_err)?;
+                let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
