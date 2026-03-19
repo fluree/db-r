@@ -281,6 +281,49 @@ impl NsFileV2 {
     }
 }
 
+/// Compare two `RefValue`s by ContentId identity (ignoring `t`).
+fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
+    match (&a.id, &b.id) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Check CAS expectation against the current value.
+///
+/// Returns `Some(conflict_result)` if there is a mismatch, `None` if the
+/// expectation is satisfied and the caller should proceed with the write.
+///
+/// `allow_create` controls the `(None, None)` case: if `true`, creating a
+/// new record when none exists is allowed; if `false`, it's a conflict.
+fn check_cas_expectation<T: Clone, R>(
+    expected: &Option<T>,
+    current: &Option<T>,
+    allow_create: bool,
+    eq: impl Fn(&T, &T) -> bool,
+    conflict: impl Fn(Option<T>) -> R,
+) -> Option<R> {
+    match (expected, current) {
+        (None, None) => {
+            if allow_create {
+                None
+            } else {
+                Some(conflict(None))
+            }
+        }
+        (None, Some(actual)) => Some(conflict(Some(actual.clone()))),
+        (Some(_), None) => Some(conflict(None)),
+        (Some(exp), Some(actual)) => {
+            if eq(exp, actual) {
+                None
+            } else {
+                Some(conflict(Some(actual.clone())))
+            }
+        }
+    }
+}
+
 const NS_VERSION: &str = "ns@v2";
 
 /// Create the standard ns@v2 context as JSON value.
@@ -1213,30 +1256,14 @@ impl RefPublisher for FileNameService {
                             t: f.t,
                         });
 
-                        // Validate expected matches current.
-                        match (&expected_clone, &current_ref) {
-                            (None, None) => {} // OK: creating new
-                            (None, Some(actual)) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                }));
-                            }
-                            (Some(_), None) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict { actual: None }));
-                            }
-                            (Some(exp), Some(actual)) => {
-                                // Compare on ContentId identity.
-                                let identity_matches = match (&exp.id, &actual.id) {
-                                    (Some(a), Some(b)) => a == b,
-                                    (None, None) => true,
-                                    _ => false,
-                                };
-                                if !identity_matches {
-                                    return Ok(CasAction::Abort(CasResult::Conflict {
-                                        actual: Some(actual.clone()),
-                                    }));
-                                }
-                            }
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
 
                         // Monotonic guard: CommitHead requires strict new.t > current.t
@@ -1316,30 +1343,14 @@ impl RefPublisher for FileNameService {
                             t: f.index.t,
                         });
 
-                        // Validate expected matches current.
-                        match (&expected_clone, &current_ref) {
-                            (None, None) => {}
-                            (None, Some(actual)) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                }));
-                            }
-                            (Some(_), None) => {
-                                return Ok(CasAction::Abort(CasResult::Conflict { actual: None }));
-                            }
-                            (Some(exp), Some(actual)) => {
-                                // Compare on ContentId identity.
-                                let identity_matches = match (&exp.id, &actual.id) {
-                                    (Some(a), Some(b)) => a == b,
-                                    (None, None) => true,
-                                    _ => false,
-                                };
-                                if !identity_matches {
-                                    return Ok(CasAction::Abort(CasResult::Conflict {
-                                        actual: Some(actual.clone()),
-                                    }));
-                                }
-                            }
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
 
                         // Monotonic guard: IndexHead allows new.t >= current.t
@@ -1441,26 +1452,14 @@ impl StatusPublisher for FileNameService {
 
                 let current = existing.as_ref().map(NsFileV2::to_status_value);
 
-                // Compare expected with current
-                match (&expected_clone, &current) {
-                    (None, None) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
-                    }
-                    (None, Some(actual)) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        }));
-                    }
-                    (Some(_), None) => {
-                        return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
-                    }
-                    (Some(exp), Some(actual)) => {
-                        if exp.v != actual.v || exp.payload != actual.payload {
-                            return Ok(CasAction::Abort(StatusCasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            }));
-                        }
-                    }
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| StatusCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
                 }
 
                 // Monotonic guard: new.v > current.v
@@ -1527,60 +1526,14 @@ impl ConfigPublisher for FileNameService {
 
                 let current = existing.as_ref().map(NsFileV2::to_config_value);
 
-                        let v = f.config_v.unwrap_or_else(|| {
-                            if has_default_ctx || f.config_meta.is_some() {
-                                1 // Legacy record with config data
-                            } else {
-                                0 // Unborn
-                            }
-                        });
-
-                        let resolved_ctx = f
-                            .default_context_cid
-                            .as_deref()
-                            .and_then(parse_default_context_value);
-
-                        let payload = if v == 0
-                            && resolved_ctx.is_none()
-                            && f.config_meta.is_none()
-                            && f.config_cid.is_none()
-                        {
-                            None
-                        } else {
-                            let extra = f.config_meta.clone().unwrap_or_default();
-                            Some(ConfigPayload {
-                                default_context: resolved_ctx,
-                                config_id: f
-                                    .config_cid
-                                    .as_deref()
-                                    .and_then(|s| s.parse::<ContentId>().ok()),
-                                extra,
-                            })
-                        };
-                        Some(ConfigValue { v, payload })
-                    }
-                };
-
-                // Compare expected with current
-                match (&expected_clone, &current) {
-                    (None, None) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
-                    }
-                    (None, Some(actual)) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        }));
-                    }
-                    (Some(_), None) => {
-                        return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
-                    }
-                    (Some(exp), Some(actual)) => {
-                        if exp.v != actual.v || exp.payload != actual.payload {
-                            return Ok(CasAction::Abort(ConfigCasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            }));
-                        }
-                    }
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| ConfigCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
                 }
 
                 // Monotonic guard: new.v > current.v
