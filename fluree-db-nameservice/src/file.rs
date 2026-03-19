@@ -192,13 +192,12 @@ impl FileNameService {
         let mut stack = vec![root.to_path_buf()];
 
         while let Some(current_dir) = stack.pop() {
-            let mut dir_entries =
-                tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                    NameServiceError::storage(format!(
-                        "Failed to read directory {:?}: {}",
-                        current_dir, e
-                    ))
-                })?;
+            let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
+                NameServiceError::storage(format!(
+                    "Failed to read directory {:?}: {}",
+                    current_dir, e
+                ))
+            })?;
 
             while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
                 NameServiceError::storage(format!("Failed to read directory entry: {}", e))
@@ -1190,8 +1189,7 @@ impl RefPublisher for FileNameService {
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
-                        let existing: Option<NsFileV2> =
-                            bytes.map(deserialize_json).transpose()?;
+                        let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
                         let current_ref = existing.as_ref().map(|f| RefValue {
                             id: f
@@ -1390,8 +1388,7 @@ impl StatusPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> =
-                    bytes.map(deserialize_json).transpose()?;
+                let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
                 let current = existing.as_ref().map(NsFileV2::to_status_value);
 
@@ -1462,8 +1459,7 @@ impl ConfigPublisher for FileNameService {
         let outcome = self
             .storage
             .compare_and_swap(&address, |bytes| {
-                let existing: Option<NsFileV2> =
-                    bytes.map(deserialize_json).transpose()?;
+                let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
                 let current = existing.as_ref().map(NsFileV2::to_config_value);
 
