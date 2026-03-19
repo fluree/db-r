@@ -15,6 +15,7 @@
   - [query](cli/query.md)
   - [history](cli/history.md)
   - [export](cli/export.md)
+  - [context](cli/context.md)
   - [log](cli/log.md)
   - [config](cli/config.md)
   - [prefix](cli/prefix.md)

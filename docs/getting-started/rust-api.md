@@ -532,6 +532,61 @@ async fn main() -> Result<()> {
 
 **Note:** `StagedGraph` currently supports querying only. Staging on top of a staged transaction and committing from a `StagedGraph` are not yet supported.
 
+### Export Data
+
+Stream ledger data as Turtle, N-Triples, N-Quads, TriG, or JSON-LD using the builder API:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+use fluree_db_api::export::ExportFormat;
+use std::io::BufWriter;
+use std::fs::File;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data").build()?;
+
+    // Export as Turtle to a file
+    let file = File::create("backup.ttl").unwrap();
+    let mut writer = BufWriter::new(file);
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::Turtle)
+        .write_to(&mut writer)
+        .await?;
+    println!("Exported {} triples", stats.triples_written);
+
+    // Export as JSON-LD with custom prefixes
+    let mut buf = Vec::new();
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::JsonLd)
+        .context(&serde_json::json!({"ex": "http://example.org/"}))
+        .write_to(&mut buf)
+        .await?;
+
+    // Export all graphs as N-Quads (dataset export)
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::NQuads)
+        .all_graphs()
+        .to_stdout()
+        .await?;
+
+    Ok(())
+}
+```
+
+All formats stream directly from the binary SPOT index. Memory usage is O(leaflet size) for line-oriented formats and O(largest subject) for JSON-LD, regardless of dataset size.
+
+**Builder methods:**
+- `.format(ExportFormat)` — output format (default: Turtle)
+- `.all_graphs()` — include all named graphs including system graphs (requires TriG or NQuads)
+- `.graph("iri")` — export a specific named graph by IRI
+- `.as_of(TimeSpec)` — time-travel export (transaction number, ISO-8601 datetime, or commit CID prefix)
+- `.context(&json)` — override prefix map (default: ledger's context from nameservice)
+- `.write_to(&mut writer)` — stream to any `Write` sink
+- `.to_stdout()` — convenience for stdout output
+
+See also: [CLI export](../cli/export.md) for command-line usage.
+
 ### Materialize for Reuse
 
 When you need to run multiple queries against the same snapshot, materialize a `GraphSnapshot` once:

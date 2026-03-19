@@ -18,6 +18,20 @@ WHERE {
 }
 ```
 
+### Default Prefixes
+
+If a ledger has a [default context](../concepts/iri-and-context.md#default-context), its prefix mappings are available in SPARQL queries without explicit `PREFIX` declarations. For example, if the default context includes `{"ex": "http://example.org/ns/"}`, this query works without a `PREFIX` line:
+
+```sparql
+SELECT ?name ?age
+WHERE {
+  ?person ex:name ?name .
+  ?person ex:age ?age .
+}
+```
+
+Explicit `PREFIX` declarations in a query take precedence over the default context for that prefix. You can view and manage the default context with `fluree context get/set` or `GET/PUT /fluree/context/:ledger`.
+
 ## Query Forms
 
 ### SELECT Queries
