@@ -38,7 +38,7 @@ use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_led
 use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::broadcast;
 
 /// File-based nameservice using ns@v2 format
@@ -183,7 +183,7 @@ impl FileNameService {
     /// `.json` files, skipping index, snapshot, lock, and tmp files.
     ///
     /// Returns an empty vec if `root` does not exist.
-    async fn walk_ns_json_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
+    async fn walk_ns_json_files(root: &Path) -> Result<Vec<PathBuf>> {
         if !root.exists() {
             return Ok(vec![]);
         }
