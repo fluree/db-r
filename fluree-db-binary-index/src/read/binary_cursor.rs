@@ -158,9 +158,6 @@ impl BinaryCursor {
     /// Slice overlay ops for the leaf at `leaf_idx` using branch manifest keys.
     /// Sets `overlay_pos` and `leaf_overlay_end` for this leaf.
     fn slice_overlay_for_leaf(&mut self, leaf_idx: usize) {
-        use super::types::cmp_overlay_vs_record;
-        use std::cmp::Ordering;
-
         let ops = &self.overlay_ops[self.overlay_pos..];
         if ops.is_empty() {
             self.leaf_overlay_end = self.overlay_pos;
@@ -168,24 +165,15 @@ impl BinaryCursor {
         }
 
         let leaf_entry = &self.branch.leaves[leaf_idx];
-
-        // Start: skip ops that sort before this leaf's first_key.
-        let start_offset = ops.partition_point(|ov| {
-            cmp_overlay_vs_record(ov, &leaf_entry.first_key, self.order) == Ordering::Less
-        });
-
-        // End: find first op >= next leaf's first_key.
         let next_first = if leaf_idx + 1 < self.branch.leaves.len() {
             Some(&self.branch.leaves[leaf_idx + 1].first_key)
         } else {
             None
         };
-        let end_offset = match next_first {
-            Some(next_key) => ops.partition_point(|ov| {
-                cmp_overlay_vs_record(ov, next_key, self.order) == Ordering::Less
-            }),
-            None => ops.len(),
-        };
+
+        let is_first = leaf_idx == self.leaf_range.start;
+        let (start_offset, end_offset) =
+            compute_overlay_window(ops, &leaf_entry.first_key, next_first, self.order, is_first);
 
         self.overlay_pos += start_offset;
         self.leaf_overlay_end = self.overlay_pos + (end_offset - start_offset);
@@ -639,5 +627,139 @@ fn gather_column<T: Copy>(col: &ColumnData<T>, indices: &[usize]) -> ColumnData<
         }
         ColumnData::Const(v) => ColumnData::Const(*v),
         ColumnData::AbsentDefault => ColumnData::AbsentDefault,
+    }
+}
+
+/// Compute the overlay op window `[start, end)` for a given leaf.
+///
+/// For the first leaf in the scan range (`is_first_leaf = true`), includes
+/// all pre-leaf overlay ops so the merge loop can emit novelty-only rows
+/// that sort before the first indexed data. Without this, subjects whose
+/// sort keys precede all leaflets are silently dropped. See issue #95.
+pub(crate) fn compute_overlay_window(
+    ops: &[OverlayOp],
+    leaf_first_key: &crate::format::run_record_v2::RunRecordV2,
+    next_leaf_first_key: Option<&crate::format::run_record_v2::RunRecordV2>,
+    order: crate::format::run_record::RunSortOrder,
+    is_first_leaf: bool,
+) -> (usize, usize) {
+    use super::types::cmp_overlay_vs_record;
+    use std::cmp::Ordering;
+
+    if ops.is_empty() {
+        return (0, 0);
+    }
+
+    // Start: skip ops that sort before this leaf's first_key.
+    // Exception: for the FIRST leaf in the scan range, include all pre-leaf
+    // overlay ops. The merge loop handles them correctly via the "overlay
+    // sorts before row" case (emits asserts, skips retracts).
+    let start = if is_first_leaf {
+        0
+    } else {
+        ops.partition_point(|ov| cmp_overlay_vs_record(ov, leaf_first_key, order) == Ordering::Less)
+    };
+
+    // End: find first op >= next leaf's first_key (or all remaining if last leaf).
+    let end = match next_leaf_first_key {
+        Some(next_key) => {
+            ops.partition_point(|ov| cmp_overlay_vs_record(ov, next_key, order) == Ordering::Less)
+        }
+        None => ops.len(),
+    };
+
+    (start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::run_record::RunSortOrder;
+    use crate::format::run_record_v2::RunRecordV2;
+    use crate::read::types::OverlayOp;
+    use fluree_db_core::subject_id::SubjectId;
+
+    fn make_op(s_id: u64, p_id: u32) -> OverlayOp {
+        OverlayOp {
+            s_id,
+            p_id,
+            o_type: 0,
+            o_key: 0,
+            o_i: u32::MAX,
+            t: 1,
+            op: true,
+        }
+    }
+
+    fn make_key(s_id: u64, p_id: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key: 0,
+            p_id,
+            t: 0,
+            o_i: 0,
+            o_type: 0,
+            g_id: 0,
+        }
+    }
+
+    #[test]
+    fn first_leaf_includes_pre_leaf_ops() {
+        // Overlay ops with s_id=5 sort BEFORE leaf first_key s_id=10.
+        let ops = vec![make_op(5, 1), make_op(5, 2), make_op(5, 3)];
+        let leaf_key = make_key(10, 0);
+        let next_key = make_key(20, 0);
+
+        // First leaf: should include pre-leaf ops (start=0).
+        let (start, end) =
+            compute_overlay_window(&ops, &leaf_key, Some(&next_key), RunSortOrder::Spot, true);
+        assert_eq!(start, 0, "first leaf should NOT skip pre-leaf ops");
+        assert_eq!(end, 3, "all ops sort before next leaf");
+
+        // Non-first leaf: should skip pre-leaf ops.
+        let (start, end) =
+            compute_overlay_window(&ops, &leaf_key, Some(&next_key), RunSortOrder::Spot, false);
+        assert_eq!(start, 3, "non-first leaf should skip pre-leaf ops");
+        assert_eq!(end, 3, "no ops remain for this leaf");
+    }
+
+    #[test]
+    fn end_boundary_with_next_leaf() {
+        // Ops spanning two leaves: s_ids 5, 15, 25.
+        // Leaf covers [10, 20), so only s_id=15 belongs to it.
+        let ops = vec![make_op(5, 0), make_op(15, 0), make_op(25, 0)];
+        let leaf_key = make_key(10, 0);
+        let next_key = make_key(20, 0);
+
+        // Non-first leaf: skip pre-leaf op (s_id=5), include s_id=15, exclude s_id=25.
+        let (start, end) =
+            compute_overlay_window(&ops, &leaf_key, Some(&next_key), RunSortOrder::Spot, false);
+        assert_eq!(start, 1, "skip 1 pre-leaf op");
+        assert_eq!(end, 2, "include s_id=15, exclude s_id=25");
+    }
+
+    #[test]
+    fn last_leaf_includes_all_remaining() {
+        let ops = vec![make_op(50, 0), make_op(100, 0), make_op(200, 0)];
+        let leaf_key = make_key(40, 0);
+
+        let (start, end) = compute_overlay_window(
+            &ops,
+            &leaf_key,
+            None, // last leaf — no next
+            RunSortOrder::Spot,
+            false,
+        );
+        assert_eq!(start, 0, "no ops sort before this leaf");
+        assert_eq!(end, 3, "last leaf gets all remaining ops");
+    }
+
+    #[test]
+    fn empty_ops() {
+        let ops: Vec<OverlayOp> = vec![];
+        let leaf_key = make_key(10, 0);
+
+        let (start, end) = compute_overlay_window(&ops, &leaf_key, None, RunSortOrder::Spot, true);
+        assert_eq!((start, end), (0, 0));
     }
 }
