@@ -2171,6 +2171,15 @@ pub(crate) fn value_to_otype_okey_simple(
                 })?;
             Ok((OType::XSD_STRING, str_id as u64))
         }
+        FlakeValue::Json(s) => {
+            let str_id = store
+                .find_string_id(s)
+                .map_err(|e| QueryError::execution(format!("find_string_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("JSON value not found in V6 dict".to_string())
+                })?;
+            Ok((OType::RDF_JSON, str_id as u64))
+        }
         FlakeValue::Date(d) => Ok((
             OType::XSD_DATE,
             ObjKey::encode_date(d.days_since_epoch()).as_u64(),

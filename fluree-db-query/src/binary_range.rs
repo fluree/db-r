@@ -138,23 +138,15 @@ fn binary_range_eq_v3(
     let mut filter = BinaryFilter::default();
 
     if let Some(s_sid) = &match_val.s {
-        // Prefer persisted reverse dict, then DictNovelty. If neither can map this subject
-        // to an s_id, there are no base rows to scan; return overlay-only matches.
+        // If the persisted index knows this subject, set the cursor filter.
+        // Otherwise, no base leaflets can contain this s_id — any matching
+        // data is novelty-only. DictNovelty may resolve it (for overlay
+        // translation), but the cursor would silently drop overlay ops when
+        // zero leaflets match, so we must take the overlay-only path.
         match store.sid_to_s_id(s_sid)? {
             Some(id) => filter.s_id = Some(id),
             None => {
-                if dict_novelty.is_initialized() {
-                    if let Some(id) = dict_novelty
-                        .subjects
-                        .find_subject(s_sid.namespace_code, &s_sid.name)
-                    {
-                        filter.s_id = Some(id);
-                    } else {
-                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
-                    }
-                } else {
-                    return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
-                }
+                return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
             }
         }
     }
@@ -171,52 +163,39 @@ fn binary_range_eq_v3(
     if let Some(o_val) = &match_val.o {
         match o_val {
             fluree_db_core::FlakeValue::Ref(sid) => {
-                // Resolve ref object to an s_id (persisted → DictNovelty).
+                // Resolve ref object — same logic as subject: if not in persisted
+                // index, no base leaflets can match this o_key, so overlay-only.
                 let o_id = match store.sid_to_s_id(sid)? {
                     Some(id) => id,
                     None => {
-                        if dict_novelty.is_initialized() {
-                            if let Some(id) = dict_novelty
-                                .subjects
-                                .find_subject(sid.namespace_code, &sid.name)
-                            {
-                                id
-                            } else {
-                                return overlay_only_flakes(
-                                    store, g_id, index, match_val, opts, overlay,
-                                );
-                            }
-                        } else {
-                            return overlay_only_flakes(
-                                store, g_id, index, match_val, opts, overlay,
-                            );
-                        }
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
                     }
                 };
                 filter.o_type = Some(OType::IRI_REF.as_u16());
                 filter.o_key = Some(o_id);
             }
             fluree_db_core::FlakeValue::String(s) => {
-                // Resolve string dict id (persisted → DictNovelty).
+                // Resolve string dict id — same logic: if not in persisted
+                // index, no base leaflets can match this string_id, so overlay-only.
                 let str_id = match store.find_string_id(s)? {
                     Some(id) => id,
                     None => {
-                        if dict_novelty.is_initialized() {
-                            if let Some(id) = dict_novelty.strings.find_string(s) {
-                                id
-                            } else {
-                                return overlay_only_flakes(
-                                    store, g_id, index, match_val, opts, overlay,
-                                );
-                            }
-                        } else {
-                            return overlay_only_flakes(
-                                store, g_id, index, match_val, opts, overlay,
-                            );
-                        }
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
                     }
                 };
                 filter.o_type = Some(OType::XSD_STRING.as_u16());
+                filter.o_key = Some(str_id as u64);
+            }
+            fluree_db_core::FlakeValue::Json(s) => {
+                // JSON values share the string dictionary but use OType::RDF_JSON.
+                // Same overlay-only fallback when not in persisted index.
+                let str_id = match store.find_string_id(s)? {
+                    Some(id) => id,
+                    None => {
+                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
+                    }
+                };
+                filter.o_type = Some(OType::RDF_JSON.as_u16());
                 filter.o_key = Some(str_id as u64);
             }
             _ => {
