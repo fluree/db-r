@@ -985,3 +985,20 @@ mem:fact-01km33dyv5wxhrxt4gnqra4xwb a mem:Fact ;
     mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
     mem:createdAt "2026-03-19T13:09:19.845735+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+    
+mem:fact-01km3cbyysth0k11hgj7k9t3dc a mem:Fact ;
+    mem:content "Select * / Graph Crawl Execution Path - Full Trace\n\nCode path for `select {\"iri\": [\"*\"]}` (graph crawl) queries:\n\n1. PARSING & LOWERING:\n   - fluree-db-query/src/parse/lower.rs:40-65 (SelectMode enum, Wildcard variant)\n   - fluree-db-query/src/parse/lower.rs:96-108 (QueryOutput::Wildcard)\n   - fluree-db-query/src/parse/lower.rs:185-188 (ParsedQuery.graph_select field)\n   - fluree-db-query/src/parse/mod.rs:550-565 (parse_graph_select_object())\n   - fluree-db-query/src/parse/lower.rs:1261-1307 (lower_graph_select() - resolves URIs to Sids)\n\n2. QUERY RESULT CONSTRUCTION:\n   - fluree-db-api/src/query/helpers.rs:116-135 (build_query_result() - passes parsed.graph_select to QueryResult.graph_select)\n   - fluree-db-api/src/view/query.rs:97-104 (build_query_result call with db.overlay.clone() for novelty)\n\n3. FORMATTING DISPATCH:\n   - fluree-db-api/src/format/mod.rs:282-311 (format_results_async() - checks result.graph_select.is_some())\n   - Lines 296-299: Creates crawl_db = GraphDbRef::new(db.snapshot, db.g_id, novelty.as_ref(), result.t)\n   - Line 300: Calls graph_crawl::format_async(result, crawl_db, ...)\n\n4. GRAPH CRAWL FORMATTER (Main Issue Location):\n   - fluree-db-api/src/format/graph_crawl.rs:180-293 (format_async() entry point)\n   - Lines 296-329: GraphCrawlFormatter struct with db: GraphDbRef field\n   - Lines 341-473: format_subject() - recursively formats subjects\n   - Line 380: CRITICAL CALL: fetch_subject_properties(sid)\n\n5. PROPERTY FETCHING (THE ISSUE):\n   - fluree-db-api/src/format/graph_crawl.rs:1009-1032 (fetch_subject_properties() method)\n   - Lines 1010-1020: Uses self.db.range(IndexType::Spot, RangeTest::Eq, RangeMatch::subject(sid))\n   - self.db is a GraphDbRef that INCLUDES overlay\n\n6. NOVELTY OVERLAY INCLUSION:\n   - fluree-db-core/src/graph_db_ref.rs:72-93 (GraphDbRef.range() method)\n   - Lines 82-91: Calls range_with_overlay() with self.overlay parameter\n   - The overlay comes from QueryResult.novelty, set in build_query_result\n\nKEY FINDING: Graph crawl formatter DOES receive novelty overlay via QueryResult.novelty and passes it through GraphDbRef. The fetch_subject_properties() method calls db.range() which includes self.overlay via range_with_overlay()." ;
+    mem:tag "graph-crawl" ;
+    mem:tag "novelty" ;
+    mem:tag "overlay" ;
+    mem:tag "select-star" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/format/graph_crawl.rs" ;
+    mem:artifactRef "fluree-db-api/src/format/mod.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:artifactRef "fluree-db-core/src/graph_db_ref.rs" ;
+    mem:artifactRef "fluree-db-query/src/parse/lower.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-19T15:45:31.610121+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

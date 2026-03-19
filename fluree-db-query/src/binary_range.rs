@@ -138,11 +138,15 @@ fn binary_range_eq_v3(
     let mut filter = BinaryFilter::default();
 
     if let Some(s_sid) = &match_val.s {
-        // If the persisted index knows this subject, set the cursor filter.
-        // Otherwise, no base leaflets can contain this s_id — any matching
-        // data is novelty-only. DictNovelty may resolve it (for overlay
-        // translation), but the cursor would silently drop overlay ops when
-        // zero leaflets match, so we must take the overlay-only path.
+        // Prefer persisted reverse dict. If the subject is not in the persisted
+        // dictionary, no base index rows can exist for it — fall straight to
+        // overlay_only_flakes which filters by Sid equality (not numeric s_id).
+        //
+        // We intentionally do NOT consult DictNovelty here: DictNovelty may
+        // resolve a novelty-only subject to a numeric s_id, but BinaryCursor
+        // cannot emit overlay-only rows for subjects absent from all leaflets
+        // (slice_overlay_for_leaf silently advances past ops whose sort keys
+        // precede the first indexed leaf). See issue #95.
         match store.sid_to_s_id(s_sid)? {
             Some(id) => filter.s_id = Some(id),
             None => {
@@ -163,8 +167,8 @@ fn binary_range_eq_v3(
     if let Some(o_val) = &match_val.o {
         match o_val {
             fluree_db_core::FlakeValue::Ref(sid) => {
-                // Resolve ref object — same logic as subject: if not in persisted
-                // index, no base leaflets can match this o_key, so overlay-only.
+                // Resolve ref object to an s_id (persisted only — same rationale
+                // as subject resolution above; see issue #95).
                 let o_id = match store.sid_to_s_id(sid)? {
                     Some(id) => id,
                     None => {
@@ -175,8 +179,8 @@ fn binary_range_eq_v3(
                 filter.o_key = Some(o_id);
             }
             fluree_db_core::FlakeValue::String(s) => {
-                // Resolve string dict id — same logic: if not in persisted
-                // index, no base leaflets can match this string_id, so overlay-only.
+                // Resolve string dict id (persisted only — same rationale
+                // as subject resolution above; see issue #95).
                 let str_id = match store.find_string_id(s)? {
                     Some(id) => id,
                     None => {
@@ -184,18 +188,6 @@ fn binary_range_eq_v3(
                     }
                 };
                 filter.o_type = Some(OType::XSD_STRING.as_u16());
-                filter.o_key = Some(str_id as u64);
-            }
-            fluree_db_core::FlakeValue::Json(s) => {
-                // JSON values share the string dictionary but use OType::RDF_JSON.
-                // Same overlay-only fallback when not in persisted index.
-                let str_id = match store.find_string_id(s)? {
-                    Some(id) => id,
-                    None => {
-                        return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
-                    }
-                };
-                filter.o_type = Some(OType::RDF_JSON.as_u16());
                 filter.o_key = Some(str_id as u64);
             }
             _ => {
@@ -1021,6 +1013,8 @@ fn overlay_only_flakes(
     let mut skipped = 0usize;
     let mut collected = 0usize;
     let mut flakes = Vec::new();
+    let mut _dbg_total = 0usize;
+    let mut _dbg_s_mismatch = 0usize;
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -1030,6 +1024,7 @@ fn overlay_only_flakes(
         true,
         effective_to_t,
         &mut |flake| {
+            _dbg_total += 1;
             // Early exit: already have enough results.
             if collected >= limit {
                 return;
@@ -1043,6 +1038,16 @@ fn overlay_only_flakes(
             // Filter by match components.
             if let Some(ref s_sid) = match_val.s {
                 if flake.s != *s_sid {
+                    if _dbg_s_mismatch < 3 && flake.s.name.contains("CrawlTest") {
+                        tracing::debug!(
+                            flake_ns = flake.s.namespace_code,
+                            flake_name = %flake.s.name,
+                            query_ns = s_sid.namespace_code,
+                            query_name = %s_sid.name,
+                            "overlay_only_flakes: SID MISMATCH on matching name"
+                        );
+                    }
+                    _dbg_s_mismatch += 1;
                     return;
                 }
             }
