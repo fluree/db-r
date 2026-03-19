@@ -6,13 +6,16 @@
 //!
 //! # Flake Structure
 //!
-//! Each commit generates 5-7 flakes:
+//! Each commit generates 7-10 flakes:
 //!
 //! **Commit subject flakes** (subject = commit CID digest hex):
 //! - `db#address` - commit CID string (xsd:string)
 //! - `db#alias` - ledger alias (xsd:string)
 //! - `db#time` - timestamp in epoch ms (xsd:long)
 //! - `db#t` - transaction number (xsd:long)
+//! - `db#asserts` - number of assertions in this commit (xsd:long)
+//! - `db#retracts` - number of retractions in this commit (xsd:long)
+//! - `db#size` - data size in bytes of this commit's flakes (xsd:long)
 //! - `db#previous` - reference to previous commit (@id, optional)
 //! - `db#author` - transaction signer DID (xsd:string, optional)
 //! - `db#txn` - transaction CID string (xsd:string, optional)
@@ -65,7 +68,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
     };
     let hex = commit_id.digest_hex();
 
-    let mut flakes = Vec::with_capacity(7);
+    let mut flakes = Vec::with_capacity(10);
 
     // Build commit subject SID using CID digest hex
     let commit_sid = Sid::new(FLUREE_COMMIT, &hex);
@@ -124,7 +127,43 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         None,
     ));
 
-    // 5. db#previous (optional: reference to previous commit)
+    // 5. db#asserts (count of asserted flakes)
+    let asserts = commit.flakes.iter().filter(|f| f.op).count() as i64;
+    flakes.push(Flake::new(
+        commit_sid.clone(),
+        Sid::new(FLUREE_DB, db::ASSERTS),
+        FlakeValue::Long(asserts),
+        long_dt.clone(),
+        t,
+        true,
+        None,
+    ));
+
+    // 6. db#retracts (count of retracted flakes)
+    let retracts = commit.flakes.iter().filter(|f| !f.op).count() as i64;
+    flakes.push(Flake::new(
+        commit_sid.clone(),
+        Sid::new(FLUREE_DB, db::RETRACTS),
+        FlakeValue::Long(retracts),
+        long_dt.clone(),
+        t,
+        true,
+        None,
+    ));
+
+    // 7. db#size (total byte size of commit flakes)
+    let size: i64 = commit.flakes.iter().map(|f| f.size_bytes() as i64).sum();
+    flakes.push(Flake::new(
+        commit_sid.clone(),
+        Sid::new(FLUREE_DB, db::SIZE),
+        FlakeValue::Long(size),
+        long_dt.clone(),
+        t,
+        true,
+        None,
+    ));
+
+    // 8. db#previous (optional: reference to previous commit)
     if let Some(prev_id) = commit.previous_id() {
         let prev_hex = prev_id.digest_hex();
         let prev_sid = Sid::new(FLUREE_COMMIT, &prev_hex);
@@ -139,7 +178,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         ));
     }
 
-    // 6. db#author (optional: transaction signer DID)
+    // 9. db#author (optional: transaction signer DID)
     if let Some(txn_sig) = &commit.txn_signature {
         flakes.push(Flake::new(
             commit_sid.clone(),
@@ -152,7 +191,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         ));
     }
 
-    // 7. db#txn (optional: transaction CID string)
+    // 10. db#txn (optional: transaction CID string)
     if let Some(txn_id) = &commit.txn {
         flakes.push(Flake::new(
             commit_sid,
@@ -197,8 +236,8 @@ mod tests {
         let commit = make_test_commit(false);
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
-        // Should have 4 flakes (address, alias, time, t — no previous)
-        assert_eq!(flakes.len(), 4);
+        // Should have 7 flakes (address, alias, time, t, asserts, retracts, size — no previous)
+        assert_eq!(flakes.len(), 7);
 
         // Check commit subject uses correct namespace
         let commit_flake = &flakes[0];
@@ -216,8 +255,8 @@ mod tests {
         let commit = make_test_commit(true);
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
-        // Should have 5 flakes (includes db#previous)
-        assert_eq!(flakes.len(), 5);
+        // Should have 8 flakes (includes db#previous)
+        assert_eq!(flakes.len(), 8);
 
         // Find the previous flake
         let prev_flake = flakes

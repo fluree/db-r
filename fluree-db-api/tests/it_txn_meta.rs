@@ -1026,3 +1026,171 @@ async fn test_txn_meta_time_travel_filtering() {
         })
         .await;
 }
+
+// =============================================================================
+// Built-in commit stats tests (db:asserts, db:retracts, db:size)
+// =============================================================================
+
+#[tokio::test]
+async fn test_commit_stats_available_in_novelty_before_indexing() {
+    // Regression test: db:asserts, db:retracts, and db:size must be present
+    // in txn-meta immediately after commit (in novelty), not only after indexing.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-stats-novelty:main";
+
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Insert data (no indexing triggered)
+    let tx = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [
+            {"@id": "ex:alice", "schema:name": "Alice"},
+            {"@id": "ex:bob", "schema:name": "Bob"}
+        ]
+    });
+
+    let result = fluree.insert(ledger, &tx).await.expect("insert");
+    assert_eq!(result.receipt.t, 1);
+
+    // Query txn-meta from novelty (no indexing yet)
+    let query = json!({
+        "from": format!("{}#txn-meta", ledger_id),
+        "select": ["?p", "?o"],
+        "where": {"@id": "?s", "?p": "?o"}
+    });
+
+    let results = fluree.query_connection(&query).await.expect("query");
+    let ledger = fluree.ledger(ledger_id).await.expect("load");
+    let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let arr = results.as_array().expect("array");
+
+    // Verify db:asserts is present and > 0
+    let has_asserts = arr.iter().any(|row| {
+        row.as_array()
+            .map(|r| {
+                r.iter()
+                    .any(|v| v.as_str().map(|s| s.ends_with("asserts")).unwrap_or(false))
+                    && r.iter()
+                        .any(|v| json_as_i64(v).map(|n| n > 0).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    });
+
+    // Verify db:retracts is present (>= 0)
+    let has_retracts = arr.iter().any(|row| {
+        row.as_array()
+            .map(|r| {
+                r.iter()
+                    .any(|v| v.as_str().map(|s| s.ends_with("retracts")).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    });
+
+    // Verify db:size is present and > 0
+    let has_size = arr.iter().any(|row| {
+        row.as_array()
+            .map(|r| {
+                r.iter()
+                    .any(|v| v.as_str().map(|s| s.ends_with("#size")).unwrap_or(false))
+                    && r.iter()
+                        .any(|v| json_as_i64(v).map(|n| n > 0).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    });
+
+    assert!(
+        has_asserts,
+        "db:asserts should be present in txn-meta from novelty (before indexing), got: {:?}",
+        arr
+    );
+    assert!(
+        has_retracts,
+        "db:retracts should be present in txn-meta from novelty (before indexing), got: {:?}",
+        arr
+    );
+    assert!(
+        has_size,
+        "db:size should be present in txn-meta from novelty (before indexing), got: {:?}",
+        arr
+    );
+}
+
+#[tokio::test]
+async fn test_commit_stats_survive_indexing() {
+    // Verify db:asserts, db:retracts, db:size are present both before and after indexing,
+    // and that post-index commits also have them in novelty.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-stats-index:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // First commit
+            let tx1 = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "@graph": [{"@id": "ex:alice", "schema:name": "Alice"}]
+            });
+            let result1 = fluree.insert(ledger, &tx1).await.expect("insert 1");
+            assert_eq!(result1.receipt.t, 1);
+
+            // Index t=1
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
+
+            // Second commit (will be in novelty, not indexed)
+            let ledger2 = fluree.ledger(ledger_id).await.expect("load after t=1");
+            let tx2 = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "@graph": [{"@id": "ex:bob", "schema:name": "Bob"}]
+            });
+            let result2 = fluree.insert(ledger2, &tx2).await.expect("insert 2");
+            assert_eq!(result2.receipt.t, 2);
+
+            // Query txn-meta — t=1 is indexed, t=2 is in novelty.
+            // Both should have db:asserts.
+            let query = json!({
+                "from": format!("{}#txn-meta", ledger_id),
+                "select": ["?p", "?o"],
+                "where": {"@id": "?s", "?p": "?o"}
+            });
+
+            let results = fluree.query_connection(&query).await.expect("query");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            // Count how many times db:asserts appears (should be 2: one per commit)
+            let asserts_count = arr
+                .iter()
+                .filter(|row| {
+                    row.as_array()
+                        .map(|r| {
+                            r.iter().any(|v| {
+                                v.as_str().map(|s| s.ends_with("asserts")).unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+                .count();
+
+            assert_eq!(
+                asserts_count, 2,
+                "should find db:asserts for both commits (indexed + novelty), got: {:?}",
+                arr
+            );
+        })
+        .await;
+}
