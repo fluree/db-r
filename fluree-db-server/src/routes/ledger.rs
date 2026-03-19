@@ -729,24 +729,56 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
 pub async fn list_branches(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
 ) -> Result<Json<Vec<BranchInfo>>> {
-    let records = state
-        .fluree
-        .list_branches(&ledger)
-        .await
-        .map_err(ServerError::Api)?;
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
 
-    let branches = records
-        .into_iter()
-        .map(|r| BranchInfo {
-            branch: r.branch,
-            ledger_id: r.ledger_id,
-            t: r.commit_t,
-            source: r.branch_point.map(|bp| bp.source),
-        })
-        .collect();
+    let span = create_request_span(
+        "branch:list",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&ledger),
+        None,
+        None,
+    );
+    async move {
+        let span = tracing::Span::current();
 
-    Ok(Json(branches))
+        // Enforce data auth (list-branches is a read operation; Bearer token only)
+        let data_auth = state.config.data_auth();
+        if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+            set_span_error_code(&span, "error:Unauthorized");
+            return Err(ServerError::unauthorized("Bearer token required"));
+        }
+        if let Some(p) = bearer.0.as_ref() {
+            if !p.can_read(&ledger) {
+                set_span_error_code(&span, "error:Forbidden");
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        let records = state
+            .fluree
+            .list_branches(&ledger)
+            .await
+            .map_err(ServerError::Api)?;
+
+        let branches = records
+            .into_iter()
+            .map(|r| BranchInfo {
+                branch: r.branch,
+                ledger_id: r.ledger_id,
+                t: r.commit_t,
+                source: r.branch_point.map(|bp| bp.source),
+            })
+            .collect();
+
+        Ok(Json(branches))
+    }
+    .instrument(span)
+    .await
 }
 
 // =============================================================================
