@@ -395,9 +395,8 @@ where
         // Skip dictionary blobs — they are stored globally per ledger (not
         // per branch), so all branches already share the same dict artifacts.
         // Also filter out CIDs with no recognized content kind.
-        all_cids.retain(|cid| {
-            cid.codec() != CODEC_FLUREE_DICT_BLOB && cid.content_kind().is_some()
-        });
+        all_cids
+            .retain(|cid| cid.codec() != CODEC_FLUREE_DICT_BLOB && cid.content_kind().is_some());
 
         // Deduplicate
         all_cids.sort();
@@ -409,8 +408,9 @@ where
         const COPY_CONCURRENCY: usize = 32;
 
         let source_label = source_id.to_string();
+        let artifact_count = all_cids.len();
 
-        stream::iter(all_cids.iter().map(|cid| {
+        stream::iter(all_cids.into_iter().map(|cid| {
             let kind = cid.content_kind().expect("filtered above");
             let hex = cid.digest_hex();
             let src_addr = content_address(method, kind, source_id, &hex);
@@ -437,7 +437,7 @@ where
 
         tracing::info!(
             source = %source_id, target = %target_id,
-            count = all_cids.len(),
+            count = artifact_count,
             "copied index artifacts to branch namespace"
         );
 

@@ -14,7 +14,9 @@ use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
-use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher};
+use fluree_db_nameservice::{
+    AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
+};
 use std::time::Duration;
 use tracing::{info, warn};
 

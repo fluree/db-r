@@ -346,4 +346,3 @@ fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
     }
     Ok(())
 }
-

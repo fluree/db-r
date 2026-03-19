@@ -658,43 +658,44 @@ pub async fn create_branch(State(state): State<Arc<AppState>>, request: Request)
 }
 
 async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
-    let headers_result = FlureeHeaders::from_headers(request.headers());
-    let headers = match headers_result {
-        Ok(h) => h,
-        Err(e) => return Err(e),
-    };
+    let (parts, body) = request.into_parts();
+    let headers = FlureeHeaders::from_headers(&parts.headers)?;
 
-    let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
         .await
         .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
     let req: CreateBranchRequest = serde_json::from_slice(&body_bytes)
         .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
 
+    let source = req.source.unwrap_or_else(|| "main".to_string());
+    let ledger = req.ledger;
+    let branch = req.branch;
+
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
     let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "branch:create",
         request_id.as_deref(),
         trace_id.as_deref(),
-        Some(&req.ledger),
+        Some(&ledger),
         None,
         None,
     );
+
     async move {
         let span = tracing::Span::current();
 
         tracing::info!(
             status = "start",
-            branch = %req.branch,
-            source = req.source.as_deref().unwrap_or("main"),
+            branch = %branch,
+            source = %source,
             "branch creation requested"
         );
 
         let record = match state
             .fluree
             .as_file()
-            .create_branch(&req.ledger, &req.branch, req.source.as_deref())
+            .create_branch(&ledger, &branch, Some(&source))
             .await
         {
             Ok(record) => record,
