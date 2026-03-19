@@ -400,23 +400,37 @@ where
         all_cids.sort();
         all_cids.dedup();
 
-        // Copy each artifact from source namespace to target namespace
-        for cid in &all_cids {
-            let Some(kind) = cid.content_kind() else {
-                continue;
-            };
+        // Copy artifacts concurrently from source to target namespace
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        const COPY_CONCURRENCY: usize = 32;
+
+        let source_label: Arc<str> = source_id.into();
+
+        stream::iter(all_cids.iter().filter_map(|cid| {
+            let kind = cid.content_kind()?;
             let hex = cid.digest_hex();
             let src_addr = content_address(method, kind, source_id, &hex);
             let dst_addr = content_address(method, kind, target_id, &hex);
-
-            let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
-                ApiError::internal(format!(
-                    "failed to read index artifact {} from {}: {}",
-                    cid, source_id, e
-                ))
-            })?;
-            storage.write_bytes(&dst_addr, &bytes).await?;
-        }
+            let storage = storage.clone();
+            let cid_display = cid.to_string();
+            let source_label = Arc::clone(&source_label);
+            Some(async move {
+                let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to read index artifact {} from {}: {}",
+                        cid_display, source_label, e
+                    ))
+                })?;
+                storage
+                    .write_bytes(&dst_addr, &bytes)
+                    .await
+                    .map_err(ApiError::from)
+            })
+        }))
+        .buffer_unordered(COPY_CONCURRENCY)
+        .try_for_each(|()| async { Ok(()) })
+        .await?;
 
         tracing::info!(
             source = %source_id, target = %target_id,
