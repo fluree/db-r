@@ -325,7 +325,7 @@ fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
         println!("Dropped branch: {}", ledger_id);
     }
 
-    if let Some(artifacts) = result.get("artifacts_deleted").and_then(|v| v.as_u64()) {
+    if let Some(artifacts) = result.get("files_deleted").and_then(|v| v.as_u64()) {
         if artifacts > 0 {
             println!("  Artifacts deleted: {}", artifacts);
         }
