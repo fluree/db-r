@@ -617,6 +617,8 @@ where
         // Verify the increment actually happened (cas_update treats abort as Ok)
         let parent = self.load_record(ledger_name, &source_branch).await?;
         if parent.is_none() {
+            // Source branch doesn't exist; clean up the record we just created
+            let _ = self.storage.delete(&key).await;
             return Err(NameServiceError::not_found(format!(
                 "source branch {}:{}",
                 ledger_name, source_branch

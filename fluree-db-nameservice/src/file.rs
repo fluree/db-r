@@ -533,6 +533,9 @@ impl NameService for FileNameService {
             .await?;
 
         if matches!(outcome, CasOutcome::Aborted(())) {
+            // Source branch doesn't exist; clean up the file we just created
+            let created_path = self.ns_path(ledger_name, new_branch);
+            let _ = tokio::fs::remove_file(&created_path).await;
             return Err(NameServiceError::not_found(format!(
                 "source branch {}:{}",
                 ledger_name, branch_point.source
