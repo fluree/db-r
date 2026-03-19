@@ -179,6 +179,61 @@ impl FileNameService {
             .join(format!("{branch}.index.json"))
     }
 
+    /// Recursively walk `root` and return the relative paths of main ns record
+    /// `.json` files, skipping index, snapshot, lock, and tmp files.
+    ///
+    /// Returns an empty vec if `root` does not exist.
+    async fn walk_ns_json_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
+        if !root.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut paths = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(current_dir) = stack.pop() {
+            let mut dir_entries =
+                tokio::fs::read_dir(&current_dir).await.map_err(|e| {
+                    NameServiceError::storage(format!(
+                        "Failed to read directory {:?}: {}",
+                        current_dir, e
+                    ))
+                })?;
+
+            while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
+                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+            })? {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                if !path.is_file() {
+                    continue;
+                }
+
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                if file_name.ends_with(".index.json")
+                    || file_name.ends_with(".snapshots.json")
+                    || file_name.ends_with(".lock")
+                    || file_name.ends_with(".tmp")
+                    || !file_name.ends_with(".json")
+                {
+                    continue;
+                }
+
+                if let Ok(relative) = path.strip_prefix(root) {
+                    paths.push(relative.to_path_buf());
+                }
+            }
+        }
+
+        Ok(paths)
+    }
+
     /// Read and deserialize JSON from a `fluree:file://` address.
     ///
     /// Returns `None` if the address does not exist (NotFound error from storage).
@@ -369,37 +424,19 @@ impl NameService for FileNameService {
 
     async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
         let ledger_dir = self.storage.base_path().join(NS_VERSION).join(ledger_name);
-
-        if !ledger_dir.exists() {
-            return Ok(vec![]);
-        }
-
         let mut records = Vec::new();
-        let mut dir_entries = tokio::fs::read_dir(&ledger_dir).await.map_err(|e| {
-            NameServiceError::storage(format!("Failed to read directory {:?}: {}", ledger_dir, e))
-        })?;
 
-        while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
-            NameServiceError::storage(format!("Failed to read directory entry: {}", e))
-        })? {
-            let file_name = entry.file_name().to_string_lossy().to_string();
+        for relative in Self::walk_ns_json_files(&ledger_dir).await? {
+            let branch = relative
+                .to_string_lossy()
+                .trim_end_matches(".json")
+                .to_string();
 
-            if file_name.ends_with(".index.json")
-                || file_name.ends_with(".snapshots.json")
-                || file_name.ends_with(".lock")
-                || file_name.ends_with(".tmp")
-                || !file_name.ends_with(".json")
-            {
+            if self.is_graph_source_record(ledger_name, &branch).await? {
                 continue;
             }
 
-            let branch = file_name.trim_end_matches(".json");
-
-            if self.is_graph_source_record(ledger_name, branch).await? {
-                continue;
-            }
-
-            if let Ok(Some(record)) = self.load_record(ledger_name, branch).await {
+            if let Ok(Some(record)) = self.load_record(ledger_name, &branch).await {
                 if !record.retracted {
                     records.push(record);
                 }
@@ -411,71 +448,27 @@ impl NameService for FileNameService {
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         let ns_dir = self.storage.base_path().join(NS_VERSION);
-
-        if !ns_dir.exists() {
-            return Ok(vec![]);
-        }
-
         let mut records = Vec::new();
 
-        // Walk the ns@v2 directory recursively so ledger names that contain '/'
-        // (e.g., "tenant1/customers") are discovered.
-        let mut stack = vec![ns_dir];
-        let ns_dir_base = self.storage.base_path().join(NS_VERSION);
+        for relative in Self::walk_ns_json_files(&ns_dir).await? {
+            let file_stem = relative
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let parent = relative
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if parent.is_empty() {
+                continue;
+            }
 
-        while let Some(current_dir) = stack.pop() {
-            let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                NameServiceError::storage(format!(
-                    "Failed to read directory {:?}: {}",
-                    current_dir, e
-                ))
-            })?;
+            if self.is_graph_source_record(&parent, &file_stem).await? {
+                continue;
+            }
 
-            while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
-            })? {
-                let path = entry.path();
-
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-
-                if !path.is_file() {
-                    continue;
-                }
-
-                let file_name = entry.file_name().to_string_lossy().to_string();
-
-                // Skip index files and snapshot files, only process main .json files
-                if file_name.ends_with(".index.json") || file_name.ends_with(".snapshots.json") {
-                    continue;
-                }
-
-                if !file_name.ends_with(".json") {
-                    continue;
-                }
-
-                let branch = file_name.trim_end_matches(".json");
-                let Ok(relative_path) = path.strip_prefix(&ns_dir_base) else {
-                    continue;
-                };
-                let parent = relative_path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if parent.is_empty() {
-                    continue;
-                }
-
-                // Exclude graph source records from ledger records.
-                if self.is_graph_source_record(&parent, branch).await? {
-                    continue;
-                }
-
-                if let Ok(Some(record)) = self.load_record(&parent, branch).await {
-                    records.push(record);
-                }
+            if let Ok(Some(record)) = self.load_record(&parent, &file_stem).await {
+                records.push(record);
             }
         }
 
@@ -2405,6 +2398,30 @@ mod tests {
         let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["dev", "main", "staging"]);
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_with_slashes() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 1,
+        };
+        ns.create_branch("mydb", "release/v1.0", bp.clone())
+            .await
+            .unwrap();
+        ns.create_branch("mydb", "feature/auth", bp).await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["feature/auth", "main", "release/v1.0"]);
     }
 
     #[tokio::test]
