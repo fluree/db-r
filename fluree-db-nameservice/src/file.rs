@@ -228,6 +228,59 @@ struct GraphSourceIndexFileV2WithT {
     index_t: i64,
 }
 
+impl NsFileV2 {
+    /// Extract the current `StatusValue` from this record's status fields.
+    /// Defaults `status_v` to 1 if missing (backward compatibility with v1 records).
+    fn to_status_value(&self) -> StatusValue {
+        let extra = self.status_meta.clone().unwrap_or_default();
+        let payload = StatusPayload {
+            state: self.status.clone(),
+            extra,
+        };
+        let v = self.status_v.unwrap_or(1);
+        StatusValue { v, payload }
+    }
+
+    /// Extract the current `ConfigValue` from this record's config fields.
+    /// Infers `config_v` from field presence when missing: 1 if any config
+    /// data exists (legacy record), 0 otherwise (unborn).
+    fn to_config_value(&self) -> ConfigValue {
+        let has_default_ctx = self.default_context_cid.is_some();
+        let v = self.config_v.unwrap_or_else(|| {
+            if has_default_ctx || self.config_meta.is_some() {
+                1
+            } else {
+                0
+            }
+        });
+
+        let resolved_ctx = self
+            .default_context_cid
+            .as_deref()
+            .and_then(parse_default_context_value);
+
+        let payload = if v == 0
+            && resolved_ctx.is_none()
+            && self.config_meta.is_none()
+            && self.config_cid.is_none()
+        {
+            None
+        } else {
+            let extra = self.config_meta.clone().unwrap_or_default();
+            Some(ConfigPayload {
+                default_context: resolved_ctx,
+                config_id: self
+                    .config_cid
+                    .as_deref()
+                    .and_then(|s| s.parse::<ContentId>().ok()),
+                extra,
+            })
+        };
+
+        ConfigValue { v, payload }
+    }
+}
+
 const NS_VERSION: &str = "ns@v2";
 
 /// Create the standard ns@v2 context as JSON value.
@@ -1347,22 +1400,7 @@ impl StatusPublisher for FileNameService {
 
         let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                // Build StatusPayload from status field and status_meta
-                let extra = f.status_meta.unwrap_or_default();
-                let payload = StatusPayload {
-                    state: f.status.clone(),
-                    extra,
-                };
-
-                // status_v defaults to 1 if missing (for backward compatibility)
-                let v = f.status_v.unwrap_or(1);
-
-                Ok(Some(StatusValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_status_value()))
     }
 
     async fn push_status(
@@ -1386,18 +1424,7 @@ impl StatusPublisher for FileNameService {
                     None => None,
                 };
 
-                let current = match &existing {
-                    None => None,
-                    Some(f) => {
-                        let extra = f.status_meta.clone().unwrap_or_default();
-                        let payload = StatusPayload {
-                            state: f.status.clone(),
-                            extra,
-                        };
-                        let v = f.status_v.unwrap_or(1);
-                        Some(StatusValue { v, payload })
-                    }
-                };
+                let current = existing.as_ref().map(NsFileV2::to_status_value);
 
                 // Compare expected with current
                 match (&expected_clone, &current) {
@@ -1459,49 +1486,7 @@ impl ConfigPublisher for FileNameService {
 
         let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                let has_default_ctx = f.default_context_cid.is_some();
-
-                // config_v defaults based on whether default_context exists:
-                // - If default_context exists but config_v is missing, treat as v=1 (legacy record with config)
-                // - If neither exists, treat as v=0 (unborn)
-                let v = f.config_v.unwrap_or_else(|| {
-                    if has_default_ctx || f.config_meta.is_some() {
-                        1 // Legacy record with config data
-                    } else {
-                        0 // Unborn
-                    }
-                });
-
-                let resolved_ctx = f
-                    .default_context_cid
-                    .as_deref()
-                    .and_then(parse_default_context_value);
-
-                // Build ConfigPayload if we have any config data
-                let payload = if v == 0
-                    && resolved_ctx.is_none()
-                    && f.config_meta.is_none()
-                    && f.config_cid.is_none()
-                {
-                    None
-                } else {
-                    let extra = f.config_meta.unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: resolved_ctx,
-                        config_id: f
-                            .config_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        extra,
-                    })
-                };
-
-                Ok(Some(ConfigValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_config_value()))
     }
 
     async fn push_config(
@@ -1525,10 +1510,7 @@ impl ConfigPublisher for FileNameService {
                     None => None,
                 };
 
-                let current = match &existing {
-                    None => None,
-                    Some(f) => {
-                        let has_default_ctx = f.default_context_cid.is_some();
+                let current = existing.as_ref().map(NsFileV2::to_config_value);
 
                         let v = f.config_v.unwrap_or_else(|| {
                             if has_default_ctx || f.config_meta.is_some() {
