@@ -8,15 +8,6 @@
 //! - [`RefPublisher`]: Explicit compare-and-set ref operations for sync
 //! - [`Publication`]: Optional subscription support for reactive updates
 //!
-//! # Extended Storage Traits
-//!
-//! For storage-backed nameservice implementations (e.g., S3), this crate also
-//! provides extended storage traits:
-//!
-//! - [`StorageDelete`]: Delete stored objects
-//! - [`StorageList`]: List objects by prefix
-//! - [`StorageCas`]: Compare-and-swap operations using ETags
-//!
 //! # Implementations
 //!
 //! - [`MemoryNameService`]: In-memory implementation for testing
@@ -28,8 +19,8 @@ mod error;
 pub mod file;
 pub mod ledger_config;
 pub mod memory;
+pub(crate) mod ns_format;
 pub mod storage_ns;
-pub mod storage_traits;
 pub mod tracking;
 #[cfg(feature = "native")]
 pub mod tracking_file;
@@ -37,15 +28,76 @@ pub mod tracking_file;
 pub use error::{NameServiceError, Result};
 pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 
+use fluree_db_core::StorageExtError;
+
+/// Convert a serde_json error to a StorageExtError for use inside CAS closures.
+fn json_ext_err(e: serde_json::Error) -> StorageExtError {
+    StorageExtError::other(e.to_string())
+}
+
+/// Deserialize JSON bytes inside a CAS closure.
+pub(crate) fn deserialize_json<T: for<'de> Deserialize<'de>>(
+    data: &[u8],
+) -> std::result::Result<T, StorageExtError> {
+    serde_json::from_slice(data).map_err(json_ext_err)
+}
+
+/// Serialize a value to pretty-printed JSON bytes inside a CAS closure.
+pub(crate) fn serialize_json<T: Serialize>(
+    value: &T,
+) -> std::result::Result<Vec<u8>, StorageExtError> {
+    serde_json::to_vec_pretty(value).map_err(json_ext_err)
+}
+
+/// Check CAS expectation against the current value.
+///
+/// Returns `Some(conflict_result)` if there is a mismatch, `None` if the
+/// expectation is satisfied and the caller should proceed with the write.
+///
+/// `allow_create` controls the `(None, None)` case: if `true`, creating a
+/// new record when none exists is allowed; if `false`, it's a conflict.
+pub(crate) fn check_cas_expectation<T: Clone, R>(
+    expected: &Option<T>,
+    current: &Option<T>,
+    allow_create: bool,
+    eq: impl Fn(&T, &T) -> bool,
+    conflict: impl Fn(Option<T>) -> R,
+) -> Option<R> {
+    match (expected, current) {
+        (None, None) => {
+            if allow_create {
+                None
+            } else {
+                Some(conflict(None))
+            }
+        }
+        (None, Some(actual)) => Some(conflict(Some(actual.clone()))),
+        (Some(_), None) => Some(conflict(None)),
+        (Some(exp), Some(actual)) => {
+            if eq(exp, actual) {
+                None
+            } else {
+                Some(conflict(Some(actual.clone())))
+            }
+        }
+    }
+}
+
+/// Compare two `RefValue`s by ContentId identity (ignoring `t`).
+pub(crate) fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
+    match (&a.id, &b.id) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Storage path segment for graph source artifacts.
 ///
 /// Used when constructing storage addresses for BM25, vector, and other graph
 /// source index artifacts, e.g. `fluree:file://graph-sources/{name}/{branch}/bm25/...`.
 pub const STORAGE_SEGMENT_GRAPH_SOURCES: &str = "graph-sources";
 pub use storage_ns::StorageNameService;
-pub use storage_traits::{
-    ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
-};
 pub use tracking::{MemoryTrackingStore, RemoteName, RemoteTrackingStore, TrackingRecord};
 #[cfg(feature = "native")]
 pub use tracking_file::FileTrackingStore;
@@ -848,7 +900,7 @@ impl ConfigPayload {
 ///
 /// The watermark `v` is a monotonically increasing counter that changes
 /// on every status update. Status always has a payload (never unborn).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,
@@ -875,7 +927,7 @@ impl StatusValue {
 ///
 /// The watermark `v` is a monotonically increasing counter. Config can be
 /// "unborn" (v=0, payload=None) if no config has been set yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,

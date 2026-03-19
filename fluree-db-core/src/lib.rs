@@ -130,14 +130,22 @@ pub use storage::{
     // Helper functions for storage implementations
     ledger_id_prefix_for_path,
     sha256_hex,
+    CasAction,
+    CasOutcome,
     ContentAddressedWrite,
     ContentStore,
     ContentWriteResult,
+    ListResult,
     MemoryContentStore,
     MemoryStorage,
     ReadHint,
     Storage,
+    StorageCas,
     StorageContentStore,
+    StorageDelete,
+    StorageExtError,
+    StorageExtResult,
+    StorageList,
     StorageMethod,
     StorageRead,
     StorageWrite,
@@ -173,7 +181,8 @@ pub mod prelude {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;
     pub use crate::storage::{
-        ContentAddressedWrite, ContentStore, ContentWriteResult, MemoryContentStore, MemoryStorage,
-        ReadHint, Storage, StorageContentStore, StorageRead, StorageWrite,
+        CasAction, CasOutcome, ContentAddressedWrite, ContentStore, ContentWriteResult, ListResult,
+        MemoryContentStore, MemoryStorage, ReadHint, Storage, StorageCas, StorageContentStore,
+        StorageDelete, StorageExtError, StorageExtResult, StorageList, StorageRead, StorageWrite,
     };
 }

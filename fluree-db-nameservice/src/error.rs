@@ -44,6 +44,18 @@ impl From<LedgerIdParseError> for NameServiceError {
     }
 }
 
+impl From<fluree_db_core::StorageExtError> for NameServiceError {
+    fn from(e: fluree_db_core::StorageExtError) -> Self {
+        Self::Storage(e.to_string())
+    }
+}
+
+impl From<fluree_db_core::Error> for NameServiceError {
+    fn from(e: fluree_db_core::Error) -> Self {
+        Self::Storage(e.to_string())
+    }
+}
+
 impl NameServiceError {
     /// Create a not found error
     pub fn not_found(id: impl Into<String>) -> Self {
