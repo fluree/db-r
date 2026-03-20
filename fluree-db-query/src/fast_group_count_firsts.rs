@@ -1020,7 +1020,7 @@ fn build_psot_cursor_for_predicate_group(
         let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
             Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
         });
-        let mut ephemeral_preds: StdHashMap<String, u32> = StdHashMap::new();
+        let mut ephemeral_preds: StdHashMap<fluree_db_core::Sid, u32> = StdHashMap::new();
         let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
 

@@ -331,7 +331,7 @@ fn binary_range_eq_v3(
     // this map to be decoded back to IRIs when cursor rows are materialized.
     let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
         .into_iter()
-        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .map(|(sid, id)| (id, sid))
         .collect();
 
     // Iterate and decode to Flakes.
@@ -788,7 +788,7 @@ fn binary_range_bounded_v3(
     // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
     let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
         .into_iter()
-        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .map(|(sid, id)| (id, sid))
         .collect();
 
     if s_id_set.is_empty() {

@@ -379,7 +379,23 @@ impl Operator for GeoSearchOperator {
 
         // Resolve predicate ID once at open (may allocate ephemeral ID if overlay present).
         self.p_id = match self.dict_overlay.as_mut() {
-            Some(dict_ov) => Some(dict_ov.assign_predicate_id_from_sid(&self.pattern.predicate)),
+            Some(dict_ov) => {
+                // Decode predicate Sid using the snapshot namespace table (authoritative),
+                // then assign/lookup by full IRI in the dict overlay.
+                let iri = ctx
+                    .snapshot
+                    .decode_sid(&self.pattern.predicate)
+                    .or_else(|| {
+                        (self.pattern.predicate.namespace_code == fluree_vocab::namespaces::EMPTY)
+                            .then_some(self.pattern.predicate.name.as_ref().to_string())
+                    })
+                    .ok_or_else(|| {
+                        QueryError::Internal(
+                            "GeoSearch predicate Sid could not be decoded to an IRI".to_string(),
+                        )
+                    })?;
+                Some(dict_ov.assign_predicate_id(&iri))
+            }
             None => store.sid_to_p_id(&self.pattern.predicate),
         };
 
