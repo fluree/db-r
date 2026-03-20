@@ -1331,6 +1331,185 @@ curl -X POST http://localhost:8090/fluree/drop \
   -d '{"ledger": "mydb"}'
 ```
 
+### POST /fluree/branch
+
+Create a new branch for a ledger.
+
+**URL:**
+```
+POST /fluree/branch
+```
+
+**Authentication:** When admin auth is enabled (`--admin-auth-mode=required`), requires Bearer token from a trusted issuer. See [Admin Authentication](#admin-authentication).
+
+**Request Body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x",
+  "source": "main"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | New branch name to create (e.g., "feature-x") |
+| `source` | string | No | Source branch to create from. Default: `"main"` |
+
+**Response:**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "branch": "feature-x",
+  "source": "main",
+  "t": 5
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger_id` | Full ledger:branch identifier for the new branch |
+| `branch` | Branch name |
+| `source` | Source branch this was created from |
+| `t` | Transaction time of the source commit at branch point |
+
+**Status Codes:**
+- `201 Created` - Branch created successfully
+- `400 Bad Request` - Invalid request body
+- `401 Unauthorized` - Bearer token required (when admin auth enabled)
+- `404 Not Found` - Source branch does not exist
+- `409 Conflict` - Branch already exists
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Create branch from main (default source)
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Create branch from a specific source branch
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "staging", "source": "dev"}'
+```
+
+### GET /fluree/branch/{ledger}
+
+List all non-retracted branches for a ledger.
+
+**URL:**
+```
+GET /fluree/branch/{ledger-name}
+```
+
+**Response:**
+
+```json
+[
+  {
+    "branch": "main",
+    "ledger_id": "mydb:main",
+    "t": 5
+  },
+  {
+    "branch": "feature-x",
+    "ledger_id": "mydb:feature-x",
+    "t": 5,
+    "source": "main"
+  }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `branch` | Branch name |
+| `ledger_id` | Full ledger:branch identifier |
+| `t` | Current transaction time on this branch |
+| `source` | Source branch (only present for branches created via `/fluree/branch`) |
+
+**Examples:**
+
+```bash
+curl http://localhost:8090/v1/fluree/branch/mydb
+```
+
+### POST /fluree/drop-branch
+
+Drop a branch from a ledger. Admin-protected.
+
+**URL:**
+```
+POST /fluree/drop-branch
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | Branch name to drop (e.g., "feature-x") |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "status": "Dropped",
+  "deferred": false,
+  "artifacts_deleted": 5,
+  "cascaded": [],
+  "warnings": []
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | Full ledger:branch identifier of the dropped branch |
+| `status` | Drop status (`"Dropped"`, `"AlreadyRetracted"`, `"NotFound"`) |
+| `deferred` | `true` if the branch has children — retracted but storage preserved |
+| `artifacts_deleted` | Number of storage artifacts removed |
+| `cascaded` | List of ancestor branch ledger_ids that were cascade-dropped |
+| `warnings` | Any non-fatal warnings during the drop |
+
+**Behavior:**
+
+- **Cannot drop `main`**: Returns 400 Bad Request.
+- **Leaf branch** (no children): Fully drops — deletes storage artifacts, purges NsRecord, decrements parent's child count. If the parent was previously retracted and its child count reaches 0, the parent is cascade-dropped too.
+- **Branch with children** (`branches > 0`): Retracted (hidden from listings, rejects new transactions) but storage is preserved for children. When the last child is eventually dropped, the retracted parent is cascade-purged automatically.
+
+**Status codes:**
+
+- `200 OK` - Branch dropped (or deferred) successfully
+- `400 Bad Request` - Cannot drop the main branch
+- `404 Not Found` - Ledger or branch does not exist
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Drop a leaf branch
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Drop a branch with children (will be deferred)
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+```
+
 ### GET /fluree/info
 
 Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.

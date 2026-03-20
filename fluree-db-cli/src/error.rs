@@ -121,6 +121,12 @@ impl From<crate::remote_client::RemoteLedgerError> for CliError {
     }
 }
 
+impl From<fluree_db_core::ledger_id::LedgerIdParseError> for CliError {
+    fn from(e: fluree_db_core::ledger_id::LedgerIdParseError) -> Self {
+        CliError::Input(e.to_string())
+    }
+}
+
 /// Print error and exit with the appropriate code.
 pub fn exit_with_error(err: CliError) -> ! {
     eprintln!("{err}");

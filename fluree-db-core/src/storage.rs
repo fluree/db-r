@@ -48,7 +48,7 @@
 //! }
 //! ```
 
-use crate::address_path::ledger_id_to_path_prefix;
+use crate::address_path::{ledger_id_to_path_prefix, shared_prefix_for_path};
 use crate::error::Result;
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -451,7 +451,7 @@ impl<S: Storage> StorageContentStore<S> {
         }
     }
 
-    /// Map a CID to a legacy address string using the existing layout.
+    /// Map a CID to an address string using the current layout.
     fn cid_to_address(&self, id: &ContentId) -> Result<String> {
         let kind = id.content_kind().ok_or_else(|| {
             crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
@@ -460,18 +460,49 @@ impl<S: Storage> StorageContentStore<S> {
         let addr = content_address(&self.method, kind, &self.ledger_id, &hex_digest);
         Ok(addr)
     }
+
+    /// For dict blobs, return the pre-global-dicts address where dicts lived
+    /// under the per-branch namespace (`mydb/main/index/objects/dicts/{sha}.dict`).
+    /// Returns `None` for non-dict CIDs.
+    fn legacy_dict_address(&self, id: &ContentId) -> Option<String> {
+        if id.codec() != crate::CODEC_FLUREE_DICT_BLOB {
+            return None;
+        }
+        let prefix = ledger_id_prefix_for_path(&self.ledger_id);
+        let hex = id.digest_hex();
+        Some(format!(
+            "fluree:{}://{}/index/objects/dicts/{}.dict",
+            self.method, prefix, hex
+        ))
+    }
 }
 
 #[async_trait]
 impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     async fn has(&self, id: &ContentId) -> Result<bool> {
         let address = self.cid_to_address(id)?;
-        self.storage.exists(&address).await
+        if self.storage.exists(&address).await? {
+            return Ok(true);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.exists(&legacy).await;
+        }
+        Ok(false)
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         let address = self.cid_to_address(id)?;
-        self.storage.read_bytes(&address).await
+        match self.storage.read_bytes(&address).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(crate::error::Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.read_bytes(&legacy).await;
+        }
+        Err(crate::error::Error::not_found(address))
     }
 
     async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
@@ -496,7 +527,12 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
         let address = self.cid_to_address(id).ok()?;
-        self.storage.resolve_local_path(&address)
+        if let Some(path) = self.storage.resolve_local_path(&address) {
+            return Some(path);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        let legacy = self.legacy_dict_address(id)?;
+        self.storage.resolve_local_path(&legacy)
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
@@ -531,6 +567,92 @@ pub fn bridge_content_store<S: Storage>(
 pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageContentStore<S> {
     let method = storage.storage_method().to_string();
     StorageContentStore::new(storage, namespace_id, method)
+}
+
+// ============================================================================
+// BranchedContentStore (fallback from branch namespace to parent namespace)
+// ============================================================================
+
+/// Content store for branched ledgers that reads from the branch namespace
+/// first, falling back through a DAG of parent namespaces.
+///
+/// Writes always go to the branch's own namespace. Reads try the branch
+/// namespace first, then recurse into parent stores. The recursive structure
+/// supports both linear branching (branch from branch) and future merge
+/// scenarios where a branch has multiple parents.
+#[derive(Debug, Clone)]
+pub struct BranchedContentStore<S: Storage> {
+    /// Store scoped to this branch's own namespace
+    branch_store: StorageContentStore<S>,
+    /// Parent stores to fall back to on read misses. Typically one parent
+    /// for a simple branch; multiple parents after a merge.
+    parents: Vec<BranchedContentStore<S>>,
+}
+
+impl<S: Storage + Clone> BranchedContentStore<S> {
+    /// Create a leaf content store with no parents (equivalent to a root branch).
+    pub fn leaf(storage: S, namespace_id: &str) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents: Vec::new(),
+        }
+    }
+
+    /// Create a branched content store with parent fallbacks.
+    pub fn with_parents(storage: S, namespace_id: &str, parents: Vec<Self>) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents,
+        }
+    }
+}
+
+#[async_trait]
+impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        if self.branch_store.has(id).await? {
+            return Ok(true);
+        }
+        for parent in &self.parents {
+            if parent.has(id).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        match self.branch_store.get(id).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(e) if self.parents.is_empty() => return Err(e),
+            Err(e) if !matches!(e, crate::error::Error::NotFound(_)) => return Err(e),
+            Err(_) => {} // not-found with parents available — fall through
+        }
+        let mut last_err = None;
+        for parent in &self.parents {
+            match parent.get(id).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| crate::error::Error::not_found(id.to_string())))
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        self.branch_store.put(kind, bytes).await
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        self.branch_store.put_with_id(id, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        self.branch_store
+            .resolve_local_path(id)
+            .or_else(|| self.parents.iter().find_map(|p| p.resolve_local_path(id)))
+    }
 }
 
 // ============================================================================
@@ -569,8 +691,11 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::DictBlob { dict } => {
+            // Dictionaries are global per ledger — shared across all branches.
+            // Use the @shared namespace (can't collide with branch names since @ is forbidden).
+            let shared = shared_prefix_for_path(ledger_id);
             let ext = dict_kind_extension(dict);
-            format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
+            format!("{}/dicts/{}.{}", shared, hash_hex, ext)
         }
         ContentKind::IndexBranch => {
             format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex)
@@ -1505,7 +1630,6 @@ pub trait StorageCas: Debug + Send + Sync {
         F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
         T: Send;
 }
-
 // ============================================================================
 // Tests
 // ============================================================================

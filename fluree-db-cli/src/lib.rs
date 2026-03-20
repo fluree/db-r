@@ -89,6 +89,11 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref(), direct).await
         }
 
+        Commands::Branch { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::branch::run(action, &fluree_dir, direct).await
+        }
+
         Commands::Drop { name, force } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::drop::run(&name, force, &fluree_dir).await

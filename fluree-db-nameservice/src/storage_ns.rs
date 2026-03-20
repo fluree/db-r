@@ -17,7 +17,9 @@
 //! Uses ETag-based compare-and-swap (CAS) operations for atomic updates.
 //! Under contention, operations will retry with exponential backoff.
 
-use crate::ns_format::{ns_context, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION};
+use crate::ns_format::{
+    ns_context, BranchPointRef, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION,
+};
 use crate::{
     deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
     ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord,
@@ -154,6 +156,8 @@ impl<S> StorageNameService<S> {
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
+            branches: 0,
         }
     }
 }
@@ -361,6 +365,15 @@ where
                 .as_deref()
                 .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
+            branch_point: main.branch_point.and_then(|bp| {
+                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
+                Some(crate::BranchPoint {
+                    source: bp.source,
+                    commit_id,
+                    t: bp.t,
+                })
+            }),
+            branches: main.branches,
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -476,6 +489,38 @@ where
         self.load_record(&ledger_name, &branch).await
     }
 
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let prefix = if self.prefix.is_empty() {
+            format!("{}/{}/", NS_VERSION, ledger_name)
+        } else {
+            format!("{}/{}/{}/", self.prefix, NS_VERSION, ledger_name)
+        };
+
+        let keys = StorageList::list_prefix(&self.storage, &prefix)
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to list branches: {}", e)))?;
+
+        let mut records = Vec::new();
+
+        for key in keys {
+            if key.ends_with(".index.json") || !key.ends_with(".json") {
+                continue;
+            }
+
+            // Extract branch name from the key suffix
+            let file_part = key.rsplit('/').next().unwrap_or("");
+            let branch = file_part.trim_end_matches(".json");
+
+            if let Ok(Some(record)) = self.load_record(ledger_name, branch).await {
+                if !record.retracted {
+                    records.push(record);
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         let prefix = if self.prefix.is_empty() {
             NS_VERSION.to_string()
@@ -523,6 +568,109 @@ where
 
         Ok(records)
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let key = self.ns_key(ledger_name, new_branch);
+        let normalized_id = format_ledger_id(ledger_name, new_branch);
+
+        let bp_ref = BranchPointRef {
+            source: branch_point.source.clone(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            t: branch_point.t,
+        };
+
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_id.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.to_string(),
+            },
+            branch: new_branch.to_string(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            config_cid: None,
+            t: branch_point.t,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            status_v: Some(1),
+            status_meta: None,
+            config_v: Some(0),
+            config_meta: None,
+            branch_point: Some(bp_ref),
+            branches: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|e| NameServiceError::storage(e.to_string()))?;
+
+        let created = self.storage.insert(&key, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(&normalized_id));
+        }
+
+        // Increment source branch's child count
+        let source_key = self.ns_key(ledger_name, &branch_point.source);
+        let source_branch = branch_point.source.clone();
+        self.cas_update::<NsFileV2, _>(&source_key, |existing| {
+            let mut file = existing?;
+            file.branches += 1;
+            Some(file)
+        })
+        .await?;
+
+        // Verify the increment actually happened (cas_update treats abort as Ok)
+        let parent = self.load_record(ledger_name, &source_branch).await?;
+        if parent.is_none() {
+            // Source branch doesn't exist; clean up the record we just created
+            let _ = self.storage.delete(&key).await;
+            return Err(NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, source_branch
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+
+        // Read the record to find the parent before purging
+        let record = self
+            .load_record(&ledger_name, &branch)
+            .await?
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_branch_point = record.branch_point.clone();
+
+        // Remove the NS files
+        let main_key = self.ns_key(&ledger_name, &branch);
+        let index_key = self.index_key(&ledger_name, &branch);
+        let _ = self.storage.delete(&main_key).await;
+        let _ = self.storage.delete(&index_key).await;
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_branch_point {
+            Some(bp) => {
+                let parent_key = self.ns_key(&ledger_name, &bp.source);
+                self.cas_update::<NsFileV2, _>(&parent_key, move |existing| {
+                    let mut file = existing?;
+                    file.branches = file.branches.saturating_sub(1);
+                    Some(file)
+                })
+                .await?;
+                // Re-read the parent to get the updated count
+                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                Ok(parent_record.map(|r| r.branches))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[async_trait]
@@ -555,6 +703,8 @@ where
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
+            branches: 0,
         };
 
         let bytes = serde_json::to_vec_pretty(&file)?;

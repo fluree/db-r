@@ -359,6 +359,79 @@ impl StorageList for MyStorage {
 }
 ```
 
+## BranchedContentStore (fluree-db-core)
+
+`BranchedContentStore<S>` is a recursive `ContentStore` implementation that provides namespace-scoped fallback reads for branched ledgers. When a branch is created, it gets its own storage namespace for new writes, but needs to read pre-branch-point content (commits, dictionaries) from ancestor namespaces.
+
+### Structure
+
+```rust
+pub struct BranchedContentStore<S: Storage> {
+    branch_store: StorageContentStore<S>,
+    parents: Vec<BranchedContentStore<S>>,
+}
+```
+
+- **`branch_store`** — the branch's own namespace store; all writes go here
+- **`parents`** — ancestor stores to fall back to for reads (recursive tree)
+
+The recursive structure supports arbitrarily deep branch chains (main → dev → feature) and is designed to support future merge scenarios where a branch may have multiple parents (DAG ancestry).
+
+### Constructors
+
+```rust
+// Root branch (e.g., main) — no parents
+let store = BranchedContentStore::leaf(storage, "mydb:main");
+
+// Branch with parent fallback
+let parent = BranchedContentStore::leaf(storage, "mydb:main");
+let store = BranchedContentStore::with_parents(storage, "mydb:dev", vec![parent]);
+```
+
+### Read Behavior
+
+`get()` tries the branch's own namespace first, then recurses into parents:
+
+1. Try `branch_store.get(id)` — if found, return immediately
+2. If `NotFound` and parents exist, try each parent in order
+3. If no parent finds it, return the last `NotFound` error
+4. **Non-`NotFound` errors propagate immediately** — only `NotFound` triggers fallback
+
+`has()` and `resolve_local_path()` follow the same fallback pattern.
+
+### Write Behavior
+
+`put()` and `put_with_id()` always write to `branch_store` — never to parents. This ensures branch isolation: new content is always scoped to the branch's own namespace.
+
+### What Is and Isn't Copied at Branch Time
+
+| Artifact | Copied? | Reason |
+|----------|---------|--------|
+| **Commits** | No | Immutable chain, never deleted; read via fallback |
+| **Index structure files** (root, leaves, branches, arenas) | Yes | Source may GC old indexes after reindexing |
+| **String dictionaries** | No | Stored globally in the `@shared` namespace; all branches read from the same location |
+
+### Global Dictionary Storage (`@shared` Namespace)
+
+String dictionaries (mappings between IRIs/strings and compact integer IDs) are the largest index artifact. Rather than copying them per-branch or relying on `BranchedContentStore` fallback reads, dictionaries are stored in a **global namespace** shared by all branches of a ledger.
+
+The `content_path` function routes all `DictBlob` CIDs to a shared path:
+
+```text
+mydb/@shared/dicts/<sha256hex>.subject    # Subject dict
+mydb/@shared/dicts/<sha256hex>.string     # String dict
+mydb/@shared/dicts/<sha256hex>.predicate  # Predicate dict
+...
+```
+
+The `@shared` prefix uses the `@` character, which is forbidden in branch names by `validate_branch_name`, so it cannot collide with any branch namespace. The constant is defined as `SHARED_NAMESPACE` in `fluree-db-core::address_path`.
+
+**Legacy fallback:** Existing deployments may have dictionaries stored at the old per-branch path (e.g., `mydb/main/index/objects/dicts/<sha>.dict`). `StorageContentStore` automatically falls back to the legacy path when a dict CID is not found at the new `@shared` location. After the next index build, new writes go to the `@shared` path — no manual migration is needed.
+
+### Building the Store Tree
+
+`LedgerState::build_branched_store()` recursively walks the branch ancestry via nameservice `BranchPoint` metadata, constructing the `BranchedContentStore` tree. This uses `Box::pin` for the recursive async calls.
+
 ## Type Erasure with AnyStorage
 
 For dynamic dispatch (e.g., runtime-selected storage backends), use `AnyStorage`:
@@ -436,15 +509,16 @@ Extended errors for nameservice operations:
 
 ## Summary
 
-| Trait | Crate | Purpose | Error Type |
-|-------|-------|---------|------------|
-| `ContentStore` | core | Content-addressed get/put/has by `ContentId` | `Result<T>` |
-| `StorageRead` | core | Physical read operations | `Result<T>` |
-| `StorageWrite` | core | Physical write + delete | `Result<T>` |
-| `ContentAddressedWrite` | core | Hash-based physical writes | `Result<T>` |
-| `Storage` | core | Marker (full physical capability) | - |
-| `StorageList` | nameservice | Paginated listing | `StorageExtResult<T>` |
-| `StorageCas` | nameservice | Compare-and-swap | `StorageExtResult<T>` |
-| `StorageDelete` | nameservice | Delete with ext errors | `StorageExtResult<T>` |
+| Type | Crate | Purpose | Error Type |
+|------|-------|---------|------------|
+| `ContentStore` (trait) | core | Content-addressed get/put/has by `ContentId` | `Result<T>` |
+| `BranchedContentStore` (struct) | core | Recursive `ContentStore` with namespace fallback for branches | `Result<T>` |
+| `StorageRead` (trait) | core | Physical read operations | `Result<T>` |
+| `StorageWrite` (trait) | core | Physical write + delete | `Result<T>` |
+| `ContentAddressedWrite` (trait) | core | Hash-based physical writes | `Result<T>` |
+| `Storage` (trait) | core | Marker (full physical capability) | - |
+| `StorageList` (trait) | nameservice | Paginated listing | `StorageExtResult<T>` |
+| `StorageCas` (trait) | nameservice | Compare-and-swap | `StorageExtResult<T>` |
+| `StorageDelete` (trait) | nameservice | Delete with ext errors | `StorageExtResult<T>` |
 
-Application code typically interacts with `ContentStore` for immutable artifact access. Storage backend implementors implement the physical traits (`StorageRead`, `StorageWrite`, `ContentAddressedWrite`) and the `Storage` marker trait is automatically satisfied.
+Application code typically interacts with `ContentStore` for immutable artifact access. Storage backend implementors implement the physical traits (`StorageRead`, `StorageWrite`, `ContentAddressedWrite`) and the `Storage` marker trait is automatically satisfied. For branched ledgers, `BranchedContentStore` wraps the physical storage with recursive namespace fallback — see [BranchedContentStore](#branchedcontentstore-fluree-db-core) above.

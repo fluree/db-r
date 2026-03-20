@@ -21,3 +21,22 @@ pub fn ledger_id_to_path_prefix(ledger_id: &str) -> Result<String, LedgerIdParse
     let (name, branch) = split_ledger_id(ledger_id)?;
     Ok(format!("{}/{}", name, branch))
 }
+
+/// Namespace for content shared across all branches of a ledger.
+///
+/// Uses `@` prefix, which cannot collide with any real branch name since
+/// `@` is forbidden by [`validate_branch_name`].
+pub const SHARED_NAMESPACE: &str = "@shared";
+
+/// Path prefix for content shared across all branches of a ledger.
+///
+/// Given `"mydb:main"` or `"mydb:feature-x"`, returns `"mydb/@shared"`.
+/// Given `"mydb/main"` (path form), returns `"mydb/@shared"`.
+pub fn shared_prefix_for_path(ledger_id: &str) -> String {
+    let name = if !ledger_id.contains(':') && ledger_id.contains('/') {
+        ledger_id.split('/').next().unwrap_or(ledger_id)
+    } else {
+        ledger_id.split(':').next().unwrap_or(ledger_id)
+    };
+    format!("{}/{}", name, SHARED_NAMESPACE)
+}
