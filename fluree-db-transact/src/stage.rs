@@ -196,8 +196,7 @@ pub async fn stage(
         // Track whether this transaction has an explicit WHERE clause, before
         // execute_where consumes the patterns. Needed to distinguish "WHERE that
         // matched nothing" (→ no-op) from "no WHERE at all" (→ fire templates once).
-        let has_where_clause = !txn.where_patterns.is_empty()
-            || txn.values.is_some();
+        let has_where_clause = !txn.where_patterns.is_empty() || txn.values.is_some();
 
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
@@ -241,8 +240,7 @@ pub async fn stage(
         // Only applies when the transaction has an explicit WHERE clause. Update
         // transactions with no WHERE (insert-only through the update path) should
         // still fire templates once.
-        let where_returned_no_rows =
-            has_where_clause && bindings.is_empty();
+        let where_returned_no_rows = has_where_clause && bindings.is_empty();
 
         // Generate retractions from DELETE templates
         let delete_span = tracing::debug_span!(

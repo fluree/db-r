@@ -413,7 +413,11 @@ async fn guarded_deduction_insufficient_balance_is_noop() {
 
     assert_eq!(result.ledger.t(), t_before, "t should not bump");
     let acct = query_entity(&fluree, &result.ledger, "ex:account").await;
-    assert_eq!(acct.get("ex:balance"), Some(&json!(50)), "balance unchanged");
+    assert_eq!(
+        acct.get("ex:balance"),
+        Some(&json!(50)),
+        "balance unchanged"
+    );
 }
 
 // ============================================================================
@@ -578,7 +582,11 @@ async fn insert_if_not_exists_noop_when_exists() {
 
     assert_eq!(result.ledger.t(), t_before, "t should not bump");
     let alice = query_entity(&fluree, &result.ledger, "ex:alice").await;
-    assert_eq!(alice.get("schema:name"), Some(&json!("Alice")), "name unchanged");
+    assert_eq!(
+        alice.get("schema:name"),
+        Some(&json!("Alice")),
+        "name unchanged"
+    );
 }
 
 // ============================================================================

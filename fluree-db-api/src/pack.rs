@@ -20,9 +20,13 @@ use crate::LedgerHandle;
 use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::pack::{
     encode_data_frame, encode_end_frame, encode_error_frame, encode_header_frame,
-    encode_manifest_frame, estimate_pack_bytes, write_stream_preamble, PackHeader, PackRequest,
+    encode_manifest_frame, estimate_pack_bytes, write_stream_preamble, PackHeader,
     PACK_PROTOCOL,
 };
+
+// Re-export types that appear in our public API signatures so consumers
+// don't need fluree-db-core as a direct dependency.
+pub use fluree_db_core::pack::PackRequest;
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, RefPublisher};
