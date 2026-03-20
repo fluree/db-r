@@ -276,12 +276,6 @@ impl DictOverlay {
         self.ext_predicates.assign_or_lookup(iri)
     }
 
-    /// Assign a predicate ID from a Sid.
-    pub fn assign_predicate_id_from_sid(&mut self, sid: &Sid) -> u32 {
-        let iri = self.graph_view.store().sid_to_iri(sid);
-        self.assign_predicate_id(&iri)
-    }
-
     /// Resolve a predicate ID back to an IRI.
     pub fn resolve_predicate_iri(&self, id: u32) -> Option<&str> {
         if id < self.ext_predicates.base_id() {

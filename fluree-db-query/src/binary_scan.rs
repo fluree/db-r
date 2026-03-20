@@ -32,6 +32,7 @@ use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
+use crate::sid_iri;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 
@@ -687,18 +688,34 @@ impl BinaryScanOperator {
         snapshot: &LedgerSnapshot,
         pattern: &TriplePattern,
     ) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
+        // Re-encode Sids through the snapshot so that uncompressed Sids
+        // (e.g., Sid(0, "http://example.org/s")) are normalized to the
+        // compressed form (Sid(ex_code, "s")) matching novelty flakes.
+        let normalize = |sid: &Sid| -> Sid {
+            // Fast path: already compressed in snapshot namespace space.
+            // Avoid allocating a full IRI string just to feed it back into encode_iri().
+            if sid.namespace_code != fluree_vocab::namespaces::EMPTY {
+                return sid.clone();
+            }
+
+            // EMPTY namespace: treat name as a full IRI and try to compress.
+            // If it doesn't match any known prefix, encode_iri will keep it in EMPTY.
+            snapshot
+                .encode_iri(sid.name.as_ref())
+                .unwrap_or_else(|| sid.clone())
+        };
         let s_sid = match &pattern.s {
-            Ref::Sid(s) => Some(s.clone()),
+            Ref::Sid(s) => Some(normalize(s)),
             Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
         let p_sid = match &pattern.p {
-            Ref::Sid(p) => Some(p.clone()),
+            Ref::Sid(p) => Some(normalize(p)),
             Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
         let o_val = match &pattern.o {
-            Term::Sid(sid) => Some(FlakeValue::Ref(sid.clone())),
+            Term::Sid(sid) => Some(FlakeValue::Ref(normalize(sid))),
             Term::Iri(iri) => snapshot.encode_iri(iri).map(FlakeValue::Ref),
             Term::Value(v) => Some(v.clone()),
             Term::Var(_) => None,
@@ -713,39 +730,13 @@ impl BinaryScanOperator {
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
-        let sid_to_iri = |sid: &Sid| -> Option<String> {
-            // Prefer snapshot namespace table (authoritative for query input).
-            snapshot.decode_sid(sid).or_else(|| {
-                // EMPTY namespace encodes the full IRI as the local name.
-                // If the snapshot can't decode it, preserve the raw string.
-                if sid.namespace_code == fluree_vocab::namespaces::EMPTY {
-                    Some(sid.name.as_ref().to_string())
-                } else {
-                    None
-                }
-            })
+        let s_id = match s_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_s_id(snapshot, store, sid)?,
+            None => None,
         };
-
-        let s_id = if let Some(sid) = s_sid.as_ref() {
-            if let Some(iri) = sid_to_iri(sid) {
-                let store_sid = store.encode_iri(&iri);
-                store.sid_to_s_id(&store_sid)?
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let p_id = if let Some(sid) = p_sid.as_ref() {
-            if let Some(iri) = sid_to_iri(sid) {
-                let store_sid = store.encode_iri(&iri);
-                store.sid_to_p_id(&store_sid)
-            } else {
-                None
-            }
-        } else {
-            None
+        let p_id = match p_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_p_id(snapshot, store, sid),
+            None => None,
         };
 
         Ok(BinaryFilter {
@@ -1305,8 +1296,8 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
-            snapshot.encode_iri(&iri)
+        if let Some(iri) = sid_iri::sid_to_full_iri(ctx.snapshot, sid) {
+            snapshot.encode_iri(iri.as_ref())
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
             // raw SID. This is important when the namespace table has been
