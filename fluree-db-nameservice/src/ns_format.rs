@@ -5,7 +5,9 @@
 //! `FileNameService` and `StorageNameService` serialize/deserialize these types,
 //! so they are defined once here to ensure consistency.
 
-use crate::{parse_default_context_value, ConfigPayload, ConfigValue, StatusPayload, StatusValue};
+use crate::{
+    is_zero, parse_default_context_value, ConfigPayload, ConfigValue, StatusPayload, StatusValue,
+};
 use fluree_db_core::ContentId;
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +89,18 @@ pub(crate) struct NsFileV2 {
         default
     )]
     pub config_cid: Option<String>,
+
+    /// Branch point metadata recording where this branch was created from
+    #[serde(
+        rename = "f:branchPoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub branch_point: Option<BranchPointRef>,
+
+    /// Number of child branches created from this branch
+    #[serde(rename = "f:branches", default, skip_serializing_if = "is_zero")]
+    pub branches: u32,
 }
 
 impl NsFileV2 {
@@ -164,6 +178,19 @@ pub(crate) struct IndexRef {
     /// Content identifier for this index root (CID string).
     #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
     pub cid: Option<String>,
+
+    #[serde(rename = "f:t")]
+    pub t: i64,
+}
+
+/// JSON-LD representation of a branch point in an ns@v2 file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BranchPointRef {
+    #[serde(rename = "f:source")]
+    pub source: String,
+
+    #[serde(rename = "f:commitCid", skip_serializing_if = "Option::is_none")]
+    pub commit_cid: Option<String>,
 
     #[serde(rename = "f:t")]
     pub t: i64,

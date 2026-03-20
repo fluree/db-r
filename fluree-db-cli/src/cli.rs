@@ -115,6 +115,12 @@ pub enum Commands {
         remote: Option<String>,
     },
 
+    /// Manage branches for a ledger
+    Branch {
+        #[command(subcommand)]
+        action: BranchAction,
+    },
+
     /// Drop (delete) a ledger
     Drop {
         /// Ledger name to drop
@@ -470,6 +476,52 @@ pub enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+}
+
+/// Branch subcommands.
+#[derive(Subcommand)]
+pub enum BranchAction {
+    /// Create a new branch
+    Create {
+        /// New branch name (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Source branch to create from (defaults to "main")
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Drop a branch
+    Drop {
+        /// Branch name to drop (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// List all branches
+    List {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// List branches on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 

@@ -73,6 +73,7 @@ pub mod ledger_manager;
 pub mod search;
 
 pub use admin::{
+    BranchDropReport,
     DropMode,
     DropReport,
     DropStatus,
@@ -387,6 +388,24 @@ impl fluree_db_nameservice::NameService for AnyNameService {
     > {
         self.0.all_records().await
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.0.drop_branch(ledger_id).await
+    }
 }
 
 #[async_trait]
@@ -498,6 +517,24 @@ where
         fluree_db_nameservice::NameServiceError,
     > {
         self.inner.all_records().await
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.inner.drop_branch(ledger_id).await
     }
 }
 
