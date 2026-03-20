@@ -1063,8 +1063,25 @@ where
                                 });
                             }
                             (true, None) => {
-                                return CasUpdateDecision::Skip(CasResult::Conflict {
-                                    actual: None,
+                                // The separate index file doesn't exist yet.
+                                // get_ref returns Some(RefValue { id: None, t: 0 })
+                                // for a freshly created ledger (from the main file
+                                // fallback). Allow if the caller expected that empty
+                                // state; otherwise conflict.
+                                let expected_is_empty =
+                                    expected_id.is_none();
+                                if !expected_is_empty {
+                                    return CasUpdateDecision::Skip(CasResult::Conflict {
+                                        actual: None,
+                                    });
+                                }
+                                // Treat as create — fall through to apply
+                                return CasUpdateDecision::Apply(NsIndexFileV2 {
+                                    context: ns_context(),
+                                    index: IndexRef {
+                                        cid: new_cid.as_ref().map(|c| c.to_string()),
+                                        t: new_t,
+                                    },
                                 });
                             }
                             (true, Some(actual)) => {
