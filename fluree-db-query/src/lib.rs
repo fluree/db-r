@@ -75,6 +75,7 @@ pub mod s2_search;
 pub mod seed;
 pub(crate) mod semijoin;
 pub mod service;
+pub(crate) mod sid_iri;
 pub mod sort;
 pub mod stats_query;
 pub mod subquery;

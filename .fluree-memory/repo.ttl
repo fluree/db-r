@@ -985,3 +985,54 @@ mem:fact-01km33dyv5wxhrxt4gnqra4xwb a mem:Fact ;
     mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
     mem:createdAt "2026-03-19T13:09:19.845735+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01km4f8dv0jzt33vdww5k6gef0 a mem:Fact ;
+    mem:content "Novelty-aware decoding consolidation (BinaryIndex V6/V3 query paths):\n- `BinaryGraphView` now carries `dict_novelty: Option<Arc<DictNovelty>>` and performs watermark routing internally for dict-backed types (IriRef, StringDict, JsonArena) in both `decode_value(o_type, ...)` and `decode_value_from_kind(o_kind, dt_id, lang_id, ...)`, plus `resolve_subject_iri`.\n- Added `BinaryGraphView::resolve_subject_sid(s_id)` and internal `resolve_novel_subject_sid()` so novelty subjects can return `Sid::new(ns_code, suffix)` directly (avoids IRI string concat + `encode_iri` trie lookup).\n- `ExecutionContext::graph_view()` should construct views via `BinaryIndexStore::graph_with_novelty(g_id, dict_novelty.clone())` so call sites become novelty-safe by default.\n- When decoding `Binding::EncodedLit`, always use `decode_value_from_kind(o_kind,o_key,p_id,dt_id,lang_id)` (dt_id is DatatypeDictId, not o_type; p_id needed for NUM_BIG arenas)." ;
+    mem:tag "binary-index" ;
+    mem:tag "binarygraphview" ;
+    mem:tag "decode" ;
+    mem:tag "dict-novelty" ;
+    mem:tag "novelty-aware" ;
+    mem:tag "performance" ;
+    mem:tag "watermark" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/context.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:createdAt "2026-03-20T01:55:15.936809+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01km5nyf5803na09n60d6z8j30 a mem:Fact ;
+    mem:content "Binary-scan bound-term normalization depends on BinaryIndexStore namespace codes: `BinaryScanOperator::extract_bound_terms` re-encodes `Ref::Sid`/`Term::Sid` via `re_encode_sid`, which does `store.sid_to_iri(sid)` then `store.encode_iri(&iri)`. If the store lacks a namespace code (e.g., new namespace introduced in commits after the binary index was built/loaded), `sid_to_iri` drops the prefix (\"\" fallback) and `encode_iri` falls back to EMPTY (code 0), causing bound filters to miss and queries to return empty/incorrect results. Mitigation requires augmenting the BinaryIndexStore namespace table/prefix trie with the snapshot's `namespace_codes` whenever new namespace deltas are applied (or avoiding store-based re-encode when the store can't decode the Sid)." ;
+    mem:tag "binary-scan" ;
+    mem:tag "namespace" ;
+    mem:tag "novelty" ;
+    mem:tag "overlay" ;
+    mem:tag "prefix-trie" ;
+    mem:tag "query-bug" ;
+    mem:tag "reload" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/src/ledger/loading.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:createdAt "2026-03-20T13:11:24.072938+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01km5pmwnsym5zz3vgpyz4k1rt a mem:Fact ;
+    mem:content "Fix for 'new namespace after binary index attached' bound-query bug: `BinaryScanOperator` now keeps bound pattern SIDs in *snapshot* namespace space for overlay matching, and constructs persisted binary filters by decoding those SIDs to full IRIs via `LedgerSnapshot::decode_sid` then re-encoding via `BinaryIndexStore::encode_iri`. This avoids depending on the store's namespace table being updated after commit deltas, while preserving correct filtering when store namespace codes differ from snapshot (e.g., after rebuild). Regression test: `fluree-db-api/tests/it_namespace_new_after_index.rs`." ;
+    mem:tag "binary-scan" ;
+    mem:tag "namespace" ;
+    mem:tag "novelty" ;
+    mem:tag "overlay" ;
+    mem:tag "prefix-trie" ;
+    mem:tag "regression-test" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/tests/it_namespace_new_after_index.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:createdAt "2026-03-20T13:23:38.809931+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
