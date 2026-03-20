@@ -704,11 +704,45 @@ impl NameService for DynamoDbNameService {
             .cloned()
             .unwrap_or_default();
 
-        // Delete all items for this branch via BatchWriteItem
+        // Conditionally delete the meta item first — this is the linearization
+        // point that prevents a double-drop race. If two callers race, only one
+        // wins the conditional delete; the other gets ConditionalCheckFailed and
+        // we return NotFound, avoiding a double parent-count decrement.
+        match self
+            .client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => {}
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::delete_item::DeleteItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                return Err(NameServiceError::not_found(ledger_id));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB conditional delete failed: {e}"
+                )));
+            }
+        }
+
+        // Delete remaining (non-meta) items via BatchWriteItem
         let delete_requests: Vec<_> = items
             .iter()
             .filter_map(|item| {
                 let sk_val = item.get(ATTR_SK)?.as_s().ok()?;
+                if sk_val == SK_META {
+                    return None; // already deleted above
+                }
                 Some(
                     aws_sdk_dynamodb::types::WriteRequest::builder()
                         .delete_request(
