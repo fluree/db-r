@@ -193,6 +193,31 @@ impl DynamoDbNameService {
             .and_then(|v| v.as_s().ok())
             .and_then(|s| fluree_db_nameservice::parse_default_context_value(s));
 
+        let branch_point = meta
+            .get(ATTR_BP_SOURCE)
+            .and_then(|v| v.as_s().ok())
+            .and_then(|source_branch| {
+                let commit_id = meta
+                    .get(ATTR_BP_COMMIT_ID)
+                    .and_then(|v| v.as_s().ok())
+                    .and_then(|s| s.parse::<ContentId>().ok())?;
+                let t = meta
+                    .get(ATTR_BP_T)
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())?;
+                Some(fluree_db_nameservice::BranchPoint {
+                    source: source_branch.clone(),
+                    commit_id,
+                    t,
+                })
+            });
+
+        let branches = meta
+            .get(ATTR_BRANCHES)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         Some(NsRecord {
             ledger_id: pk.to_string(),
             name,
@@ -204,6 +229,8 @@ impl DynamoDbNameService {
             index_t,
             default_context,
             retracted,
+            branch_point,
+            branches,
         })
     }
 
@@ -511,6 +538,282 @@ impl NameService for DynamoDbNameService {
         }
 
         Ok(records)
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = format_ledger_id(ledger_name, new_branch);
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        let base_item = |sk: &str| -> Item {
+            HashMap::from([
+                (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
+                (
+                    ATTR_UPDATED_AT_MS.to_string(),
+                    AttributeValue::N(now.clone()),
+                ),
+                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
+            ])
+        };
+
+        let cond = "attribute_not_exists(pk)";
+
+        // 1. Meta — includes branch point attributes
+        let mut meta = base_item(SK_META);
+        meta.insert(
+            ATTR_KIND.to_string(),
+            AttributeValue::S(KIND_LEDGER.to_string()),
+        );
+        meta.insert(
+            ATTR_NAME.to_string(),
+            AttributeValue::S(ledger_name.to_string()),
+        );
+        meta.insert(
+            ATTR_BRANCH.to_string(),
+            AttributeValue::S(new_branch.to_string()),
+        );
+        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
+        meta.insert(
+            ATTR_BP_SOURCE.to_string(),
+            AttributeValue::S(branch_point.source.clone()),
+        );
+        meta.insert(
+            ATTR_BP_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        meta.insert(
+            ATTR_BP_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 2. Head — starts at source commit
+        let mut head = base_item(SK_HEAD);
+        head.insert(
+            ATTR_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        head.insert(
+            ATTR_COMMIT_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 3. Index (unborn)
+        let mut index = base_item(SK_INDEX);
+        index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
+
+        // 4. Status (ready, v=1)
+        let mut status = base_item(SK_STATUS);
+        status.insert(
+            ATTR_STATUS.to_string(),
+            AttributeValue::S(STATUS_READY.to_string()),
+        );
+        status.insert(
+            ATTR_STATUS_V.to_string(),
+            AttributeValue::N("1".to_string()),
+        );
+
+        // 5. Config (unborn)
+        let mut config = base_item(SK_CONFIG);
+        config.insert(
+            ATTR_CONFIG_V.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        let make_put = |item: Item| -> TransactWriteItem {
+            TransactWriteItem::builder()
+                .put(
+                    Put::builder()
+                        .table_name(&self.table_name)
+                        .set_item(Some(item))
+                        .condition_expression(cond)
+                        .build()
+                        .expect("valid Put"),
+                )
+                .build()
+        };
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(make_put(meta))
+            .transact_items(make_put(head))
+            .transact_items(make_put(index))
+            .transact_items(make_put(status))
+            .transact_items(make_put(config))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => {}
+            Err(e) if Self::is_transaction_canceled(&e) => {
+                return Err(NameServiceError::ledger_already_exists(&pk));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB TransactWriteItems failed: {e}"
+                )));
+            }
+        }
+
+        // Increment source branch's child count atomically
+        let source_pk = format_ledger_id(ledger_name, &branch_point.source);
+        let _ = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(source_pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #b = if_not_exists(#b, :zero) + :one")
+            .expression_attribute_names("#b", ATTR_BRANCHES)
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .send()
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB increment branches failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        // Read all items for this branch to find the parent
+        let items = self.query_all_items(&pk).await?;
+        let meta = Self::find_item_by_sk(&items, SK_META)
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_source = meta
+            .get(ATTR_BP_SOURCE)
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+
+        let ledger_name = meta
+            .get(ATTR_NAME)
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        // Conditionally delete the meta item first — this is the linearization
+        // point that prevents a double-drop race. If two callers race, only one
+        // wins the conditional delete; the other gets ConditionalCheckFailed and
+        // we return NotFound, avoiding a double parent-count decrement.
+        match self
+            .client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => {}
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::delete_item::DeleteItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                return Err(NameServiceError::not_found(ledger_id));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB conditional delete failed: {e}"
+                )));
+            }
+        }
+
+        // Delete remaining (non-meta) items via BatchWriteItem
+        let delete_requests: Vec<_> = items
+            .iter()
+            .filter_map(|item| {
+                let sk_val = item.get(ATTR_SK)?.as_s().ok()?;
+                if sk_val == SK_META {
+                    return None; // already deleted above
+                }
+                Some(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(
+                            aws_sdk_dynamodb::types::DeleteRequest::builder()
+                                .key(ATTR_PK, AttributeValue::S(pk.clone()))
+                                .key(ATTR_SK, AttributeValue::S(sk_val.to_string()))
+                                .build()
+                                .expect("delete request keys set"),
+                        )
+                        .build(),
+                )
+            })
+            .collect();
+
+        let mut remaining: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        remaining.insert(self.table_name.clone(), delete_requests);
+
+        while !remaining.is_empty() {
+            // DynamoDB BatchWriteItem accepts at most 25 items total per call.
+            // We already chunked into ≤25-item batches per table, but after
+            // unprocessed retries the map may have items across tables.
+            let mut builder = self.client.batch_write_item();
+            for (table, items) in &remaining {
+                builder = builder.request_items(table, items.clone());
+            }
+
+            let result = builder.send().await.map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
+            })?;
+
+            remaining = result.unprocessed_items().cloned().unwrap_or_default();
+
+            if !remaining.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_source {
+            Some(source) => {
+                let parent_pk = format_ledger_id(&ledger_name, &source);
+                let result = self
+                    .client
+                    .update_item()
+                    .table_name(&self.table_name)
+                    .key(ATTR_PK, AttributeValue::S(parent_pk))
+                    .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+                    .update_expression("SET #b = if_not_exists(#b, :zero) - :one")
+                    .expression_attribute_names("#b", ATTR_BRANCHES)
+                    .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+                    .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+                    .return_values(aws_sdk_dynamodb::types::ReturnValue::UpdatedNew)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        NameServiceError::storage(format!(
+                            "DynamoDB decrement branches failed: {e}"
+                        ))
+                    })?;
+
+                let new_count = result
+                    .attributes()
+                    .and_then(|attrs| attrs.get(ATTR_BRANCHES))
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok());
+
+                Ok(new_count)
+            }
+            None => Ok(None),
+        }
     }
 }
 

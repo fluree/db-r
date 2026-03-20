@@ -117,6 +117,23 @@ pub fn parse_default_context_value(s: &str) -> Option<ContentId> {
     s.parse::<ContentId>().ok()
 }
 
+/// Records where a branch was created from.
+///
+/// When a branch is created via [`Publisher::create_branch`], this struct captures
+/// the source branch and commit state at the time of branching. This enables ancestry
+/// queries (e.g., determining common ancestors for future merge operations).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchPoint {
+    /// The branch this was created from (e.g., "main")
+    pub source: String,
+
+    /// Content identifier of the source commit at branch time
+    pub commit_id: ContentId,
+
+    /// Transaction time of the source commit at branch time
+    pub t: i64,
+}
+
 /// Nameservice record containing ledger metadata
 ///
 /// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
@@ -164,6 +181,21 @@ pub struct NsRecord {
     /// origins, auth requirements, and replication defaults.
     #[serde(default)]
     pub config_id: Option<ContentId>,
+
+    /// The point at which this branch was created, if it was created via
+    /// [`Publisher::create_branch`]. `None` for the initial branch (typically "main").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_point: Option<BranchPoint>,
+
+    /// Number of child branches that were created from this branch.
+    /// Used for safe deletion: a branch with children cannot be fully purged
+    /// until all children are dropped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub branches: u32,
+}
+
+pub(crate) fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl NsRecord {
@@ -184,6 +216,8 @@ impl NsRecord {
             default_context: None,
             retracted: false,
             config_id: None,
+            branch_point: None,
+            branches: 0,
         }
     }
 
@@ -391,6 +425,59 @@ pub trait NameService: Debug + Send + Sync {
     ///
     /// Used for building in-memory query indexes over the nameservice.
     async fn all_records(&self) -> Result<Vec<NsRecord>>;
+
+    /// List all branches for a given ledger name.
+    ///
+    /// Returns the [`NsRecord`] for every non-retracted branch that shares the
+    /// given base name (e.g., passing `"mydb"` returns records for `"mydb:main"`,
+    /// `"mydb:feature-x"`, etc.).
+    ///
+    /// The default implementation filters [`all_records`](Self::all_records);
+    /// backends may override for efficiency.
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let all = self.all_records().await?;
+        Ok(all
+            .into_iter()
+            .filter(|r| r.name == ledger_name && !r.retracted)
+            .collect())
+    }
+
+    /// Create a new branch for a ledger.
+    ///
+    /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
+    /// [`branch_point`](NsRecord::branch_point) set to record the branch origin.
+    /// The new branch starts at the same commit head as the source, so
+    /// subsequent transactions on either branch will diverge independently.
+    ///
+    /// Also increments the source branch's `branches` count to track
+    /// the child reference for safe deletion.
+    ///
+    /// # Arguments
+    /// * `ledger_name` - The base ledger name (e.g., `"mydb"`)
+    /// * `new_branch` - The branch name to create (e.g., `"feature-x"`)
+    /// * `branch_point` - The source branch state at branch time
+    ///
+    /// # Errors
+    /// Returns [`LedgerAlreadyExists`](NameServiceError::LedgerAlreadyExists)
+    /// if the branch already exists.
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()>;
+
+    /// Drop a branch, purging its nameservice record and decrementing
+    /// the parent branch's child count.
+    ///
+    /// Returns `Some(new_count)` with the parent's updated `branches` count
+    /// if the dropped branch had a parent, or `None` if it had no parent
+    /// (i.e., was the root branch).
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch
+    /// record does not exist.
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
 }
 
 /// Publisher trait for writing nameservice records

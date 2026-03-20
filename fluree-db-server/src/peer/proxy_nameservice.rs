@@ -84,6 +84,8 @@ impl NsRecordResponse {
                 .default_context
                 .and_then(|s| s.parse::<ContentId>().ok()),
             retracted: self.retracted,
+            branch_point: None,
+            branches: 0,
         }
     }
 }
@@ -166,6 +168,25 @@ impl NameService for ProxyNameService {
         // Return empty - this is intentional for proxy mode
         // The peer maintains its own view of known ledgers via SSE events
         Ok(Vec::new())
+    }
+
+    async fn create_branch(
+        &self,
+        _ledger_name: &str,
+        _new_branch: &str,
+        _branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> Result<()> {
+        // Proxy peers forward branch creation to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "create_branch not supported in proxy mode".to_string(),
+        ))
+    }
+
+    async fn drop_branch(&self, _ledger_id: &str) -> Result<Option<u32>> {
+        // Proxy peers forward branch deletion to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "drop_branch not supported in proxy mode".to_string(),
+        ))
     }
 }
 
