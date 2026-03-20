@@ -757,15 +757,31 @@ impl NameService for DynamoDbNameService {
             })
             .collect();
 
-        for chunk in delete_requests.chunks(25) {
-            self.client
-                .batch_write_item()
-                .request_items(&self.table_name, chunk.to_vec())
-                .send()
-                .await
-                .map_err(|e| {
-                    NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
-                })?;
+        let mut remaining: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        remaining.insert(self.table_name.clone(), delete_requests);
+
+        while !remaining.is_empty() {
+            // DynamoDB BatchWriteItem accepts at most 25 items total per call.
+            // We already chunked into ≤25-item batches per table, but after
+            // unprocessed retries the map may have items across tables.
+            let mut builder = self.client.batch_write_item();
+            for (table, items) in &remaining {
+                builder = builder.request_items(table, items.clone());
+            }
+
+            let result = builder.send().await.map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
+            })?;
+
+            remaining = result
+                .unprocessed_items()
+                .cloned()
+                .unwrap_or_default();
+
+            if !remaining.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
 
         // Decrement parent's child count if this branch had a parent
