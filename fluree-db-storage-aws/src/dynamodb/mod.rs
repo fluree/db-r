@@ -774,10 +774,7 @@ impl NameService for DynamoDbNameService {
                 NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
             })?;
 
-            remaining = result
-                .unprocessed_items()
-                .cloned()
-                .unwrap_or_default();
+            remaining = result.unprocessed_items().cloned().unwrap_or_default();
 
             if !remaining.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
