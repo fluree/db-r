@@ -22,8 +22,9 @@ use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
-    NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    dt_compatible, range_with_overlay, Flake, FlakeMeta, FlakeValue, GraphId, IndexType,
+    LedgerSnapshot, NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest,
+    Sid,
 };
 
 use crate::binding::{Batch, Binding};
@@ -1189,7 +1190,7 @@ impl BinaryScanOperator {
         });
 
         flakes.sort_by(cmp);
-        flakes = remove_stale_overlay_flakes(flakes);
+        flakes = resolve_overlay_retractions(flakes);
 
         // Apply equality match (subject/predicate/object).
         if s_sid.is_some() || p_sid.is_some() || self.bound_o.is_some() {
@@ -1234,26 +1235,41 @@ impl BinaryScanOperator {
     }
 }
 
-fn remove_stale_overlay_flakes(flakes: Vec<Flake>) -> Vec<Flake> {
+/// Resolve assert/retract pairs in overlay flakes.
+///
+/// For each distinct fact `(s, p, o, dt, m)`, the latest entry (highest `t`)
+/// determines the current state: if it's an assertion, the fact is kept;
+/// if it's a retraction, the fact is excluded from query results.
+///
+/// Novelty enforces RDF set semantics at write time (`apply_commit`), so
+/// duplicate assertions for the same fact cannot exist. This function only
+/// needs to resolve assert/retract lifecycles, not deduplicate.
+fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
     use std::collections::HashSet;
 
+    // Full fact identity includes metadata (lang tags, list indices).
+    // Two flakes with same (s, p, o, dt) but different `m` are distinct facts.
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct FactKeyRef<'a> {
         s: &'a Sid,
         p: &'a Sid,
         o: &'a FlakeValue,
         dt: &'a Sid,
+        m: &'a Option<FlakeMeta>,
     }
 
     let mut seen: HashSet<FactKeyRef<'_>> = HashSet::new();
     let mut keep = vec![false; flakes.len()];
 
+    // Walk in reverse (highest t first). First occurrence per fact key is
+    // the latest state. Keep it only if it's an assertion.
     for (idx, f) in flakes.iter().enumerate().rev() {
         let key = FactKeyRef {
             s: &f.s,
             p: &f.p,
             o: &f.o,
             dt: &f.dt,
+            m: &f.m,
         };
         if !seen.insert(key) {
             continue;
@@ -1638,7 +1654,7 @@ impl Operator for BinaryScanOperator {
             if !untranslated.is_empty() {
                 let cmp = self.index.comparator();
                 untranslated.sort_by(cmp);
-                untranslated = remove_stale_overlay_flakes(untranslated);
+                untranslated = resolve_overlay_retractions(untranslated);
 
                 // Apply equality match (subject/predicate/object) against pattern constants.
                 let s_sid = match &self.pattern.s {

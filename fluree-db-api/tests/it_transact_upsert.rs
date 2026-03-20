@@ -577,6 +577,103 @@ async fn upsert_json_type_idempotent() {
     );
 }
 
+/// Novelty enforces RDF set semantics: inserting the same triple multiple
+/// times across separate commits should not create duplicate assertions.
+/// Only the first assertion is kept; subsequent duplicates are silently dropped.
+#[tokio::test]
+async fn novelty_dedup_prevents_duplicate_assertions() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree.create_ledger("tx/novelty-dedup:main").await.unwrap();
+
+    let ctx = json!({
+        "ex": "http://example.org/ns/"
+    });
+
+    // Insert "open" 4 times across separate commits
+    let mut ledger = fluree
+        .insert(
+            ledger0,
+            &json!({ "@context": ctx, "@graph": [{"@id": "ex:task1", "ex:status": "open"}] }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    for _ in 0..3 {
+        ledger = fluree
+            .insert(
+                ledger,
+                &json!({ "@context": ctx, "@graph": [{"@id": "ex:task1", "ex:status": "open"}] }),
+            )
+            .await
+            .unwrap()
+            .ledger;
+    }
+
+    // Also add distinct values
+    ledger = fluree
+        .insert(
+            ledger,
+            &json!({ "@context": ctx, "@graph": [{"@id": "ex:task1", "ex:status": "in-progress"}] }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    ledger = fluree
+        .insert(
+            ledger,
+            &json!({ "@context": ctx, "@graph": [{"@id": "ex:task1", "ex:status": "blocked"}] }),
+        )
+        .await
+        .unwrap()
+        .ledger;
+
+    // Novelty dedup: only 3 distinct values should exist, not 6
+    let query = json!({
+        "@context": ctx,
+        "select": ["?status"],
+        "where": { "@id": "ex:task1", "ex:status": "?status" }
+    });
+    let result = support::query_jsonld(&fluree, &ledger, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    let mut statuses: Vec<String> = result
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        vec!["blocked", "in-progress", "open"],
+        "novelty should deduplicate: 4 inserts of 'open' should yield 1 copy"
+    );
+
+    // Upsert replaces all 3 distinct values with 1 new value
+    let upsert_txn = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:task1", "ex:status": "complete"}]
+    });
+    let ledger_after = fluree.upsert(ledger, &upsert_txn).await.unwrap().ledger;
+
+    let post = support::query_jsonld(&fluree, &ledger_after, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger_after.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        post,
+        json!(["complete"]),
+        "upsert should replace all values with single 'complete'. Got: {post}"
+    );
+}
+
 /// Upsert one new value when multiple existing values live in novelty only.
 ///
 /// Regression test: when values are accumulated across multiple transactions

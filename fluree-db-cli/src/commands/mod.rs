@@ -6,6 +6,7 @@ pub mod create;
 pub mod drop;
 pub mod export;
 pub mod history;
+pub mod index;
 pub mod info;
 pub mod init;
 pub mod insert;

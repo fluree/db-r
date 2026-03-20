@@ -19,7 +19,12 @@ This guide covers common patterns for state-dependent updates with both **JSON-L
 └──────────────────────────────────────────────────────┘
 ```
 
-The WHERE clause runs against the **current** database state. If it matches, the bound variables flow into DELETE (to retract old values) and INSERT (to assert new ones). If WHERE returns zero rows — because a FILTER eliminated them or a pattern didn't match — the transaction is a **no-op**: no data changes, no new commit is created, and the ledger time (`t`) does not advance. This follows the SPARQL 1.1 Update specification: INSERT/DELETE templates are instantiated once per solution row from WHERE — zero solutions means zero instantiations, even for all-literal templates.
+The WHERE clause runs against the **current** database state. If it matches, the bound variables flow into DELETE (to retract old values) and INSERT (to assert new ones). If WHERE returns zero rows — because a FILTER eliminated them or a pattern didn't match — DELETE is skipped entirely (nothing to retract) and INSERT templates with unbound variables produce zero flakes.
+
+### Two INSERT behaviors
+
+- **INSERT with variables from WHERE** (e.g., `"@id": "?s"`) — conditional. When WHERE returns zero rows, the variable is unbound and the INSERT produces nothing. Use this for CAS, state machines, and guards.
+- **All-literal INSERT** (e.g., `"@id": "ex:alice"`) — unconditional. Fires even when WHERE returns zero rows. Use this for "delete-if-exists, always insert" patterns.
 
 ---
 

@@ -331,6 +331,16 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::track::run(action, &fluree_dir).await
         }
 
+        Commands::Index { ledger } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::index::run_index(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Reindex { ledger } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::index::run_reindex(ledger.as_deref(), &fluree_dir).await
+        }
+
         #[cfg(feature = "server")]
         Commands::Server { action } => commands::server::run(action, config_path).await,
 

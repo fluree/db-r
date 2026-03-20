@@ -253,6 +253,67 @@ fn read_configured_storage_path(config_dir: &Path) -> Option<String> {
     }
 }
 
+/// Indexing thresholds read from the config file.
+pub struct IndexingThresholds {
+    pub reindex_min_bytes: Option<usize>,
+    pub reindex_max_bytes: Option<usize>,
+}
+
+/// Read `[server.indexing]` thresholds from the config file.
+///
+/// Returns `None` values for fields that are absent or commented-out;
+/// callers fall back to compiled defaults.
+pub fn read_indexing_thresholds(config_dir: &Path) -> IndexingThresholds {
+    let empty = IndexingThresholds {
+        reindex_min_bytes: None,
+        reindex_max_bytes: None,
+    };
+
+    let Some((path, format)) = detect_config_file(config_dir) else {
+        return empty;
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        return empty;
+    };
+
+    match format {
+        ConfigFileFormat::Toml => {
+            let doc: toml::Value = match toml::from_str(&content) {
+                Ok(d) => d,
+                Err(_) => return empty,
+            };
+            let indexing = doc.get("server").and_then(|s| s.get("indexing"));
+            IndexingThresholds {
+                reindex_min_bytes: indexing
+                    .and_then(|i| i.get("reindex_min_bytes"))
+                    .and_then(|v| v.as_integer())
+                    .map(|v| v as usize),
+                reindex_max_bytes: indexing
+                    .and_then(|i| i.get("reindex_max_bytes"))
+                    .and_then(|v| v.as_integer())
+                    .map(|v| v as usize),
+            }
+        }
+        ConfigFileFormat::JsonLd => {
+            let doc: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(d) => d,
+                Err(_) => return empty,
+            };
+            let indexing = doc.get("server").and_then(|s| s.get("indexing"));
+            IndexingThresholds {
+                reindex_min_bytes: indexing
+                    .and_then(|i| i.get("reindex_min_bytes"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize),
+                reindex_max_bytes: indexing
+                    .and_then(|i| i.get("reindex_max_bytes"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize),
+            }
+        }
+    }
+}
+
 /// Prefix map type: prefix -> IRI namespace
 pub type PrefixMap = std::collections::HashMap<String, String>;
 

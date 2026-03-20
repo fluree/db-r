@@ -279,7 +279,14 @@ pub async fn stage(
         .instrument(delete_span)
         .await?;
 
-        // Generate assertions from INSERT templates
+        // Generate assertions from INSERT templates.
+        //
+        // Unlike DELETE (which is skipped on empty WHERE), INSERT templates
+        // are always evaluated. When WHERE returns no solutions, templates
+        // with variables produce 0 flakes (variables are unbound), but
+        // all-literal templates still fire once. This supports the common
+        // "delete-if-exists, always insert" pattern:
+        //   WHERE { ?s :prop ?old } DELETE { ?s :prop ?old } INSERT { :s :prop "new" }
         let insert_span = tracing::debug_span!(
             "insert_gen",
             template_count = txn.insert_templates.len(),
@@ -288,7 +295,11 @@ pub async fn stage(
         let assertions = {
             let _guard = insert_span.enter();
             let assertions = if where_returned_no_rows {
-                vec![]
+                // WHERE returned 0 rows. Use a single empty solution so that
+                // all-literal INSERT templates fire once (templates with variables
+                // will naturally produce 0 flakes since the variables are unbound).
+                let empty_solution = Batch::single_empty();
+                generator.generate_assertions(&txn.insert_templates, &empty_solution)?
             } else {
                 generator.generate_assertions(&txn.insert_templates, &bindings)?
             };

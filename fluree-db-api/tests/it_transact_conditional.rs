@@ -212,16 +212,19 @@ async fn compare_and_swap_stale_version_is_noop() {
     let t_before = ledger.t();
 
     // Client has stale version=1, but current is 3. WHERE won't match → no-op.
-    // All-literal INSERT triples are correctly skipped when WHERE returns 0 rows
-    // (per SPARQL 1.1 Update spec: 0 solutions = 0 template instantiations).
+    //
+    // Pattern: use a WHERE variable in the INSERT subject so that when WHERE
+    // returns 0 rows, the variable is unbound and the INSERT produces 0 flakes.
+    // All-literal INSERTs fire unconditionally (the "delete-if-exists, always
+    // insert" pattern), so CAS must use a variable to be conditional.
     let result = fluree
         .update(
             ledger,
             &json!({
                 "@context": ctx(),
-                "where": { "id": "ex:item", "ex:version": 1, "ex:price": "?oldPrice" },
-                "delete": { "id": "ex:item", "ex:version": 1, "ex:price": "?oldPrice" },
-                "insert": { "id": "ex:item", "ex:version": 2, "ex:price": 24.99 }
+                "where": { "id": "?s", "ex:version": 1, "ex:price": "?oldPrice" },
+                "delete": { "id": "?s", "ex:version": 1, "ex:price": "?oldPrice" },
+                "insert": { "id": "?s", "ex:version": 2, "ex:price": 24.99 }
             }),
         )
         .await
@@ -277,14 +280,15 @@ async fn state_machine_invalid_transition_is_noop() {
     let t_before = ledger.t();
 
     // Try shipped → delivered, but current state is "pending" — no match → no-op.
+    // Use variable subject so INSERT is conditional on WHERE matching.
     let result = fluree
         .update(
             ledger,
             &json!({
                 "@context": ctx(),
-                "where": { "id": "ex:order1", "ex:status": "shipped" },
-                "delete": { "id": "ex:order1", "ex:status": "shipped" },
-                "insert": { "id": "ex:order1", "ex:status": "delivered" }
+                "where": { "id": "?s", "ex:status": "shipped" },
+                "delete": { "id": "?s", "ex:status": "shipped" },
+                "insert": { "id": "?s", "ex:status": "delivered" }
             }),
         )
         .await
@@ -565,6 +569,9 @@ async fn insert_if_not_exists_noop_when_exists() {
     let t_before = ledger.t();
 
     // Try to insert ex:alice again — should be a no-op because she exists.
+    // Use BIND to create variables for the insert values so the INSERT is
+    // conditional on WHERE (FILTER) passing. All-literal INSERTs fire
+    // unconditionally, so conditional creates must use WHERE variables.
     let result = fluree
         .update(
             ledger,
@@ -572,9 +579,10 @@ async fn insert_if_not_exists_noop_when_exists() {
                 "@context": ctx(),
                 "where": [
                     ["optional", { "id": "ex:alice", "schema:name": "?existing" }],
-                    ["filter", "(not (bound ?existing))"]
+                    ["filter", "(not (bound ?existing))"],
+                    ["bind", "?newName", "\"Alice 2\"", "?newAge", "99"]
                 ],
-                "insert": { "id": "ex:alice", "schema:name": "Alice 2", "schema:age": 99 }
+                "insert": { "id": "ex:alice", "schema:name": "?newName", "schema:age": "?newAge" }
             }),
         )
         .await
