@@ -73,5 +73,6 @@ bafybeig9m1 t=1 Initial data load
 
 ## See Also
 
+- [show](show.md) - Show decoded contents of a specific commit
 - [info](info.md) - Show ledger details
 - [history](history.md) - Show entity change history

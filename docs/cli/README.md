@@ -61,6 +61,7 @@ fluree query 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 | [`history`](history.md) | Show change history for an entity |
 | [`export`](export.md) | Export ledger data |
 | [`log`](log.md) | Show commit log |
+| [`show`](show.md) | Show decoded commit contents (flakes with resolved IRIs) |
 
 ### Remote Sync
 

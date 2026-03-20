@@ -182,7 +182,10 @@ mod tests {
 
         // 1 assertion cancels 1 retraction → 3 retractions survive
         assert_eq!(result.len(), 3, "should have 3 surviving retractions");
-        assert!(result.iter().all(|f| !f.op), "all survivors should be retractions");
+        assert!(
+            result.iter().all(|f| !f.op),
+            "all survivors should be retractions"
+        );
     }
 
     /// Multiple duplicate assertions with fewer retractions.
@@ -201,7 +204,10 @@ mod tests {
 
         // 1 retraction cancels 1 assertion → 2 assertions survive
         assert_eq!(result.len(), 2, "should have 2 surviving assertions");
-        assert!(result.iter().all(|f| f.op), "all survivors should be assertions");
+        assert!(
+            result.iter().all(|f| f.op),
+            "all survivors should be assertions"
+        );
     }
 
     /// Mixed scenario: some facts have duplicates, some don't.

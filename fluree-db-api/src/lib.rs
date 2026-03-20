@@ -45,6 +45,7 @@ mod error;
 pub mod explain;
 pub mod format;
 pub mod graph;
+pub mod graph_commit_builder;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
 pub mod graph_source;
@@ -100,6 +101,7 @@ pub use dataset::{
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
 pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use graph::Graph;
+pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
 pub use graph_source::{

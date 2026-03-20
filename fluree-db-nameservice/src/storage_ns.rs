@@ -1068,8 +1068,7 @@ where
                                 // for a freshly created ledger (from the main file
                                 // fallback). Allow if the caller expected that empty
                                 // state; otherwise conflict.
-                                let expected_is_empty =
-                                    expected_id.is_none();
+                                let expected_is_empty = expected_id.is_none();
                                 if !expected_is_empty {
                                     return CasUpdateDecision::Skip(CasResult::Conflict {
                                         actual: None,

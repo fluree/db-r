@@ -291,11 +291,9 @@ impl Novelty {
             let g_id = Self::resolve_flake_g_id(&flake, reverse_graph)?;
 
             // Set semantics: skip duplicate assertions
-            if flake.op {
-                if self.fact_currently_asserted_in_graph(g_id, &flake) {
-                    deduped += 1;
-                    continue;
-                }
+            if flake.op && self.fact_currently_asserted_in_graph(g_id, &flake) {
+                deduped += 1;
+                continue;
             }
 
             let size = flake.size_bytes();
@@ -305,7 +303,10 @@ impl Novelty {
         }
 
         if deduped > 0 {
-            tracing::debug!(deduped, "skipped duplicate assertion flakes (set semantics)");
+            tracing::debug!(
+                deduped,
+                "skipped duplicate assertion flakes (set semantics)"
+            );
         }
 
         // Ensure all graph slots exist

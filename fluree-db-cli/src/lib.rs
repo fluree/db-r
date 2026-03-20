@@ -232,6 +232,11 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::log::run(ledger.as_deref(), oneline, count, &fluree_dir).await
         }
 
+        Commands::Show { commit, ledger } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::show::run(&commit, ledger.as_deref(), &fluree_dir).await
+        }
+
         Commands::Config { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             match action {

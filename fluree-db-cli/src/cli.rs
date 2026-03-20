@@ -360,6 +360,16 @@ pub enum Commands {
         count: Option<usize>,
     },
 
+    /// Show the contents of a commit (decoded flakes with resolved IRIs)
+    Show {
+        /// Commit identifier: t:<N>, hex-digest prefix (min 6 chars), or full CID
+        commit: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]

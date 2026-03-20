@@ -199,6 +199,34 @@ impl IriCompactor {
         &self.compactor
     }
 
+    /// Build the effective prefix → IRI map used by this compactor.
+    ///
+    /// Combines prefixes from the `@context` (term definitions that look like
+    /// namespace prefixes) with auto-derived fallback prefixes. This is the
+    /// authoritative map that matches what `compact_for_display` actually uses.
+    pub fn effective_prefixes(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        // 1. Context term definitions that are simple prefix mappings
+        for (term, entry) in &self.context.terms {
+            if let Some(ref iri) = entry.id {
+                // Only include terms that look like prefix mappings
+                // (IRI ends with / or # — otherwise it's a specific term definition)
+                if iri.ends_with('/') || iri.ends_with('#') {
+                    map.insert(term.clone(), iri.clone());
+                }
+            }
+        }
+
+        // 2. Fallback prefixes (auto-derived for uncovered namespaces)
+        for (ns_iri, prefix_name) in &self.fallback_prefixes {
+            map.entry(prefix_name.clone())
+                .or_insert_with(|| ns_iri.clone());
+        }
+
+        map
+    }
+
     /// Try to compact an IRI using the auto-derived fallback prefixes.
     fn try_fallback(&self, iri: &str) -> Option<String> {
         for (ns_iri, prefix_name) in &self.fallback_prefixes {

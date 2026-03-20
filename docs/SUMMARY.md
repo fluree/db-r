@@ -17,6 +17,7 @@
   - [history](cli/history.md)
   - [export](cli/export.md)
   - [log](cli/log.md)
+  - [show](cli/show.md)
   - [config](cli/config.md)
   - [prefix](cli/prefix.md)
   - [token](cli/token.md)
