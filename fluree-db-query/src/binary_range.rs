@@ -13,8 +13,8 @@ use fluree_db_binary_index::{
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
-    Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions,
-    RangeProvider, RangeTest, Sid,
+    Flake, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions, RangeProvider,
+    RangeTest, Sid,
 };
 
 use crate::binary_scan::index_type_to_sort_order;
@@ -145,7 +145,8 @@ fn binary_range_eq_v3(
     overlay: &dyn OverlayProvider,
 ) -> std::io::Result<Vec<fluree_db_core::Flake>> {
     let order = index_type_to_sort_order(index);
-    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+    let view =
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
 
     // Build filter from bound match components.
     let mut filter = BinaryFilter::default();
@@ -330,7 +331,7 @@ fn binary_range_eq_v3(
     // this map to be decoded back to IRIs when cursor rows are materialized.
     let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
         .into_iter()
-        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .map(|(sid, id)| (id, sid))
         .collect();
 
     // Iterate and decode to Flakes.
@@ -349,7 +350,7 @@ fn binary_range_eq_v3(
             let o_i = batch.o_i.get_or(i, u32::MAX);
 
             // Resolve subject.
-            let s_sid = resolve_sid(s_id, store, dict_novelty)?;
+            let s_sid = resolve_sid(s_id, &view)?;
             // Resolve predicate: persisted dict first, then ephemeral overlay map.
             let p_sid = match store.resolve_predicate_iri(p_id) {
                 Some(iri) => store.encode_iri(iri),
@@ -359,7 +360,7 @@ fn binary_range_eq_v3(
                 },
             };
             // Decode object.
-            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
+            let o_val = view.decode_value(o_type, o_key, p_id)?;
             // Resolve datatype.
             let dt = store
                 .resolve_datatype_sid(o_type)
@@ -413,81 +414,14 @@ fn binary_range_eq_v3(
     Ok(flakes)
 }
 
-/// Resolve a subject integer ID to Sid using persisted dict then DictNovelty.
-fn resolve_sid(
-    s_id: u64,
-    store: &BinaryIndexStore,
-    dict_novelty: &Arc<DictNovelty>,
-) -> std::io::Result<Sid> {
-    // Try persisted first.
-    match store.resolve_subject_iri(s_id) {
-        Ok(iri) => Ok(store.encode_iri(&iri)),
-        Err(_) => {
-            // Try DictNovelty forward lookup: returns (ns_code, suffix).
-            if dict_novelty.is_initialized() {
-                if let Some((ns_code, suffix)) = dict_novelty.subjects.resolve_subject(s_id) {
-                    return Ok(Sid::new(ns_code, suffix));
-                }
-            }
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("subject s_id={s_id} not found in persisted or novelty dict"),
-            ))
-        }
-    }
-}
-
-/// Decode an encoded object `(o_type, o_key)` with DictNovelty fallback.
+/// Resolve a subject integer ID to Sid.
 ///
-/// This is required for overlay-only rows where IDs are assigned by `DictNovelty`
-/// (starting at watermark+1) and do not exist in persisted forward packs yet.
-///
-/// Applies to:
-/// - subject refs / blank nodes (`OType::IRI_REF`): resolve via subject dict → novelty
-/// - string-dict-backed types (`DecodeKind::StringDict` and `DecodeKind::JsonArena`):
-///   resolve via string dict → novelty
-/// - all other types: delegate to `BinaryGraphView::decode_value()`
-fn decode_value_with_novelty(
-    o_type: u16,
-    o_key: u64,
-    p_id: u32,
-    view: &BinaryGraphView,
-    store: &BinaryIndexStore,
-    dict_novelty: &Arc<DictNovelty>,
-) -> std::io::Result<FlakeValue> {
-    let ot = OType::from_u16(o_type);
-    if ot.is_iri_ref() || ot.is_blank_node() {
-        return Ok(FlakeValue::Ref(resolve_sid(o_key, store, dict_novelty)?));
-    }
-
-    match ot.decode_kind() {
-        fluree_db_core::DecodeKind::StringDict | fluree_db_core::DecodeKind::JsonArena => {
-            let str_id = o_key as u32;
-            let wrap = |s: String| {
-                if matches!(ot.decode_kind(), fluree_db_core::DecodeKind::JsonArena) {
-                    FlakeValue::Json(s)
-                } else {
-                    FlakeValue::String(s)
-                }
-            };
-
-            match store.resolve_string_value(str_id) {
-                Ok(s) => Ok(wrap(s)),
-                Err(e) => {
-                    if dict_novelty.is_initialized() {
-                        if let Some(s) = dict_novelty.strings.resolve_string(str_id) {
-                            Ok(wrap(s.to_string()))
-                        } else {
-                            Err(e)
-                        }
-                    } else {
-                        Err(e)
-                    }
-                }
-            }
-        }
-        _ => view.decode_value(o_type, o_key, p_id),
-    }
+/// Delegates to `BinaryGraphView::resolve_subject_sid` which handles
+/// watermark-based novelty routing internally: novel subjects return
+/// `Sid::new(ns_code, suffix)` directly (no IRI string + trie lookup).
+#[inline]
+fn resolve_sid(s_id: u64, view: &BinaryGraphView) -> std::io::Result<Sid> {
+    view.resolve_subject_sid(s_id)
 }
 
 /// Batched lookup for ref-valued predicate objects across many subjects (V3).
@@ -516,6 +450,9 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
     if subjects.is_empty() {
         return Ok(HashMap::new());
     }
+
+    let view =
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
 
     // Resolve predicate.
     let p_id = match store.sid_to_p_id(predicate) {
@@ -675,11 +612,11 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
             // Subject Sid: prefer the original input Sid.
             let subj_sid = match s_id_to_sid.get(&s_id) {
                 Some(s) => s.clone(),
-                None => resolve_sid(s_id, store, dict_novelty)?,
+                None => resolve_sid(s_id, &view)?,
             };
 
             // Resolve object (IRI ref) to Sid.
-            let class_sid = resolve_sid(o_key, store, dict_novelty)?;
+            let class_sid = resolve_sid(o_key, &view)?;
 
             out.entry(subj_sid).or_default().push(class_sid);
         }
@@ -708,6 +645,8 @@ fn batched_refs_overlay_only(
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
     let subject_set: HashSet<&Sid> = subjects.iter().collect();
     let iri_ref_o_type = OType::IRI_REF.as_u16();
+    let view =
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
 
     let mut out: HashMap<Sid, Vec<Sid>> = HashMap::new();
 
@@ -744,7 +683,7 @@ fn batched_refs_overlay_only(
                     return;
                 }
                 // Resolve the class Sid.
-                if let Ok(class_sid) = resolve_sid(op.o_key, store, dict_novelty) {
+                if let Ok(class_sid) = resolve_sid(op.o_key, &view) {
                     out.entry(flake.s.clone()).or_default().push(class_sid);
                 }
             }
@@ -849,7 +788,7 @@ fn binary_range_bounded_v3(
     // Build reverse map for novelty-only predicates: ephemeral p_id → Sid.
     let ephemeral_p_id_to_sid: HashMap<u32, Sid> = ephemeral_preds
         .into_iter()
-        .map(|(iri, id)| (id, store.encode_iri(&iri)))
+        .map(|(sid, id)| (id, sid))
         .collect();
 
     if s_id_set.is_empty() {
@@ -917,7 +856,8 @@ fn binary_range_bounded_v3(
         cursor.set_epoch(overlay.epoch());
     }
 
-    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+    let view =
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();
@@ -938,7 +878,7 @@ fn binary_range_bounded_v3(
             let t = batch.t.get_or(i, 0) as i64;
             let o_i = batch.o_i.get_or(i, u32::MAX);
 
-            let s_sid = resolve_sid(s_id, store, dict_novelty)?;
+            let s_sid = resolve_sid(s_id, &view)?;
 
             // Double-check the subject name is in [start_name, end_name).
             if s_sid.namespace_code == ns_code {
@@ -956,7 +896,7 @@ fn binary_range_bounded_v3(
                     None => continue, // truly unknown — shouldn't happen
                 },
             };
-            let o_val = decode_value_with_novelty(o_type, o_key, p_id, &view, store, dict_novelty)?;
+            let o_val = view.decode_value(o_type, o_key, p_id)?;
             let dt = store
                 .resolve_datatype_sid(o_type)
                 .unwrap_or_else(|| Sid::new(0, ""));

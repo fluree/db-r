@@ -920,16 +920,15 @@ async fn generate_upsert_deletions(
         return Ok(Vec::new());
     }
 
-    // Extract the binary index store (if present) so we can materialize
-    // EncodedLit/EncodedSid bindings returned by the binary scan path.
-    // Without this, upsert silently skips retractions for @json, vector,
-    // and other string-dictionary-backed values (issue #88).
-    let binary_store = ledger
+    // Extract the binary index store and DictNovelty (if present) so we can
+    // materialize EncodedLit/EncodedSid bindings returned by the binary scan path.
+    let brp_ref = ledger
         .snapshot
         .range_provider
         .as_ref()
-        .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
-        .map(|brp| Arc::clone(brp.store()));
+        .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>());
+    let binary_store = brp_ref.map(|brp| Arc::clone(brp.store()));
+    let dict_novelty = brp_ref.map(|brp| Arc::clone(brp.dict_novelty()));
 
     let mut retractions = Vec::new();
 
@@ -1006,10 +1005,15 @@ async fn generate_upsert_deletions(
         };
 
         // Create a materializer for this graph context if a binary store exists.
-        // The graph_id determines which graph partition to decode from.
+        // BinaryGraphView::with_novelty handles watermark routing internally,
+        // so novelty-only string/subject IDs resolve correctly.
         let effective_g_id = ledger_g_id.unwrap_or(0);
         let mut materializer = binary_store.as_ref().map(|store| {
-            let view = BinaryGraphView::new(Arc::clone(store), effective_g_id);
+            let view = BinaryGraphView::with_novelty(
+                Arc::clone(store),
+                effective_g_id,
+                dict_novelty.clone(),
+            );
             Materializer::new(view, JoinKeyMode::SingleLedger)
         });
 

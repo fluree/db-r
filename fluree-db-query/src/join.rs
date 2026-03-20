@@ -16,7 +16,7 @@ use crate::operator::{
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_binary_index::BinaryIndexStore;
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
@@ -475,14 +475,15 @@ impl NestedLoopJoinOperator {
         })
     }
 
-    /// Substitute left row bindings into right pattern
+    /// Substitute left row bindings into right pattern.
     ///
-    /// Substitute left row bindings into right pattern with optional store for encoded binding resolution.
+    /// Uses a novelty-aware `BinaryGraphView` for encoded binding resolution
+    /// so that novelty-only subject/string IDs resolve correctly.
     fn substitute_pattern_with_store(
         &self,
         left_batch: &Batch,
         left_row: usize,
-        store: Option<&BinaryIndexStore>,
+        gv: Option<&BinaryGraphView>,
     ) -> TriplePattern {
         let mut pattern = self.right_pattern.clone();
 
@@ -500,9 +501,9 @@ impl NestedLoopJoinOperator {
                             pattern.s = Ref::Iri(iri.clone());
                         }
                         Binding::EncodedSid { s_id } => {
-                            // Resolve encoded s_id to IRI if store available
-                            if let Some(store) = store {
-                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                            // Resolve encoded s_id to IRI (novelty-aware via BinaryGraphView)
+                            if let Some(gv) = gv {
+                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
                                     pattern.s = Ref::Iri(Arc::from(iri));
                                 }
                             }
@@ -510,8 +511,8 @@ impl NestedLoopJoinOperator {
                         }
                         Binding::EncodedPid { p_id } => {
                             // Predicates are IRIs; allow using an encoded predicate as a subject.
-                            if let Some(store) = store {
-                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                            if let Some(gv) = gv {
+                                if let Some(iri) = gv.store().resolve_predicate_iri(*p_id) {
                                     pattern.s = Ref::Iri(Arc::from(iri));
                                 }
                             }
@@ -534,17 +535,17 @@ impl NestedLoopJoinOperator {
                         Binding::EncodedSid { s_id } => {
                             // Allow cross-position reuse: an IRI bound as a subject/object can
                             // be used to bind a predicate position. Resolve via subject dict.
-                            if let Some(store) = store {
-                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                            if let Some(gv) = gv {
+                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
                                     pattern.p = Ref::Iri(Arc::from(iri));
                                 }
                             }
                             // Otherwise leave as variable
                         }
                         Binding::EncodedPid { p_id } => {
-                            // Resolve encoded p_id to IRI if store available
-                            if let Some(store) = store {
-                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                            // Resolve encoded p_id to IRI
+                            if let Some(gv) = gv {
+                                if let Some(iri) = gv.store().resolve_predicate_iri(*p_id) {
                                     pattern.p = Ref::Iri(Arc::from(iri));
                                 }
                             }
@@ -570,23 +571,28 @@ impl NestedLoopJoinOperator {
                         Binding::EncodedLit {
                             o_kind,
                             o_key,
+                            p_id,
                             dt_id,
+                            lang_id,
                             ..
                         } => {
-                            // Decode encoded literal if store available.
-                            // Use dt_id as o_type when available (V3), fall back to o_kind cast (V5).
-                            if let Some(store) = store {
-                                let o_type = if *dt_id > 0 { *dt_id } else { *o_kind as u16 };
-                                if let Ok(val) = store.decode_value_no_graph(o_type, *o_key) {
+                            // Decode encoded literal (novelty-aware via BinaryGraphView).
+                            // Must use decode_value_from_kind with the correct (o_kind, dt_id, lang_id)
+                            // — dt_id is a DatatypeDictId, NOT an o_type. p_id is needed for
+                            // NUM_BIG per-predicate arena lookup.
+                            if let Some(gv) = gv {
+                                if let Ok(val) = gv.decode_value_from_kind(
+                                    *o_kind, *o_key, *p_id, *dt_id, *lang_id,
+                                ) {
                                     pattern.o = Term::Value(val);
                                 }
                             }
                             // Otherwise leave as variable
                         }
                         Binding::EncodedSid { s_id } => {
-                            // Resolve encoded s_id to IRI if store available (object is a ref)
-                            if let Some(store) = store {
-                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                            // Resolve encoded s_id to IRI (novelty-aware)
+                            if let Some(gv) = gv {
+                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
                                     pattern.o = Term::Iri(Arc::from(iri));
                                 }
                             }
@@ -594,8 +600,8 @@ impl NestedLoopJoinOperator {
                         }
                         Binding::EncodedPid { p_id } => {
                             // Allow using an encoded predicate IRI as an object IRI.
-                            if let Some(store) = store {
-                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                            if let Some(gv) = gv {
+                                if let Some(iri) = gv.store().resolve_predicate_iri(*p_id) {
                                     pattern.o = Term::Iri(Arc::from(iri));
                                 }
                             }
@@ -744,6 +750,10 @@ impl Operator for NestedLoopJoinOperator {
                 ActiveGraphs::Many(graphs) => self.batched_eligible && graphs.len() == 1,
             };
 
+        // Cache novelty-aware graph view once for the entire next_batch call
+        // (avoids repeated Arc::clone + construction per-row).
+        let cached_gv = ctx.graph_view();
+
         // Process until we have output or exhaust input
         loop {
             // 1. Pre-built output from batched flush
@@ -872,7 +882,7 @@ impl Operator for NestedLoopJoinOperator {
                     let bound_pattern = self.substitute_pattern_with_store(
                         left_batch,
                         left_row,
-                        ctx.binary_store.as_deref(),
+                        cached_gv.as_ref(),
                     );
                     let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
                     let mut right_scan =
@@ -892,11 +902,8 @@ impl Operator for NestedLoopJoinOperator {
             } else {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
-                let bound_pattern = self.substitute_pattern_with_store(
-                    left_batch,
-                    left_row,
-                    ctx.binary_store.as_deref(),
-                );
+                let bound_pattern =
+                    self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref());
                 let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
                 let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
                 right_scan.open(ctx).await?;
@@ -1042,6 +1049,7 @@ impl NestedLoopJoinOperator {
     async fn resolve_left_batch_per_row(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let batch_idx = self.ensure_current_batch_stored();
         let batch_len = self.stored_left_batches[batch_idx].len();
+        let cached_gv = ctx.graph_view();
         let mut right_scans = 0usize;
         let mut matched_rows = 0usize;
 
@@ -1062,11 +1070,7 @@ impl NestedLoopJoinOperator {
 
             let bound_pattern = {
                 let left_batch = &self.stored_left_batches[batch_idx];
-                self.substitute_pattern_with_store(
-                    left_batch,
-                    left_row,
-                    ctx.binary_store.as_deref(),
-                )
+                self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref())
             };
             let left_batch = &self.stored_left_batches[batch_idx];
             let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
@@ -1232,6 +1236,7 @@ impl NestedLoopJoinOperator {
         unique_s_ids: &[u64],
         s_id_to_accum: &HashMap<u64, Vec<usize>>,
         scatter: &mut [Vec<Vec<Binding>>],
+        dict_overlay: &Option<crate::dict_overlay::DictOverlay>,
     ) -> Result<()> {
         use fluree_db_binary_index::format::leaf::{
             decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
@@ -1487,14 +1492,54 @@ impl NestedLoopJoinOperator {
                                 }
                             }
                             _ => {
-                                // Fallback: decode eagerly.
-                                let val = store
-                                    .decode_value_v3(o_type_val, o_key_val, p_id, ctx.binary_g_id)
-                                    .map_err(|e| {
-                                        crate::error::QueryError::Internal(format!(
-                                            "decode_value_v3 (batched join): {e}"
-                                        ))
-                                    })?;
+                                // Fallback: decode eagerly, using DictOverlay for
+                                // novelty-aware resolution of string/subject IDs.
+                                use fluree_db_core::o_type::{DecodeKind, OType as OT};
+                                let ot = OT::from_u16(o_type_val);
+                                let val: fluree_db_core::FlakeValue =
+                                    match (ot.decode_kind(), dict_overlay.as_ref()) {
+                                        (DecodeKind::IriRef, Some(ov)) => {
+                                            let iri =
+                                                ov.resolve_subject_iri(o_key_val).map_err(|e| {
+                                                    crate::error::QueryError::Internal(format!(
+                                                        "resolve_subject_iri (batched join): {e}"
+                                                    ))
+                                                })?;
+                                            fluree_db_core::FlakeValue::Ref(store.encode_iri(&iri))
+                                        }
+                                        (DecodeKind::StringDict, Some(ov)) => {
+                                            let s = ov
+                                                .resolve_string_value(o_key_val as u32)
+                                                .map_err(|e| {
+                                                    crate::error::QueryError::Internal(format!(
+                                                        "resolve_string_value (batched join): {e}"
+                                                    ))
+                                                })?;
+                                            fluree_db_core::FlakeValue::String(s)
+                                        }
+                                        (DecodeKind::JsonArena, Some(ov)) => {
+                                            let s = ov
+                                                .resolve_string_value(o_key_val as u32)
+                                                .map_err(|e| {
+                                                    crate::error::QueryError::Internal(format!(
+                                                    "resolve_string_value (batched join json): {e}"
+                                                ))
+                                                })?;
+                                            fluree_db_core::FlakeValue::Json(s)
+                                        }
+                                        _ => store
+                                            .decode_value_v3(
+                                                o_type_val,
+                                                o_key_val,
+                                                p_id,
+                                                ctx.binary_g_id,
+                                            )
+                                            .map_err(|e| {
+                                                crate::error::QueryError::Internal(format!(
+                                                    "decode_value_v3 (batched join): {e}"
+                                                ))
+                                            })?,
+                                    };
                                 match val {
                                     fluree_db_core::FlakeValue::Ref(sid) => Binding::Sid(sid),
                                     other => {
@@ -1634,6 +1679,18 @@ impl NestedLoopJoinOperator {
         let overall_start = Instant::now();
         let store = ctx.binary_store.as_ref().unwrap().clone();
 
+        // Create DictOverlay for novelty-aware decoding in the fallback path.
+        let dict_overlay = ctx.dict_novelty.as_ref().map(|dn| {
+            crate::dict_overlay::DictOverlay::new(
+                BinaryGraphView::with_novelty(
+                    Arc::clone(&store),
+                    ctx.binary_g_id,
+                    Some(Arc::clone(dn)),
+                ),
+                Arc::clone(dn),
+            )
+        });
+
         // Phase 1: Resolve predicate
         let p_id = match self.resolve_batched_predicate(&store) {
             Some(id) => id,
@@ -1683,6 +1740,7 @@ impl NestedLoopJoinOperator {
             &unique_s_ids,
             &s_id_to_accum,
             &mut scatter,
+            &dict_overlay,
         )?;
 
         // Phase 5: Emit output batches

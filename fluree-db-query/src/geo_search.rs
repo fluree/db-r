@@ -19,6 +19,7 @@ use crate::ir::{GeoSearchCenter, GeoSearchPattern};
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
+use crate::sid_iri;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::format::branch::BranchManifest;
@@ -284,15 +285,18 @@ impl GeoSearchOperator {
             }
 
             // Add subject binding: s_id → Sid
+            // DictOverlay delegates to novelty-aware BinaryGraphView::resolve_subject_sid
+            // which returns Sid directly (no IRI string + trie round-trip).
+            // When no overlay, store is the only dict (no novelty), so resolve+encode is safe.
             let subject_sid = match &self.dict_overlay {
                 Some(dict_ov) => dict_ov
                     .resolve_subject_sid(s_id)
                     .map_err(|e| QueryError::Internal(e.to_string()))?,
                 None => {
-                    let subject_iri = store
+                    let iri = store
                         .resolve_subject_iri(s_id)
                         .map_err(|e| QueryError::Internal(e.to_string()))?;
-                    store.encode_iri(&subject_iri)
+                    store.encode_iri(&iri)
                 }
             };
             let subject_pos = *self.out_pos.get(&self.pattern.subject_var).unwrap();
@@ -368,7 +372,7 @@ impl Operator for GeoSearchOperator {
             }
             // Build DictOverlay for ephemeral ID translation.
             if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
-                let gv = BinaryGraphView::new(store.clone(), g_id);
+                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()));
                 let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
                 self.dict_overlay = Some(dict_ov);
             }
@@ -376,7 +380,15 @@ impl Operator for GeoSearchOperator {
 
         // Resolve predicate ID once at open (may allocate ephemeral ID if overlay present).
         self.p_id = match self.dict_overlay.as_mut() {
-            Some(dict_ov) => Some(dict_ov.assign_predicate_id_from_sid(&self.pattern.predicate)),
+            Some(dict_ov) => {
+                let iri = sid_iri::sid_to_full_iri(ctx.snapshot, &self.pattern.predicate)
+                    .ok_or_else(|| {
+                        QueryError::Internal(
+                            "GeoSearch predicate Sid could not be decoded to an IRI".to_string(),
+                        )
+                    })?;
+                Some(dict_ov.assign_predicate_id(iri.as_ref()))
+            }
             None => store.sid_to_p_id(&self.pattern.predicate),
         };
 

@@ -87,7 +87,14 @@ pub fn star_const_ordered_limit_operator(
             }
 
             // Fetch labels for surviving subjects.
-            let pairs = collect_label_pairs(store, g_id, label_p_id, &filtered_subjects, ctx.to_t)?;
+            let pairs = collect_label_pairs(
+                store,
+                g_id,
+                label_p_id,
+                &filtered_subjects,
+                ctx.to_t,
+                ctx.dict_novelty.as_ref(),
+            )?;
             if pairs.is_empty() {
                 return Ok(Some(empty_batch(schema.clone())?));
             }
@@ -347,6 +354,7 @@ fn collect_label_pairs(
     p_id: u32,
     subjects_sorted: &[u64],
     to_t: i64,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 ) -> Result<Vec<(u64, String, Option<String>)>> {
     if subjects_sorted.is_empty() {
         return Ok(Vec::new());
@@ -426,9 +434,29 @@ fn collect_label_pairs(
                     ));
                 }
                 let str_id = batch.o_key.get(i) as u32;
-                let s = store
-                    .resolve_string_value(str_id)
-                    .map_err(|e| QueryError::Internal(format!("resolve_string_value: {e}")))?;
+                // Watermark-based routing: novel IDs (above watermark) resolve
+                // from DictNovelty; persisted IDs delegate to the store.
+                let s = if let Some(dn) = dict_novelty.filter(|dn| dn.is_initialized()) {
+                    if str_id > dn.strings.watermark() {
+                        dn.strings
+                            .resolve_string(str_id)
+                            .map(|s| s.to_string())
+                            .ok_or_else(|| {
+                                QueryError::Internal(format!(
+                                    "resolve_string_value: string id {} not found in DictNovelty",
+                                    str_id
+                                ))
+                            })?
+                    } else {
+                        store.resolve_string_value(str_id).map_err(|e| {
+                            QueryError::Internal(format!("resolve_string_value: {e}"))
+                        })?
+                    }
+                } else {
+                    store
+                        .resolve_string_value(str_id)
+                        .map_err(|e| QueryError::Internal(format!("resolve_string_value: {e}")))?
+                };
                 let lang = if ot.is_lang_string() {
                     store.resolve_lang_tag(ot_u16).map(|t| t.to_string())
                 } else {

@@ -1078,9 +1078,18 @@ impl BinaryIndexStore {
         Ok(0)
     }
 
-    /// Create a `BinaryGraphView` for a specific graph.
+    /// Create a `BinaryGraphView` for a specific graph (no novelty).
     pub fn graph(self: &Arc<Self>, g_id: GraphId) -> BinaryGraphView {
         BinaryGraphView::new(Arc::clone(self), g_id)
+    }
+
+    /// Create a novelty-aware `BinaryGraphView` for a specific graph.
+    pub fn graph_with_novelty(
+        self: &Arc<Self>,
+        g_id: GraphId,
+        dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ) -> BinaryGraphView {
+        BinaryGraphView::with_novelty(Arc::clone(self), g_id, dict_novelty)
     }
 
     /// Find the 1-based lang_id for a language tag string. Returns `None` if not found.
@@ -1184,23 +1193,80 @@ fn compare_prefix_suffix_bytes(
 // ============================================================================
 
 /// Graph-scoped view for V6 store. Binds a specific `g_id` for value decoding.
+///
+/// When `dict_novelty` is present, all decode methods automatically perform
+/// watermark-based routing: IDs at or below the watermark delegate to the
+/// persisted store; IDs above the watermark resolve from `DictNovelty`.
+/// This makes every caller novelty-safe by default.
+///
+/// When `dict_novelty` is `None`, all methods delegate straight to the store
+/// with zero overhead (single well-predicted branch).
 pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
+    dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 }
 
 impl BinaryGraphView {
     pub fn new(store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
-        Self { store, g_id }
+        Self {
+            store,
+            g_id,
+            dict_novelty: None,
+        }
     }
 
+    /// Create a novelty-aware graph view.
+    ///
+    /// When `dict_novelty` is `Some`, decode methods use watermark routing
+    /// so that novel string/subject IDs (above the persisted watermark) are
+    /// resolved from `DictNovelty` instead of failing with "not found in
+    /// forward packs".
+    pub fn with_novelty(
+        store: Arc<BinaryIndexStore>,
+        g_id: GraphId,
+        dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ) -> Self {
+        Self {
+            store,
+            g_id,
+            dict_novelty,
+        }
+    }
+
+    /// Decode a value from `(o_type, o_key)`. Novelty-aware when `dict_novelty`
+    /// is set: dict-backed types (IriRef, StringDict, JsonArena) route through
+    /// watermark checks; all other types delegate directly to the store.
     pub fn decode_value(&self, o_type: u16, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                let ot = OType::from_u16(o_type);
+                match ot.decode_kind() {
+                    DecodeKind::IriRef => {
+                        if let Some(sid) = self.resolve_novel_subject_sid(dn, o_key) {
+                            return Ok(FlakeValue::Ref(sid));
+                        }
+                    }
+                    DecodeKind::StringDict => {
+                        if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                            return Ok(FlakeValue::String(s));
+                        }
+                    }
+                    DecodeKind::JsonArena => {
+                        if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                            return Ok(FlakeValue::Json(s));
+                        }
+                    }
+                    _ => {} // Non-dict types: straight to store
+                }
+            }
+        }
         self.store.decode_value_v3(o_type, o_key, p_id, self.g_id)
     }
 
-    /// Decode a value from `(o_kind, dt_id, lang_id)` fields.
+    /// Decode a value from `(o_kind, dt_id, lang_id)` fields. Novelty-aware.
     ///
-    /// See [`BinaryIndexStore::decode_value_from_kind`] for details.
+    /// See [`BinaryIndexStore::decode_value_from_kind`] for the persisted path.
     pub fn decode_value_from_kind(
         &self,
         o_kind: u8,
@@ -1209,8 +1275,55 @@ impl BinaryGraphView {
         dt_id: u16,
         lang_id: u16,
     ) -> io::Result<FlakeValue> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                // Route dict-backed ObjKinds through watermark checks.
+                if o_kind == ObjKind::REF_ID.as_u8() {
+                    if let Some(sid) = self.resolve_novel_subject_sid(dn, o_key) {
+                        return Ok(FlakeValue::Ref(sid));
+                    }
+                } else if o_kind == ObjKind::LEX_ID.as_u8() {
+                    if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                        return Ok(FlakeValue::String(s));
+                    }
+                } else if o_kind == ObjKind::JSON_ID.as_u8() {
+                    if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                        return Ok(FlakeValue::Json(s));
+                    }
+                }
+            }
+        }
         self.store
             .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id)
+    }
+
+    /// Resolve a subject ID to its full IRI string. Novelty-aware.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                if let Some(result) = self.resolve_novel_subject_iri(dn, s_id) {
+                    return result;
+                }
+            }
+        }
+        self.store.resolve_subject_iri(s_id)
+    }
+
+    /// Resolve a subject ID to a `Sid`. Novelty-aware.
+    ///
+    /// More efficient than `resolve_subject_iri` + `encode_iri` because the
+    /// novelty path returns `Sid::new(ns_code, suffix)` directly without
+    /// building the full IRI string or doing a prefix trie lookup.
+    pub fn resolve_subject_sid(&self, s_id: u64) -> io::Result<Sid> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                if let Some(sid) = self.resolve_novel_subject_sid(dn, s_id) {
+                    return Ok(sid);
+                }
+            }
+        }
+        let iri = self.store.resolve_subject_iri(s_id)?;
+        Ok(self.store.encode_iri(&iri))
     }
 
     pub fn store(&self) -> &BinaryIndexStore {
@@ -1223,6 +1336,76 @@ impl BinaryGraphView {
 
     pub fn g_id(&self) -> GraphId {
         self.g_id
+    }
+
+    /// Check whether this view has DictNovelty attached.
+    pub fn has_dict_novelty(&self) -> bool {
+        self.dict_novelty.is_some()
+    }
+
+    // ── Internal watermark helpers ──────────────────────────────────────
+
+    /// If `s_id` is above the watermark for its namespace, resolve from
+    /// DictNovelty to a `Sid` directly (no IRI string allocation, no prefix
+    /// trie lookup). Returns `None` if the ID is persisted (below watermark).
+    #[inline]
+    fn resolve_novel_subject_sid(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        s_id: u64,
+    ) -> Option<Sid> {
+        use fluree_db_core::subject_id::SubjectId;
+        let sid64 = SubjectId::from_u64(s_id);
+        let wm = dn.subjects.watermark_for_ns(sid64.ns_code());
+        if sid64.local_id() <= wm {
+            return None; // Persisted — let the store handle it
+        }
+        // Novel — resolve (ns_code, suffix) directly to Sid.
+        // This avoids format!("{prefix}{suffix}") + encode_iri() trie lookup.
+        dn.subjects
+            .resolve_subject(s_id)
+            .map(|(ns_code, suffix)| Sid::new(ns_code, suffix))
+    }
+
+    /// If `s_id` is above the watermark, resolve from DictNovelty to a full
+    /// IRI string. Returns `None` if the ID is persisted (below watermark).
+    ///
+    /// Use `resolve_novel_subject_sid` when you need a `Sid` (avoids the
+    /// prefix concatenation).
+    #[inline]
+    fn resolve_novel_subject_iri(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        s_id: u64,
+    ) -> Option<io::Result<String>> {
+        use fluree_db_core::subject_id::SubjectId;
+        let sid64 = SubjectId::from_u64(s_id);
+        let wm = dn.subjects.watermark_for_ns(sid64.ns_code());
+        if sid64.local_id() <= wm {
+            return None; // Persisted — let the store handle it
+        }
+        // Novel — need full IRI string (prefix + suffix).
+        match dn.subjects.resolve_subject(s_id) {
+            Some((ns_code, suffix)) => match self.store.namespace_prefix(ns_code) {
+                Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
+                Err(e) => Some(Err(e)),
+            },
+            None => None, // Not in DictNovelty either — fall through to store
+        }
+    }
+
+    /// If `str_id` is above the string watermark, resolve from DictNovelty.
+    /// Returns `None` if the ID is persisted (below watermark).
+    #[inline]
+    fn resolve_novel_string(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        str_id: u32,
+    ) -> Option<String> {
+        if str_id <= dn.strings.watermark() {
+            return None; // Persisted — let the store handle it
+        }
+        dn.strings.resolve_string(str_id).map(|s| s.to_string())
     }
 }
 
