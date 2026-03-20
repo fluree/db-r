@@ -219,8 +219,11 @@ impl Operator for PredicateGroupCountFirstsOperator {
         })?;
         let g_id = ctx.binary_g_id;
         let p_id = resolve_predicate_id_v6(&self.predicate, binary_index_store)?;
-        let view =
-            fluree_db_binary_index::BinaryGraphView::new(Arc::clone(binary_index_store), g_id);
+        let view = fluree_db_binary_index::BinaryGraphView::with_novelty(
+            Arc::clone(binary_index_store),
+            g_id,
+            ctx.dict_novelty.clone(),
+        );
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -1322,7 +1325,7 @@ fn compute_group_by_object_star_topk(
     }
 
     // Build output columns.
-    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone());
     let dt_count = WellKnownDatatypes::new().xsd_long;
 
     let mut col_o1: Vec<Binding> = Vec::with_capacity(rows.len());

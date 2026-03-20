@@ -284,15 +284,18 @@ impl GeoSearchOperator {
             }
 
             // Add subject binding: s_id → Sid
+            // DictOverlay delegates to novelty-aware BinaryGraphView::resolve_subject_sid
+            // which returns Sid directly (no IRI string + trie round-trip).
+            // When no overlay, store is the only dict (no novelty), so resolve+encode is safe.
             let subject_sid = match &self.dict_overlay {
                 Some(dict_ov) => dict_ov
                     .resolve_subject_sid(s_id)
                     .map_err(|e| QueryError::Internal(e.to_string()))?,
                 None => {
-                    let subject_iri = store
+                    let iri = store
                         .resolve_subject_iri(s_id)
                         .map_err(|e| QueryError::Internal(e.to_string()))?;
-                    store.encode_iri(&subject_iri)
+                    store.encode_iri(&iri)
                 }
             };
             let subject_pos = *self.out_pos.get(&self.pattern.subject_var).unwrap();
@@ -368,7 +371,7 @@ impl Operator for GeoSearchOperator {
             }
             // Build DictOverlay for ephemeral ID translation.
             if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
-                let gv = BinaryGraphView::new(store.clone(), g_id);
+                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()));
                 let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
                 self.dict_overlay = Some(dict_ov);
             }

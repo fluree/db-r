@@ -146,6 +146,7 @@ fn compare_for_minmax(
     }
 
     // General path: materialize then use SPARQL ordering comparator.
+    // BinaryGraphView handles novelty watermark routing internally.
     let am = materialize_for_minmax(a, Some(gv));
     let bm = materialize_for_minmax(b, Some(gv));
     crate::sort::compare_bindings(&am, &bm)
@@ -153,7 +154,6 @@ fn compare_for_minmax(
 
 fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Binding {
     let Some(gv) = gv else {
-        // No store available - return as-is (will use raw ID comparison as fallback)
         return binding.clone();
     };
     let store = gv.store();
@@ -168,6 +168,7 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
             i_val,
             t,
         } => {
+            // BinaryGraphView handles novelty watermark routing internally.
             match gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id) {
                 Ok(fluree_db_core::FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
@@ -190,22 +191,18 @@ fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Bi
                         p_id: Some(*p_id),
                     }
                 }
-                Err(_) => binding.clone(), // Decode error - keep encoded
+                Err(_) => binding.clone(),
             }
         }
-        Binding::EncodedSid { s_id } => {
-            match store.resolve_subject_iri(*s_id) {
-                Ok(iri) => Binding::Sid(store.encode_iri(&iri)),
-                Err(_) => binding.clone(), // Resolution error - keep encoded
-            }
-        }
-        Binding::EncodedPid { p_id } => {
-            match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Binding::Sid(store.encode_iri(iri)),
-                None => binding.clone(), // Resolution error - keep encoded
-            }
-        }
-        _ => binding.clone(), // Already materialized or special type
+        Binding::EncodedSid { s_id } => match gv.resolve_subject_sid(*s_id) {
+            Ok(sid) => Binding::Sid(sid),
+            Err(_) => binding.clone(),
+        },
+        Binding::EncodedPid { p_id } => match store.resolve_predicate_iri(*p_id) {
+            Some(iri) => Binding::Sid(store.encode_iri(iri)),
+            None => binding.clone(),
+        },
+        _ => binding.clone(),
     }
 }
 
@@ -238,7 +235,8 @@ impl AggState {
     /// # Arguments
     ///
     /// * `binding` - The binding value to incorporate
-    /// * `gv` - Optional graph view for materializing encoded bindings (needed for MIN/MAX)
+    /// * `gv` - Optional graph view for materializing encoded bindings (needed for MIN/MAX).
+    ///   When the graph view is novelty-aware, watermark routing is handled internally.
     fn update(&mut self, binding: &Binding, gv: Option<&BinaryGraphView>) {
         match self {
             AggState::Count { n } => {
@@ -539,6 +537,8 @@ pub struct GroupAggregateOperator {
     /// Iterator for emitting results.
     emit_iter: Option<GroupEmitIter>,
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
+    /// When novelty-aware (via `ExecutionContext::graph_view()`), watermark routing
+    /// for novelty-only subject/string IDs is handled internally.
     graph_view: Option<BinaryGraphView>,
     /// Variables required by downstream operators; if set, output is trimmed.
     out_schema: Option<Arc<[VarId]>>,

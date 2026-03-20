@@ -862,13 +862,15 @@ impl BinaryScanOperator {
         let base_len = self.base_schema_len();
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
         let store_arc: Arc<BinaryIndexStore> = Arc::clone(self.store());
-        let view = BinaryGraphView::new(Arc::clone(&store_arc), self.g_id);
-        let dict_overlay = ctx.and_then(|c| c.dict_novelty.clone()).map(|dn| {
-            crate::dict_overlay::DictOverlay::new(
-                BinaryGraphView::new(Arc::clone(&store_arc), self.g_id),
-                dn,
-            )
-        });
+        let dict_novelty_arc = ctx.and_then(|c| c.dict_novelty.clone());
+        let view = BinaryGraphView::with_novelty(
+            Arc::clone(&store_arc),
+            self.g_id,
+            dict_novelty_arc.clone(),
+        );
+        // DictOverlay is no longer needed here for decoding — BinaryGraphView
+        // handles watermark routing internally. DictOverlay is still used for
+        // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.
 
         // Late materialization is safe only when the BinaryIndexStore is authoritative
         // for decoding (no novelty overlay with ephemeral IDs).
@@ -1003,26 +1005,12 @@ impl BinaryScanOperator {
             let needs_o_decode = self.bound_o.is_some()
                 || self.object_bounds.is_some()
                 || (!late_materialize && self.o_var_pos.is_some());
+            // BinaryGraphView::decode_value is novelty-aware: dict-backed types
+            // (IriRef, StringDict, JsonArena) automatically route through
+            // watermark checks when dict_novelty is present.
             let decode_value = |o_type: u16, o_key: u64, p_id: u32| -> Result<FlakeValue> {
-                use fluree_db_core::o_type::{DecodeKind, OType};
-                let ot = OType::from_u16(o_type);
-                match (ot.decode_kind(), dict_overlay.as_ref()) {
-                    (DecodeKind::IriRef, Some(ov)) => {
-                        let iri = ov.resolve_subject_iri(o_key).map_err(|e| {
-                            QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                        })?;
-                        Ok(FlakeValue::Ref(store_arc.encode_iri(&iri)))
-                    }
-                    (DecodeKind::StringDict, Some(ov)) => {
-                        let s = ov.resolve_string_value(o_key as u32).map_err(|e| {
-                            QueryError::Internal(format!("resolve_string_value: {e}"))
-                        })?;
-                        Ok(FlakeValue::String(s))
-                    }
-                    _ => Ok(view
-                        .decode_value(o_type, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?),
-                }
+                view.decode_value(o_type, o_key, p_id)
+                    .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))
             };
 
             let decoded_o = if needs_o_decode {
@@ -1061,15 +1049,12 @@ impl BinaryScanOperator {
                 let binding = if late_materialize {
                     Binding::EncodedSid { s_id }
                 } else {
-                    match dict_overlay.as_ref() {
-                        Some(ov) => {
-                            let iri = ov.resolve_subject_iri(s_id).map_err(|e| {
-                                QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                            })?;
-                            Binding::Sid(store_arc.encode_iri(&iri))
-                        }
-                        None => Binding::Sid(self.resolve_s_id(s_id)?),
-                    }
+                    // BinaryGraphView::resolve_subject_sid is novelty-aware:
+                    // novel subjects return Sid directly without IRI round-trip.
+                    let sid = view
+                        .resolve_subject_sid(s_id)
+                        .map_err(|e| QueryError::Internal(format!("resolve_subject_sid: {e}")))?;
+                    Binding::Sid(sid)
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;

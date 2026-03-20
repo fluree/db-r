@@ -49,6 +49,7 @@ fn materialize_encoded_for_sort(
                 return None;
             }
 
+            // BinaryGraphView handles novelty watermark routing internally.
             let val = gv
                 .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                 .ok()?;
@@ -77,9 +78,10 @@ fn materialize_encoded_for_sort(
             }
         }
         Binding::EncodedSid { s_id } => {
-            // Resolve to Sid for correct namespace/name ordering
-            let iri = gv.store().resolve_subject_iri(*s_id).ok()?;
-            Some(Binding::Sid(gv.store().encode_iri(&iri)))
+            // BinaryGraphView::resolve_subject_sid handles novelty routing
+            // and returns Sid directly (no IRI string + trie lookup).
+            let sid = gv.resolve_subject_sid(*s_id).ok()?;
+            Some(Binding::Sid(sid))
         }
         Binding::EncodedPid { p_id } => {
             // Resolve to Sid for correct namespace/name ordering
@@ -549,6 +551,10 @@ impl Operator for SortOperator {
                 let mut child_next_ms: u64 = 0;
                 let mut build_rows_ms: u64 = 0;
                 let k = self.topk.unwrap_or(0);
+
+                // Build novelty-aware graph view once for the entire drain loop.
+                let cached_gv = ctx.graph_view();
+
                 loop {
                     let next_start = Instant::now();
                     let next = self
@@ -576,11 +582,11 @@ impl Operator for SortOperator {
                                 continue;
                             }
                             let mut row = row;
-                            if let Some(gv) = ctx.graph_view() {
+                            if let Some(ref gv) = cached_gv {
                                 materialize_sort_keys_in_row(
                                     &mut row,
                                     &self.sort_col_indices,
-                                    &gv,
+                                    gv,
                                     self.assume_lex_sorted_string_ids,
                                 );
                             }
@@ -620,11 +626,11 @@ impl Operator for SortOperator {
                 );
                 let _sort_exec_guard = sort_execute_span.enter();
                 if !use_streaming_topk {
-                    if let Some(gv) = ctx.graph_view() {
+                    if let Some(ref gv) = cached_gv {
                         materialize_sort_keys_in_rows(
                             &mut all_rows,
                             &self.sort_col_indices,
-                            &gv,
+                            gv,
                             self.assume_lex_sorted_string_ids,
                         );
                     }

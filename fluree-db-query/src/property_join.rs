@@ -304,9 +304,9 @@ impl PropertyJoinOperator {
             }
             Binding::EncodedSid { s_id } => {
                 // Resolve to canonical IRI for cross-ledger comparison.
-                ctx.binary_store
-                    .as_ref()
-                    .and_then(|store| store.resolve_subject_iri(*s_id).ok())
+                // Novelty-aware via ctx.resolve_subject_iri().
+                ctx.resolve_subject_iri(*s_id)
+                    .and_then(|r| r.ok())
                     .map(|iri| SubjectKey::Iri(Arc::from(iri)))
             }
             _ => None,

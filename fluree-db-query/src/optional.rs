@@ -254,13 +254,14 @@ impl PatternOptionalBuilder {
                         }
                         Binding::EncodedSid { s_id } => {
                             // Late materialized subject ID: resolve to IRI for correlation.
-                            let store = ctx.binary_store.as_ref().ok_or_else(|| {
+                            // Uses novelty-aware BinaryGraphView via ctx.graph_view().
+                            let gv = ctx.graph_view().ok_or_else(|| {
                                 QueryError::Internal(
                                     "OPTIONAL correlation requires binary store for EncodedSid"
                                         .into(),
                                 )
                             })?;
-                            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                            let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
                                 QueryError::Internal(format!("resolve subject iri: {e}"))
                             })?;
                             pattern.s = Ref::Iri(Arc::<str>::from(iri));

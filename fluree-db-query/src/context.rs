@@ -543,7 +543,36 @@ impl<'a> ExecutionContext<'a> {
     /// (each call clones an Arc).
     pub fn graph_view(&self) -> Option<BinaryGraphView> {
         let store = self.binary_store.as_ref()?;
-        Some(store.graph(self.binary_g_id))
+        Some(store.graph_with_novelty(self.binary_g_id, self.dict_novelty.clone()))
+    }
+
+    /// Decode an `EncodedLit` binding value using DictNovelty-aware routing.
+    ///
+    /// Thin wrapper around [`BinaryGraphView::decode_value_from_kind`] which
+    /// handles watermark routing automatically when `dict_novelty` is present.
+    ///
+    /// Returns `None` if no binary store is attached.
+    pub fn decode_encoded_value(
+        &self,
+        o_kind: u8,
+        o_key: u64,
+        p_id: u32,
+        dt_id: u16,
+        lang_id: u16,
+    ) -> Option<std::io::Result<fluree_db_core::FlakeValue>> {
+        let gv = self.graph_view()?;
+        Some(gv.decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id))
+    }
+
+    /// Resolve a subject ID to an IRI, using DictNovelty-aware routing.
+    ///
+    /// Thin wrapper around [`BinaryGraphView::resolve_subject_iri`] which
+    /// handles watermark routing automatically when `dict_novelty` is present.
+    ///
+    /// Returns `None` if no binary store is attached.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> Option<std::io::Result<String>> {
+        let gv = self.graph_view()?;
+        Some(gv.resolve_subject_iri(s_id))
     }
 
     /// Get the default graphs slice without allocation (for scan hot path).
