@@ -10,7 +10,7 @@ use fluree_db_core::{
     ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
     CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
 };
-use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
+use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView, TypeErasedStore};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
@@ -232,6 +232,7 @@ where
             let _g = span.enter();
             ns_registry.take_delta()
         };
+        let has_ns_delta = !ns_delta.is_empty();
 
         // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
         // This must happen before novelty apply so encode_iri() works for graph routing.
@@ -377,16 +378,54 @@ where
             Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 
-        // If the snapshot has an attached BinaryRangeProvider, re-attach it with the
-        // updated `dict_novelty` so overlay translation can resolve newly-introduced
-        // subject/string IDs (otherwise the provider holds a stale Arc).
+        // Re-attach BinaryRangeProvider with updated dict_novelty (always) and
+        // augmented namespace codes (when new namespaces were introduced).
         let mut snapshot = base.snapshot;
-        if let Some(provider) = snapshot.range_provider.as_ref() {
-            if let Some(brp) = provider.as_any().downcast_ref::<BinaryRangeProvider>() {
+        if let Some(provider) = snapshot.range_provider.take() {
+            // Extract the store Arc while the downcast borrow is active.
+            let maybe_store = provider
+                .as_any()
+                .downcast_ref::<BinaryRangeProvider>()
+                .map(|brp| Arc::clone(brp.store()));
+
+            if let Some(store_from_brp) = maybe_store {
+                let new_store = if has_ns_delta {
+                    // New namespaces introduced — augment the binary store's
+                    // PrefixTrie so encode_iri() produces correct Sids.
+                    // Drop both Arc holders to get exclusive access via try_unwrap.
+                    drop(provider);
+                    drop(base.binary_store.take());
+
+                    match Arc::try_unwrap(store_from_brp) {
+                        Ok(mut store) => {
+                            store.augment_namespace_codes(&snapshot.namespace_codes);
+                            Arc::new(store)
+                        }
+                        Err(shared) => {
+                            // External holders (e.g. LedgerManager cache) prevent
+                            // exclusive access. Use unchanged store; the next
+                            // fluree.ledger() reload will augment correctly.
+                            tracing::debug!(
+                                "commit: BinaryIndexStore has external references; \
+                                 namespace augmentation deferred to next reload"
+                            );
+                            shared
+                        }
+                    }
+                } else {
+                    // No new namespaces — just refresh dict_novelty.
+                    drop(provider);
+                    store_from_brp
+                };
+
                 snapshot.range_provider = Some(Arc::new(BinaryRangeProvider::new(
-                    Arc::clone(brp.store()),
+                    Arc::clone(&new_store),
                     Arc::clone(&dict_novelty),
                 )));
+                base.binary_store = Some(TypeErasedStore(new_store));
+            } else {
+                // Not a BinaryRangeProvider — put it back unchanged.
+                snapshot.range_provider = Some(provider);
             }
         }
 
