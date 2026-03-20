@@ -577,6 +577,124 @@ async fn upsert_json_type_idempotent() {
     );
 }
 
+/// Upsert one new value when multiple existing values live in novelty only.
+///
+/// Regression test: when values are accumulated across multiple transactions
+/// and all exist only in novelty (not persisted to the binary index), upsert
+/// must retract ALL existing values — not just one.
+#[tokio::test]
+async fn upsert_retracts_all_novelty_only_multicardinal_values() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree
+        .create_ledger("tx/upsert-novelty-multi:main")
+        .await
+        .unwrap();
+
+    let ctx = json!({
+        "ex": "http://example.org/ns/",
+        "schema": "http://schema.org/"
+    });
+
+    // Transaction 1: insert entity with multiple values
+    let txn1 = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:item", "ex:tag": ["alpha", "beta", "gamma"]}]
+    });
+    let ledger1 = fluree.insert(ledger0, &txn1).await.unwrap().ledger;
+
+    // Transaction 2: add more values via a second insert (still novelty only)
+    let txn2 = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:item", "ex:tag": ["delta", "epsilon"]}]
+    });
+    let ledger2 = fluree.insert(ledger1, &txn2).await.unwrap().ledger;
+
+    // Verify we now have 5 values, all in novelty only
+    let query = json!({
+        "@context": ctx,
+        "select": {"ex:item": ["*"]}
+    });
+    let pre = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    let pre_tags = &pre[0]["ex:tag"];
+    assert_eq!(
+        pre_tags.as_array().unwrap().len(),
+        5,
+        "should have 5 tags before upsert: {pre_tags}"
+    );
+
+    // Upsert with a SINGLE new value — should replace all 5
+    let upsert_txn = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:item", "ex:tag": "zulu"}]
+    });
+    let ledger3 = fluree.upsert(ledger2, &upsert_txn).await.unwrap().ledger;
+
+    // Query: should have exactly ONE tag value now
+    let post = support::query_jsonld(&fluree, &ledger3, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger3.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    let post_tags = &post[0]["ex:tag"];
+    assert_eq!(
+        post_tags,
+        &json!("zulu"),
+        "upsert should replace all 5 novelty-only values with single new value. Got: {post_tags}"
+    );
+}
+
+/// Same test but with values accumulated in a single transaction (array form).
+#[tokio::test]
+async fn upsert_single_value_replaces_array_in_novelty() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree
+        .create_ledger("tx/upsert-array-to-single:main")
+        .await
+        .unwrap();
+
+    let ctx = json!({
+        "ex": "http://example.org/ns/"
+    });
+
+    // Insert 4 values at once
+    let txn = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:item", "ex:color": ["red", "green", "blue", "yellow"]}]
+    });
+    let ledger1 = fluree.insert(ledger0, &txn).await.unwrap().ledger;
+
+    // Upsert with a single value
+    let upsert = json!({
+        "@context": ctx,
+        "@graph": [{"@id": "ex:item", "ex:color": "purple"}]
+    });
+    let ledger2 = fluree.upsert(ledger1, &upsert).await.unwrap().ledger;
+
+    let query = json!({
+        "@context": ctx,
+        "select": {"ex:item": ["*"]}
+    });
+    let result = support::query_jsonld(&fluree, &ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result[0]["ex:color"],
+        json!("purple"),
+        "upsert should replace 4 values with 1. Got: {}",
+        result[0]["ex:color"]
+    );
+}
+
 /// Upsert with @json values after data has been indexed (binary store path).
 ///
 /// When data lives in the binary index (not just novelty), the query engine may

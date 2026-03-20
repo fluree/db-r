@@ -193,6 +193,12 @@ pub async fn stage(
         let new_t = ledger.t() + 1;
         tracing::debug!(new_t = new_t, "computed new transaction t");
 
+        // Track whether this transaction has an explicit WHERE clause, before
+        // execute_where consumes the patterns. Needed to distinguish "WHERE that
+        // matched nothing" (→ no-op) from "no WHERE at all" (→ fire templates once).
+        let has_where_clause = !txn.where_patterns.is_empty()
+            || txn.values.is_some();
+
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
         let where_span = tracing::debug_span!(
@@ -222,6 +228,22 @@ pub async fn stage(
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
 
+        // Per SPARQL 1.1 Update spec (§3.1.3): INSERT/DELETE templates are
+        // instantiated once per solution row from WHERE. Zero solutions = zero
+        // instantiations, regardless of whether templates contain variables or
+        // only literals. This ensures conditional update patterns (CAS, state
+        // machines, guards) correctly produce no-ops when WHERE doesn't match.
+        //
+        // We check this at the stage level rather than in generate_flakes because
+        // a WHERE clause with zero variables produces a Batch with empty schema,
+        // which is indistinguishable from "no WHERE clause" inside generate_flakes.
+        //
+        // Only applies when the transaction has an explicit WHERE clause. Update
+        // transactions with no WHERE (insert-only through the update path) should
+        // still fire templates once.
+        let where_returned_no_rows =
+            has_where_clause && bindings.is_empty();
+
         // Generate retractions from DELETE templates
         let delete_span = tracing::debug_span!(
             "delete_gen",
@@ -229,8 +251,11 @@ pub async fn stage(
             retraction_count = tracing::field::Empty,
         );
         let retractions = async {
-            let mut retractions =
-                generator.generate_retractions(&txn.delete_templates, &bindings)?;
+            let mut retractions = if where_returned_no_rows {
+                vec![]
+            } else {
+                generator.generate_retractions(&txn.delete_templates, &bindings)?
+            };
 
             // DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
@@ -264,17 +289,8 @@ pub async fn stage(
         );
         let assertions = {
             let _guard = insert_span.enter();
-            // For UPDATE transactions, it's common to write:
-            //   WHERE { ... maybe matches ... }
-            //   DELETE { ... bound vars ... }
-            //   INSERT { ... constant assertions ... }
-            //
-            // When WHERE has **no solutions**, DELETE should be a no-op
-            // (handled by bindings.is_empty()), but constant INSERT templates
-            // should still be applied once.
-            let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
-                let empty_solution = Batch::single_empty();
-                generator.generate_assertions(&txn.insert_templates, &empty_solution)?
+            let assertions = if where_returned_no_rows {
+                vec![]
             } else {
                 generator.generate_assertions(&txn.insert_templates, &bindings)?
             };

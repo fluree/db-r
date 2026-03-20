@@ -82,6 +82,7 @@
   - [Insert](transactions/insert.md)
   - [Upsert (“replace mode”)](transactions/upsert.md)
   - [Update (WHERE/DELETE/INSERT)](transactions/update-where-delete-insert.md)
+  - [Conditional updates (atomic / compare-and-swap)](transactions/conditional-updates.md)
   - [Retractions](transactions/retractions.md)
   - [Turtle ingest](transactions/turtle.md)
   - [Signed / credentialed transactions](transactions/signed-transactions.md)
