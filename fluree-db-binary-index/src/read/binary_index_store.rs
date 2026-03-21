@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
 use fluree_db_core::o_type::{DecodeKind, OType};
@@ -63,6 +64,13 @@ fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
         _ => io::ErrorKind::Other,
     };
     io::Error::new(kind, e.to_string())
+}
+
+fn cas_sync_timeout() -> Option<Duration> {
+    std::env::var("FLUREE_CAS_SYNC_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
 }
 
 pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -347,13 +355,26 @@ impl BinaryIndexStore {
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
+        let timeout = cas_sync_timeout();
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
         std::thread::spawn(move || {
             let result = handle.block_on(async {
-                let data = cs
-                    .get(&cid)
-                    .await
-                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?;
+                let fut = cs.get(&cid);
+                let data = if let Some(dur) = timeout {
+                    tokio::time::timeout(dur, fut)
+                        .await
+                        .map_err(|_| {
+                            io::Error::other(format!(
+                                "CAS fetch timed out after {}ms (cid={})",
+                                dur.as_millis(),
+                                cid
+                            ))
+                        })?
+                        .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+                } else {
+                    fut.await
+                        .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+                };
                 cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
                 Ok(data)
             });
@@ -1747,12 +1768,27 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
             .map_err(|_| io::Error::other("range fetch requires a Tokio runtime"))?;
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
+        let timeout = cas_sync_timeout();
         let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
         std::thread::spawn(move || {
             let result = handle.block_on(async {
-                cs.get_range(&cid, range)
-                    .await
-                    .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+                let fut = cs.get_range(&cid, range.clone());
+                if let Some(dur) = timeout {
+                    tokio::time::timeout(dur, fut)
+                        .await
+                        .map_err(|_| {
+                            io::Error::other(format!(
+                                "CAS range fetch timed out after {}ms (cid={}, range={:?})",
+                                dur.as_millis(),
+                                cid,
+                                range
+                            ))
+                        })?
+                        .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+                } else {
+                    fut.await
+                        .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+                }
             });
             let _ = tx.send(result);
         });

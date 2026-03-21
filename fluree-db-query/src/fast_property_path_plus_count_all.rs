@@ -12,7 +12,7 @@
 //! - does NOT include the start node unless there is a non-zero-length cycle back to it
 //! - traverses only IRI_REF edges (ref-only), matching existing property path behavior
 
-use crate::error::{QueryError, Result};
+use crate::error::Result;
 use crate::fast_path_common::{
     build_count_batch, build_iri_adjacency_from_cursor, build_psot_cursor_for_predicate,
     cursor_projection_sid_otype_okey, fast_path_store, reach_count_plus, subject_ref_to_s_id,
@@ -66,13 +66,19 @@ fn count_reachable_plus_from_fixed_subject(
         return Ok(None);
     };
     let Some(p_id) = store.sid_to_p_id(pred_sid) else {
-        return Ok(Some(0));
+        return if ctx.overlay.is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(0))
+        };
     };
 
     let projection = cursor_projection_sid_otype_okey();
-    let mut cursor =
+    let Some(mut cursor) =
         build_psot_cursor_for_predicate(ctx, store, g_id, pred_sid.clone(), p_id, projection)?
-            .ok_or_else(|| QueryError::Internal("property-path+: missing PSOT branch".into()))?;
+    else {
+        return Ok(None);
+    };
 
     let adj = build_iri_adjacency_from_cursor(&mut cursor)?;
     Ok(Some(reach_count_plus(&adj, seed)))
