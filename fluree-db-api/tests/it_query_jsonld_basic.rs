@@ -488,6 +488,51 @@ async fn jsonld_rdf_type_query_analytical() {
 }
 
 #[tokio::test]
+async fn jsonld_graph_crawl_nested_subselect_includes_id() {
+    let (fluree, ledger) = seed_movie_graph().await;
+
+    // Regression: nested ref sub-selects should always include @id for identity,
+    // even when the sub-select requests specific properties (no "*").
+    let q = json!({
+        "@context": ctx(),
+        "select": {"?s": ["*", {"schema:isBasedOn": ["schema:name"]}]},
+        "where": {
+            "@id": "?s",
+            "@type": "schema:Movie"
+        }
+    });
+
+    let result = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .expect("query nested subselect");
+    let json_result = result
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .expect("to_jsonld_async");
+
+    let arr = json_result.as_array().expect("array result");
+    assert_eq!(arr.len(), 1);
+
+    let movie = arr[0].as_object().expect("movie object");
+    let based_on = movie
+        .get("schema:isBasedOn")
+        .expect("schema:isBasedOn present")
+        .as_object()
+        .expect("schema:isBasedOn object");
+
+    assert_eq!(
+        based_on.get("@id").and_then(|v| v.as_str()),
+        Some("wiki:Qbook"),
+        "nested sub-select ref should include @id for identity; got: {based_on:?}"
+    );
+    assert_eq!(
+        based_on.get("schema:name").and_then(|v| v.as_str()),
+        Some("The Hitchhiker's Guide to the Galaxy"),
+        "nested sub-select should still include requested properties; got: {based_on:?}"
+    );
+}
+
+#[tokio::test]
 async fn jsonld_list_order_preservation_context_container() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/jsonld-basic:list-container";
