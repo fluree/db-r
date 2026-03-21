@@ -1023,6 +1023,7 @@ fn build_psot_cursor_for_predicate_group(
         let mut ephemeral_preds: StdHashMap<fluree_db_core::Sid, u32> = StdHashMap::new();
         let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
+        let mut translate_failed = false;
 
         ctx.overlay().for_each_overlay_flake(
             g_id,
@@ -1044,11 +1045,24 @@ fn build_psot_cursor_for_predicate_group(
                 ) {
                     Ok(op) => ops.push(op),
                     Err(e) => {
-                        tracing::warn!(error = %e, "group-by-object star: failed to translate overlay flake");
+                        translate_failed = true;
+                        tracing::error!(
+                            error = %e,
+                            s = %flake.s,
+                            p = %flake.p,
+                            t = flake.t,
+                            op = flake.op,
+                            "group-by-object star: failed to translate overlay flake (correctness requires abort)"
+                        );
                     }
                 }
             },
         );
+        if translate_failed {
+            return Err(QueryError::Internal(
+                "group-by-object star: failed to translate overlay flake".to_string(),
+            ));
+        }
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);

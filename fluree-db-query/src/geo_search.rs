@@ -357,13 +357,47 @@ impl Operator for GeoSearchOperator {
         // Overlay translation + DictOverlay setup (matches ScanOperator's binary path).
         let g_id = ctx.binary_g_id;
         if let Some(ovl) = ctx.overlay {
-            let mut ops = crate::binary_scan::translate_overlay_flakes(
-                ovl,
-                store,
-                ctx.dict_novelty.as_ref(),
-                ctx.to_t,
+            // Correctness first: GeoSearch depends on a predicate+o_type constrained overlay.
+            // If we cannot translate a geo overlay flake into V3 ID space, returning
+            // silently-wrong results is unacceptable; fail the query instead.
+            let mut ops: Vec<OverlayOp> = Vec::new();
+            let mut ephemeral_preds = std::collections::HashMap::new();
+            let mut next_ep = store.predicate_count();
+            let mut translate_failed = false;
+            ovl.for_each_overlay_flake(
                 g_id,
+                fluree_db_core::IndexType::Post,
+                None,
+                None,
+                true,
+                ctx.to_t,
+                &mut |flake| match crate::binary_scan::translate_one_flake_v3_pub(
+                    flake,
+                    store,
+                    ctx.dict_novelty.as_ref(),
+                    &mut ephemeral_preds,
+                    &mut next_ep,
+                ) {
+                    Ok(op) => ops.push(op),
+                    Err(e) => {
+                        // Hard fail: GeoSearch must be exact.
+                        tracing::error!(
+                            error = %e,
+                            s = %flake.s,
+                            p = %flake.p,
+                            t = flake.t,
+                            op = flake.op,
+                            "GeoSearch: failed to translate overlay flake to V3"
+                        );
+                        translate_failed = true;
+                    }
+                },
             );
+            if translate_failed {
+                return Err(QueryError::Internal(
+                    "GeoSearch: failed to translate overlay flake to V3".to_string(),
+                ));
+            }
             let epoch = ovl.epoch();
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, RunSortOrder::Post);
