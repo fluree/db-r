@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use fluree_db_binary_index::format::branch::BranchManifest;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore,
-    ColumnProjection, OverlayOp, RunSortOrder,
+    resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
+    BinaryIndexStore, ColumnProjection, OverlayOp, RunSortOrder,
 };
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::o_type::OType;
@@ -367,6 +367,7 @@ impl Operator for GeoSearchOperator {
             let epoch = ovl.epoch();
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, RunSortOrder::Post);
+                resolve_overlay_ops(&mut ops);
                 self.overlay_ops = ops;
                 self.overlay_epoch = epoch;
             }

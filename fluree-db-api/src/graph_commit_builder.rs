@@ -236,13 +236,8 @@ where
                 .await?
             }
             CommitRef::T(t) => {
-                resolve_t_to_commit_id(
-                    &snapshot.snapshot,
-                    snapshot.novelty.as_ref(),
-                    t,
-                    snapshot.t,
-                )
-                .await?
+                resolve_t_to_commit_id(&snapshot.snapshot, snapshot.novelty.as_ref(), t, snapshot.t)
+                    .await?
             }
         };
 

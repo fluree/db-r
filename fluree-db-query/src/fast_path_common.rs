@@ -1380,6 +1380,7 @@ pub fn build_psot_cursor_for_predicate(
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             cursor.set_overlay_ops(ops);
         }
         cursor.set_epoch(ctx.overlay().epoch());

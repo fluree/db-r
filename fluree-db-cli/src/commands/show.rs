@@ -12,9 +12,9 @@ pub async fn run(commit: &str, ledger: Option<&str>, dirs: &FlureeDir) -> CliRes
 
     // Accepts: "t:N" for transaction number, full CID, or abbreviated hex prefix
     let detail = if let Some(t_str) = commit.strip_prefix("t:") {
-        let t: i64 = t_str.parse().map_err(|_| {
-            CliError::Input(format!("Invalid transaction number: '{}'", t_str))
-        })?;
+        let t: i64 = t_str
+            .parse()
+            .map_err(|_| CliError::Input(format!("Invalid transaction number: '{}'", t_str)))?;
         fluree
             .graph(&ledger_id)
             .commit_t(t)

@@ -14,8 +14,8 @@ use async_trait::async_trait;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::read::column_types::ColumnSet;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch,
-    ColumnProjection, OverlayOp,
+    resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
+    BinaryIndexStore, ColumnBatch, ColumnProjection, OverlayOp,
 };
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
@@ -1644,6 +1644,7 @@ impl Operator for BinaryScanOperator {
 
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, order);
+                resolve_overlay_ops(&mut ops);
                 let epoch = ctx.overlay().epoch();
                 cursor.set_overlay_ops(ops);
                 cursor.set_epoch(epoch);

@@ -320,6 +320,7 @@ fn binary_range_eq_v3(
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, order);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             let epoch = overlay.epoch();
             cursor.set_overlay_ops(ops);
             cursor.set_epoch(epoch);
@@ -584,6 +585,7 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             cursor.set_overlay_ops(ops);
             cursor.set_epoch(overlay.epoch());
         }
