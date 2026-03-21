@@ -1456,8 +1456,7 @@ fn compute_group_by_object_star_topk(
             )));
         }
     }
-    Ok(Some(
-        crate::binding::Batch::new(schema, cols)
-            .map_err(|e| QueryError::execution(format!("batch build: {e}")))?,
-    ))
+    Ok(Some(crate::binding::Batch::new(schema, cols).map_err(
+        |e| QueryError::execution(format!("batch build: {e}")),
+    )?))
 }

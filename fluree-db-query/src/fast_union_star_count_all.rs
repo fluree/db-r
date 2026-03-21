@@ -110,7 +110,8 @@ impl Operator for UnionStarCountAllOperator {
                     // Fall through to the provided fallback operator.
                     let Some(fallback) = &mut self.fallback else {
                         return Err(QueryError::Internal(
-                            "UNION-star COUNT(*) fast-path unavailable and no fallback provided".into(),
+                            "UNION-star COUNT(*) fast-path unavailable and no fallback provided"
+                                .into(),
                         ));
                     };
                     fallback.open(ctx).await?;

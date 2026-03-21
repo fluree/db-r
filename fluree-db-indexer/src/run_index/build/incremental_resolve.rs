@@ -191,11 +191,7 @@ pub async fn resolve_incremental_commits_v6(
         let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
             .await
             .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
-        (
-            subject_tree,
-            string_tree,
-            t0.elapsed().as_millis() as u64,
-        )
+        (subject_tree, string_tree, t0.elapsed().as_millis() as u64)
     };
 
     // 4. Seed SharedResolverState from V6 root.
@@ -271,51 +267,58 @@ pub async fn resolve_incremental_commits_v6(
     };
 
     // 6. Resolve commits into chunk.
-    let (chunk, max_t, delta_commit_size, delta_asserts, delta_retracts, commit_count, t_commit_resolve_ms) =
-        {
-            let t0 = Instant::now();
-            let mut chunk = RebuildChunk::new();
-            let mut max_t: i64 = root.index_t;
-            let mut delta_commit_size = 0u64;
-            let mut delta_asserts = 0u64;
-            let mut delta_retracts = 0u64;
-            let mut commit_count = 0usize;
+    let (
+        chunk,
+        max_t,
+        delta_commit_size,
+        delta_asserts,
+        delta_retracts,
+        commit_count,
+        t_commit_resolve_ms,
+    ) = {
+        let t0 = Instant::now();
+        let mut chunk = RebuildChunk::new();
+        let mut max_t: i64 = root.index_t;
+        let mut delta_commit_size = 0u64;
+        let mut delta_asserts = 0u64;
+        let mut delta_retracts = 0u64;
+        let mut commit_count = 0usize;
 
-            for cid in &commit_cids {
-                let bytes = cs.get(cid).await.map_err(|e| {
+        for cid in &commit_cids {
+            let bytes = cs.get(cid).await.map_err(|e| {
+                IncrementalResolveError::CommitChain(format!(
+                    "failed to load commit {}: {}",
+                    cid, e
+                ))
+            })?;
+            let envelope =
+                fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
                     IncrementalResolveError::CommitChain(format!(
-                        "failed to load commit {}: {}",
+                        "failed to decode envelope for {}: {}",
                         cid, e
                     ))
                 })?;
-                let envelope =
-                    fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
-                        IncrementalResolveError::CommitChain(format!(
-                            "failed to decode envelope for {}: {}",
-                            cid, e
-                        ))
-                    })?;
-                let resolved = shared
-                    .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
-                    .map_err(IncrementalResolveError::Resolve)?;
+            let resolved = shared
+                .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
+                .map_err(IncrementalResolveError::Resolve)?;
 
-                max_t = max_t.max(envelope.t);
-                delta_commit_size += resolved.size;
-                delta_asserts += resolved.asserts as u64;
-                delta_retracts += resolved.retracts as u64;
-                commit_count += 1;
-            }
+            max_t = max_t.max(envelope.t);
+            delta_commit_size += resolved.size;
+            delta_asserts += resolved.asserts as u64;
+            delta_retracts += resolved.retracts as u64;
+            commit_count += 1;
+        }
 
-            (
-                chunk,
-                max_t,
-                delta_commit_size,
-                delta_asserts,
-                delta_retracts,
-                commit_count,
-                t0.elapsed().as_millis() as u64,
-            )
-        };
+        (
+            chunk,
+            max_t,
+            delta_commit_size,
+            delta_asserts,
+            delta_retracts,
+            commit_count,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
 
     tracing::info!(
         commit_count,
@@ -367,17 +370,14 @@ pub async fn resolve_incremental_commits_v6(
         &base_subject_watermarks,
         base_string_watermark,
     )?;
-    let t_reconcile_ms = t_start
-        .elapsed()
-        .as_millis()
-        .saturating_sub(
-            (t_root_load_ms
-                + t_root_decode_ms
-                + t_dict_load_ms
-                + t_seed_arenas_ms
-                + t_walk_chain_ms
-                + t_commit_resolve_ms) as u128,
-        ) as u64;
+    let t_reconcile_ms = t_start.elapsed().as_millis().saturating_sub(
+        (t_root_load_ms
+            + t_root_decode_ms
+            + t_dict_load_ms
+            + t_seed_arenas_ms
+            + t_walk_chain_ms
+            + t_commit_resolve_ms) as u128,
+    ) as u64;
     // Note: the above gives a conservative aggregate since start; we also measure precise
     // step timings below where possible.
 

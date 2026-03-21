@@ -103,28 +103,26 @@ pub fn batched_lookup_predicate_refs(
     let hb_chunk_idx = Arc::clone(&current_chunk_idx);
     let hb_hits = Arc::clone(&subjects_with_hits);
     let hb_started = started_all;
-    let hb = std::thread::spawn(move || {
-        loop {
-            match stop_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                Ok(()) => return,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    let b = hb_scanned_batches.load(std::sync::atomic::Ordering::Relaxed);
-                    let r = hb_scanned_rows.load(std::sync::atomic::Ordering::Relaxed);
-                    let c = hb_chunk_idx.load(std::sync::atomic::Ordering::Relaxed);
-                    let h = hb_hits.load(std::sync::atomic::Ordering::Relaxed);
-                    tracing::info!(
-                        g_id,
-                        p_id,
-                        chunk_idx = c,
-                        scanned_batches = b,
-                        scanned_rows = r,
-                        subjects_with_hits = h,
-                        elapsed_ms = hb_started.elapsed().as_millis() as u64,
-                        "batched_lookup_predicate_refs: heartbeat"
-                    );
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+    let hb = std::thread::spawn(move || loop {
+        match stop_rx.recv_timeout(HEARTBEAT_INTERVAL) {
+            Ok(()) => return,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let b = hb_scanned_batches.load(std::sync::atomic::Ordering::Relaxed);
+                let r = hb_scanned_rows.load(std::sync::atomic::Ordering::Relaxed);
+                let c = hb_chunk_idx.load(std::sync::atomic::Ordering::Relaxed);
+                let h = hb_hits.load(std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    g_id,
+                    p_id,
+                    chunk_idx = c,
+                    scanned_batches = b,
+                    scanned_rows = r,
+                    subjects_with_hits = h,
+                    elapsed_ms = hb_started.elapsed().as_millis() as u64,
+                    "batched_lookup_predicate_refs: heartbeat"
+                );
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
         }
     });
 

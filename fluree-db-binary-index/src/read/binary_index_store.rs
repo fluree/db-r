@@ -96,7 +96,9 @@ where
                     let result = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .map_err(|e| io::Error::other(format!("failed to build helper runtime: {e}")))
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
                         .and_then(|rt| rt.block_on(fut));
                     let _ = tx.send(result);
                 });
@@ -110,7 +112,9 @@ where
                     let result = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .map_err(|e| io::Error::other(format!("failed to build helper runtime: {e}")))
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
                         .and_then(|rt| rt.block_on(fut));
                     let _ = tx.send(result);
                 });
