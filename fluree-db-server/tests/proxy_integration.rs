@@ -1318,7 +1318,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .await
         .expect("reindex should succeed");
     fluree
-        .refresh("leaf:test")
+        .refresh("leaf:test", Default::default())
         .await
         .expect("refresh after reindex should succeed");
 
@@ -1483,7 +1483,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
         .await
         .expect("reindex should succeed");
     fluree
-        .refresh("peer:test")
+        .refresh("peer:test", Default::default())
         .await
         .expect("refresh after reindex should succeed");
 
@@ -1628,7 +1628,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         .await
         .expect("reindex should succeed");
     fluree
-        .refresh("raw:test")
+        .refresh("raw:test", Default::default())
         .await
         .expect("refresh after reindex should succeed");
 
@@ -1883,7 +1883,10 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     // CRITICAL: Refresh the cached ledger so it picks up the new indexed state.
     // Without this, the cached db's dictionary won't have the policy class IRI
     // and policy lookup will fail (returning root policy = no filtering).
-    let refresh_result = fluree.refresh(alias).await.expect("refresh should succeed");
+    let refresh_result = fluree
+        .refresh(alias, Default::default())
+        .await
+        .expect("refresh should succeed");
 
     // Should have reloaded or updated index
     println!("Refresh result after reindex: {:?}", refresh_result);
@@ -2035,7 +2038,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .await
         .expect("reindex");
     fluree
-        .refresh(alias)
+        .refresh(alias, Default::default())
         .await
         .expect("refresh after reindex should succeed");
 

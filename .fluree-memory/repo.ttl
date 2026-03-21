@@ -1087,3 +1087,19 @@ mem:decision-01km88js2zfk0b5465psvc8c35 a mem:Decision ;
     mem:rationale "Database correctness must not depend on flawless overlay translation; when overlay cannot be mapped into binary ID space, the system should choose a slower correct path rather than erroring or producing partial results." ;
     mem:alternatives "Hard-fail the query on translation error; always disable fast paths whenever overlay is present" .
 
+mem:fact-01km81d85z7rfdckve3wqwtszx a mem:Fact ;
+    mem:content "Graph crawl formatting (`fluree-db-api/src/format/graph_crawl.rs`) fetches subject properties via `GraphDbRef::range` (SPOT/POST), which goes through `BinaryRangeProvider` when a binary index is attached. In `binary_range_eq_v3`, overlay flake→V3 `OverlayOp` translation can fail (e.g., `DictNovelty` uninitialized so novelty-only strings/subjects aren't resolvable). Previously those overlay flakes were WARN-logged then DROPPED, which can make properties disappear when a translated retract suppresses the base row but the asserted novelty value fails translation. Fix: keep failed translations as raw `Flake`s and run a post-pass that merges raw overlay flakes with cursor output, resolves per-fact lifecycles (latest t wins; tie prefers retract), drops retracts, then applies RangeOptions." ;
+    mem:tag "binary-range" ;
+    mem:tag "correctness" ;
+    mem:tag "dict-novelty" ;
+    mem:tag "graph-crawl" ;
+    mem:tag "jsonld" ;
+    mem:tag "overlay" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/format/graph_crawl.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_range.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:createdAt "2026-03-21T11:10:11.647303+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
