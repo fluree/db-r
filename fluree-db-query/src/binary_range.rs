@@ -294,6 +294,7 @@ fn binary_range_eq_v3(
     // when the overlay is empty (NoOverlay returns immediately).
     let mut ephemeral_preds = std::collections::HashMap::new();
     let mut next_ep = store.predicate_count();
+    let mut untranslated: Vec<Flake> = Vec::new();
     {
         let mut ops = Vec::new();
 
@@ -313,7 +314,17 @@ fn binary_range_eq_v3(
             ) {
                 Ok(op) => ops.push(op),
                 Err(e) => {
-                    tracing::warn!(error = %e, "V3 range: failed to translate overlay flake");
+                    // Correctness first: never drop overlay flakes on translation failure.
+                    // Keep them as raw flakes and merge in a slower post-pass.
+                    tracing::warn!(
+                        error = %e,
+                        s = %flake.s,
+                        p = %flake.p,
+                        t = flake.t,
+                        op = flake.op,
+                        "V3 range: failed to translate overlay flake; will merge as raw flake"
+                    );
+                    untranslated.push(flake.clone());
                 }
             },
         );
@@ -336,6 +347,7 @@ fn binary_range_eq_v3(
         .collect();
 
     // Iterate and decode to Flakes.
+    let has_untranslated = !untranslated.is_empty();
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();
@@ -382,20 +394,7 @@ fn binary_range_eq_v3(
                 None
             };
 
-            // Apply object bounds if present.
-            if let Some(bounds) = &opts.object_bounds {
-                if !bounds.matches(&o_val) {
-                    continue;
-                }
-            }
-
-            // Offset.
-            if skipped < offset {
-                skipped += 1;
-                continue;
-            }
-
-            flakes.push(fluree_db_core::Flake {
+            let flake = fluree_db_core::Flake {
                 g: None,
                 s: s_sid,
                 p: p_sid,
@@ -404,15 +403,51 @@ fn binary_range_eq_v3(
                 t,
                 op: true,
                 m: meta,
-            });
+            };
 
+            if has_untranslated {
+                flakes.push(flake);
+                continue;
+            }
+
+            // Fast path filters/limits.
+            if let Some(bounds) = &opts.object_bounds {
+                if !bounds.matches(&flake.o) {
+                    continue;
+                }
+            }
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+            flakes.push(flake);
             if flakes.len() >= limit {
                 return Ok(flakes);
             }
         }
     }
 
-    Ok(flakes)
+    if !has_untranslated {
+        return Ok(flakes);
+    }
+
+    // Correctness fallback: merge untranslated overlay flakes (including retracts),
+    // resolve per-fact lifecycles (latest-op-wins), then apply RangeOptions.
+    flakes.extend(untranslated);
+    let mut resolved = resolve_latest_ops_keep_asserts(flakes, index);
+
+    if let Some(bounds) = &opts.object_bounds {
+        resolved.retain(|f| bounds.matches(&f.o));
+    }
+    if offset > 0 && !resolved.is_empty() {
+        let n = offset.min(resolved.len());
+        resolved.drain(0..n);
+    }
+    if resolved.len() > limit {
+        resolved.truncate(limit);
+    }
+
+    Ok(resolved)
 }
 
 /// Resolve a subject integer ID to Sid.
@@ -423,6 +458,47 @@ fn binary_range_eq_v3(
 #[inline]
 fn resolve_sid(s_id: u64, view: &BinaryGraphView) -> std::io::Result<Sid> {
     view.resolve_subject_sid(s_id)
+}
+
+/// Resolve fact lifecycles (latest op wins) and drop retracts.
+///
+/// Used as a correctness fallback when some overlay flakes cannot be translated
+/// into V3 `OverlayOp`s (e.g., missing dict novelty). The input should include
+/// both cursor output flakes (asserts) and raw overlay flakes (asserts/retracts).
+fn resolve_latest_ops_keep_asserts(mut flakes: Vec<Flake>, index: IndexType) -> Vec<Flake> {
+    let cmp = index.comparator();
+    flakes.sort_by(cmp);
+
+    if flakes.len() < 2 {
+        return flakes.into_iter().filter(|f| f.op).collect();
+    }
+
+    let mut out: Vec<Flake> = Vec::with_capacity(flakes.len());
+    let mut i = 0usize;
+    while i < flakes.len() {
+        let mut best = i;
+        i += 1;
+
+        while i < flakes.len() && same_fact_identity(&flakes[best], &flakes[i]) {
+            let cand = &flakes[i];
+            let cur = &flakes[best];
+            if cand.t > cur.t || (cand.t == cur.t && !cand.op && cur.op) {
+                best = i;
+            }
+            i += 1;
+        }
+
+        if flakes[best].op {
+            out.push(flakes[best].clone());
+        }
+    }
+
+    out
+}
+
+#[inline]
+fn same_fact_identity(a: &Flake, b: &Flake) -> bool {
+    a.s == b.s && a.p == b.p && a.o == b.o && a.dt == b.dt && a.m == b.m
 }
 
 /// Batched lookup for ref-valued predicate objects across many subjects (V3).
