@@ -1036,3 +1036,32 @@ mem:fact-01km5pmwnsym5zz3vgpyz4k1rt a mem:Fact ;
     mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
     mem:createdAt "2026-03-20T13:23:38.809931+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01km6e7s84vcmvhrxvtcwgfkka a mem:Fact ;
+    mem:content "`IriCompactor` only auto-derives fallback prefixes when the provided `ParsedContext` is non-empty (has terms/@vocab/@base). If you want compact display IRIs without a user-supplied @context, pass a synthetic context with well-known prefixes so fallback derivation activates for user namespaces too (e.g., `IriCompactor::with_fallback_prefixes(namespace_codes)` pattern). Also ensure any emitted `@context` matches the exact prefixes actually used for compaction (handle collisions/unique suffixes)." ;
+    mem:tag "api" ;
+    mem:tag "commit-detail" ;
+    mem:tag "context" ;
+    mem:tag "iri-compaction" ;
+    mem:tag "json-ld" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/format/iri.rs" ;
+    mem:artifactRef "fluree-db-api/src/graph_commit_builder.rs" ;
+    mem:createdAt "2026-03-20T20:15:55.140833+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:constraint-01km6xq65xn4dzghwnf4wc5ax6 a mem:Constraint ;
+    mem:content "Overlay ops for `BinaryCursor` overlay merge must be (1) sorted by the cursor's `RunSortOrder` and (2) deduplicated by `FactKeyV3` before merging, otherwise duplicate ops for the same fact can cause duplicate outputs or incorrect suppression. Dedup should be deterministic: if multiple ops share the same `FactKeyV3` at the same max `t`, prefer `retract` over `assert` (final state = not present) to avoid nondeterminism from `sort_unstable` tie ordering." ;
+    mem:tag "binary-cursor" ;
+    mem:tag "binary-index" ;
+    mem:tag "correctness" ;
+    mem:tag "dedup" ;
+    mem:tag "overlay" ;
+    mem:tag "sort" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "must" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_cursor.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/types.rs" ;
+    mem:createdAt "2026-03-21T00:46:28.541390+00:00"^^xsd:dateTime .
