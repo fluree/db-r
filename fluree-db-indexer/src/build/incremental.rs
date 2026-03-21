@@ -1505,7 +1505,7 @@ where
                     }
 
                     let total_subjects: usize = subjects_by_graph.values().map(|v| v.len()).sum();
-                    tracing::info!(
+                    tracing::debug!(
                         graphs = subjects_by_graph.len(),
                         total_subjects,
                         rdf_type_p_id,
@@ -1517,7 +1517,7 @@ where
                         }
                         let min_s = sids[0];
                         let max_s = *sids.last().unwrap_or(&min_s);
-                        tracing::info!(
+                        tracing::debug!(
                             g_id = g,
                             subjects = sids.len(),
                             min_s_id = min_s,

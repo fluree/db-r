@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
+use std::time::Instant;
 
 use fluree_db_binary_index::dict::DictTreeReader;
 use fluree_db_binary_index::format::index_root::IndexRoot;
@@ -143,15 +144,27 @@ pub async fn resolve_incremental_commits_v6(
     cs: Arc<dyn ContentStore>,
     config: IncrementalResolveConfig,
 ) -> Result<IncrementalNovelty, IncrementalResolveError> {
+    let t_start = Instant::now();
+
     // 1. Load and decode IndexRoot.
-    let root_bytes = cs.get(&config.base_root_id).await.map_err(|e| {
-        IncrementalResolveError::RootLoad(format!(
-            "failed to load FIR6 root {}: {}",
-            config.base_root_id, e
-        ))
-    })?;
-    let root = IndexRoot::decode(&root_bytes)
-        .map_err(|e| IncrementalResolveError::RootLoad(format!("failed to decode FIR6: {}", e)))?;
+    let (root_bytes, t_root_load_ms) = {
+        let t0 = Instant::now();
+        let bytes = cs.get(&config.base_root_id).await.map_err(|e| {
+            IncrementalResolveError::RootLoad(format!(
+                "failed to load FIR6 root {}: {}",
+                config.base_root_id, e
+            ))
+        })?;
+        (bytes, t0.elapsed().as_millis() as u64)
+    };
+
+    let (root, t_root_decode_ms) = {
+        let t0 = Instant::now();
+        let root = IndexRoot::decode(&root_bytes).map_err(|e| {
+            IncrementalResolveError::RootLoad(format!("failed to decode FIR6: {}", e))
+        })?;
+        (root, t0.elapsed().as_millis() as u64)
+    };
 
     tracing::info!(
         index_t = root.index_t,
@@ -170,12 +183,20 @@ pub async fn resolve_incremental_commits_v6(
     let o_type_registry = OTypeRegistry::new(&custom_dt_iris);
 
     // 3. Load subject + string reverse dict trees (same DictRefs as V5).
-    let subject_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, None)
-        .await
-        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}")))?;
-    let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
-        .await
-        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
+    let (subject_tree, string_tree, t_dict_load_ms) = {
+        let t0 = Instant::now();
+        let subject_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, None)
+            .await
+            .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}")))?;
+        let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
+            .await
+            .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
+        (
+            subject_tree,
+            string_tree,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
 
     // 4. Seed SharedResolverState from V6 root.
     let mut shared = SharedResolverState::from_index_root(&root)?;
@@ -186,79 +207,115 @@ pub async fn resolve_incremental_commits_v6(
     shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
 
     // 4a. Pre-seed numbig arenas.
-    let mut base_numbig_counts: HashMap<(u16, u32), usize> = HashMap::new();
-    for ga in &root.graph_arenas {
-        if ga.numbig.is_empty() {
-            continue;
-        }
-        let nb_map = shared.numbigs.entry(ga.g_id).or_default();
-        for (p_id, cid) in &ga.numbig {
-            let bytes = cs.get(cid).await.map_err(|e| {
-                IncrementalResolveError::RootLoad(format!(
-                    "numbig arena load for g_id={}, p_id={}: {}",
-                    ga.g_id, p_id, e
-                ))
-            })?;
-            let arena = fluree_db_binary_index::arena::numbig::read_numbig_arena_from_bytes(&bytes)
-                .map_err(|e| {
-                    IncrementalResolveError::RootLoad(format!("numbig arena decode: {}", e))
-                })?;
-            base_numbig_counts.insert((ga.g_id, *p_id), arena.len());
-            nb_map.insert(*p_id, arena);
-        }
-    }
+    let (base_numbig_counts, base_vector_counts, t_seed_arenas_ms) = {
+        let t0 = Instant::now();
 
-    // 4b. Collect base vector counts.
-    let mut base_vector_counts: HashMap<(u16, u32), u32> = HashMap::new();
-    for ga in &root.graph_arenas {
-        for vref in &ga.vectors {
-            let manifest_bytes = cs.get(&vref.manifest).await.map_err(|e| {
-                IncrementalResolveError::RootLoad(format!(
-                    "vector manifest load for g_id={}, p_id={}: {}",
-                    ga.g_id, vref.p_id, e
-                ))
-            })?;
-            let manifest =
-                fluree_db_binary_index::arena::vector::read_vector_manifest(&manifest_bytes)
-                    .map_err(|e| {
-                        IncrementalResolveError::RootLoad(format!("vector manifest decode: {}", e))
-                    })?;
-            base_vector_counts.insert((ga.g_id, vref.p_id), manifest.total_count);
+        let mut base_numbig_counts: HashMap<(u16, u32), usize> = HashMap::new();
+        for ga in &root.graph_arenas {
+            if ga.numbig.is_empty() {
+                continue;
+            }
+            let nb_map = shared.numbigs.entry(ga.g_id).or_default();
+            for (p_id, cid) in &ga.numbig {
+                let bytes = cs.get(cid).await.map_err(|e| {
+                    IncrementalResolveError::RootLoad(format!(
+                        "numbig arena load for g_id={}, p_id={}: {}",
+                        ga.g_id, p_id, e
+                    ))
+                })?;
+                let arena =
+                    fluree_db_binary_index::arena::numbig::read_numbig_arena_from_bytes(&bytes)
+                        .map_err(|e| {
+                            IncrementalResolveError::RootLoad(format!("numbig arena decode: {}", e))
+                        })?;
+                base_numbig_counts.insert((ga.g_id, *p_id), arena.len());
+                nb_map.insert(*p_id, arena);
+            }
         }
-    }
+
+        // 4b. Collect base vector counts.
+        let mut base_vector_counts: HashMap<(u16, u32), u32> = HashMap::new();
+        for ga in &root.graph_arenas {
+            for vref in &ga.vectors {
+                let manifest_bytes = cs.get(&vref.manifest).await.map_err(|e| {
+                    IncrementalResolveError::RootLoad(format!(
+                        "vector manifest load for g_id={}, p_id={}: {}",
+                        ga.g_id, vref.p_id, e
+                    ))
+                })?;
+                let manifest =
+                    fluree_db_binary_index::arena::vector::read_vector_manifest(&manifest_bytes)
+                        .map_err(|e| {
+                            IncrementalResolveError::RootLoad(format!(
+                                "vector manifest decode: {}",
+                                e
+                            ))
+                        })?;
+                base_vector_counts.insert((ga.g_id, vref.p_id), manifest.total_count);
+            }
+        }
+
+        (
+            base_numbig_counts,
+            base_vector_counts,
+            t0.elapsed().as_millis() as u64,
+        )
+    };
 
     // 5. Walk commit chain (commit format is version-independent).
-    let commit_cids =
-        walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
+    let (commit_cids, t_walk_chain_ms) = {
+        let t0 = Instant::now();
+        let cids =
+            walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
+        (cids, t0.elapsed().as_millis() as u64)
+    };
 
     // 6. Resolve commits into chunk.
-    let mut chunk = RebuildChunk::new();
-    let mut max_t: i64 = root.index_t;
-    let mut delta_commit_size = 0u64;
-    let mut delta_asserts = 0u64;
-    let mut delta_retracts = 0u64;
-    let mut commit_count = 0usize;
+    let (chunk, max_t, delta_commit_size, delta_asserts, delta_retracts, commit_count, t_commit_resolve_ms) =
+        {
+            let t0 = Instant::now();
+            let mut chunk = RebuildChunk::new();
+            let mut max_t: i64 = root.index_t;
+            let mut delta_commit_size = 0u64;
+            let mut delta_asserts = 0u64;
+            let mut delta_retracts = 0u64;
+            let mut commit_count = 0usize;
 
-    for cid in &commit_cids {
-        let bytes = cs.get(cid).await.map_err(|e| {
-            IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
-        })?;
-        let envelope = fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
-            IncrementalResolveError::CommitChain(format!(
-                "failed to decode envelope for {}: {}",
-                cid, e
-            ))
-        })?;
-        let resolved = shared
-            .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
-            .map_err(IncrementalResolveError::Resolve)?;
+            for cid in &commit_cids {
+                let bytes = cs.get(cid).await.map_err(|e| {
+                    IncrementalResolveError::CommitChain(format!(
+                        "failed to load commit {}: {}",
+                        cid, e
+                    ))
+                })?;
+                let envelope =
+                    fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
+                        IncrementalResolveError::CommitChain(format!(
+                            "failed to decode envelope for {}: {}",
+                            cid, e
+                        ))
+                    })?;
+                let resolved = shared
+                    .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
+                    .map_err(IncrementalResolveError::Resolve)?;
 
-        max_t = max_t.max(envelope.t);
-        delta_commit_size += resolved.size;
-        delta_asserts += resolved.asserts as u64;
-        delta_retracts += resolved.retracts as u64;
-        commit_count += 1;
-    }
+                max_t = max_t.max(envelope.t);
+                delta_commit_size += resolved.size;
+                delta_asserts += resolved.asserts as u64;
+                delta_retracts += resolved.retracts as u64;
+                commit_count += 1;
+            }
+
+            (
+                chunk,
+                max_t,
+                delta_commit_size,
+                delta_asserts,
+                delta_retracts,
+                commit_count,
+                t0.elapsed().as_millis() as u64,
+            )
+        };
 
     tracing::info!(
         commit_count,
@@ -272,6 +329,17 @@ pub async fn resolve_incremental_commits_v6(
     let base_string_watermark = root.string_watermark;
 
     if chunk.records.is_empty() {
+        tracing::info!(
+            root_load_ms = t_root_load_ms,
+            root_decode_ms = t_root_decode_ms,
+            dict_load_ms = t_dict_load_ms,
+            seed_arenas_ms = t_seed_arenas_ms,
+            walk_chain_ms = t_walk_chain_ms,
+            commit_resolve_ms = t_commit_resolve_ms,
+            total_ms = t_start.elapsed().as_millis() as u64,
+            commit_count,
+            "V6 incremental resolve: timings (no records)"
+        );
         return Ok(IncrementalNovelty {
             records: Vec::new(),
             ops: Vec::new(),
@@ -299,8 +367,22 @@ pub async fn resolve_incremental_commits_v6(
         &base_subject_watermarks,
         base_string_watermark,
     )?;
+    let t_reconcile_ms = t_start
+        .elapsed()
+        .as_millis()
+        .saturating_sub(
+            (t_root_load_ms
+                + t_root_decode_ms
+                + t_dict_load_ms
+                + t_seed_arenas_ms
+                + t_walk_chain_ms
+                + t_commit_resolve_ms) as u128,
+        ) as u64;
+    // Note: the above gives a conservative aggregate since start; we also measure precise
+    // step timings below where possible.
 
     // 8. Remap fulltext hook entries.
+    let t0 = Instant::now();
     let fulltext_string_bytes: HashMap<u32, Vec<u8>> = {
         let chunk_forward = chunk.strings.forward_entries();
         if let Some(ref mut ft) = shared.fulltext_hook {
@@ -328,12 +410,15 @@ pub async fn resolve_incremental_commits_v6(
             HashMap::new()
         }
     };
+    let t_remap_fulltext_ms = t0.elapsed().as_millis() as u64;
 
     // 9. Remap all V1 records in-place, then convert to V2.
+    let t0 = Instant::now();
     let mut v1_records = chunk.records;
     for record in &mut v1_records {
         remap_record(record, &reconcile.subject_remap, &reconcile.string_remap)?;
     }
+    let t_remap_records_ms = t0.elapsed().as_millis() as u64;
 
     // Offset vector handles.
     if !base_vector_counts.is_empty() {
@@ -349,16 +434,40 @@ pub async fn resolve_incremental_commits_v6(
 
     // 10. Sort V1 records by (g_id, SPOT) — needed for the conversion step
     //     which preserves sort order.
+    let t0 = Instant::now();
     let spot_cmp = cmp_for_order(RunSortOrder::Spot);
     v1_records.sort_unstable_by(|a, b| a.g_id.cmp(&b.g_id).then_with(|| spot_cmp(a, b)));
+    let t_sort_ms = t0.elapsed().as_millis() as u64;
 
     // 11. Convert V1 → V2 + extract ops.
+    let t0 = Instant::now();
     let mut records = Vec::with_capacity(v1_records.len());
     let mut ops = Vec::with_capacity(v1_records.len());
     for v1 in &v1_records {
         records.push(RunRecordV2::from_v1(v1, &o_type_registry));
         ops.push(v1.op);
     }
+    let t_convert_ms = t0.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        root_load_ms = t_root_load_ms,
+        root_decode_ms = t_root_decode_ms,
+        dict_load_ms = t_dict_load_ms,
+        seed_arenas_ms = t_seed_arenas_ms,
+        walk_chain_ms = t_walk_chain_ms,
+        commit_resolve_ms = t_commit_resolve_ms,
+        reconcile_ms = t_reconcile_ms,
+        remap_fulltext_ms = t_remap_fulltext_ms,
+        remap_records_ms = t_remap_records_ms,
+        sort_ms = t_sort_ms,
+        convert_ms = t_convert_ms,
+        total_ms = t_start.elapsed().as_millis() as u64,
+        commit_count,
+        record_count = records.len(),
+        new_subjects = reconcile.new_subjects.len(),
+        new_strings = reconcile.new_strings.len(),
+        "V6 incremental resolve: timings"
+    );
 
     Ok(IncrementalNovelty {
         records,
