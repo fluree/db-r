@@ -24,7 +24,7 @@ Create your first ledger to store data. Learn how to:
 
 Start writing data to your ledger. Learn how to:
 - Insert new entities (basic inserts)
-- Upsert data (replace mode for idempotent writes)
+- Upsert data (idempotent transactions; predicate-level replacement for supplied predicates)
 - Update existing data (WHERE/DELETE/INSERT pattern)
 - Understand JSON-LD transaction format
 

@@ -1,6 +1,6 @@
-//! Write forwarding to transaction server
+//! Transaction forwarding to transaction server
 //!
-//! Forwards write requests from peer to the transaction server,
+//! Forwards transaction requests from peer to the transaction server,
 //! preserving headers (except hop-by-hop) and returning the response.
 
 use axum::body::Body;

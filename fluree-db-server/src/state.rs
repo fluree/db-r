@@ -455,7 +455,7 @@ pub struct AppState {
     /// Peer state tracking remote watermarks (peer mode only)
     pub peer_state: Option<Arc<PeerState>>,
 
-    /// HTTP client for write forwarding (peer mode only)
+    /// HTTP client for transaction forwarding (peer mode only)
     pub forwarding_client: Option<Arc<ForwardingClient>>,
 
     /// Counter for ledger refreshes (for testing/metrics)

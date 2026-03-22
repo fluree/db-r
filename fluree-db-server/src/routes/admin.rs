@@ -347,9 +347,9 @@ pub async fn openapi_spec() -> Result<Json<serde_json::Value>> {
                     "description": "Execute JSON-LD or SPARQL queries"
                 }
             },
-            "/v1/fluree/transact": {
+            "/v1/fluree/update": {
                 "post": {
-                    "summary": "Execute a transaction"
+                    "summary": "Execute an update transaction"
                 }
             }
         }

@@ -80,10 +80,10 @@
   - [Explain plans](query/explain.md)
   - [Tracking and fuel limits](query/tracking-and-fuel.md)
 
-- [Transactions / writes](transactions/README.md)
+- [Transactions](transactions/README.md)
   - [Overview](transactions/overview.md)
   - [Insert](transactions/insert.md)
-  - [Upsert (“replace mode”)](transactions/upsert.md)
+  - [Upsert](transactions/upsert.md)
   - [Update (WHERE/DELETE/INSERT)](transactions/update-where-delete-insert.md)
   - [Conditional updates (atomic / compare-and-swap)](transactions/conditional-updates.md)
   - [Retractions](transactions/retractions.md)

@@ -49,7 +49,7 @@ Fallbacks (strongly recommended):
 
 - `POST {api_base_url}/push/*ledger`
 
-This is not storage-proxy replication; it is a write operation and should be authorized like normal writes.
+This is not storage-proxy replication; it is a transaction operation and should be authorized like normal transactions.
 
 The CLI sends an `Idempotency-Key` header derived from the pushed commit bytes so servers can safely replay a successful push result if the client retries after a timeout.
 
