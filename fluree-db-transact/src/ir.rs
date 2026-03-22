@@ -22,8 +22,19 @@ use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
 use fluree_db_query::{VarId, VarRegistry};
+use fluree_db_sparql::ast::{GraphPattern as SparqlGraphPattern, Prologue as SparqlPrologue};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+
+/// SPARQL WHERE clause for Update operations (parsed from SPARQL UPDATE).
+///
+/// Stored in the transaction IR so staging can lower it using the current ledger
+/// snapshot as the IRI encoder, reusing the same query engine as SELECT queries.
+#[derive(Debug, Clone)]
+pub struct SparqlWhereClause {
+    pub prologue: SparqlPrologue,
+    pub pattern: SparqlGraphPattern,
+}
 
 /// Type of transaction operation
 ///
@@ -76,6 +87,13 @@ pub struct Txn {
     /// This reuses the query parser's full pattern support (OPTIONAL, UNION, etc.).
     pub where_patterns: Vec<UnresolvedPattern>,
 
+    /// Optional SPARQL WHERE clause (for SPARQL UPDATE Modify operations).
+    ///
+    /// When present, staging executes this WHERE clause using the SPARQL lowering
+    /// pipeline and the shared query engine. `where_patterns` is typically empty
+    /// in this case.
+    pub sparql_where: Option<SparqlWhereClause>,
+
     /// Templates for flakes to delete
     pub delete_templates: Vec<TripleTemplate>,
 
@@ -118,6 +136,7 @@ impl Txn {
         Self {
             txn_type: TxnType::Insert,
             where_patterns: Vec::new(),
+            sparql_where: None,
             delete_templates: Vec::new(),
             insert_templates: Vec::new(),
             values: None,

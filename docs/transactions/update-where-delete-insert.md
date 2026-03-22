@@ -33,6 +33,32 @@ This:
 2. Deletes that age value
 3. Inserts the new age value
 
+## WHERE clause capabilities
+
+The update transaction `where` clause uses the **same pattern grammar as JSON-LD queries**, so you can use rich patterns like OPTIONAL, UNION, FILTER, VALUES, and subqueries.
+
+Two common forms:
+
+- **Node-map**: a single object (simple triple patterns)
+- **Array**: a sequence of node-maps plus special forms (recommended for anything beyond basic matching)
+
+Supported special forms inside the `where` array:
+
+- `["filter", <expr>]`
+- `["bind", "?var", <expr>]` (may include multiple var/expr pairs)
+- `["optional", <pattern>]`
+- `["union", <pattern>, <pattern>, ...]`
+- `["minus", <pattern>]`
+- `["exists", <pattern>]` / `["not-exists", <pattern>]`
+- `["values", <values-clause>]`
+- `["query", <subquery>]` (subquery can use `select`, `groupBy`, aggregates like `(max ?x)`, etc.)
+- `["graph", <graph-name>, <pattern>]`
+
+Expression format for `filter`/`bind` supports either:
+
+- **Data expressions** like `["+", "?x", 1]`, `["and", [">=", "?age", 18], ["=", "?status", "pending"]]`
+- **S-expressions** like `"(+ ?x 1)"`
+
 ## Simple Property Update
 
 Update a single property value:
@@ -86,9 +112,9 @@ Only update if condition is met:
 {
   "where": [
     { "@id": "ex:alice", "schema:age": "?age" },
-    { "@id": "ex:alice", "ex:status": "?status" }
+    { "@id": "ex:alice", "ex:status": "?status" },
+    ["filter", ["and", [">=", "?age", 18], ["=", "?status", "pending"]]]
   ],
-  "filter": "?age >= 18 && ?status == 'pending'",
   "delete": [
     { "@id": "ex:alice", "ex:status": "?status" }
   ],
@@ -131,17 +157,15 @@ Update based on relationships:
 {
   "where": [
     { "@id": "?employee", "schema:worksFor": "ex:company-a" },
-    { "@id": "?employee", "ex:salary": "?oldSalary" }
+    { "@id": "?employee", "ex:salary": "?oldSalary" },
+    ["bind", "?newSalary", ["*", "?oldSalary", 1.1]]
   ],
   "delete": [
     { "@id": "?employee", "ex:salary": "?oldSalary" }
   ],
   "insert": [
     { "@id": "?employee", "ex:salary": "?newSalary" }
-  ],
-  "bind": {
-    "?newSalary": "?oldSalary * 1.1"
-  }
+  ]
 }
 ```
 
@@ -154,7 +178,8 @@ Use variables from WHERE in INSERT with transformations:
 ```json
 {
   "where": [
-    { "@id": "ex:product-123", "ex:price": "?currentPrice" }
+    { "@id": "ex:product-123", "ex:price": "?currentPrice" },
+    ["bind", "?newPrice", ["*", "?currentPrice", 0.9]]
   ],
   "delete": [
     { "@id": "ex:product-123", "ex:price": "?currentPrice" }
@@ -162,10 +187,7 @@ Use variables from WHERE in INSERT with transformations:
   "insert": [
     { "@id": "ex:product-123", "ex:price": "?newPrice" },
     { "@id": "ex:product-123", "ex:previousPrice": "?currentPrice" }
-  ],
-  "bind": {
-    "?newPrice": "?currentPrice * 0.9"
-  }
+  ]
 }
 ```
 
@@ -223,15 +245,13 @@ Or conditionally add if missing:
 ```json
 {
   "where": [
-    { "@id": "ex:alice", "schema:name": "?name" }
+    { "@id": "ex:alice", "schema:name": "?name" },
+    ["optional", { "@id": "ex:alice", "schema:telephone": "?existingPhone" }],
+    ["filter", ["not", ["bound", "?existingPhone"]]]
   ],
   "insert": [
     { "@id": "ex:alice", "schema:telephone": "+1-555-0100" }
-  ],
-  "optional": [
-    { "@id": "ex:alice", "schema:telephone": "?existingPhone" }
-  ],
-  "filter": "!bound(?existingPhone)"
+  ]
 }
 ```
 
@@ -379,17 +399,15 @@ Calculate new values based on old:
 {
   "where": [
     { "@id": "ex:product-123", "ex:inventory": "?current" },
-    { "@id": "ex:product-123", "ex:sold": "?sold" }
+    { "@id": "ex:product-123", "ex:sold": "?sold" },
+    ["bind", "?newInventory", ["-", "?current", "?sold"]]
   ],
   "delete": [
     { "@id": "ex:product-123", "ex:inventory": "?current" }
   ],
   "insert": [
     { "@id": "ex:product-123", "ex:inventory": "?newInventory" }
-  ],
-  "bind": {
-    "?newInventory": "?current - ?sold"
-  }
+  ]
 }
 ```
 
@@ -500,8 +518,10 @@ Add filters to prevent unintended updates:
 
 ```json
 {
-  "where": [...],
-  "filter": "?age >= 0 && ?age <= 150",
+  "where": [
+    "...",
+    ["filter", ["and", [">=", "?age", 0], ["<=", "?age", 150]]]
+  ],
   "delete": [...],
   "insert": [...]
 }

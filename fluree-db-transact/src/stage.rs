@@ -25,6 +25,11 @@ use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
     Batch, Binding, Pattern, QueryPolicyExecutor, Ref, Term, TriplePattern, VarId, VarRegistry,
 };
+use fluree_db_sparql::ast::{
+    QueryBody as SparqlQueryBody, SelectClause, SelectQuery, SolutionModifiers, SparqlAst,
+    WhereClause as SparqlWhereClauseAst,
+};
+use fluree_db_sparql::lower_sparql;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::Instrument;
@@ -196,7 +201,8 @@ pub async fn stage(
         // Track whether this transaction has an explicit WHERE clause, before
         // execute_where consumes the patterns. Needed to distinguish "WHERE that
         // matched nothing" (→ no-op) from "no WHERE at all" (→ fire templates once).
-        let has_where_clause = !txn.where_patterns.is_empty() || txn.values.is_some();
+        let has_where_clause =
+            !txn.where_patterns.is_empty() || txn.values.is_some() || txn.sparql_where.is_some();
 
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
@@ -613,10 +619,19 @@ async fn enforce_modify_policy_per_flake(
 /// This function lowers the `UnresolvedPattern` patterns (which use string IRIs)
 /// to `Pattern` (with encoded Sids), then executes them against the ledger.
 async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
-    // Lower UnresolvedPattern to Pattern using the ledger's LedgerSnapshot as the IRI encoder.
-    // This also assigns VarIds to any variables referenced in WHERE patterns.
-    let mut query_patterns =
-        lower_where_patterns(&txn.where_patterns, &ledger.snapshot, &mut txn.vars)?;
+    // Lower transaction WHERE clause to query patterns.
+    //
+    // - JSON-LD updates: `txn.where_patterns` is an UnresolvedPattern list, lowered here using the
+    //   current ledger snapshot as the IRI encoder.
+    // - SPARQL UPDATE (Modify): `txn.sparql_where` is lowered here using the SPARQL lowering
+    //   pipeline + the shared query engine, also using the current ledger snapshot as the IRI encoder.
+    let mut query_patterns = if let Some(sparql_where) = txn.sparql_where.as_ref() {
+        lower_sparql_where_patterns(sparql_where, &ledger.snapshot, &mut txn.vars)?
+    } else {
+        // Lower UnresolvedPattern to Pattern using the ledger's LedgerSnapshot as the IRI encoder.
+        // This also assigns VarIds to any variables referenced in WHERE patterns.
+        lower_where_patterns(&txn.where_patterns, &ledger.snapshot, &mut txn.vars)?
+    };
 
     // If VALUES clause present, prepend it as first pattern (seeds the join)
     if let Some(inline_values) = &txn.values {
@@ -649,6 +664,33 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     // Query execution may return late-materialized `Binding::Encoded*` values
     // when the binary index store is available.
     materialize_encoded_bindings_for_txn(ledger, merged)
+}
+
+/// Lower a stored SPARQL WHERE clause (from SPARQL UPDATE) into query patterns.
+///
+/// This constructs a synthetic `SELECT * WHERE { ... }` query so we can reuse the
+/// existing SPARQL lowering pipeline (which already supports subqueries + aggregates)
+/// and keep one execution path in `fluree-db-query`.
+fn lower_sparql_where_patterns(
+    sparql_where: &crate::ir::SparqlWhereClause,
+    encoder: &fluree_db_core::LedgerSnapshot,
+    vars: &mut VarRegistry,
+) -> Result<Vec<Pattern>> {
+    // Propagate the original parsed span so lowering errors report helpful locations.
+    let span = sparql_where.pattern.span();
+    let where_clause = SparqlWhereClauseAst::new(sparql_where.pattern.clone(), true, span);
+    let select = SelectClause::star(span);
+    let modifiers = SolutionModifiers::new();
+    let select_query = SelectQuery::new(select, where_clause, modifiers, span);
+    let ast = SparqlAst::new(
+        sparql_where.prologue.clone(),
+        SparqlQueryBody::Select(select_query),
+        span,
+    );
+
+    lower_sparql(&ast, encoder, vars)
+        .map(|pq| pq.patterns)
+        .map_err(Into::into)
 }
 
 /// Materialize any late-materialized (`Binding::Encoded*`) values in a WHERE-result batch.

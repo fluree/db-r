@@ -28,11 +28,11 @@
 //!
 //! # MVP Restrictions
 //!
-//! This implementation supports only triple patterns in UPDATE WHERE clauses.
-//! OPTIONAL, FILTER, UNION, VALUES, and other complex pattern types are future work.
+//! This implementation supports full SPARQL graph patterns in UPDATE WHERE clauses
+//! by deferring WHERE lowering to staging time (when a ledger snapshot is available
+//! for IRI encoding) and reusing the shared query engine.
 //!
 //! Additional restrictions:
-//! - Blank nodes in WHERE patterns are not supported
 //! - WITH/USING clauses are rejected
 
 use std::mem;
@@ -48,12 +48,12 @@ use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
     BlankNodeValue, Iri, IriValue, Literal, LiteralValue as SparqlLiteralValue, Modify,
     PredicateTerm, Prologue, QuadData, QuadPattern, QueryBody, SparqlAst, SubjectTerm, Term,
-    TriplePattern, UpdateOperation, WherePattern,
+    TriplePattern, UpdateOperation,
 };
 use fluree_db_sparql::SourceSpan;
 use thiserror::Error;
 
-use crate::ir::{TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
+use crate::ir::{SparqlWhereClause, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_vocab::xsd;
 
@@ -71,10 +71,6 @@ pub enum LowerError {
     /// Expected SPARQL UPDATE, found a query
     #[error("Expected SPARQL UPDATE, found query")]
     NotAnUpdate { span: SourceSpan },
-
-    /// Blank nodes in WHERE patterns are not supported
-    #[error("Blank nodes in WHERE patterns are not supported")]
-    BlankNodeInWhere { span: SourceSpan },
 
     /// Unsupported feature encountered
     #[error("{feature} is not yet supported in SPARQL UPDATE lowering")]
@@ -102,6 +98,33 @@ impl BlankNodeCounter {
         let label = format!("_:b{}", self.next);
         self.next += 1;
         label
+    }
+}
+
+/// Assign stable variable names for SPARQL blank nodes when lowering
+/// triple-template forms like `DELETE WHERE { ... }`.
+///
+/// In SPARQL graph patterns, blank node labels behave like locally-scoped
+/// existential variables; lowering rewrites them to query variables with
+/// special names (e.g., `_:b1`).
+struct BlankNodeVarNamer {
+    anon_counter: u32,
+}
+
+impl BlankNodeVarNamer {
+    fn new() -> Self {
+        Self { anon_counter: 0 }
+    }
+
+    fn var_name(&mut self, bn: &BlankNodeValue) -> Arc<str> {
+        match bn {
+            BlankNodeValue::Labeled(label) => Arc::from(format!("_:{}", label)),
+            BlankNodeValue::Anon => {
+                let name: Arc<str> = Arc::from(format!("_:b{}", self.anon_counter));
+                self.anon_counter += 1;
+                name
+            }
+        }
     }
 }
 
@@ -207,6 +230,7 @@ fn lower_insert_data(
     Ok(Txn {
         txn_type: TxnType::Insert,
         where_patterns: Vec::new(),
+        sparql_where: None,
         delete_templates: Vec::new(),
         insert_templates,
         values: None,
@@ -234,6 +258,7 @@ fn lower_delete_data(
     Ok(Txn {
         txn_type: TxnType::Update,
         where_patterns: Vec::new(),
+        sparql_where: None,
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
@@ -255,18 +280,49 @@ fn lower_delete_where(
     vars: &mut VarRegistry,
     opts: TxnOpts,
 ) -> Result<Txn, LowerError> {
-    // Convert triples to WHERE patterns (UnresolvedPattern)
-    let where_patterns = lower_triples_to_where(&pattern.triples, prologue)?;
+    // DELETE WHERE in SPARQL Update uses a QuadPattern (i.e., a set of triple templates),
+    // not a general GroupGraphPattern. Keeping this on the triple-only path is
+    // intentional: there is no FILTER/OPTIONAL/subquery form for DELETE WHERE.
+    //
+    // (In contrast, Modify operations store a full graph-pattern WHERE for staging-time lowering.)
+    // DELETE WHERE is shorthand for `DELETE { pattern } WHERE { pattern }`.
+    //
+    // In SPARQL, blank nodes in a graph pattern behave like locally-scoped existential
+    // variables. To keep DELETE WHERE semantics correct (including for blank nodes),
+    // we lower blank nodes into variables consistently across BOTH:
+    // - the WHERE patterns (for matching/bindings)
+    // - the DELETE templates (for instantiating concrete retractions)
+    let mut bnode_vars = BlankNodeVarNamer::new();
+    let mut where_patterns: Vec<UnresolvedPattern> = Vec::with_capacity(pattern.triples.len());
+    let mut delete_templates: Vec<TripleTemplate> = Vec::with_capacity(pattern.triples.len());
 
-    // For DELETE WHERE, the delete templates mirror the WHERE patterns
-    // We need to create templates from the same triples
-    let mut bnodes = BlankNodeCounter::new();
-    let delete_templates =
-        lower_triples_to_templates(&pattern.triples, prologue, ns, vars, &mut bnodes)?;
+    for tp in &pattern.triples {
+        // WHERE side: lower to UnresolvedPattern::Triple with bnodes rewritten as vars
+        let s = subject_to_unresolved_delete_where(&tp.subject, prologue, &mut bnode_vars)?;
+        let p = predicate_to_unresolved(&tp.predicate, prologue)?;
+        let obj = object_to_unresolved_delete_where(&tp.object, prologue, &mut bnode_vars)?;
+
+        where_patterns.push(UnresolvedPattern::Triple(UnresolvedTriplePattern {
+            s,
+            p,
+            o: obj.term,
+            dtc: obj.dtc,
+        }));
+
+        // DELETE side: lower to TripleTemplate with the same bnode->var mapping
+        delete_templates.push(lower_triple_to_delete_template_delete_where(
+            tp,
+            prologue,
+            ns,
+            vars,
+            &mut bnode_vars,
+        )?);
+    }
 
     Ok(Txn {
         txn_type: TxnType::Update,
         where_patterns,
+        sparql_where: None,
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
@@ -304,8 +360,14 @@ fn lower_modify(
         });
     }
 
-    // Lower WHERE patterns
-    let where_patterns = lower_where_pattern(&modify.where_clause, prologue)?;
+    // Store WHERE clause for staging-time SPARQL lowering (full graph-pattern support).
+    //
+    // Note: `lower_sparql_update` takes `&UpdateOperation`, so we can't move out of the AST here.
+    // Cloning keeps the lowering interface simple and ensures the transaction IR owns its WHERE.
+    let sparql_where = SparqlWhereClause {
+        prologue: prologue.clone(),
+        pattern: modify.where_clause.clone(),
+    };
 
     // Lower DELETE templates (if present)
     let delete_templates = if let Some(delete_clause) = &modify.delete_clause {
@@ -323,7 +385,8 @@ fn lower_modify(
 
     Ok(Txn {
         txn_type: TxnType::Update,
-        where_patterns,
+        where_patterns: Vec::new(),
+        sparql_where: Some(sparql_where),
         delete_templates,
         insert_templates,
         values: None,
@@ -332,44 +395,6 @@ fn lower_modify(
         txn_meta: Vec::new(),
         graph_delta: Default::default(),
     })
-}
-
-/// Lower a WherePattern to Vec<UnresolvedPattern>.
-fn lower_where_pattern(
-    where_pattern: &WherePattern,
-    prologue: &Prologue,
-) -> Result<Vec<UnresolvedPattern>, LowerError> {
-    lower_triples_to_where(&where_pattern.triples, prologue)
-}
-
-/// Lower triple patterns to UnresolvedPattern for WHERE clauses.
-fn lower_triples_to_where(
-    triples: &[TriplePattern],
-    prologue: &Prologue,
-) -> Result<Vec<UnresolvedPattern>, LowerError> {
-    triples
-        .iter()
-        .map(|tp| lower_triple_to_where(tp, prologue))
-        .collect()
-}
-
-/// Lower a single triple pattern to UnresolvedPattern.
-fn lower_triple_to_where(
-    triple: &TriplePattern,
-    prologue: &Prologue,
-) -> Result<UnresolvedPattern, LowerError> {
-    let s = subject_to_unresolved(&triple.subject, prologue)?;
-    let p = predicate_to_unresolved(&triple.predicate, prologue)?;
-    let obj = object_to_unresolved(&triple.object, prologue)?;
-
-    let pattern = UnresolvedTriplePattern {
-        s,
-        p,
-        o: obj.term,
-        dtc: obj.dtc,
-    };
-
-    Ok(UnresolvedPattern::Triple(pattern))
 }
 
 /// Lower triple patterns to TripleTemplate for DELETE/INSERT templates.
@@ -420,15 +445,15 @@ fn lower_triple_to_template(
 // Term conversion for WHERE patterns (UnresolvedTerm)
 // =============================================================================
 
-/// Convert SPARQL SubjectTerm to UnresolvedTerm (for WHERE patterns).
-fn subject_to_unresolved(
+fn subject_to_unresolved_delete_where(
     term: &SubjectTerm,
     prologue: &Prologue,
+    bnodes: &mut BlankNodeVarNamer,
 ) -> Result<UnresolvedTerm, LowerError> {
     match term {
         SubjectTerm::Var(v) => Ok(UnresolvedTerm::Var(Arc::from(format!("?{}", v.name)))),
         SubjectTerm::Iri(iri) => Ok(UnresolvedTerm::Iri(Arc::from(expand_iri(iri, prologue)?))),
-        SubjectTerm::BlankNode(bn) => Err(LowerError::BlankNodeInWhere { span: bn.span }),
+        SubjectTerm::BlankNode(bn) => Ok(UnresolvedTerm::Var(bnodes.var_name(&bn.value))),
         SubjectTerm::QuotedTriple(qt) => Err(LowerError::UnsupportedFeature {
             feature: "RDF-star quoted triple",
             span: qt.span,
@@ -447,10 +472,10 @@ fn predicate_to_unresolved(
     }
 }
 
-/// Convert SPARQL Term (object position) to UnresolvedTerm with metadata.
-fn object_to_unresolved(
+fn object_to_unresolved_delete_where(
     term: &Term,
     prologue: &Prologue,
+    bnodes: &mut BlankNodeVarNamer,
 ) -> Result<UnresolvedTermWithMeta, LowerError> {
     match term {
         Term::Var(v) => Ok(UnresolvedTermWithMeta {
@@ -462,8 +487,76 @@ fn object_to_unresolved(
             dtc: None,
         }),
         Term::Literal(lit) => literal_to_unresolved(lit, prologue),
-        Term::BlankNode(bn) => Err(LowerError::BlankNodeInWhere { span: bn.span }),
+        Term::BlankNode(bn) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Var(bnodes.var_name(&bn.value)),
+            dtc: None,
+        }),
     }
+}
+
+fn lower_triple_to_delete_template_delete_where(
+    triple: &TriplePattern,
+    prologue: &Prologue,
+    ns: &mut NamespaceRegistry,
+    vars: &mut VarRegistry,
+    bnodes: &mut BlankNodeVarNamer,
+) -> Result<TripleTemplate, LowerError> {
+    // Subject
+    let subject = match &triple.subject {
+        SubjectTerm::Var(v) => TemplateTerm::Var(vars.get_or_insert(&format!("?{}", v.name))),
+        SubjectTerm::Iri(iri) => {
+            let expanded = expand_iri(iri, prologue)?;
+            TemplateTerm::Sid(ns.sid_for_iri(&expanded))
+        }
+        SubjectTerm::BlankNode(bn) => {
+            let name = bnodes.var_name(&bn.value);
+            TemplateTerm::Var(vars.get_or_insert(&name))
+        }
+        SubjectTerm::QuotedTriple(qt) => {
+            return Err(LowerError::UnsupportedFeature {
+                feature: "RDF-star quoted triple",
+                span: qt.span,
+            });
+        }
+    };
+
+    // Predicate
+    let predicate = match &triple.predicate {
+        PredicateTerm::Var(v) => TemplateTerm::Var(vars.get_or_insert(&format!("?{}", v.name))),
+        PredicateTerm::Iri(iri) => {
+            let expanded = expand_iri(iri, prologue)?;
+            TemplateTerm::Sid(ns.sid_for_iri(&expanded))
+        }
+    };
+
+    // Object + datatype constraint (for literals)
+    let (object, dtc) = match &triple.object {
+        Term::Var(v) => (
+            TemplateTerm::Var(vars.get_or_insert(&format!("?{}", v.name))),
+            None,
+        ),
+        Term::Iri(iri) => {
+            let expanded = expand_iri(iri, prologue)?;
+            (TemplateTerm::Sid(ns.sid_for_iri(&expanded)), None)
+        }
+        Term::Literal(lit) => {
+            let r = literal_to_template(lit, prologue, ns)?;
+            (r.term, r.dtc)
+        }
+        Term::BlankNode(bn) => {
+            let name = bnodes.var_name(&bn.value);
+            (TemplateTerm::Var(vars.get_or_insert(&name)), None)
+        }
+    };
+
+    Ok(TripleTemplate {
+        subject,
+        predicate,
+        object,
+        dtc,
+        list_index: None,
+        graph_id: None,
+    })
 }
 
 /// Convert SPARQL Literal to UnresolvedTerm with metadata.
@@ -801,8 +894,9 @@ mod tests {
         let var = Var::new("name", test_span());
         let prologue = test_prologue();
         let subject = SubjectTerm::Var(var);
+        let mut namer = BlankNodeVarNamer::new();
 
-        let result = subject_to_unresolved(&subject, &prologue).unwrap();
+        let result = subject_to_unresolved_delete_where(&subject, &prologue, &mut namer).unwrap();
         match result {
             UnresolvedTerm::Var(name) => assert_eq!(name.as_ref(), "?name"),
             _ => panic!("Expected variable term"),
@@ -810,15 +904,16 @@ mod tests {
     }
 
     #[test]
-    fn test_blank_node_in_where_error() {
+    fn test_blank_node_in_delete_where_is_lowered_to_var() {
         use fluree_db_sparql::ast::BlankNode;
 
         let bn = BlankNode::labeled("b1", test_span());
         let prologue = test_prologue();
         let subject = SubjectTerm::BlankNode(bn);
+        let mut namer = BlankNodeVarNamer::new();
 
-        let result = subject_to_unresolved(&subject, &prologue);
-        assert!(matches!(result, Err(LowerError::BlankNodeInWhere { .. })));
+        let result = subject_to_unresolved_delete_where(&subject, &prologue, &mut namer).unwrap();
+        assert_eq!(result, UnresolvedTerm::Var(Arc::from("_:b1")));
     }
 
     #[test]
