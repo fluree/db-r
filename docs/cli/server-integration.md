@@ -53,11 +53,14 @@ This is not storage-proxy replication; it is a transaction operation and should 
 
 The CLI sends an `Idempotency-Key` header derived from the pushed commit bytes so servers can safely replay a successful push result if the client retries after a timeout.
 
-### `fluree query`, `fluree insert`, `fluree upsert`, `fluree track`
+### `fluree query`, `fluree insert`, `fluree upsert`, `fluree update`, `fluree track`, `fluree info`, `fluree exists`
 
 - `POST {api_base_url}/query/*ledger`
 - `POST {api_base_url}/insert/*ledger`
 - `POST {api_base_url}/upsert/*ledger`
+- `POST {api_base_url}/update/*ledger`
+- `GET {api_base_url}/info/*ledger`
+- `GET {api_base_url}/exists/*ledger`
 
 ## Replication Auth Contract
 
@@ -66,7 +69,7 @@ Replication endpoints are intentionally protected more strictly than data reads:
 - Pack + commit export + storage proxy endpoints require a Bearer token with `fluree.storage.*` permissions.
 - Unauthorized requests should return `404 Not Found` (no existence leak) for these endpoints.
 
-Data API endpoints use normal read/write auth (`fluree.ledger.read.*`, `fluree.ledger.write.*`) and should return `401/403/404` as appropriate for your product.
+Data API endpoints use normal read/transaction auth (`fluree.ledger.read.*`, `fluree.ledger.write.*`) and should return `401/403/404` as appropriate for your product.
 
 ## Pack Protocol Contract
 
