@@ -1265,6 +1265,28 @@ pub enum NotifyResult {
     Reloaded,
 }
 
+/// Options for `Fluree::refresh()`.
+///
+/// Controls minimum-`t` enforcement: if `min_t` is set and the ledger's `t`
+/// is still below that value after pulling the latest state from the
+/// nameservice, the call returns [`ApiError::AwaitTNotReached`] so the
+/// caller can decide whether to retry, back off, or time out.
+#[derive(Debug, Clone, Default)]
+pub struct RefreshOpts {
+    /// If set, refresh will return an error when the ledger's `t` is still
+    /// below this value after the nameservice pull + apply cycle.
+    pub min_t: Option<i64>,
+}
+
+/// Result of a successful `Fluree::refresh()` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshResult {
+    /// The ledger's `t` value after the refresh completed.
+    pub t: i64,
+    /// What action was taken (no-op, incremental, reload, etc.).
+    pub action: NotifyResult,
+}
+
 impl<S, N> LedgerManager<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -1440,6 +1462,22 @@ where
                 self.reload(&input.ledger_id).await?;
                 Ok(NotifyResult::Reloaded)
             }
+        }
+    }
+
+    /// Returns the cached ledger's current `t`, or `None` if not cached.
+    pub async fn current_t(&self, ledger_id: &str) -> Option<i64> {
+        let entries = self.entries.read().await;
+        match entries.get(ledger_id) {
+            Some(LoadState::Ready(handle)) => {
+                let (t, _, _) = handle.state_metrics().await;
+                Some(t)
+            }
+            Some(LoadState::Reloading { handle, .. }) => {
+                let (t, _, _) = handle.state_metrics().await;
+                Some(t)
+            }
+            _ => None,
         }
     }
 }

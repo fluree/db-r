@@ -227,6 +227,19 @@ pub enum ApiError {
     #[error("Indexing is disabled - no background indexer configured")]
     IndexingDisabled,
 
+    /// Refresh did not reach the requested minimum `t` value.
+    ///
+    /// The nameservice was polled and any available commits were applied,
+    /// but the ledger's `t` is still below the caller's `min_t` threshold.
+    /// The caller should decide whether to retry (with backoff) or give up.
+    #[error("Ledger has not reached t={requested}, current t={current}")]
+    AwaitTNotReached {
+        /// The `t` value the caller asked for.
+        requested: i64,
+        /// The ledger's `t` after the refresh attempt.
+        current: i64,
+    },
+
     /// Ledger advanced during reindex (conflict)
     #[error("Ledger advanced during reindex: expected t={expected}, found t={found}")]
     ReindexConflict {
