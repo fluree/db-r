@@ -1103,3 +1103,28 @@ mem:fact-01km81d85z7rfdckve3wqwtszx a mem:Fact ;
     mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
     mem:createdAt "2026-03-21T11:10:11.647303+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01km8qdr8jp1zs8eh6tmq8jfdx a mem:Fact ;
+    mem:content "Graph crawl formatter currently only includes `@id` when `*` is used (or `@id` explicitly selected) at that crawl level. This drops identity for nested ref sub-selects like `{ \"schema:isBasedOn\": [\"schema:name\"] }`, producing `{ \"schema:name\": ... }` without `@id`. Added regression test `jsonld_graph_crawl_nested_subselect_includes_id` in `fluree-db-api/tests/it_query_jsonld_basic.rs` asserting nested ref objects always include `@id` even when selecting specific properties." ;
+    mem:tag "@id" ;
+    mem:tag "formatter" ;
+    mem:tag "graph-crawl" ;
+    mem:tag "jsonld" ;
+    mem:tag "regression-test" ;
+    mem:tag "subselect" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-21T17:34:56.786195+00:00"^^xsd:dateTime .
+
+mem:fact-01km8qneeknvq50y6dvm459rne a mem:Fact ;
+    mem:content "Graph crawl formatter previously only included `@id` when `*` was used (or `@id` explicitly selected) at that crawl level, which dropped identity for nested ref sub-selects like `{ \"schema:isBasedOn\": [\"schema:name\"] }`, producing `{ \"schema:name\": ... }` without `@id`.\n\nFix: `fluree-db-api/src/format/graph_crawl.rs` now always includes `@id` for nested expansions (`current_depth > 0`), while keeping root-level behavior unchanged unless `*` or explicit `@id` is requested.\n\nRegression test: `jsonld_graph_crawl_nested_subselect_includes_id` in `fluree-db-api/tests/it_query_jsonld_basic.rs` (was failing, now passes)." ;
+    mem:tag "@id" ;
+    mem:tag "formatter" ;
+    mem:tag "graph-crawl" ;
+    mem:tag "jsonld" ;
+    mem:tag "regression-test" ;
+    mem:tag "subselect" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:supersedes mem:fact-01km8qdr8jp1zs8eh6tmq8jfdx ;
+    mem:createdAt "2026-03-21T17:39:08.884534+00:00"^^xsd:dateTime .

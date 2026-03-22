@@ -371,8 +371,10 @@ impl<'a> GraphCrawlFormatter<'a> {
                 .selections
                 .iter()
                 .any(|s| matches!(s, SelectionSpec::Id));
-            // @id inclusion: wildcard OR explicit @id selection
-            if spec.has_wildcard || has_explicit_id {
+            // @id inclusion:
+            // - Always include for nested expansions (identity of a crawled ref)
+            // - Otherwise include when wildcard or explicit @id selection
+            if current_depth > 0 || spec.has_wildcard || has_explicit_id {
                 obj.insert("@id".to_string(), json!(self.compactor.compact_sid(sid)?));
             }
 
