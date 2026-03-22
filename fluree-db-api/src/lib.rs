@@ -45,6 +45,7 @@ mod error;
 pub mod explain;
 pub mod format;
 pub mod graph;
+pub mod graph_commit_builder;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
 pub mod graph_source;
@@ -100,6 +101,7 @@ pub use dataset::{
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
 pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use graph::Graph;
+pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
 pub use graph_source::{
@@ -1158,6 +1160,13 @@ pub struct FlureeBuilder {
     /// Optional background indexing configuration.
     /// When set, `build()` will spawn a `BackgroundIndexerWorker`.
     indexing_config: Option<IndexingBuilderConfig>,
+    /// Optional novelty backpressure thresholds (independent of background indexing).
+    ///
+    /// When set, these override the thresholds from `indexing_config` for
+    /// `derive_indexing()`. Use `with_novelty_thresholds()` to set this without
+    /// enabling background indexing — useful for CLI or embedded scenarios where
+    /// the process is too short-lived for a background indexer.
+    novelty_thresholds: Option<IndexConfig>,
 }
 
 /// Configuration for background indexing in `FlureeBuilder`.
@@ -1198,6 +1207,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1210,6 +1220,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1273,6 +1284,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1450,6 +1462,7 @@ impl FlureeBuilder {
             encryption_key,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config,
+            novelty_thresholds: None,
         })
     }
 
@@ -1539,6 +1552,20 @@ impl FlureeBuilder {
                 .map(|c| c.indexer_config)
                 .unwrap_or_default(),
             index_config,
+        });
+        self
+    }
+
+    /// Set novelty backpressure thresholds without enabling background indexing.
+    ///
+    /// Use this for short-lived processes (CLI, one-shot scripts) that need
+    /// the correct commit-blocking limits but exit before a background indexer
+    /// could finish. The thresholds take priority over any values set via
+    /// `with_indexing()` or `with_indexing_thresholds()`.
+    pub fn with_novelty_thresholds(mut self, min_bytes: usize, max_bytes: usize) -> Self {
+        self.novelty_thresholds = Some(IndexConfig {
+            reindex_min_bytes: min_bytes,
+            reindex_max_bytes: max_bytes,
         });
         self
     }
@@ -1899,7 +1926,12 @@ impl FlureeBuilder {
     // ========================================================================
 
     /// Extract the `IndexConfig` from builder settings (no runtime required).
+    ///
+    /// Priority: `novelty_thresholds` > `indexing_config` thresholds > defaults.
     fn derive_indexing(&self) -> IndexConfig {
+        if let Some(ref thresholds) = self.novelty_thresholds {
+            return thresholds.clone();
+        }
         self.indexing_config
             .as_ref()
             .map(|c| c.index_config.clone())

@@ -1345,6 +1345,47 @@ let preview = staged.query()
     .execute().await?;
 ```
 
+### Commit Inspection
+
+Decode and display the contents of a commit — assertions and retractions with IRIs resolved to compact form. Similar to `git show` for individual commits.
+
+```rust
+// By exact CID
+let detail = fluree.graph("mydb:main")
+    .commit(&commit_id)
+    .execute().await?;
+
+// By transaction number
+let detail = fluree.graph("mydb:main")
+    .commit_t(5)
+    .execute().await?;
+
+// By hex-digest prefix (min 6 chars, like abbreviated git hashes)
+let detail = fluree.graph("mydb:main")
+    .commit_prefix("3dd028")
+    .execute().await?;
+
+// With a custom @context for IRI compaction
+let detail = fluree.graph("mydb:main")
+    .commit_prefix("3dd028")
+    .context(my_parsed_context)
+    .execute().await?;
+
+// Access the result
+println!("t={}, +{} -{}", detail.t, detail.asserts, detail.retracts);
+for flake in &detail.flakes {
+    let op = if flake.op { "+" } else { "-" };
+    println!("{} {} {} {} [{}]", op, flake.s, flake.p, flake.o, flake.dt);
+}
+```
+
+The returned `CommitDetail` contains:
+- **Metadata**: `id`, `t`, `time`, `size`, `previous`, `signer`, `asserts`, `retracts`
+- **`context`**: prefix → IRI map derived from the ledger's namespace codes
+- **`flakes`**: flat list in SPOT order, each with resolved compact IRIs
+
+`CommitDetail` implements `Serialize` — flakes serialize as `[s, p, o, dt, op]` tuples (with an optional 6th metadata element for language tags, list indices, or named graphs).
+
 ### Terminal Operations
 
 | Method | Returns | Description |

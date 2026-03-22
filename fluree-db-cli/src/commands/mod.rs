@@ -6,6 +6,7 @@ pub mod create;
 pub mod drop;
 pub mod export;
 pub mod history;
+pub mod index;
 pub mod info;
 pub mod init;
 pub mod insert;
@@ -18,6 +19,7 @@ pub mod query;
 pub mod remote;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod show;
 pub mod sync;
 pub mod token;
 pub mod track;

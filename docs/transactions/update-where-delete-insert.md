@@ -552,6 +552,7 @@ for (const update of updates) {
 
 ## Related Documentation
 
+- [Conditional updates (atomic / CAS patterns)](conditional-updates.md) - Increment, compare-and-swap, state machines, transfers
 - [Insert](insert.md) - Adding new data
 - [Upsert](upsert.md) - Replace mode
 - [Retractions](retractions.md) - Removing data
