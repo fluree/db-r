@@ -241,10 +241,16 @@ where
             }
         };
 
-        // 3. Build IRI compactor
-        let compactor = match &self.user_context {
-            Some(ctx) => IriCompactor::new(namespace_codes, ctx),
-            None => IriCompactor::with_fallback_prefixes(namespace_codes),
+        // 3. Build IRI compactor: user-supplied context > ledger default > none
+        let default_ctx;
+        let compactor = if let Some(ctx) = &self.user_context {
+            IriCompactor::new(namespace_codes, ctx)
+        } else if let Some(ctx_json) = &snapshot.default_context {
+            default_ctx = ParsedContext::parse(None, ctx_json)
+                .map_err(|e| ApiError::internal(format!("bad default @context: {e}")))?;
+            IriCompactor::new(namespace_codes, &default_ctx)
+        } else {
+            IriCompactor::from_namespaces(namespace_codes)
         };
 
         // 4. Fetch commit blob from content-addressed storage
@@ -568,63 +574,4 @@ fn compact_dt(compactor: &IriCompactor, dt_sid: &fluree_db_core::Sid) -> Result<
     compactor
         .compact_sid_for_display(dt_sid)
         .map_err(|e| ApiError::internal(format!("Failed to resolve datatype IRI: {}", e)))
-}
-
-// ============================================================================
-// IriCompactor extension
-// ============================================================================
-
-impl IriCompactor {
-    /// Build a compactor with auto-derived fallback prefixes (no user @context).
-    ///
-    /// Creates a synthetic `ParsedContext` from the well-known namespace prefixes
-    /// so that the fallback prefix logic activates for user namespaces too.
-    pub fn with_fallback_prefixes(namespace_codes: &HashMap<u16, String>) -> Self {
-        let ctx = build_synthetic_context(namespace_codes);
-        Self::new(namespace_codes, &ctx)
-    }
-}
-
-/// Build a `ParsedContext` from namespace codes with well-known short prefixes.
-///
-/// This provides a minimal context so that `IriCompactor::new()` activates its
-/// fallback prefix derivation for any remaining uncovered namespaces.
-fn build_synthetic_context(namespace_codes: &HashMap<u16, String>) -> ParsedContext {
-    use fluree_graph_json_ld::ContextEntry;
-    use fluree_vocab::namespaces;
-
-    let mut ctx = ParsedContext::default();
-
-    for (&code, iri) in namespace_codes {
-        let prefix = match code {
-            namespaces::EMPTY | namespaces::BLANK_NODE => continue,
-            namespaces::JSON_LD => continue,
-            namespaces::XSD => "xsd",
-            namespaces::RDF => "rdf",
-            namespaces::RDFS => "rdfs",
-            namespaces::SHACL => "sh",
-            namespaces::OWL => "owl",
-            namespaces::FLUREE_DB => "f",
-            namespaces::DID_KEY => continue,
-            namespaces::FLUREE_COMMIT => continue,
-            namespaces::OGC_GEO => "geo",
-            namespaces::FLUREE_URN => continue,
-            _ => continue, // user namespaces will be covered by fallback logic
-        };
-        ctx.terms.insert(
-            prefix.to_string(),
-            ContextEntry {
-                id: Some(iri.clone()),
-                type_: None,
-                reverse: None,
-                container: None,
-                context: None,
-                language: None,
-                is_type_definition: false,
-                derived: false,
-            },
-        );
-    }
-
-    ctx
 }
