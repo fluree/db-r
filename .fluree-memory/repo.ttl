@@ -1065,3 +1065,25 @@ mem:constraint-01km6xq65xn4dzghwnf4wc5ax6 a mem:Constraint ;
     mem:artifactRef "fluree-db-binary-index/src/read/binary_cursor.rs" ;
     mem:artifactRef "fluree-db-binary-index/src/read/types.rs" ;
     mem:createdAt "2026-03-21T00:46:28.541390+00:00"^^xsd:dateTime .
+
+mem:decision-01km88js2zfk0b5465psvc8c35 a mem:Decision ;
+    mem:content "Fast-path PSOT cursor builders and dependent operators now prefer correctness-preserving fallback over hard failure when novelty overlay translation to V3 IDs fails. `build_psot_cursor_for_predicate` (and the group variant) returns `Ok(None)` if overlay flakes can't be translated (e.g., missing/stale DictNovelty or unsupported value types), and callers treat `None` as \"fast path unavailable\" and run their provided fallback operators instead of returning an internal error. This keeps the hot path unchanged when translation succeeds and avoids silently wrong results under novelty edge cases." ;
+    mem:tag "binary-cursor" ;
+    mem:tag "correctness" ;
+    mem:tag "dict-novelty" ;
+    mem:tag "fallback" ;
+    mem:tag "fast-path" ;
+    mem:tag "overlay" ;
+    mem:tag "performance" ;
+    mem:tag "psot" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/fast_group_count_firsts.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_path_common.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_property_path_plus_count_all.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_transitive_path_plus_count_all.rs" ;
+    mem:artifactRef "fluree-db-query/src/fast_union_star_count_all.rs" ;
+    mem:createdAt "2026-03-21T13:15:32.831834+00:00"^^xsd:dateTime ;
+    mem:rationale "Database correctness must not depend on flawless overlay translation; when overlay cannot be mapped into binary ID space, the system should choose a slower correct path rather than erroring or producing partial results." ;
+    mem:alternatives "Hard-fail the query on translation error; always disable fast paths whenever overlay is present" .
+

@@ -168,6 +168,308 @@ async fn graph_crawl_applies_novelty_retractions() {
     assert_eq!(status_arr[0]["@value"].as_str().unwrap(), "pending");
 }
 
+/// Scenario where the original value is already indexed (in the binary index),
+/// and the update happens in novelty. This exercises the cursor merge path
+/// (base rows + overlay retract/assert) rather than the overlay-only path.
+#[tokio::test]
+async fn graph_crawl_applies_novelty_retractions_for_indexed_base_rows() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let path = tmp.path().to_str().unwrap();
+
+    let fluree = FlureeBuilder::file(path).build().expect("build");
+    let ledger0 = fluree.create_ledger("test:main").await.expect("create");
+
+    // t=1: Insert schema and index it.
+    let receipt = fluree.insert(ledger0, &schema()).await.expect("schema");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // t=2: Insert task and index it so the old value lives in the base index.
+    let insert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "@type": "ex:Task",
+        "ex:description": "original description",
+        "ex:status": "pending"
+    });
+    let receipt = fluree
+        .insert(receipt.ledger, &insert_txn)
+        .await
+        .expect("insert task");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // t=3: Upsert — update description in novelty (retract old + assert new).
+    let upsert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "ex:description": "updated description"
+    });
+    let receipt = fluree
+        .upsert(receipt.ledger, &upsert_txn)
+        .await
+        .expect("upsert task");
+
+    // SPARQL SELECT (control): should return only the updated value.
+    let sparql = format!(
+        r#"PREFIX ex: <http://example.org/>
+        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}"#,
+    );
+    let sparql_result = support::query_sparql(&fluree, &receipt.ledger, &sparql)
+        .await
+        .expect("sparql query");
+    let sparql_json = sparql_result
+        .to_jsonld_async(receipt.ledger.as_graph_db_ref(0))
+        .await
+        .expect("format sparql");
+    let rows = sparql_json.as_array().expect("sparql rows");
+    assert_eq!(
+        rows.len(),
+        1,
+        "SPARQL should return exactly 1 row, got {}: {:?}",
+        rows.len(),
+        rows
+    );
+    assert_eq!(
+        rows[0],
+        json!("updated description"),
+        "SPARQL should return only the updated description"
+    );
+
+    // FQL graph crawl: select {IRI: ["*"]} should also return only the updated value.
+    let crawl_query = json!({
+        "@context": test_context(),
+        "select": { TASK_IRI: ["*"] },
+        "from": "test:main"
+    });
+    let config = FormatterConfig::typed_json().with_normalize_arrays();
+    let crawl_result = fluree
+        .query_from()
+        .jsonld(&crawl_query)
+        .format(config)
+        .execute_tracked()
+        .await
+        .expect("graph crawl query");
+
+    let formatted = serde_json::to_value(&crawl_result.result).expect("serialize");
+    let node = formatted
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("should return one result");
+
+    let desc = &node["ex:description"];
+    let desc_arr = desc.as_array().expect("description should be an array");
+    assert_eq!(
+        desc_arr.len(),
+        1,
+        "Indexed-base graph crawl should return exactly 1 description value.\n\
+         Got: {desc}\nFull node: {node}"
+    );
+    assert_eq!(
+        desc_arr[0]["@value"].as_str().unwrap(),
+        "updated description",
+        "Description should be the updated value"
+    );
+}
+
+/// Multi-valued property case: descriptions stored with list indices.
+///
+/// This is a closer match for real-world system properties where repeated
+/// updates can result in list metadata (`@list` / array semantics). Retractions
+/// must match the exact fact identity including list index, otherwise stale
+/// values will leak from the base index.
+#[tokio::test]
+async fn graph_crawl_applies_novelty_retractions_for_list_indexed_values() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let path = tmp.path().to_str().unwrap();
+
+    let fluree = FlureeBuilder::file(path).build().expect("build");
+    let ledger0 = fluree.create_ledger("test:main").await.expect("create");
+
+    // Seed schema + index.
+    let receipt = fluree.insert(ledger0, &schema()).await.expect("schema");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // Insert two descriptions (array) and index them so list-indexed base rows exist.
+    let insert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "@type": "ex:Task",
+        "ex:description": ["desc a", "desc b"],
+        "ex:status": "pending"
+    });
+    let receipt = fluree
+        .insert(receipt.ledger, &insert_txn)
+        .await
+        .expect("insert task");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // Upsert with a single new description value.
+    let upsert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "ex:description": "desc c"
+    });
+    let receipt = fluree
+        .upsert(receipt.ledger, &upsert_txn)
+        .await
+        .expect("upsert task");
+
+    // SPARQL SELECT (control): should return only the updated value.
+    let sparql = format!(
+        r#"PREFIX ex: <http://example.org/>
+        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}"#,
+    );
+    let sparql_result = support::query_sparql(&fluree, &receipt.ledger, &sparql)
+        .await
+        .expect("sparql query");
+    let sparql_json = sparql_result
+        .to_jsonld_async(receipt.ledger.as_graph_db_ref(0))
+        .await
+        .expect("format sparql");
+    let rows = sparql_json.as_array().expect("sparql rows");
+    assert_eq!(
+        rows,
+        &vec![json!("desc c")],
+        "SPARQL should return only the updated single description"
+    );
+
+    // FQL graph crawl should also contain only one description value.
+    let crawl_query = json!({
+        "@context": test_context(),
+        "select": { TASK_IRI: ["*"] },
+        "from": "test:main"
+    });
+    let config = FormatterConfig::typed_json().with_normalize_arrays();
+    let crawl_result = fluree
+        .query_from()
+        .jsonld(&crawl_query)
+        .format(config)
+        .execute_tracked()
+        .await
+        .expect("graph crawl query");
+    let formatted = serde_json::to_value(&crawl_result.result).expect("serialize");
+    let node = formatted
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("should return one result");
+
+    let desc = &node["ex:description"];
+    let desc_arr = desc.as_array().expect("description should be an array");
+    assert_eq!(
+        desc_arr.len(),
+        1,
+        "List-indexed graph crawl should return exactly 1 description value.\n\
+         Got: {desc}\nFull node: {node}"
+    );
+    assert_eq!(
+        desc_arr[0]["@value"].as_str().unwrap(),
+        "desc c",
+        "Description should be the updated value"
+    );
+}
+
+/// Regression: graph crawl must not drop novelty assertions when V3 overlay translation
+/// fails due to missing/invalid dictionary state.
+///
+/// This simulates a production failure mode where the reader has a binary index
+/// but its `DictNovelty` is not populated with novelty-only strings. In that case
+/// overlay translation of asserted string values can fail (`NotFound`) while
+/// translation of retractions for indexed (old) string values still succeeds.
+/// If we silently drop the failed assertion, the property disappears entirely.
+#[tokio::test]
+async fn graph_crawl_does_not_drop_overlay_assertions_when_dict_novelty_missing() {
+    use std::sync::Arc;
+
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let path = tmp.path().to_str().unwrap();
+
+    let fluree = FlureeBuilder::file(path).build().expect("build");
+    let ledger0 = fluree.create_ledger("test:main").await.expect("create");
+
+    // Seed schema + index.
+    let receipt = fluree.insert(ledger0, &schema()).await.expect("schema");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // Insert task and index it so "original description" is in persisted dicts.
+    let insert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "@type": "ex:Task",
+        "ex:description": "original description",
+        "ex:status": "pending"
+    });
+    let receipt = fluree
+        .insert(receipt.ledger, &insert_txn)
+        .await
+        .expect("insert task");
+    let _index = fluree.reindex("test:main", ReindexOptions::default()).await;
+
+    // Upsert in novelty with a NEW string value that is not in the persisted string dict.
+    let upsert_txn = json!({
+        "@context": test_context(),
+        "@id": TASK_IRI,
+        "ex:description": "updated description (novelty-only string)"
+    });
+    let _receipt = fluree
+        .upsert(receipt.ledger, &upsert_txn)
+        .await
+        .expect("upsert");
+
+    // Load a fresh reader state so the binary index + range_provider are attached.
+    let loaded = fluree.ledger("test:main").await.expect("load ledger");
+
+    // Mutate the ledger snapshot to use a BinaryRangeProvider with an uninitialized DictNovelty.
+    // This forces V3 overlay translation of the NEW asserted string value to fail.
+    let mut ledger = loaded;
+    let Some(provider) = ledger.snapshot.range_provider.as_ref() else {
+        panic!("expected range_provider to be attached after reindex");
+    };
+    let brp = provider
+        .as_ref()
+        .as_any()
+        .downcast_ref::<fluree_db_query::BinaryRangeProvider>()
+        .expect("range_provider should be BinaryRangeProvider in native tests");
+
+    let store = Arc::clone(brp.store());
+    let bad_dn = Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized());
+    ledger.snapshot.range_provider = Some(Arc::new(fluree_db_query::BinaryRangeProvider::new(
+        store, bad_dn,
+    )));
+
+    // Graph crawl should still return the updated value (correctness over speed).
+    let crawl_query = json!({
+        "@context": test_context(),
+        "select": { TASK_IRI: ["*"] },
+        "from": "test:main"
+    });
+    let config = FormatterConfig::typed_json().with_normalize_arrays();
+
+    let db = support::graphdb_from_ledger(&ledger);
+    let result = fluree.query(&db, &crawl_query).await.expect("query");
+    let formatted = result
+        .format_async(db.as_graph_db_ref(), &config)
+        .await
+        .expect("format graph crawl");
+
+    let node = formatted
+        .as_array()
+        .and_then(|arr| arr.first())
+        .expect("should return one result");
+
+    let desc = &node["ex:description"];
+    let desc_arr = desc.as_array().expect("description should be an array");
+    assert_eq!(
+        desc_arr.len(),
+        1,
+        "Graph crawl should keep the novelty-only asserted description even if overlay translation fails.\n\
+         Got: {desc}\nFull node: {node}"
+    );
+    assert_eq!(
+        desc_arr[0]["@value"].as_str().unwrap(),
+        "updated description (novelty-only string)",
+        "Description should be the updated value"
+    );
+}
+
 /// Same test but with a fresh reader instance (simulates Lambda/separate process).
 /// This is closer to the production scenario where the reader loads state from storage.
 #[tokio::test]

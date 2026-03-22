@@ -1406,6 +1406,19 @@ where
                             .apply_single_commit(commit, &ledger_id_canonical)
                             .map_err(|e| ApiError::internal(format!("apply commit: {e}")))?;
                     }
+
+                    // If a binary range provider is attached, refresh it to point at the
+                    // updated DictNovelty. `apply_single_commit` replaces `state.dict_novelty`
+                    // with a new Arc; without re-attaching here, the provider holds a stale
+                    // Arc and overlay translation will fail for novelty-only strings/subjects.
+                    if let Some(rp) = write_guard.state().snapshot.range_provider.as_ref() {
+                        if let Some(brp) = rp.as_any().downcast_ref::<BinaryRangeProvider>() {
+                            let store = Arc::clone(brp.store());
+                            let dn = Arc::clone(&write_guard.state().dict_novelty);
+                            write_guard.state_mut().snapshot.range_provider =
+                                Some(Arc::new(BinaryRangeProvider::new(store, dn)));
+                        }
+                    }
                 }
 
                 // Apply index update if present (after commits so novelty has latest flakes)

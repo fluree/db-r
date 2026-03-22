@@ -17,6 +17,7 @@
 //! 5. **Root assembly**: `IncrementalRootBuilder` → encode → CAS write → publish
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
@@ -1401,6 +1402,13 @@ where
                 !class_count_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
 
             if has_class_changes || !novelty_subject_props.is_empty() {
+                tracing::info!(
+                    has_class_changes,
+                    novelty_subject_props = novelty_subject_props.len(),
+                    novelty_subject_class_deltas = novelty_subject_class_deltas.len(),
+                    novelty_records = novelty.records.len(),
+                    "Phase 3b: class-property attribution starting"
+                );
                 let cache_dir = config
                     .data_dir
                     .as_ref()
@@ -1496,11 +1504,45 @@ where
                         sids.dedup();
                     }
 
+                    let total_subjects: usize = subjects_by_graph.values().map(|v| v.len()).sum();
+                    tracing::debug!(
+                        graphs = subjects_by_graph.len(),
+                        total_subjects,
+                        rdf_type_p_id,
+                        "Phase 3b: prepared base class lookup subject sets"
+                    );
+                    for (&g, sids) in &subjects_by_graph {
+                        if sids.is_empty() {
+                            continue;
+                        }
+                        let min_s = sids[0];
+                        let max_s = *sids.last().unwrap_or(&min_s);
+                        tracing::debug!(
+                            g_id = g,
+                            subjects = sids.len(),
+                            min_s_id = min_s,
+                            max_s_id = max_s,
+                            span = max_s.saturating_sub(min_s),
+                            "Phase 3b: graph subject range for rdf:type scan"
+                        );
+                    }
+
                     // Batched PSOT lookup per graph.
                     for (&scan_g_id, scan_sids) in &subjects_by_graph {
                         if scan_sids.is_empty() {
                             continue;
                         }
+                        let min_s = scan_sids[0];
+                        let max_s = *scan_sids.last().unwrap_or(&min_s);
+                        tracing::info!(
+                            g_id = scan_g_id,
+                            subjects = scan_sids.len(),
+                            min_s_id = min_s,
+                            max_s_id = max_s,
+                            span = max_s.saturating_sub(min_s),
+                            "Phase 3b: starting batched PSOT rdf:type lookup"
+                        );
+                        let started = Instant::now();
                         match fluree_db_binary_index::batched_lookup_predicate_refs(
                             store,
                             scan_g_id,
@@ -1509,6 +1551,12 @@ where
                             base_root.index_t,
                         ) {
                             Ok(base_map) => {
+                                tracing::info!(
+                                    g_id = scan_g_id,
+                                    subjects_with_hits = base_map.len(),
+                                    elapsed_ms = started.elapsed().as_millis() as u64,
+                                    "Phase 3b: completed batched PSOT rdf:type lookup"
+                                );
                                 for (s_id, classes) in base_map {
                                     subject_classes
                                         .entry((scan_g_id, s_id))

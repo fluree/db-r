@@ -20,6 +20,9 @@ use fluree_db_core::GraphId;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Batched PSOT lookup for ref-valued predicate objects across many subjects.
 ///
@@ -43,6 +46,8 @@ pub fn batched_lookup_predicate_refs(
         return Ok(HashMap::new());
     }
 
+    let started_all = Instant::now();
+
     let mut sorted_subjects = subjects.to_vec();
     sorted_subjects.sort_unstable();
     sorted_subjects.dedup();
@@ -61,6 +66,21 @@ pub fn batched_lookup_predicate_refs(
     const MAX_CHUNK: usize = 1000;
     let chunks = chunk_subjects(&sorted_subjects, MAX_SPAN, MAX_CHUNK);
 
+    let min_s = *sorted_subjects.first().unwrap_or(&0);
+    let max_s = *sorted_subjects.last().unwrap_or(&min_s);
+    tracing::info!(
+        g_id,
+        p_id,
+        subjects = sorted_subjects.len(),
+        chunks = chunks.len(),
+        min_s_id = min_s,
+        max_s_id = max_s,
+        span = max_s.saturating_sub(min_s),
+        to_t,
+        heartbeat_secs = HEARTBEAT_INTERVAL.as_secs(),
+        "batched_lookup_predicate_refs: starting"
+    );
+
     // Only need s_id, o_type, o_key columns for class lookup.
     let mut needed = ColumnSet::EMPTY;
     needed.insert(ColumnId::SId);
@@ -71,9 +91,56 @@ pub fn batched_lookup_predicate_refs(
         internal: ColumnSet::EMPTY,
     };
 
-    for chunk in &chunks {
+    let scanned_batches = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let scanned_rows = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let current_chunk_idx = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let subjects_with_hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // Heartbeat thread: emits progress even if we stall inside cursor.next_batch().
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let hb_scanned_batches = Arc::clone(&scanned_batches);
+    let hb_scanned_rows = Arc::clone(&scanned_rows);
+    let hb_chunk_idx = Arc::clone(&current_chunk_idx);
+    let hb_hits = Arc::clone(&subjects_with_hits);
+    let hb_started = started_all;
+    let hb = std::thread::spawn(move || loop {
+        match stop_rx.recv_timeout(HEARTBEAT_INTERVAL) {
+            Ok(()) => return,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let b = hb_scanned_batches.load(std::sync::atomic::Ordering::Relaxed);
+                let r = hb_scanned_rows.load(std::sync::atomic::Ordering::Relaxed);
+                let c = hb_chunk_idx.load(std::sync::atomic::Ordering::Relaxed);
+                let h = hb_hits.load(std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    g_id,
+                    p_id,
+                    chunk_idx = c,
+                    scanned_batches = b,
+                    scanned_rows = r,
+                    subjects_with_hits = h,
+                    elapsed_ms = hb_started.elapsed().as_millis() as u64,
+                    "batched_lookup_predicate_refs: heartbeat"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    });
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        current_chunk_idx.store(chunk_idx as u64, std::sync::atomic::Ordering::Relaxed);
         let min_s = chunk[0];
         let max_s = *chunk.last().unwrap();
+
+        tracing::debug!(
+            g_id,
+            p_id,
+            chunk_idx,
+            chunk_subjects = chunk.len(),
+            min_s_id = min_s,
+            max_s_id = max_s,
+            span = max_s.saturating_sub(min_s),
+            "batched_lookup_predicate_refs: scanning chunk"
+        );
 
         let min_key = RunRecordV2 {
             s_id: SubjectId::from_u64(min_s),
@@ -111,6 +178,8 @@ pub fn batched_lookup_predicate_refs(
         cursor.set_to_t(to_t);
 
         while let Some(batch) = cursor.next_batch()? {
+            scanned_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            scanned_rows.fetch_add(batch.row_count as u64, std::sync::atomic::Ordering::Relaxed);
             for i in 0..batch.row_count {
                 let s_id = batch.s_id.get(i);
                 if !s_id_set.contains(&s_id) {
@@ -122,6 +191,7 @@ pub fn batched_lookup_predicate_refs(
                 }
                 out.entry(s_id).or_default().push(batch.o_key.get(i));
             }
+            subjects_with_hits.store(out.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -129,6 +199,20 @@ pub fn batched_lookup_predicate_refs(
         classes.sort_unstable();
         classes.dedup();
     }
+
+    // Stop heartbeat.
+    let _ = stop_tx.send(());
+    let _ = hb.join();
+
+    tracing::info!(
+        g_id,
+        p_id,
+        subjects_with_hits = out.len(),
+        scanned_batches = scanned_batches.load(std::sync::atomic::Ordering::Relaxed),
+        scanned_rows = scanned_rows.load(std::sync::atomic::Ordering::Relaxed),
+        elapsed_ms = started_all.elapsed().as_millis() as u64,
+        "batched_lookup_predicate_refs: completed"
+    );
 
     Ok(out)
 }

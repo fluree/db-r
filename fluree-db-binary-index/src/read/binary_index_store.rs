@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
 use fluree_db_core::o_type::{DecodeKind, OType};
@@ -63,6 +64,73 @@ fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
         _ => io::ErrorKind::Other,
     };
     io::Error::new(kind, e.to_string())
+}
+
+fn cas_sync_timeout() -> Option<Duration> {
+    std::env::var("FLUREE_CAS_SYNC_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
+
+fn run_sync_on_runtime<T, Fut>(fut: Fut) -> io::Result<T>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => {
+                // Safe on multithread runtimes: allow blocking in-place while we
+                // drive the async future to completion.
+                tokio::task::block_in_place(|| handle.block_on(fut))
+            }
+            tokio::runtime::RuntimeFlavor::CurrentThread => {
+                // Avoid deadlock:
+                // - We're on the single runtime thread.
+                // - If we block here waiting for another thread that calls
+                //   `handle.block_on(...)`, the runtime can't make progress.
+                // Instead, run the future on a self-contained runtime in a helper thread.
+                let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<T>>(1);
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
+                        .and_then(|rt| rt.block_on(fut));
+                    let _ = tx.send(result);
+                });
+                rx.recv()
+                    .map_err(|_| io::Error::other("helper runtime thread panicked"))?
+            }
+            _ => {
+                // Future-proofing: treat unknown flavors conservatively.
+                let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<T>>(1);
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
+                        .and_then(|rt| rt.block_on(fut));
+                    let _ = tx.send(result);
+                });
+                rx.recv()
+                    .map_err(|_| io::Error::other("helper runtime thread panicked"))?
+            }
+        },
+        Err(_) => {
+            // No runtime context available. Create a local runtime to run the future.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| io::Error::other(format!("failed to build helper runtime: {e}")))?
+                .block_on(fut)
+        }
+    }
 }
 
 pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -340,27 +408,31 @@ impl BinaryIndexStore {
         }
 
         // Fetch from CAS via sync bridge: capture the Tokio handle on the caller's
-        // thread (which has a runtime context), then spawn a dedicated OS thread that
-        // uses it to block_on the async fetch. Same pattern as V5 ensure_index_leaf_cached.
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| io::Error::other("leaf fetch requires a Tokio runtime"))?;
+        // sync bridge: run the async CAS request without deadlocking current-thread runtimes.
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
-        std::thread::spawn(move || {
-            let result = handle.block_on(async {
-                let data = cs
-                    .get(&cid)
+        let timeout = cas_sync_timeout();
+        run_sync_on_runtime(async move {
+            let fut = cs.get(&cid);
+            let data = if let Some(dur) = timeout {
+                tokio::time::timeout(dur, fut)
                     .await
-                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?;
-                cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
-                Ok(data)
-            });
-            let _ = tx.send(result);
-        });
-        rx.recv()
-            .map_err(|_| io::Error::other("leaf fetch thread panicked"))?
+                    .map_err(|_| {
+                        io::Error::other(format!(
+                            "CAS fetch timed out after {}ms (cid={})",
+                            dur.as_millis(),
+                            cid
+                        ))
+                    })?
+                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+            } else {
+                fut.await
+                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+            };
+            cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
+            Ok(data)
+        })
     }
 
     // ── LeafHandle-based access ──────────────────────────────────────
@@ -1743,20 +1815,27 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
         }
 
         // Remote CAS: use async get_range via sync bridge.
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| io::Error::other("range fetch requires a Tokio runtime"))?;
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
-        std::thread::spawn(move || {
-            let result = handle.block_on(async {
-                cs.get_range(&cid, range)
+        let timeout = cas_sync_timeout();
+        run_sync_on_runtime(async move {
+            let fut = cs.get_range(&cid, range.clone());
+            if let Some(dur) = timeout {
+                tokio::time::timeout(dur, fut)
                     .await
+                    .map_err(|_| {
+                        io::Error::other(format!(
+                            "CAS range fetch timed out after {}ms (cid={}, range={:?})",
+                            dur.as_millis(),
+                            cid,
+                            range
+                        ))
+                    })?
                     .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
-            });
-            let _ = tx.send(result);
-        });
-        rx.recv()
-            .map_err(|_| io::Error::other("range fetch thread panicked"))?
+            } else {
+                fut.await
+                    .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+            }
+        })
     }
 }
