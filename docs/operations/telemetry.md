@@ -358,7 +358,7 @@ The `import_chunks` span covers the parse+commit loop. Spawned threads (resolver
 
 ### Tracker-to-Span Bridge
 
-When tracked queries or transactions are executed (via the `/query` or `/transact` endpoints with tracking enabled), the `tracker_time` and `tracker_fuel` fields are recorded as deferred attributes on the `query_execute` and `transact_execute` spans. These values appear as span attributes in OTEL backends (Jaeger, Tempo, etc.), enabling correlation between the Tracker's fuel accounting and the span waterfall.
+When tracked queries or transactions are executed (via the `/query` or `/update` endpoints with tracking enabled), the `tracker_time` and `tracker_fuel` fields are recorded as deferred attributes on the `query_execute` and `transact_execute` spans. These values appear as span attributes in OTEL backends (Jaeger, Tempo, etc.), enabling correlation between the Tracker's fuel accounting and the span waterfall.
 
 ### RUST_LOG Quick Reference
 

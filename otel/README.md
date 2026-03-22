@@ -153,7 +153,7 @@ otel/
 ## What to Look for in Jaeger
 
 After running scenarios, open Jaeger at `http://localhost:16686` and search for:
-- **`fluree-server`** — server-side traces (query, transact, index)
+- **`fluree-server`** — server-side traces (query, transactions, index)
 - **`fluree-cli`** — CLI import traces (bulk_import pipeline)
 
 ### Root span names (otel.name)
@@ -163,7 +163,7 @@ Traces are named via `otel.name` for easy identification in Jaeger's trace list:
 | Operation | Span name examples |
 |-----------|-------------------|
 | Query | `query:fql`, `query:sparql`, `query:explain` |
-| Transact | `transact:fql`, `transact:sparql-update`, `transact:turtle` |
+| Update | `update:fql`, `update:sparql-update` |
 | Insert | `insert:fql`, `insert:turtle` |
 | Upsert | `upsert:fql`, `upsert:turtle` |
 | Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
@@ -173,7 +173,7 @@ The `operation` tag on each span retains the handler-specific name for filtering
 ### Transaction traces
 
 ```
-request (info, otel.name = transact:fql)
+request (info, otel.name = update:fql)
   └─ transact_execute (debug)
        ├─ txn_stage (debug)
        │   ├─ where_exec (debug)

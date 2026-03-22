@@ -1,6 +1,6 @@
 # Signed / Credentialed Transactions
 
-Fluree supports cryptographically signed transactions using **JSON Web Signatures (JWS)** and **Verifiable Credentials (VC)**. Signed transactions provide authentication, integrity, and non-repudiation for all write operations.
+Fluree supports cryptographically signed transactions using **JSON Web Signatures (JWS)** and **Verifiable Credentials (VC)**. Signed transactions provide authentication, integrity, and non-repudiation for all transaction operations.
 
 ## Why Sign Transactions?
 
@@ -58,7 +58,7 @@ const jws = await new jose.SignJWT(transaction)
 Submit the signed transaction:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/jose" \
   -d "$jws"
 ```
@@ -125,7 +125,7 @@ Use W3C Verifiable Credentials for transactions:
 
 Submit with:
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/vc+ld+json" \
   -d @credential.json
 ```
@@ -250,7 +250,7 @@ async function signTransaction(transaction: object, privateKey: Uint8Array) {
 async function submitSignedTransaction(ledger: string, transaction: object) {
   const signed = await signTransaction(transaction, privateKey);
   
-  const response = await fetch(`http://localhost:8090/v1/fluree/transact?ledger=${ledger}`, {
+  const response = await fetch(`http://localhost:8090/v1/fluree/upsert?ledger=${ledger}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/jose' },
     body: signed
@@ -285,7 +285,7 @@ def submit_signed_transaction(ledger, transaction, private_key):
     signed = sign_transaction(transaction, private_key)
     
     response = requests.post(
-        f'http://localhost:8090/v1/fluree/transact?ledger={ledger}',
+        f'http://localhost:8090/v1/fluree/upsert?ledger={ledger}',
         headers={'Content-Type': 'application/jose'},
         data=signed
     )

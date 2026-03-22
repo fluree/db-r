@@ -15,7 +15,7 @@ High-level introduction to the Fluree HTTP API, including:
 ### [Endpoints](endpoints.md)
 
 Complete reference for all HTTP endpoints:
-- `POST /transact` - Submit transactions
+- `POST /update` - Submit update transactions (WHERE/DELETE/INSERT or SPARQL UPDATE)
 - `POST /query` - Execute queries
 - `GET /ledgers` - List ledgers
 - `GET /health` - Health checks
@@ -89,7 +89,7 @@ See [Signed Requests](signed-requests.md) for cryptographic authentication detai
 ### Transaction Request
 
 ```bash
-curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/insert?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {

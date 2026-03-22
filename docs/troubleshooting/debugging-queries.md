@@ -443,7 +443,7 @@ Test on small dataset first:
 
 ```bash
 # Create test ledger
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=test:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=test:main" \
   -d '{"@graph": [small test data]}'
 
 # Test query

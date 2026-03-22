@@ -201,13 +201,13 @@ Prometheus-compatible format.
 File storage backup:
 
 ```bash
-# Stop writes (optional but recommended)
+# Stop transactions (optional but recommended)
 curl -X POST http://localhost:8090/admin/maintenance-mode
 
 # Backup data directory
 tar -czf fluree-backup-$(date +%Y%m%d).tar.gz /var/lib/fluree/
 
-# Resume writes
+# Resume transactions
 curl -X POST http://localhost:8090/admin/maintenance-mode/off
 ```
 

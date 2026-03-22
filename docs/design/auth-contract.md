@@ -340,7 +340,7 @@ Notes:
 
 ### Anti-leak pattern: 404 for out-of-scope ledgers
 
-Data endpoints (`/fluree/query`, `/fluree/transact`, etc.) return `404` rather than `403` when a valid token lacks access to the requested ledger. This prevents authenticated users from discovering the existence of ledgers they are not authorized to access.
+Data endpoints (`/fluree/query`, `/fluree/update`, etc.) return `404` rather than `403` when a valid token lacks access to the requested ledger. This prevents authenticated users from discovering the existence of ledgers they are not authorized to access.
 
 **Implication for CLI and implementers:** A `404` on a data endpoint can mean either:
 - The ledger genuinely does not exist, or
@@ -380,7 +380,7 @@ Implementors MUST return these status codes consistently so the CLI can provide 
 | `POST /fluree/create` | `201` | `401` | `401` | `403` | n/a |
 | `POST /fluree/drop` | `200` | `401` | `401` | `403` | `404` |
 | `POST /fluree/query` | `200` | `401` | `401` | `404` (anti-leak) | `404` (anti-leak) |
-| `POST /fluree/transact` | `200` | `401` | `401` | `404` (anti-leak) | `404` (anti-leak) |
+| `POST /fluree/update` | `200` | `401` | `401` | `404` (anti-leak) | `404` (anti-leak) |
 | `POST /v1/fluree/auth/exchange` | `200` | n/a | `401` | `403` | n/a |
 | `GET /v1/fluree/whoami` | `200` | `200` (token_present=false) | `200` (verified=false) | n/a | n/a |
 

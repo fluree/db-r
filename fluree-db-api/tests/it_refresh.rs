@@ -63,13 +63,7 @@ async fn refresh_min_t_satisfied_returns_immediately() {
 
     // Refresh with min_t already satisfied — should return Current without NS lookup
     let result = fluree
-        .refresh(
-            ledger_id,
-            RefreshOpts {
-                min_t: Some(t),
-                ..Default::default()
-            },
-        )
+        .refresh(ledger_id, RefreshOpts { min_t: Some(t) })
         .await
         .expect("refresh should succeed");
 
@@ -103,13 +97,7 @@ async fn refresh_min_t_below_cached_t_returns_immediately() {
 
     // Refresh with min_t lower than cached t
     let result = fluree
-        .refresh(
-            ledger_id,
-            RefreshOpts {
-                min_t: Some(1),
-                ..Default::default()
-            },
-        )
+        .refresh(ledger_id, RefreshOpts { min_t: Some(1) })
         .await
         .expect("refresh should succeed");
 
@@ -146,7 +134,6 @@ async fn refresh_min_t_not_reached_returns_error() {
             ledger_id,
             RefreshOpts {
                 min_t: Some(unreachable_t),
-                ..Default::default()
             },
         )
         .await

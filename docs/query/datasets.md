@@ -178,7 +178,7 @@ to select a graph **within** the ledger in the URL.
 **Ingesting data with named graphs (TriG):**
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   -d '@prefix ex: <http://example.org/ns/> .
 

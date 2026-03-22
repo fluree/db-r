@@ -36,7 +36,7 @@ This removes the age property from ex:alice.
 Remove a specific property value:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {

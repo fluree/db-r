@@ -575,7 +575,7 @@ async fn push_rejects_list_retraction_missing_meta_with_422() {
 }
 
 #[tokio::test]
-async fn transact_endpoint_accepts_jsonld_transactions() {
+async fn update_endpoint_accepts_jsonld_transactions() {
     let (_tmp, state) = test_state();
     let app = build_router(state.clone());
 
@@ -595,7 +595,7 @@ async fn transact_endpoint_accepts_jsonld_transactions() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Use /v1/fluree/transact
+    // Use /v1/fluree/update
     let update_body = serde_json::json!({
         "ledger": "test:update",
         "@context": { "ex": "http://example.org/" },
@@ -609,7 +609,7 @@ async fn transact_endpoint_accepts_jsonld_transactions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -898,7 +898,7 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let (_tmp, state) = test_state();
     let app = build_router(state);
 
-    // SPARQL UPDATE requests should go to /v1/fluree/transact, not /v1/fluree/query.
+    // SPARQL UPDATE requests should go to /v1/fluree/update, not /v1/fluree/query.
     // The query endpoint returns 400 Bad Request with a helpful message.
     let sparql_update = r#"
         PREFIX ex: <http://example.org/>
@@ -922,8 +922,8 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let (_, json) = json_body(resp).await;
     let error_msg = json["error"].as_str().unwrap_or("");
     assert!(
-        error_msg.contains("/v1/fluree/transact"),
-        "Expected error to mention /v1/fluree/transact endpoint, got: {}",
+        error_msg.contains("/v1/fluree/update"),
+        "Expected error to mention /v1/fluree/update endpoint, got: {}",
         error_msg
     );
 }

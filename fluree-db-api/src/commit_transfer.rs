@@ -128,7 +128,7 @@ where
             return Err(ApiError::http(400, "missing required field 'commits'"));
         }
 
-        // 0) Lock ledger state for write (serialize with transact).
+        // 0) Lock ledger state for write (serialize with transactions).
         let mut guard = handle.lock_for_write().await;
         let base_state = guard.clone_state();
 

@@ -77,7 +77,7 @@ Not yet supported:
 - DROP
 - COPY, MOVE, ADD
 
-Use JSON-LD transactions for write operations.
+Use JSON-LD transactions for transaction operations.
 
 **Specification:** https://www.w3.org/TR/sparql11-update/
 

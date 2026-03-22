@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise all transaction API paths with minimal data.
+# Exercise transaction API paths with minimal data.
 # Usage: transact-smoke.sh [BASE_URL] [LEDGER]
 
 set -euo pipefail
@@ -69,7 +69,7 @@ run_tx "JSON-LD upsert" \
 # 3. JSON-LD update (WHERE / DELETE / INSERT)
 echo "3. JSON-LD update (WHERE/DELETE/INSERT)..."
 run_tx "JSON-LD update" \
-    -X POST "${BASE_URL}/v1/fluree/transact/${LEDGER}" \
+    -X POST "${BASE_URL}/v1/fluree/update/${LEDGER}" \
     -H "Content-Type: application/json" \
     --data-raw '{
   "@context": {"ex": "http://example.org/ns/"},
@@ -92,7 +92,7 @@ ex:smoke-item-2 a ex:SmokeTest ;
 # 5. SPARQL UPDATE
 echo "5. SPARQL UPDATE..."
 run_tx "SPARQL UPDATE" \
-    -X POST "${BASE_URL}/v1/fluree/transact/${LEDGER}" \
+    -X POST "${BASE_URL}/v1/fluree/update/${LEDGER}" \
     -H "Content-Type: application/sparql-update" \
     --data-raw 'PREFIX ex: <http://example.org/ns/>
 INSERT DATA {
@@ -104,3 +104,4 @@ INSERT DATA {
 echo ""
 echo "Transaction smoke test complete."
 echo "Check Jaeger for transact_execute > txn_stage > txn_commit spans."
+
