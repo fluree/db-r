@@ -160,10 +160,8 @@ impl<'a> Validator<'a> {
         // DELETE and INSERT templates can have variables (bound by WHERE)
         // No ground validation needed for templates
 
-        // Validate WHERE pattern for property paths
-        for triple in &modify.where_clause.triples {
-            self.validate_triple_pattern(triple);
-        }
+        // Validate WHERE graph pattern (same capabilities as query WHERE).
+        self.validate_graph_pattern(&modify.where_clause);
     }
 
     /// Validate that QuadData contains only ground triples (no variables).

@@ -2,9 +2,9 @@
 
 use crate::ast::update::{
     DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, UpdateOperation,
-    UsingClause, WherePattern,
+    UsingClause,
 };
-use crate::ast::Iri;
+use crate::ast::{GraphPattern, Iri};
 use crate::lex::TokenKind;
 use crate::span::SourceSpan;
 
@@ -277,14 +277,12 @@ impl<'a> super::Parser<'a> {
     }
 
     /// Parse WHERE clause for update operations.
-    fn parse_update_where_clause(&mut self) -> Option<WherePattern> {
+    fn parse_update_where_clause(&mut self) -> Option<GraphPattern> {
         // Require WHERE keyword
         if !self.stream.match_keyword(TokenKind::KwWhere) {
             self.stream.error_at_current("expected WHERE clause");
             return None;
         }
-
-        let start = self.stream.current_span();
 
         // Expect opening brace
         if !self.stream.match_token(&TokenKind::LBrace) {
@@ -293,38 +291,8 @@ impl<'a> super::Parser<'a> {
             return None;
         }
 
-        // Parse triple patterns
-        let mut triples = Vec::new();
-        while !self.stream.check(&TokenKind::RBrace) && !self.stream.is_eof() {
-            // Parse subject
-            let subject = match self.parse_subject() {
-                Some(s) => s,
-                None => {
-                    if self.stream.check(&TokenKind::RBrace) {
-                        break;
-                    }
-                    self.stream
-                        .error_at_current("expected subject in WHERE clause");
-                    return None;
-                }
-            };
-
-            // Parse predicate-object list
-            self.parse_construct_predicate_object_list(&subject, &mut triples)?;
-
-            // Optional dot
-            self.stream.match_token(&TokenKind::Dot);
-        }
-
-        // Expect closing brace
-        if !self.stream.match_token(&TokenKind::RBrace) {
-            self.stream
-                .error_at_current("expected '}' after WHERE clause");
-            return None;
-        }
-
-        let span = start.union(self.stream.previous_span());
-        Some(WherePattern::new(triples, span))
+        // Parse group graph pattern (contents within { ... })
+        self.parse_group_graph_pattern()
     }
 
     /// Parse USING clause for update operations.

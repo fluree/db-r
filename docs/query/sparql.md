@@ -910,11 +910,23 @@ INSERT DATA {
 
 ### SPARQL UPDATE Restrictions
 
-Current MVP restrictions:
+Current restrictions:
 
-- **WHERE patterns**: Only basic triple patterns are supported. OPTIONAL, FILTER, UNION, and VALUES in WHERE clauses are not yet supported.
-- **Blank nodes in WHERE**: Blank nodes cannot be used in WHERE patterns (use variables instead).
 - **WITH/USING clauses**: Graph scoping via WITH and USING is not yet supported.
+- **Named graphs in templates**: `GRAPH { ... }` blocks in INSERT/DELETE templates are not yet supported.
+
+Supported in UPDATE `WHERE` (same query engine as SPARQL SELECT):
+
+- Basic triple patterns
+- `FILTER`, `BIND`
+- `OPTIONAL`, `UNION`, `VALUES`, `MINUS`
+- Subqueries (including aggregates like `MAX`, `COUNT`, etc.)
+
+Notes / boundaries:
+
+- **SERVICE**: Supported for local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` (dataset-driven); arbitrary remote HTTP SERVICE endpoints are not supported.
+- **GRAPH**: Graph patterns in `WHERE` are supported; named graphs in INSERT/DELETE templates are still not supported.
+- **Property paths**: Supported in `WHERE` (subject to Fluree capability settings).
 
 ### Endpoint Usage
 

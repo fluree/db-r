@@ -110,6 +110,41 @@ async fn atomic_increment_counter() {
     assert_eq!(result.get("ex:count"), Some(&json!(11)));
 }
 
+#[tokio::test]
+async fn update_supports_subquery_aggregate_max_plus_one() {
+    let (fluree, ledger) = seed(
+        "it/conditional:max-plus-one",
+        json!([
+            { "id": "ex:item1", "ex:seq": 1 },
+            { "id": "ex:item2", "ex:seq": 2 }
+        ]),
+    )
+    .await;
+
+    // Compute MAX(ex:seq) in a subquery, then bind next = max + 1 and insert it.
+    let updated = fluree
+        .update(
+            ledger,
+            &json!({
+                "@context": ctx(),
+                "where": [
+                    ["query", {
+                        "@context": ctx(),
+                        "select": ["(as (max ?n) ?m)"],
+                        "where": [{ "id": "?s", "ex:seq": "?n" }]
+                    }],
+                    ["bind", "?next", "(+ ?m 1)"]
+                ],
+                "insert": { "id": "ex:counter", "ex:next": "?next" }
+            }),
+        )
+        .await
+        .expect("max+1 update");
+
+    let result = query_entity(&fluree, &updated.ledger, "ex:counter").await;
+    assert_eq!(result.get("ex:next"), Some(&json!(3)));
+}
+
 /// Atomic decrement: subtract 1 from current value.
 #[tokio::test]
 async fn atomic_decrement_counter() {

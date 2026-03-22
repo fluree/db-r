@@ -1562,7 +1562,13 @@ fn test_modify_delete_insert() {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
             assert!(modify.delete_clause.is_some());
             assert!(modify.insert_clause.is_some());
-            assert_eq!(modify.where_clause.triples.len(), 1);
+            // where_clause is now a GraphPattern; a single-BGP body parses as Bgp directly.
+            match &modify.where_clause {
+                crate::ast::GraphPattern::Bgp { patterns, .. } => {
+                    assert_eq!(patterns.len(), 1, "expected one triple pattern");
+                }
+                other => panic!("Expected Bgp, got: {:?}", other),
+            }
         }
         _ => panic!("Expected Modify operation"),
     }

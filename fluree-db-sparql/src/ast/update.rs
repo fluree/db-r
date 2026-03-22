@@ -15,7 +15,7 @@
 //!
 //! These restrictions are enforced at the validation layer, not during parsing.
 
-use super::pattern::TriplePattern;
+use super::pattern::{GraphPattern, TriplePattern};
 use super::term::Iri;
 use crate::span::SourceSpan;
 
@@ -120,7 +120,7 @@ pub struct Modify {
     /// INSERT clause (optional)
     pub insert_clause: Option<QuadPattern>,
     /// WHERE clause
-    pub where_clause: WherePattern,
+    pub where_clause: GraphPattern,
     /// Source span
     pub span: SourceSpan,
 }
@@ -130,7 +130,7 @@ impl Modify {
     pub fn new(
         delete_clause: Option<QuadPattern>,
         insert_clause: Option<QuadPattern>,
-        where_clause: WherePattern,
+        where_clause: GraphPattern,
         span: SourceSpan,
     ) -> Self {
         Self {
@@ -189,25 +189,6 @@ pub struct QuadPattern {
 
 impl QuadPattern {
     /// Create a new quad pattern.
-    pub fn new(triples: Vec<TriplePattern>, span: SourceSpan) -> Self {
-        Self { triples, span }
-    }
-}
-
-/// WHERE pattern for Modify operations.
-///
-/// Uses a simpler pattern type than query WHERE clauses
-/// since Update WHERE patterns have more restrictions.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WherePattern {
-    /// The pattern to match
-    pub triples: Vec<TriplePattern>,
-    /// Source span
-    pub span: SourceSpan,
-}
-
-impl WherePattern {
-    /// Create a new WHERE pattern.
     pub fn new(triples: Vec<TriplePattern>, span: SourceSpan) -> Self {
         Self { triples, span }
     }
@@ -276,7 +257,7 @@ mod tests {
     fn test_modify_builder() {
         use crate::ast::term::Iri;
 
-        let where_pattern = WherePattern::new(vec![], test_span());
+        let where_pattern = GraphPattern::empty_bgp(test_span());
         let modify = Modify::new(None, None, where_pattern, test_span())
             .with_graph(Iri::full("http://example.org/graph", test_span()));
 

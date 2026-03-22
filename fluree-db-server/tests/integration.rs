@@ -929,6 +929,293 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
 }
 
 #[tokio::test]
+async fn sparql_update_supports_subquery_aggregate_and_bind() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed numeric values to aggregate
+    let insert_body = serde_json::json!({
+      "@context": { "ex": "http://example.org/" },
+      "@graph": [
+        { "@id": "ex:item1", "ex:seq": 1 },
+        { "@id": "ex:item2", "ex:seq": 2 }
+      ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(insert_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // SPARQL UPDATE: compute MAX in a subquery, then BIND(max+1) and insert.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+
+        INSERT {
+          ex:counter ex:next ?next .
+        }
+        WHERE {
+          { SELECT (MAX(?n) AS ?m)
+            WHERE { ?s ex:seq ?n . }
+          }
+          BIND((?m + 1) AS ?next)
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "update failed: {json}");
+
+    // Verify inserted value is 3
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?next
+        WHERE { ex:counter ex:next ?next }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json_contains_string(&json, "3"),
+        "Expected SPARQL response to contain '3', got: {}",
+        json
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_where_allows_blank_nodes() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed blank-node data via Turtle
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:alice ex:knows _:x .
+        _:x ex:seq 2 .
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "text/turtle")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(turtle))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // SPARQL UPDATE: WHERE uses a blank-node label to match the existing bnode.
+    // INSERT does not need to reference the bnode; it just checks that the pattern matches.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT { ex:flag ex:ok true }
+        WHERE {
+          ex:alice ex:knows _:x .
+          _:x ex:seq 2 .
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "update failed: {json}");
+
+    // Verify inserted flag exists
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?ok
+        WHERE { ex:flag ex:ok ?ok }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json_contains_string(&json, "true"),
+        "Expected response to contain 'true', got: {}",
+        json
+    );
+}
+
+#[tokio::test]
+async fn sparql_delete_where_allows_blank_nodes() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed blank-node data via Turtle
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:alice ex:knows _:x .
+        _:x ex:seq 2 .
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "text/turtle")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(turtle))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // DELETE WHERE using blank-node label should remove both triples.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+        DELETE WHERE {
+          ex:alice ex:knows _:x .
+          _:x ex:seq 2 .
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "delete-where failed: {json}");
+
+    // Verify no seq=2 remains
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?s
+        WHERE { ?s ex:seq 2 }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !json_contains_string(&json, "seq"),
+        "Expected no results after delete, got: {}",
+        json
+    );
+}
+
+#[tokio::test]
 async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
     let (_tmp, state) = test_state();
     let app = build_router(state.clone());
