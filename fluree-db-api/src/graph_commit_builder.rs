@@ -251,9 +251,7 @@ where
         let content_store =
             content_store_for(self.graph.fluree.storage().clone(), &self.graph.ledger_id);
         let blob = content_store.get(&commit_id).await.map_err(|e| {
-            // Distinguish storage I/O errors from actual not-found
-            let msg = e.to_string();
-            if msg.contains("not found") || msg.contains("NotFound") || msg.contains("No such") {
+            if matches!(e, fluree_db_core::error::Error::NotFound(_)) {
                 ApiError::NotFound(format!("Commit {} not found", commit_id))
             } else {
                 ApiError::internal(format!(

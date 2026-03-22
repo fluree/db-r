@@ -18,6 +18,8 @@
   - [export](cli/export.md)
   - [log](cli/log.md)
   - [show](cli/show.md)
+  - [index](cli/index.md)
+  - [reindex](cli/reindex.md)
   - [config](cli/config.md)
   - [prefix](cli/prefix.md)
   - [token](cli/token.md)
