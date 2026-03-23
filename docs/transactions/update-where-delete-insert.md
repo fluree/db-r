@@ -59,6 +59,56 @@ Expression format for `filter`/`bind` supports either:
 - **Data expressions** like `["+", "?x", 1]`, `["and", [">=", "?age", 18], ["=", "?status", "pending"]]`
 - **S-expressions** like `"(+ ?x 1)"`
 
+## Graph scoping (named graphs)
+
+JSON-LD update supports writing into **user-defined named graphs** (ingested via TriG or JSON-LD `@graph`) and scoping the update to a named graph.
+
+### Default graph for WHERE/DELETE/INSERT
+
+Use a top-level `graph` key to scope the update to a named graph **as the default graph**:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/graphs/audit",
+  "where":  { "@id": "ex:event1", "schema:description": "?old" },
+  "delete": { "@id": "ex:event1", "schema:description": "?old" },
+  "insert": { "@id": "ex:event1", "schema:description": "new" }
+}
+```
+
+This is the JSON-LD UPDATE analog of SPARQL UPDATE `WITH <iri>`:
+- WHERE patterns are evaluated against the named graph
+- DELETE/INSERT templates without an explicit graph are written to that named graph
+
+### Writing templates to specific graphs
+
+There are two ways to target graphs in `insert` / `delete` templates:
+
+- **Per-node `@graph`**: attach a graph IRI to a node object (overrides the transaction-level `graph`)
+
+```json
+{
+  "insert": [
+    { "@id": "ex:event1", "@graph": "http://example.org/graphs/audit", "schema:description": "v" }
+  ]
+}
+```
+
+- **Template sugar**: inside `insert` / `delete` arrays, use `["graph", "<graph IRI>", <pattern>]`
+
+```json
+{
+  "insert": [
+    ["graph", "http://example.org/graphs/audit", { "@id": "ex:event1", "schema:description": "v" }]
+  ]
+}
+```
+
+Notes:
+- `graph` is a **graph IRI** (a string like `"http://example.org/graphs/audit"`)
+- Named-graph reads are available after indexing completes (see `docs/query/datasets.md`)
+
 ## Simple Property Update
 
 Update a single property value:

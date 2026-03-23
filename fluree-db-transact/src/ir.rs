@@ -22,6 +22,7 @@ use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
 use fluree_db_query::{VarId, VarRegistry};
+use fluree_db_sparql::ast::Iri as SparqlIri;
 use fluree_db_sparql::ast::{GraphPattern as SparqlGraphPattern, Prologue as SparqlPrologue};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub struct SparqlWhereClause {
     pub prologue: SparqlPrologue,
+    /// Optional WITH clause graph for SPARQL UPDATE Modify operations.
+    ///
+    /// Phase 2: Fluree uses this to scope the WHERE clause default graph and
+    /// to provide a default graph for INSERT/DELETE templates that do not
+    /// specify an explicit `GRAPH <iri> { ... }` block.
+    pub with_iri: Option<SparqlIri>,
     pub pattern: SparqlGraphPattern,
 }
 
@@ -103,6 +110,14 @@ pub struct Txn {
     /// Optional inline VALUES bindings
     pub values: Option<InlineValues>,
 
+    /// Optional default graph IRI for JSON-LD update WHERE execution.
+    ///
+    /// When present (parsed from the JSON-LD update top-level `graph` key), staging
+    /// executes `where_patterns` against that named graph as the default graph.
+    ///
+    /// This is the JSON-LD UPDATE analog of SPARQL UPDATE `WITH <iri>` scoping.
+    pub update_where_graph_iri: Option<String>,
+
     /// Transaction options
     pub opts: TxnOpts,
 
@@ -140,6 +155,7 @@ impl Txn {
             delete_templates: Vec::new(),
             insert_templates: Vec::new(),
             values: None,
+            update_where_graph_iri: None,
             opts: TxnOpts::default(),
             vars: VarRegistry::new(),
             txn_meta: Vec::new(),

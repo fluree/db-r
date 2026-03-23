@@ -912,8 +912,9 @@ INSERT DATA {
 
 Current restrictions:
 
-- **WITH/USING clauses**: Graph scoping via WITH and USING is not yet supported.
-- **Named graphs in templates**: `GRAPH { ... }` blocks in INSERT/DELETE templates are not yet supported.
+- **USING clauses**: Dataset scoping via USING / USING NAMED is not yet supported.
+- **Named graphs in templates**: `GRAPH <iri> { ... }` blocks are supported in INSERT/DELETE templates, but **graph variables** (e.g., `GRAPH ?g { ... }`) are not yet supported.
+- **DELETE WHERE**: `GRAPH { ... }` blocks are not yet supported inside `DELETE WHERE { ... }`.
 
 Supported in UPDATE `WHERE` (same query engine as SPARQL SELECT):
 
@@ -925,8 +926,14 @@ Supported in UPDATE `WHERE` (same query engine as SPARQL SELECT):
 Notes / boundaries:
 
 - **SERVICE**: Supported for local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` (dataset-driven); arbitrary remote HTTP SERVICE endpoints are not supported.
-- **GRAPH**: Graph patterns in `WHERE` are supported; named graphs in INSERT/DELETE templates are still not supported.
+- **GRAPH**: Graph patterns in `WHERE` are supported; UPDATE templates support `GRAPH <iri> { ... }` but not `GRAPH ?var { ... }`.
 - **Property paths**: Supported in `WHERE` (subject to Fluree capability settings).
+
+Phase 2:
+
+- **WITH**: `WITH <iri>` is supported for MODIFY operations. It scopes the default graph for both:
+  - INSERT/DELETE templates that do not specify an explicit `GRAPH <iri> { ... }` block
+  - WHERE patterns that are not already inside an explicit `GRAPH` pattern
 
 ### Endpoint Usage
 

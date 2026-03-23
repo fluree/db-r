@@ -11,11 +11,11 @@
 //! Not all SPARQL Update features are supported by Fluree:
 //! - USING NAMED is not supported
 //! - Multiple USING clauses are not supported
-//! - GRAPH in INSERT/DELETE templates is not supported
+//! - GRAPH in INSERT/DELETE templates only supports IRI graph names (no variables)
 //!
 //! These restrictions are enforced at the validation layer, not during parsing.
 
-use super::pattern::{GraphPattern, TriplePattern};
+use super::pattern::{GraphName, GraphPattern, TriplePattern};
 use super::term::Iri;
 use crate::span::SourceSpan;
 
@@ -181,17 +181,32 @@ impl QuadData {
 /// Can contain variables that will be bound by the WHERE clause.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuadPattern {
-    /// The triple patterns
-    pub triples: Vec<TriplePattern>,
+    /// The quad pattern elements (triples and GRAPH blocks)
+    pub patterns: Vec<QuadPatternElement>,
     /// Source span
     pub span: SourceSpan,
 }
 
 impl QuadPattern {
     /// Create a new quad pattern.
-    pub fn new(triples: Vec<TriplePattern>, span: SourceSpan) -> Self {
-        Self { triples, span }
+    pub fn new(patterns: Vec<QuadPatternElement>, span: SourceSpan) -> Self {
+        Self { patterns, span }
     }
+}
+
+/// Element of a quad pattern: either a triple, or a GRAPH block containing triples.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QuadPatternElement {
+    /// A triple in the default graph.
+    Triple(TriplePattern),
+    /// A GRAPH block: `GRAPH <iri>|?g { ... }`
+    ///
+    /// Note: Fluree currently supports only IRI graph names in UPDATE templates.
+    Graph {
+        name: GraphName,
+        triples: Vec<TriplePattern>,
+        span: SourceSpan,
+    },
 }
 
 /// USING clause for Modify operations.

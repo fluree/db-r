@@ -35,7 +35,8 @@ use crate::ast::query::{
 };
 use crate::ast::term::{PredicateTerm, SubjectTerm, Term};
 use crate::ast::update::{
-    DeleteData, DeleteWhere, InsertData, Modify, QuadData, UpdateOperation, UsingClause,
+    DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, QuadPatternElement,
+    UpdateOperation, UsingClause,
 };
 use crate::diag::{DiagCode, Diagnostic, Label};
 use crate::span::SourceSpan;
@@ -145,9 +146,23 @@ impl<'a> Validator<'a> {
     }
 
     /// Validate DELETE WHERE - patterns can have variables.
-    fn validate_delete_where(&mut self, _delete_where: &DeleteWhere) {
-        // DELETE WHERE allows variables - no ground validation needed
-        // Could add property path validation if needed
+    fn validate_delete_where(&mut self, delete_where: &DeleteWhere) {
+        // DELETE WHERE allows variables - no ground validation needed.
+        //
+        // Phase 1: GRAPH blocks in DELETE WHERE are not supported yet because the lowering
+        // path in `fluree-db-transact` currently targets triple-only patterns.
+        for el in &delete_where.pattern.patterns {
+            if let QuadPatternElement::Graph { span, .. } = el {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagCode::UnsupportedGraphInUpdate,
+                        "GRAPH blocks are not supported in DELETE WHERE yet",
+                        *span,
+                    )
+                    .with_help("Rewrite using explicit triples in the default graph, or use DELETE/INSERT with WHERE once GRAPH template support is extended to DELETE WHERE."),
+                );
+            }
+        }
     }
 
     /// Validate Modify (INSERT/DELETE with WHERE).
@@ -159,9 +174,43 @@ impl<'a> Validator<'a> {
 
         // DELETE and INSERT templates can have variables (bound by WHERE)
         // No ground validation needed for templates
+        if let Some(delete_clause) = &modify.delete_clause {
+            self.validate_update_template_quad_pattern(delete_clause, "DELETE");
+        }
+        if let Some(insert_clause) = &modify.insert_clause {
+            self.validate_update_template_quad_pattern(insert_clause, "INSERT");
+        }
 
         // Validate WHERE graph pattern (same capabilities as query WHERE).
         self.validate_graph_pattern(&modify.where_clause);
+    }
+
+    fn validate_update_template_quad_pattern(&mut self, pattern: &QuadPattern, context: &str) {
+        for el in &pattern.patterns {
+            if let QuadPatternElement::Graph { name, span, .. } = el {
+                match name {
+                    crate::ast::pattern::GraphName::Iri(_iri) => {
+                        // Allowed (Phase 1)
+                    }
+                    crate::ast::pattern::GraphName::Var(v) => {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagCode::UnsupportedGraphInUpdate,
+                                format!(
+                                    "GRAPH ?{} is not supported in SPARQL Update {} templates",
+                                    v.name, context
+                                ),
+                                *span,
+                            )
+                            .with_label(Label::new(v.span, "graph variables not supported here"))
+                            .with_help(
+                                "Use GRAPH <iri> { ... } with an explicit graph IRI, or rewrite to a fixed target graph.",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Validate that QuadData contains only ground triples (no variables).

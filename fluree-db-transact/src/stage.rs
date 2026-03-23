@@ -645,14 +645,86 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
         return Batch::empty(schema).map_err(|e| TransactError::Query(e.into()));
     }
 
-    // Execute using the clean public API that handles multi-pattern joins
+    // Select the default graph for WHERE execution.
+    //
+    // - Standard case: default graph (g_id=0)
+    // - JSON-LD update with top-level `graph`: execute WHERE against that named graph
+    let base_g_id: GraphId = if let Some(iri) = txn.update_where_graph_iri.as_deref() {
+        ledger
+            .snapshot
+            .graph_registry
+            .graph_id_for_iri(iri)
+            .or_else(|| {
+                ledger.binary_store.as_ref().and_then(|te| {
+                    Arc::clone(&te.0)
+                        .downcast::<fluree_db_binary_index::BinaryIndexStore>()
+                        .ok()
+                        .and_then(|store| store.graph_id_for_iri(iri))
+                })
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Provide a runtime dataset so GRAPH patterns can resolve named graphs by IRI.
+    //
+    // Without a dataset, `GRAPH <iri> { ... }` only executes when <iri> matches the
+    // db's ledger_id alias. Named graph IRIs require `DataSet` to map IRI → g_id.
+    let base_db = ledger.as_graph_db_ref(base_g_id);
+    let mut runtime_dataset = fluree_db_query::DataSet::new().with_default_graph(
+        fluree_db_query::GraphRef::from_db(base_db.snapshot, base_db.overlay, base_db.t),
+    );
+
+    // Prefer snapshot GraphRegistry, but also include binary-store graph entries as a fallback.
+    // This mirrors the query path's safety fallback when registry is temporarily missing entries.
+    let mut seen_named_iris: HashSet<Arc<str>> = HashSet::new();
+    for (g_id, iri) in ledger.snapshot.graph_registry.iter_entries() {
+        let iri: Arc<str> = Arc::from(iri);
+        if seen_named_iris.insert(Arc::clone(&iri)) {
+            runtime_dataset = runtime_dataset.with_named_graph(
+                Arc::clone(&iri),
+                fluree_db_query::GraphRef::new(
+                    base_db.snapshot,
+                    g_id,
+                    base_db.overlay,
+                    base_db.t,
+                    base_db.snapshot.ledger_id.as_str(),
+                ),
+            );
+        }
+    }
+
+    if let Some(te) = &ledger.binary_store {
+        if let Ok(store) = Arc::clone(&te.0).downcast::<fluree_db_binary_index::BinaryIndexStore>()
+        {
+            for (g_id, iri) in store.graph_entries() {
+                let iri: Arc<str> = Arc::from(iri);
+                if seen_named_iris.insert(Arc::clone(&iri)) {
+                    runtime_dataset = runtime_dataset.with_named_graph(
+                        Arc::clone(&iri),
+                        fluree_db_query::GraphRef::new(
+                            base_db.snapshot,
+                            g_id,
+                            base_db.overlay,
+                            base_db.t,
+                            base_db.snapshot.ledger_id.as_str(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // Execute using the clean public API that handles multi-pattern joins.
     //
     // IMPORTANT: Execute "as of" the ledger's current t (which may be ahead of db.t when novelty exists).
-    let batches = fluree_db_query::execute_where_with_overlay_at_strict(
-        ledger.as_graph_db_ref(0),
+    let batches = fluree_db_query::execute_where_with_overlay_at_strict_in_dataset(
+        base_db,
         &txn.vars,
         &query_patterns,
         None,
+        Some(&runtime_dataset),
     )
     .await
     .map_err(TransactError::Query)?;
@@ -678,7 +750,17 @@ fn lower_sparql_where_patterns(
 ) -> Result<Vec<Pattern>> {
     // Propagate the original parsed span so lowering errors report helpful locations.
     let span = sparql_where.pattern.span();
-    let where_clause = SparqlWhereClauseAst::new(sparql_where.pattern.clone(), true, span);
+    let pattern = if let Some(with_iri) = sparql_where.with_iri.as_ref() {
+        fluree_db_sparql::ast::GraphPattern::Graph {
+            name: fluree_db_sparql::ast::GraphName::Iri(with_iri.clone()),
+            pattern: Box::new(sparql_where.pattern.clone()),
+            span,
+        }
+    } else {
+        sparql_where.pattern.clone()
+    };
+
+    let where_clause = SparqlWhereClauseAst::new(pattern, true, span);
     let select = SelectClause::star(span);
     let modifiers = SolutionModifiers::new();
     let select_query = SelectQuery::new(select, where_clause, modifiers, span);

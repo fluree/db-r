@@ -121,6 +121,7 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         ns_registry,
         false,
         &mut graph_ids,
+        None,
     )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
@@ -162,6 +163,7 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         ns_registry,
         false,
         &mut graph_ids,
+        None,
     )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
@@ -201,6 +203,12 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Extract transaction metadata (only from envelope-form documents with @graph)
     let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
 
+    // Optional transaction-level default graph.
+    // This applies to:
+    // - WHERE patterns (scopes default-graph patterns to the named graph)
+    // - DELETE/INSERT templates that do not specify per-node @graph
+    let default_graph = parse_update_default_graph(obj.get("graph"), &context, &mut graph_ids)?;
+
     let has_where = obj.get("where").is_some();
     let has_values = obj.get("values").is_some();
     let allow_object_vars = has_where || has_values;
@@ -234,14 +242,14 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse DELETE clause
     let delete_templates = if let Some(delete_val) = obj.get("delete") {
         validate_type_fields(delete_val)?;
-        let expanded = expand_with_context(delete_val, &context)?;
-        let templates = parse_expanded_triples(
-            &expanded,
+        let templates = parse_update_templates(
+            delete_val,
             &context,
             &mut vars,
             ns_registry,
             object_var_parsing,
             &mut graph_ids,
+            default_graph.as_ref().map(|(g_id, _)| *g_id),
         )?;
         if templates.is_empty() {
             // An explicit empty delete (e.g. `"delete": []`) is a no-op.
@@ -263,14 +271,14 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse INSERT clause
     let insert_templates = if let Some(insert_val) = obj.get("insert") {
         validate_type_fields(insert_val)?;
-        let expanded = expand_with_context(insert_val, &context)?;
-        let templates = parse_expanded_triples(
-            &expanded,
+        let templates = parse_update_templates(
+            insert_val,
             &context,
             &mut vars,
             ns_registry,
             object_var_parsing,
             &mut graph_ids,
+            default_graph.as_ref().map(|(g_id, _)| *g_id),
         )?;
         if templates.is_empty() {
             return Err(TransactError::Parse(
@@ -291,6 +299,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         .with_opts(opts)
         .with_txn_meta(txn_meta);
     txn.graph_delta = graph_ids.delta();
+    txn.update_where_graph_iri = default_graph.map(|(_g_id, iri)| iri);
 
     if let Some(values_val) = obj.get("values") {
         let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry)?;
@@ -298,6 +307,135 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     }
 
     Ok(txn)
+}
+
+fn parse_update_default_graph(
+    graph_val: Option<&Value>,
+    context: &ParsedContext,
+    graph_ids: &mut GraphIdAssigner,
+) -> Result<Option<(u16, String)>> {
+    let Some(v) = graph_val else {
+        return Ok(None);
+    };
+
+    let selector = match v {
+        Value::String(s) => Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("@id".to_string(), Value::String(s.clone()));
+            m
+        }),
+        Value::Object(obj) => Value::Object(obj.clone()),
+        Value::Array(arr) => {
+            let Some(first) = arr.first() else {
+                return Ok(None);
+            };
+            match first {
+                Value::String(s) => Value::Object({
+                    let mut m = serde_json::Map::new();
+                    m.insert("@id".to_string(), Value::String(s.clone()));
+                    m
+                }),
+                Value::Object(obj) => Value::Object(obj.clone()),
+                _ => {
+                    return Err(TransactError::Parse(
+                        "graph must be a string IRI (or {\"@id\": ...})".to_string(),
+                    ))
+                }
+            }
+        }
+        _ => {
+            return Err(TransactError::Parse(
+                "graph must be a string IRI (or {\"@id\": ...})".to_string(),
+            ))
+        }
+    };
+
+    let expanded = expand_with_context(&selector, context)?;
+    let iri = match &expanded {
+        Value::Array(arr) => arr
+            .first()
+            .and_then(|x| x.as_object())
+            .and_then(|o| o.get("@id"))
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string()),
+        Value::Object(o) => o
+            .get("@id")
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+    .ok_or_else(|| TransactError::Parse("graph must expand to an @id IRI".to_string()))?;
+
+    let g_id = graph_ids.get_or_assign(&iri);
+    Ok(Some((g_id, iri)))
+}
+
+fn parse_update_templates(
+    val: &Value,
+    context: &ParsedContext,
+    vars: &mut VarRegistry,
+    ns_registry: &mut NamespaceRegistry,
+    object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
+) -> Result<Vec<TripleTemplate>> {
+    // Template sugar: allow arrays of the form ["graph", <graph-iri>, <pattern>]
+    if let Value::Array(items) = val {
+        let mut out: Vec<TripleTemplate> = Vec::new();
+        let mut plain_items: Vec<Value> = Vec::new();
+
+        for item in items {
+            if let Value::Array(arr) = item {
+                if arr.len() == 3 && arr[0].as_str() == Some("graph") {
+                    let graph = parse_update_default_graph(Some(&arr[1]), context, graph_ids)?
+                        .ok_or_else(|| {
+                            TransactError::Parse("graph wrapper requires a graph IRI".to_string())
+                        })?;
+                    let expanded = expand_with_context(&arr[2], context)?;
+                    let templates = parse_expanded_triples(
+                        &expanded,
+                        context,
+                        vars,
+                        ns_registry,
+                        object_var_parsing,
+                        graph_ids,
+                        Some(graph.0),
+                    )?;
+                    out.extend(templates);
+                    continue;
+                }
+            }
+            plain_items.push(item.clone());
+        }
+
+        if !plain_items.is_empty() {
+            let expanded = expand_with_context(&Value::Array(plain_items), context)?;
+            let templates = parse_expanded_triples(
+                &expanded,
+                context,
+                vars,
+                ns_registry,
+                object_var_parsing,
+                graph_ids,
+                default_graph_id,
+            )?;
+            out.extend(templates);
+        }
+
+        return Ok(out);
+    }
+
+    // Non-array templates: parse normally.
+    let expanded = expand_with_context(val, context)?;
+    parse_expanded_triples(
+        &expanded,
+        context,
+        vars,
+        ns_registry,
+        object_var_parsing,
+        graph_ids,
+        default_graph_id,
+    )
 }
 
 /// Extract and parse the @context from a JSON-LD document
@@ -530,6 +668,7 @@ fn parse_expanded_triples(
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
 ) -> Result<Vec<TripleTemplate>> {
     let mut blank_counter: usize = 0;
     match expanded {
@@ -541,6 +680,7 @@ fn parse_expanded_triples(
                 ns_registry,
                 object_var_parsing,
                 graph_ids,
+                default_graph_id,
                 &mut blank_counter,
             )?;
             templates.extend(item_templates);
@@ -554,6 +694,7 @@ fn parse_expanded_triples(
                 ns_registry,
                 object_var_parsing,
                 graph_ids,
+                default_graph_id,
                 &mut blank_counter,
             )?;
             Ok(templates)
@@ -576,6 +717,7 @@ fn parse_expanded_object(
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<(TemplateTerm, Vec<TripleTemplate>)> {
     let obj = expanded
@@ -604,6 +746,7 @@ fn parse_expanded_object(
             _ => None,
         })
         .map(|iri| graph_ids.get_or_assign(iri));
+    let graph_id = graph_id.or(default_graph_id);
 
     // Get subject from @id (already expanded IRI or variable)
     let subject = if let Some(id) = obj.get("@id") {
@@ -678,6 +821,7 @@ fn parse_expanded_object(
             &mut templates,
             object_var_parsing,
             graph_ids,
+            default_graph_id,
             blank_counter,
         )?;
 
@@ -769,6 +913,7 @@ fn parse_expanded_objects(
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     match value {
@@ -787,6 +932,7 @@ fn parse_expanded_objects(
                             object_var_parsing,
                             templates,
                             graph_ids,
+                            default_graph_id,
                             blank_counter,
                         )?;
                         results.extend(list_items);
@@ -802,6 +948,7 @@ fn parse_expanded_objects(
                     templates,
                     object_var_parsing,
                     graph_ids,
+                    default_graph_id,
                     blank_counter,
                 )?);
             }
@@ -815,6 +962,7 @@ fn parse_expanded_objects(
             templates,
             object_var_parsing,
             graph_ids,
+            default_graph_id,
             blank_counter,
         )?]),
     }
@@ -839,6 +987,7 @@ fn parse_expanded_value(
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match value {
@@ -857,6 +1006,7 @@ fn parse_expanded_value(
                         ns_registry,
                         object_var_parsing,
                         graph_ids,
+                        default_graph_id,
                         blank_counter,
                     )?;
                     templates.extend(nested_templates);
@@ -886,6 +1036,7 @@ fn parse_expanded_value(
                     object_var_parsing,
                     templates,
                     graph_ids,
+                    default_graph_id,
                     blank_counter,
                 );
             }
@@ -935,6 +1086,7 @@ fn parse_expanded_value(
                 ns_registry,
                 object_var_parsing,
                 graph_ids,
+                default_graph_id,
                 blank_counter,
             )?;
             templates.extend(nested_templates);
@@ -1176,6 +1328,7 @@ fn parse_list_value(
     object_var_parsing: bool,
     templates: &mut Vec<TripleTemplate>,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     // @list should contain an array
@@ -1209,6 +1362,7 @@ fn parse_list_value(
         object_var_parsing,
         templates,
         graph_ids,
+        default_graph_id,
         blank_counter,
     )?;
     parsed.list_index = Some(0);
@@ -1225,6 +1379,7 @@ fn parse_list_values(
     object_var_parsing: bool,
     templates: &mut Vec<TripleTemplate>,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     // @list should contain an array
@@ -1253,6 +1408,7 @@ fn parse_list_values(
             object_var_parsing,
             templates,
             graph_ids,
+            default_graph_id,
             blank_counter,
         )?;
         parsed.list_index = Some(index as i32);
@@ -1276,6 +1432,7 @@ fn parse_single_list_item(
     object_var_parsing: bool,
     templates: &mut Vec<TripleTemplate>,
     graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
     blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match item {
@@ -1295,6 +1452,7 @@ fn parse_single_list_item(
                 templates,
                 object_var_parsing,
                 graph_ids,
+                default_graph_id,
                 blank_counter,
             )
         }
@@ -1508,6 +1666,7 @@ mod tests {
             &mut templates,
             true,
             &mut graph_ids,
+            None,
             &mut blank_counter,
         )
         .unwrap();
@@ -1538,6 +1697,7 @@ mod tests {
             &mut templates,
             true,
             &mut graph_ids,
+            None,
             &mut blank_counter,
         )
         .unwrap();
@@ -1567,6 +1727,7 @@ mod tests {
             true,
             &mut templates,
             &mut graph_ids,
+            None,
             &mut blank_counter,
         )
         .unwrap();
@@ -1612,6 +1773,7 @@ mod tests {
             true,
             &mut templates,
             &mut graph_ids,
+            None,
             &mut blank_counter,
         )
         .unwrap();
@@ -1642,6 +1804,7 @@ mod tests {
             &mut ns_registry,
             true,
             &mut graph_ids,
+            None,
         )
         .unwrap();
 
@@ -1692,6 +1855,7 @@ mod tests {
             &mut ns_registry,
             false,
             &mut graph_ids,
+            None,
         )
         .unwrap();
 
@@ -1755,6 +1919,7 @@ mod tests {
             &mut ns_registry,
             false,
             &mut graph_ids,
+            None,
         )
         .unwrap();
 
@@ -1805,6 +1970,7 @@ mod tests {
             &mut ns_registry,
             false,
             &mut graph_ids,
+            None,
         )
         .unwrap();
 

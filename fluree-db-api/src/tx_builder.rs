@@ -426,10 +426,9 @@ where
             });
         }
 
-        let op = self
-            .core
-            .operation
-            .unwrap_or_else(|| unreachable!("validate ensures operation exists when pre_built_txn is None"));
+        let op = self.core.operation.unwrap_or_else(|| {
+            unreachable!("validate ensures operation exists when pre_built_txn is None")
+        });
 
         // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
         if let TransactOperation::InsertTurtle(turtle) = op {
@@ -509,10 +508,9 @@ where
             });
         }
 
-        let op = self
-            .core
-            .operation
-            .unwrap_or_else(|| unreachable!("validate ensures operation exists when pre_built_txn is None"));
+        let op = self.core.operation.unwrap_or_else(|| {
+            unreachable!("validate ensures operation exists when pre_built_txn is None")
+        });
 
         // Direct flake path for InsertTurtle
         if let TransactOperation::InsertTurtle(turtle) = op {
@@ -1202,7 +1200,12 @@ mod tests {
                 "http://example.org/seq": 1
             }]
         });
-        let seeded = fluree.stage_owned(ledger).insert(&seed).execute().await.unwrap();
+        let seeded = fluree
+            .stage_owned(ledger)
+            .insert(&seed)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(seeded.receipt.t, 1);
 
         // Build a SPARQL UPDATE Txn IR (Modify) and execute via stage_owned().txn(txn).execute().
@@ -1226,7 +1229,12 @@ mod tests {
         let txn = fluree_db_transact::lower_sparql_update_ast(&ast, &mut ns, TxnOpts::default())
             .expect("lower SPARQL UPDATE AST to Txn IR");
 
-        let result = fluree.stage_owned(seeded.ledger).txn(txn).execute().await.unwrap();
+        let result = fluree
+            .stage_owned(seeded.ledger)
+            .txn(txn)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(result.receipt.t, 2);
     }
 

@@ -1,8 +1,9 @@
 //! SPARQL Update parsing: INSERT, DELETE, and related operations.
 
+use crate::ast::pattern::GraphName;
 use crate::ast::update::{
-    DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, UpdateOperation,
-    UsingClause,
+    DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, QuadPatternElement,
+    UpdateOperation, UsingClause,
 };
 use crate::ast::{GraphPattern, Iri};
 use crate::lex::TokenKind;
@@ -242,10 +243,20 @@ impl<'a> super::Parser<'a> {
             return None;
         }
 
-        // Parse triple patterns
-        let mut triples = Vec::new();
+        // Parse quad pattern elements:
+        // - default-graph triples
+        // - GRAPH <iri>|?g { ... } blocks (templates)
+        let mut patterns: Vec<QuadPatternElement> = Vec::new();
         while !self.stream.check(&TokenKind::RBrace) && !self.stream.is_eof() {
-            // Parse subject
+            if self.stream.check_keyword(TokenKind::KwGraph) {
+                let graph = self.parse_quad_pattern_graph_block()?;
+                patterns.push(graph);
+                // Optional dot after GRAPH block
+                self.stream.match_token(&TokenKind::Dot);
+                continue;
+            }
+
+            // Default-graph triple patterns
             let subject = match self.parse_subject() {
                 Some(s) => s,
                 None => {
@@ -258,8 +269,12 @@ impl<'a> super::Parser<'a> {
                 }
             };
 
+            let mut triples: Vec<crate::ast::TriplePattern> = Vec::new();
             // Parse predicate-object list (simple predicates only, no paths)
             self.parse_construct_predicate_object_list(&subject, &mut triples)?;
+            for t in triples {
+                patterns.push(QuadPatternElement::Triple(t));
+            }
 
             // Optional dot
             self.stream.match_token(&TokenKind::Dot);
@@ -273,7 +288,60 @@ impl<'a> super::Parser<'a> {
         }
 
         let span = start.union(self.stream.previous_span());
-        Some(QuadPattern::new(triples, span))
+        Some(QuadPattern::new(patterns, span))
+    }
+
+    fn parse_quad_pattern_graph_block(&mut self) -> Option<QuadPatternElement> {
+        let start = self.stream.current_span();
+        self.stream.advance(); // consume GRAPH
+
+        // Parse graph name (IRI or variable) using the same rules as query GRAPH patterns.
+        let name = if let Some((var_name, var_span)) = self.stream.consume_var() {
+            GraphName::Var(crate::ast::Var::new(var_name.as_ref(), var_span))
+        } else if let Some(iri) = self.parse_iri_term() {
+            GraphName::Iri(iri)
+        } else {
+            self.stream
+                .error_at_current("expected IRI or variable after GRAPH");
+            return None;
+        };
+
+        if !self.stream.match_token(&TokenKind::LBrace) {
+            self.stream
+                .error_at_current("expected '{' after GRAPH name");
+            return None;
+        }
+
+        // Parse the inner triples (same construct-template grammar as other UPDATE templates).
+        let mut triples: Vec<crate::ast::TriplePattern> = Vec::new();
+        while !self.stream.check(&TokenKind::RBrace) && !self.stream.is_eof() {
+            let subject = match self.parse_subject() {
+                Some(s) => s,
+                None => {
+                    if self.stream.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    self.stream
+                        .error_at_current("expected subject in GRAPH block");
+                    return None;
+                }
+            };
+            self.parse_construct_predicate_object_list(&subject, &mut triples)?;
+            self.stream.match_token(&TokenKind::Dot);
+        }
+
+        if !self.stream.match_token(&TokenKind::RBrace) {
+            self.stream
+                .error_at_current("expected '}' after GRAPH block");
+            return None;
+        }
+
+        let span = start.union(self.stream.previous_span());
+        Some(QuadPatternElement::Graph {
+            name,
+            triples,
+            span,
+        })
     }
 
     /// Parse WHERE clause for update operations.

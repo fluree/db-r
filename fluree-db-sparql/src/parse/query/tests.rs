@@ -1537,7 +1537,7 @@ fn test_delete_where_simple() {
     let ast = assert_parses("DELETE WHERE { ?s ex:obsolete ?o }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::DeleteWhere(delete)) => {
-            assert_eq!(delete.pattern.triples.len(), 1);
+            assert_eq!(delete.pattern.patterns.len(), 1);
         }
         _ => panic!("Expected DELETE WHERE"),
     }
@@ -1548,7 +1548,7 @@ fn test_delete_where_multiple_patterns() {
     let ast = assert_parses("DELETE WHERE { ?s ex:old ?o . ?s ex:deprecated ?x }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::DeleteWhere(delete)) => {
-            assert_eq!(delete.pattern.triples.len(), 2);
+            assert_eq!(delete.pattern.patterns.len(), 2);
         }
         _ => panic!("Expected DELETE WHERE"),
     }

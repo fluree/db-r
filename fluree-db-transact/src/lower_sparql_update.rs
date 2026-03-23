@@ -47,10 +47,11 @@ use fluree_db_query::parse::{
 use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
     BlankNodeValue, Iri, IriValue, Literal, LiteralValue as SparqlLiteralValue, Modify,
-    PredicateTerm, Prologue, QuadData, QuadPattern, QueryBody, SparqlAst, SubjectTerm, Term,
-    TriplePattern, UpdateOperation,
+    PredicateTerm, Prologue, QuadData, QuadPattern, QuadPatternElement, QueryBody, SparqlAst,
+    SubjectTerm, Term, TriplePattern, UpdateOperation,
 };
 use fluree_db_sparql::SourceSpan;
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 use crate::ir::{SparqlWhereClause, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
@@ -109,6 +110,41 @@ impl BlankNodeCounter {
 /// special names (e.g., `_:b1`).
 struct BlankNodeVarNamer {
     anon_counter: u32,
+}
+
+struct TemplateGraphIds {
+    next: u16,
+    iri_to_local: std::collections::HashMap<String, u16>,
+    delta: FxHashMap<u16, String>,
+}
+
+impl TemplateGraphIds {
+    fn new() -> Self {
+        // 0=default, 1=txn-meta, 2=config, 3+=user graphs (txn-local ids)
+        Self {
+            next: 3,
+            iri_to_local: std::collections::HashMap::new(),
+            delta: FxHashMap::default(),
+        }
+    }
+
+    fn get_or_assign(&mut self, iri: String) -> u16 {
+        if let Some(id) = self.iri_to_local.get(&iri) {
+            return *id;
+        }
+        let id = self.next;
+        self.next = self
+            .next
+            .checked_add(1)
+            .expect("txn-local graph id overflow");
+        self.iri_to_local.insert(iri.clone(), id);
+        self.delta.insert(id, iri);
+        id
+    }
+
+    fn delta(&self) -> FxHashMap<u16, String> {
+        self.delta.clone()
+    }
 }
 
 impl BlankNodeVarNamer {
@@ -234,6 +270,7 @@ fn lower_insert_data(
         delete_templates: Vec::new(),
         insert_templates,
         values: None,
+        update_where_graph_iri: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -262,6 +299,7 @@ fn lower_delete_data(
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
+        update_where_graph_iri: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -292,11 +330,24 @@ fn lower_delete_where(
     // we lower blank nodes into variables consistently across BOTH:
     // - the WHERE patterns (for matching/bindings)
     // - the DELETE templates (for instantiating concrete retractions)
-    let mut bnode_vars = BlankNodeVarNamer::new();
-    let mut where_patterns: Vec<UnresolvedPattern> = Vec::with_capacity(pattern.triples.len());
-    let mut delete_templates: Vec<TripleTemplate> = Vec::with_capacity(pattern.triples.len());
+    // Phase 1: GRAPH blocks are not supported in DELETE WHERE lowering yet.
+    let triples: Vec<&TriplePattern> = pattern
+        .patterns
+        .iter()
+        .map(|el| match el {
+            QuadPatternElement::Triple(t) => Ok(t),
+            QuadPatternElement::Graph { span, .. } => Err(LowerError::UnsupportedFeature {
+                feature: "GRAPH blocks in DELETE WHERE",
+                span: *span,
+            }),
+        })
+        .collect::<Result<_, _>>()?;
 
-    for tp in &pattern.triples {
+    let mut bnode_vars = BlankNodeVarNamer::new();
+    let mut where_patterns: Vec<UnresolvedPattern> = Vec::with_capacity(triples.len());
+    let mut delete_templates: Vec<TripleTemplate> = Vec::with_capacity(triples.len());
+
+    for tp in triples {
         // WHERE side: lower to UnresolvedPattern::Triple with bnodes rewritten as vars
         let s = subject_to_unresolved_delete_where(&tp.subject, prologue, &mut bnode_vars)?;
         let p = predicate_to_unresolved(&tp.predicate, prologue)?;
@@ -326,6 +377,7 @@ fn lower_delete_where(
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
+        update_where_graph_iri: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -344,14 +396,6 @@ fn lower_modify(
     bnodes: &mut BlankNodeCounter,
     opts: TxnOpts,
 ) -> Result<Txn, LowerError> {
-    // Reject WITH clause
-    if let Some(with_iri) = &modify.with_iri {
-        return Err(LowerError::UnsupportedFeature {
-            feature: "WITH clause",
-            span: with_iri.span,
-        });
-    }
-
     // Reject USING clause
     if let Some(using) = &modify.using {
         return Err(LowerError::UnsupportedFeature {
@@ -364,21 +408,46 @@ fn lower_modify(
     //
     // Note: `lower_sparql_update` takes `&UpdateOperation`, so we can't move out of the AST here.
     // Cloning keeps the lowering interface simple and ensures the transaction IR owns its WHERE.
+    let mut graph_ids = TemplateGraphIds::new();
+    let default_template_graph_id: Option<u16> = if let Some(iri) = modify.with_iri.as_ref() {
+        let expanded = expand_iri(iri, prologue)?;
+        Some(graph_ids.get_or_assign(expanded))
+    } else {
+        None
+    };
+
     let sparql_where = SparqlWhereClause {
         prologue: prologue.clone(),
+        with_iri: modify.with_iri.clone(),
         pattern: modify.where_clause.clone(),
     };
 
     // Lower DELETE templates (if present)
     let delete_templates = if let Some(delete_clause) = &modify.delete_clause {
-        lower_triples_to_templates(&delete_clause.triples, prologue, ns, vars, bnodes)?
+        lower_quad_pattern_to_templates(
+            delete_clause,
+            prologue,
+            ns,
+            vars,
+            bnodes,
+            &mut graph_ids,
+            default_template_graph_id,
+        )?
     } else {
         Vec::new()
     };
 
     // Lower INSERT templates (if present)
     let insert_templates = if let Some(insert_clause) = &modify.insert_clause {
-        lower_triples_to_templates(&insert_clause.triples, prologue, ns, vars, bnodes)?
+        lower_quad_pattern_to_templates(
+            insert_clause,
+            prologue,
+            ns,
+            vars,
+            bnodes,
+            &mut graph_ids,
+            default_template_graph_id,
+        )?
     } else {
         Vec::new()
     };
@@ -390,11 +459,56 @@ fn lower_modify(
         delete_templates,
         insert_templates,
         values: None,
+        update_where_graph_iri: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
-        graph_delta: Default::default(),
+        graph_delta: graph_ids.delta(),
     })
+}
+
+fn lower_quad_pattern_to_templates(
+    pattern: &QuadPattern,
+    prologue: &Prologue,
+    ns: &mut NamespaceRegistry,
+    vars: &mut VarRegistry,
+    bnodes: &mut BlankNodeCounter,
+    graph_ids: &mut TemplateGraphIds,
+    default_graph_id: Option<u16>,
+) -> Result<Vec<TripleTemplate>, LowerError> {
+    let mut out: Vec<TripleTemplate> = Vec::new();
+    for el in &pattern.patterns {
+        match el {
+            QuadPatternElement::Triple(tp) => {
+                let mut t = lower_triple_to_template(tp, prologue, ns, vars, bnodes)?;
+                if let Some(g_id) = default_graph_id {
+                    t = t.with_graph_id(g_id);
+                }
+                out.push(t);
+            }
+            QuadPatternElement::Graph { name, triples, .. } => {
+                let graph_iri = match name {
+                    fluree_db_sparql::ast::pattern::GraphName::Iri(iri) => {
+                        expand_iri(iri, prologue)?
+                    }
+                    fluree_db_sparql::ast::pattern::GraphName::Var(v) => {
+                        return Err(LowerError::UnsupportedFeature {
+                            feature: "GRAPH variables in UPDATE templates",
+                            span: v.span,
+                        });
+                    }
+                };
+                let txn_local_g_id = graph_ids.get_or_assign(graph_iri);
+                for tp in triples {
+                    out.push(
+                        lower_triple_to_template(tp, prologue, ns, vars, bnodes)?
+                            .with_graph_id(txn_local_g_id),
+                    );
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Lower triple patterns to TripleTemplate for DELETE/INSERT templates.
