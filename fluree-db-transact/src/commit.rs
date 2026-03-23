@@ -6,6 +6,7 @@
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{
     ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
     CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
@@ -361,7 +362,24 @@ where
         {
             let span = tracing::debug_span!("commit_populate_dict_novelty");
             let _g = span.enter();
-            populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
+            // Prefer pulling the BinaryIndexStore from the snapshot's range provider
+            // (this is the most reliable attachment point in the commit path).
+            let store = base
+                .snapshot
+                .range_provider
+                .as_ref()
+                .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+                .map(|brp| Arc::clone(brp.store()))
+                .or_else(|| {
+                    base.binary_store
+                        .as_ref()
+                        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())
+                });
+            populate_dict_novelty(
+                Arc::make_mut(&mut dict_novelty),
+                store.as_deref(),
+                &all_flakes,
+            )?;
         }
 
         let mut new_novelty = Arc::clone(&base.novelty);
@@ -424,8 +442,17 @@ where
 /// Does NOT check the persisted tree — some entries may shadow persisted subjects.
 /// This is safe because `DictOverlay` checks the persisted tree first for reverse
 /// lookups (canonical ID wins).
-fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.populate_from_flakes(flakes);
+fn populate_dict_novelty(
+    dict_novelty: &mut DictNovelty,
+    store: Option<&BinaryIndexStore>,
+    flakes: &[Flake],
+) -> Result<()> {
+    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+        dict_novelty,
+        store,
+        flakes.iter(),
+    )
+    .map_err(|e| TransactError::FlakeGeneration(format!("populate_dict_novelty_safe: {e}")))
 }
 
 /// Verify that this commit follows the expected sequence

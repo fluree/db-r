@@ -27,8 +27,8 @@ use base64::Engine as _;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
-    range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, GraphId, IndexType,
-    Sid, TXN_META_GRAPH_ID,
+    range_with_overlay, ContentAddressedWrite, ContentKind, Flake, GraphId, IndexType, Sid,
+    TXN_META_GRAPH_ID,
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
@@ -824,9 +824,20 @@ fn apply_pushed_commits_to_state(
     let mut novelty = (*base.novelty).clone();
     let mut dict_novelty = base.dict_novelty.clone();
 
+    let store_opt: Option<&BinaryIndexStore> = base
+        .binary_store
+        .as_ref()
+        .and_then(|te| te.0.as_ref().downcast_ref::<BinaryIndexStore>());
+
     for (t, flakes) in accepted_all_flakes {
         // Populate dict novelty similarly to transact commit path.
-        populate_dict_novelty(Arc::make_mut(&mut dict_novelty), flakes);
+        if let Err(e) = fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+            Arc::make_mut(&mut dict_novelty),
+            store_opt,
+            flakes.iter(),
+        ) {
+            error!(error = %e, "populate_dict_novelty_safe failed during commit transfer");
+        }
         // Apply to novelty.
         if let Err(e) = novelty.apply_commit(flakes.clone(), *t, &reverse_graph) {
             error!(
@@ -847,10 +858,6 @@ fn apply_pushed_commits_to_state(
         }
     }
     base
-}
-
-fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.populate_from_flakes(flakes);
 }
 
 /// Extract and **verify** the canonical content hash from a commit-v2 blob.

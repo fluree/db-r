@@ -572,16 +572,6 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         state.snapshot.subject_watermarks.clone(),
         state.snapshot.string_watermark,
     ));
-    // Re-populate DictNovelty with any already-loaded novelty flakes so overlay
-    // translation (BinaryRangeProvider) can resolve newly-introduced IDs.
-    if !state.novelty.is_empty() {
-        let novelty = state.novelty.as_ref();
-        Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
-            novelty
-                .iter_index(fluree_db_core::IndexType::Post)
-                .map(|id| novelty.get_flake(id)),
-        );
-    }
 
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
@@ -593,6 +583,23 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 
     // Augment namespace codes with entries from novelty commits (see loading.rs).
     store.augment_namespace_codes(&state.snapshot.namespace_codes);
+
+    // Re-populate DictNovelty from already-loaded novelty flakes, but *only* for
+    // entries not present in the persisted dictionaries (canonical IDs must win).
+    //
+    // This prevents minting a second internal ID for an already-indexed IRI/string.
+    if !state.novelty.is_empty() {
+        let novelty = state.novelty.as_ref();
+        let dn = Arc::make_mut(&mut state.dict_novelty);
+        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+            dn,
+            Some(&store),
+            novelty
+                .iter_index(fluree_db_core::IndexType::Post)
+                .map(|id| novelty.get_flake(id)),
+        )
+        .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
+    }
 
     // Copy store's namespace codes back to the snapshot so result
     // formatting can decode all namespace codes (e.g., custom prefixes

@@ -261,7 +261,7 @@ where
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = GraphDb::from_historical(&historical);
 
-        // Attach and populate dict_novelty derived from the historical Db's watermarks.
+        // Attach dict_novelty derived from the historical Db's watermarks.
         //
         // Historical views can have an overlay (novelty) even when the binary index
         // is behind the view's `t`. We must populate DictNovelty from the overlay
@@ -271,14 +271,10 @@ where
             view.snapshot.subject_watermarks.clone(),
             view.snapshot.string_watermark,
         );
-        if let Some(novelty) = view.novelty.as_ref() {
-            let flakes: Vec<&fluree_db_core::Flake> = novelty
-                .iter_index(IndexType::Spot)
-                .map(|id| novelty.get_flake(id))
-                .collect();
-            dict_novelty.populate_from_flakes_iter(flakes);
-        }
-        view.dict_novelty = Some(Arc::new(dict_novelty));
+        // NOTE: If we successfully attach a BinaryIndexStore below, we will populate
+        // dict_novelty using persisted-first routing to avoid allocating IDs for
+        // already-indexed entries. For overlay-only historical views (no binary store),
+        // we populate without a store (everything is treated as novel).
 
         // Load the binary index store (for index-backed historical queries only).
         //
@@ -319,6 +315,20 @@ where
                     // Augment namespace codes with entries from novelty commits.
                     store.augment_namespace_codes(&view.snapshot.namespace_codes);
 
+                    // Populate dict novelty safely (persisted dict wins).
+                    if let Some(novelty) = view.novelty.as_ref() {
+                        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                            &mut dict_novelty,
+                            Some(&store),
+                            novelty
+                                .iter_index(IndexType::Spot)
+                                .map(|id| novelty.get_flake(id)),
+                        )
+                        .map_err(|e| {
+                            ApiError::internal(format!("populate_dict_novelty_safe: {e}"))
+                        })?;
+                    }
+                    view.dict_novelty = Some(Arc::new(dict_novelty));
                     view.binary_store = Some(Arc::new(store));
 
                     // Historical views loaded from an index root are metadata-only by default
@@ -338,8 +348,49 @@ where
                         db.range_provider = Some(Arc::new(provider));
                         view.snapshot = Arc::new(db);
                     }
+                } else {
+                    // Commits exist but no index is available — populate without a store.
+                    if let Some(novelty) = view.novelty.as_ref() {
+                        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                            &mut dict_novelty,
+                            None,
+                            novelty
+                                .iter_index(IndexType::Spot)
+                                .map(|id| novelty.get_flake(id)),
+                        )
+                        .map_err(|e| {
+                            ApiError::internal(format!("populate_dict_novelty_safe: {e}"))
+                        })?;
+                    }
+                    view.dict_novelty = Some(Arc::new(dict_novelty));
                 }
+            } else {
+                // Snapshot has commits but nameservice record is missing — populate without a store.
+                if let Some(novelty) = view.novelty.as_ref() {
+                    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                        &mut dict_novelty,
+                        None,
+                        novelty
+                            .iter_index(IndexType::Spot)
+                            .map(|id| novelty.get_flake(id)),
+                    )
+                    .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
+                }
+                view.dict_novelty = Some(Arc::new(dict_novelty));
             }
+        } else {
+            // Overlay-only historical view: no persisted dictionaries available.
+            if let Some(novelty) = view.novelty.as_ref() {
+                fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                    &mut dict_novelty,
+                    None,
+                    novelty
+                        .iter_index(IndexType::Spot)
+                        .map(|id| novelty.get_flake(id)),
+                )
+                .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
+            }
+            view.dict_novelty = Some(Arc::new(dict_novelty));
         }
 
         Ok(view)

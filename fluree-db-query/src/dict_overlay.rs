@@ -191,6 +191,12 @@ impl DictOverlay {
         {
             return Ok(id);
         }
+        // Fallback: the Sid parts may be non-canonical for this IRI (e.g., different
+        // namespace-prefix split). Reconstruct IRI and consult the persisted reverse
+        // lookup again so canonical IDs win.
+        if let Some(id) = self.graph_view.store().sid_to_s_id(sid)? {
+            return Ok(id);
+        }
         // 2. DictNovelty (populated during commit — guaranteed hit for novelty subjects)
         if self.dict_novelty.is_initialized() {
             if let Some(id) = self

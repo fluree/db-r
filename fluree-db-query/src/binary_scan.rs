@@ -1946,6 +1946,10 @@ fn resolve_subject_v3(
     if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
         return Ok(id);
     }
+    // Fallback: non-canonical Sid parts may still reconstruct to a persisted IRI.
+    if let Some(id) = store.sid_to_s_id(sid)? {
+        return Ok(id);
+    }
     // 2. DictNovelty
     if let Some(dn) = dict_novelty {
         if dn.is_initialized() {

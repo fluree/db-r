@@ -11,6 +11,7 @@ pub mod types;
 
 pub mod arena;
 pub mod dict;
+pub mod dict_novelty_safe;
 pub mod format;
 pub mod read;
 

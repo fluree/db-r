@@ -101,13 +101,20 @@ where
                 ));
                 // Re-populate DictNovelty with any already-loaded novelty flakes so
                 // overlay translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+                //
+                // Important: only allocate novelty IDs for entries *not* present in the
+                // persisted dictionaries (canonical IDs must win).
                 if !state.novelty.is_empty() {
                     let novelty = state.novelty.as_ref();
-                    Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+                    let dn = Arc::make_mut(&mut state.dict_novelty);
+                    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                        dn,
+                        Some(&binary_index_store),
                         novelty
                             .iter_index(fluree_db_core::IndexType::Post)
                             .map(|id| novelty.get_flake(id)),
-                    );
+                    )
+                    .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
                 }
 
                 // Stats + schema.
