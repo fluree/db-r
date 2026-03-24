@@ -313,7 +313,7 @@ where
                         .map_err(|e| {
                             ApiError::internal(format!("augment namespace codes: {}", e))
                         })?;
-                    store.set_ns_split_mode(view.snapshot.ns_split_mode);
+                    store.set_ns_split_mode(view.snapshot.ns_split_mode());
 
                     // Populate dict novelty safely (persisted dict wins).
                     populate_dict_novelty_from_view(

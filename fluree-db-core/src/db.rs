@@ -74,9 +74,11 @@ pub struct LedgerSnapshot {
     /// Ledger-fixed split mode for canonical IRI encoding.
     ///
     /// Determines how IRIs are split into `(prefix, suffix)` for SID encoding.
-    /// Defaults to `MostGranular`. Once the ledger allocates user namespace
-    /// codes, this is immutable.
-    pub ns_split_mode: NsSplitMode,
+    /// Defaults to `MostGranular`. Immutable once the ledger allocates user
+    /// namespace codes.
+    ///
+    /// Use `ns_split_mode()` for read access and `set_ns_split_mode()` for mutation.
+    ns_split_mode: NsSplitMode,
 
     /// Index statistics (flakes count, total size)
     pub stats: Option<IndexStats>,
@@ -324,36 +326,63 @@ impl LedgerSnapshot {
             .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
-    /// Get all registered namespace codes
+    /// Get all registered namespace codes (code → prefix).
     pub fn namespaces(&self) -> &HashMap<u16, String> {
         &self.namespace_codes
+    }
+
+    /// Get the reverse namespace map (prefix → code) for conflict checking.
+    pub fn namespace_reverse(&self) -> &HashMap<String, u16> {
+        &self.namespace_reverse
+    }
+
+    /// Get the ledger's split mode for canonical IRI encoding.
+    #[inline]
+    pub fn ns_split_mode(&self) -> NsSplitMode {
+        self.ns_split_mode
+    }
+
+    /// Set the ledger's split mode (immutable after user namespace allocation).
+    ///
+    /// Validates that the mode is acceptable: if user namespaces have already
+    /// been allocated under a different mode, returns `Err`. Otherwise sets the mode.
+    ///
+    /// `commit_t` is included in error messages for diagnostics.
+    pub fn set_ns_split_mode(&mut self, mode: NsSplitMode, commit_t: i64) -> Result<()> {
+        if self.has_user_namespace_codes() && self.ns_split_mode != mode {
+            return Err(Error::invalid_index(format!(
+                "ns_split_mode conflict: commit t={} declares {:?} \
+                 but ledger already has user namespaces under {:?}",
+                commit_t, mode, self.ns_split_mode
+            )));
+        }
+        self.ns_split_mode = mode;
+        Ok(())
     }
 
     /// Insert a namespace code if not already present.
     ///
     /// Keeps the reverse map in sync. Returns `true` if the entry was new.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Debug-asserts that the prefix is not already mapped to a different code
+    /// (bimap invariant — Rule 3).
     pub fn insert_namespace_code(&mut self, code: u16, prefix: String) -> bool {
         if self.namespace_codes.contains_key(&code) {
             return false;
         }
-        self.namespace_reverse.entry(prefix.clone()).or_insert(code);
+        if let Some(&existing_code) = self.namespace_reverse.get(&prefix) {
+            debug_assert_eq!(
+                existing_code, code,
+                "namespace bimap conflict: prefix {:?} already maps to code {} but code {} was requested",
+                prefix, existing_code, code
+            );
+            return false;
+        }
+        self.namespace_reverse.insert(prefix.clone(), code);
         self.namespace_codes.insert(code, prefix);
         true
-    }
-
-    /// Validate that an incoming `ns_split_mode` doesn't conflict with the
-    /// established mode. Returns `Ok(())` if the mode is acceptable (either
-    /// no user namespaces allocated yet, or the mode matches). Returns `Err`
-    /// if user namespaces exist under a different mode.
-    pub fn validate_ns_split_mode(&self, incoming: NsSplitMode, commit_t: i64) -> Result<()> {
-        if self.has_user_namespace_codes() && self.ns_split_mode != incoming {
-            return Err(Error::invalid_index(format!(
-                "ns_split_mode conflict: commit t={} declares {:?} \
-                 but ledger already has user namespaces under {:?}",
-                commit_t, incoming, self.ns_split_mode
-            )));
-        }
-        Ok(())
     }
 
     /// Apply commit envelope deltas (namespace + graph) to this snapshot.

@@ -31,16 +31,30 @@ pub fn sync_store_and_snapshot_ns(
         .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
 
     // 2. Sync split mode.
-    store.set_ns_split_mode(snapshot.ns_split_mode);
+    store.set_ns_split_mode(snapshot.ns_split_mode());
 
     // 3. Reconcile store codes back into snapshot (validation + insert).
+    //    Check both directions of the bimap to detect conflicts:
+    //    - code→prefix: store's code already in snapshot with a different prefix
+    //    - prefix→code: store's prefix already in snapshot under a different code
     for (code, prefix) in store.namespace_codes() {
-        if let Some(existing) = snapshot.namespaces().get(code) {
-            if existing != prefix {
+        // Forward check: same code, different prefix?
+        if let Some(existing_prefix) = snapshot.namespaces().get(code) {
+            if existing_prefix != prefix {
                 return Err(ApiError::internal(format!(
                     "namespace reconciliation failure: index root ns code {} maps to {:?} \
                      but commit chain has {:?} — possible indexer/publisher bug",
-                    code, prefix, existing
+                    code, prefix, existing_prefix
+                )));
+            }
+        }
+        // Reverse check: same prefix, different code?
+        if let Some(&existing_code) = snapshot.namespace_reverse().get(prefix.as_str()) {
+            if existing_code != *code {
+                return Err(ApiError::internal(format!(
+                    "namespace reconciliation failure: prefix {:?} has code {} in index root \
+                     but code {} in commit chain — possible indexer/publisher bug",
+                    prefix, code, existing_code
                 )));
             }
         }

@@ -726,17 +726,16 @@ impl BinaryScanOperator {
 
     /// Build a `BinaryFilter` from bound pattern terms.
     fn build_filter_from_snapshot_sids(
-        snapshot: &LedgerSnapshot,
         store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
         let s_id = match s_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_s_id(snapshot, store, sid)?,
+            Some(sid) => sid_iri::sid_to_store_s_id(store, sid)?,
             None => None,
         };
         let p_id = match p_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_p_id(snapshot, store, sid),
+            Some(sid) => sid_iri::sid_to_store_p_id(store, sid),
             None => None,
         };
 
@@ -1418,7 +1417,7 @@ impl Operator for BinaryScanOperator {
         let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
         let mut filter =
-            Self::build_filter_from_snapshot_sids(ctx.snapshot, store_ref, &s_sid, &p_sid)
+            Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
                 .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,

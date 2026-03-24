@@ -306,10 +306,9 @@ impl LedgerState {
                 all_graph_iris.insert(iri);
             }
 
-            // Extract ns_split_mode (immutable once user namespaces are allocated).
+            // Extract ns_split_mode (Rule 0: immutable after user namespace allocation).
             if let Some(mode) = commit.ns_split_mode {
-                snapshot.validate_ns_split_mode(mode, commit.t)?;
-                snapshot.ns_split_mode = mode;
+                snapshot.set_ns_split_mode(mode, commit.t)?;
             }
         }
 
@@ -629,12 +628,9 @@ impl LedgerState {
         self.snapshot
             .apply_envelope_deltas(&commit.namespace_delta, &graph_iris)?;
 
-        // Apply ns_split_mode (split mode is immutable after genesis): only the genesis commit
-        // may set the mode. If a non-genesis commit carries a different mode,
-        // it's an invalid commit chain.
+        // Apply ns_split_mode (immutable after user namespace allocation).
         if let Some(mode) = commit.ns_split_mode {
-            self.snapshot.validate_ns_split_mode(mode, commit_t)?;
-            self.snapshot.ns_split_mode = mode;
+            self.snapshot.set_ns_split_mode(mode, commit_t)?;
         }
 
         // Generate commit metadata flakes

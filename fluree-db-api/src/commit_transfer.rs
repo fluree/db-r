@@ -130,7 +130,7 @@ where
 
         // 0) Lock ledger state for write (serialize with transactions).
         let mut guard = handle.lock_for_write().await;
-        let base_state = guard.clone_state();
+        let mut base_state = guard.clone_state();
 
         // 1) Read current head ref (CAS expected).
         let current_ref = self
@@ -203,7 +203,7 @@ where
             if let Some(mode) = c.commit.ns_split_mode {
                 base_state
                     .snapshot
-                    .validate_ns_split_mode(mode, c.commit.t)
+                    .set_ns_split_mode(mode, c.commit.t)
                     .map_err(|e| PushError::Invalid(e.to_string()).into_api_error())?;
             }
 
@@ -830,9 +830,10 @@ fn apply_pushed_commits_to_state(
             for iri in c.commit.graph_delta.values() {
                 all_graph_iris.insert(iri.clone());
             }
-            // Apply ns_split_mode (already validated for immutability in push acceptance loop).
+            // Apply ns_split_mode (immutable after user namespace allocation).
             if let Some(mode) = c.commit.ns_split_mode {
-                base.snapshot.ns_split_mode = mode;
+                base.snapshot.set_ns_split_mode(mode, c.commit.t)
+                    .map_err(|e| PushError::Internal(e.to_string()))?;
             }
         }
         base.snapshot

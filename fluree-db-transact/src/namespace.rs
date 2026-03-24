@@ -76,8 +76,9 @@ impl NamespaceRegistry {
     ///
     /// Merges snapshot codes into predefined defaults with bimap conflict
     /// validation. A conflict between snapshot and defaults indicates
-    /// corruption — logged as error but not fatal (the snapshot's value wins
-    /// to match historical behavior).
+    /// corruption — logged as error but not fatal. Built-in codes (< USER_START)
+    /// are always preserved; only user codes from the snapshot are accepted in
+    /// the fallback path.
     pub fn from_db(snapshot: &LedgerSnapshot) -> Self {
         let mut codes = NamespaceCodes::new(); // seeded with defaults
         let snapshot_ns: HashMap<u16, String> = snapshot
@@ -93,20 +94,29 @@ impl NamespaceRegistry {
                 "namespace conflict merging snapshot into defaults in from_db — \
                  snapshot codes may be corrupt"
             );
-            // Fall back to raw merge so the registry is usable.
+            // Fall back to raw merge: built-in codes always win, only user
+            // codes (>= USER_START) from the snapshot are accepted.
             let mut names = fluree_db_core::default_namespace_codes();
-            for (code, prefix) in snapshot.namespaces() {
-                names.insert(*code, prefix.clone());
+            for (&code, prefix) in snapshot.namespaces() {
+                if code >= USER_START {
+                    names.insert(code, prefix.clone());
+                } else {
+                    tracing::warn!(
+                        code,
+                        snapshot_prefix = %prefix,
+                        "ignoring corrupt snapshot override of built-in namespace code"
+                    );
+                }
             }
             return Self {
                 codes: NamespaceCodes::from_code_to_prefix(names),
-                split_mode: snapshot.ns_split_mode,
+                split_mode: snapshot.ns_split_mode(),
             };
         }
 
         Self {
             codes,
-            split_mode: snapshot.ns_split_mode,
+            split_mode: snapshot.ns_split_mode(),
         }
     }
 

@@ -1,5 +1,5 @@
 use fluree_db_binary_index::BinaryIndexStore;
-use fluree_db_core::{LedgerSnapshot, Sid};
+use fluree_db_core::Sid;
 use std::io;
 
 /// Translate a query-space `Sid` into a persisted subject ID filter (`s_id`) for the binary store.
@@ -11,7 +11,6 @@ use std::io;
 /// (common for novelty-only subjects or post-index namespace allocations).
 #[inline]
 pub(crate) fn sid_to_store_s_id(
-    _snapshot: &LedgerSnapshot,
     store: &BinaryIndexStore,
     sid: &Sid,
 ) -> io::Result<Option<u64>> {
@@ -28,7 +27,6 @@ pub(crate) fn sid_to_store_s_id(
 /// persisted dictionary (novelty-only predicate).
 #[inline]
 pub(crate) fn sid_to_store_p_id(
-    _snapshot: &LedgerSnapshot,
     store: &BinaryIndexStore,
     sid: &Sid,
 ) -> Option<u32> {

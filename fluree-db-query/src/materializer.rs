@@ -329,17 +329,20 @@ impl Materializer {
                     }
                     JoinKeyMode::MultiLedger => {
                         // In multi-ledger mode, namespace codes may differ across ledgers,
-                        // so we must use the full canonical IRI for comparison
-                        let iri = self.graph_view.store().sid_to_iri(sid).unwrap_or_else(|| {
-                            tracing::warn!(
-                                ns_code = sid.namespace_code,
-                                suffix = %sid.name,
-                                "sid_to_iri: unknown namespace code in materializer join_key \
-                                 — join key will use suffix only (possible data corruption)"
-                            );
-                            sid.name.to_string()
-                        });
-                        JoinKey::IriOwned(Arc::from(iri))
+                        // so we must use the full canonical IRI for comparison.
+                        // Unknown namespace code → Absent (strict decode per Rule 5).
+                        match self.graph_view.store().sid_to_iri(sid) {
+                            Some(iri) => JoinKey::IriOwned(Arc::from(iri)),
+                            None => {
+                                tracing::error!(
+                                    ns_code = sid.namespace_code,
+                                    suffix = %sid.name,
+                                    "sid_to_iri: unknown namespace code in materializer join_key \
+                                     — this is a data corruption signal"
+                                );
+                                JoinKey::Absent
+                            }
+                        }
                     }
                 }
             }
@@ -472,16 +475,19 @@ impl Materializer {
             Binding::Sid(sid) => {
                 // Decode to full IRI string.
                 // IMPORTANT: `namespace_code:name` is an internal representation and is not a full IRI.
-                let iri = self.graph_view.store().sid_to_iri(sid).unwrap_or_else(|| {
-                    tracing::warn!(
-                        ns_code = sid.namespace_code,
-                        suffix = %sid.name,
-                        "sid_to_iri: unknown namespace code in materializer as_string \
-                         — output will use suffix only (possible data corruption)"
-                    );
-                    sid.name.to_string()
-                });
-                Some(Arc::from(iri))
+                // Unknown namespace code → None (strict decode per Rule 5).
+                match self.graph_view.store().sid_to_iri(sid) {
+                    Some(iri) => Some(Arc::from(iri)),
+                    None => {
+                        tracing::error!(
+                            ns_code = sid.namespace_code,
+                            suffix = %sid.name,
+                            "sid_to_iri: unknown namespace code in materializer as_string \
+                             — this is a data corruption signal"
+                        );
+                        None
+                    }
+                }
             }
 
             Binding::IriMatch { iri, .. } => Some(Arc::clone(iri)),

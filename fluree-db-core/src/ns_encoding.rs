@@ -622,14 +622,13 @@ impl Default for NamespaceCodes {
 
 /// Validate and apply a namespace delta to a raw `code → prefix` map.
 ///
-/// This is a convenience wrapper for callers that carry a raw `HashMap`
-/// (e.g., `LedgerSnapshot`, `BinaryIndexStore`) rather than `NamespaceCodes`.
-/// It delegates to `NamespaceCodes::merge_delta` for the actual conflict
-/// checking so the bimap validation logic is not duplicated.
+/// Checks both directions of the bimap uniqueness invariant:
+/// - A code that already maps to a different prefix is a conflict.
+/// - A prefix that already maps to a different code is a conflict.
 ///
-/// The raw HashMap ergonomic wrapper exists because converting all namespace
-/// table holders to `NamespaceCodes` is a larger refactor; this function
-/// bridges the gap while keeping validation centralized.
+/// New mappings are inserted; matching duplicates are skipped.
+///
+/// Returns `Err(NsAllocError)` on the first violation.
 pub fn validate_and_merge_ns_delta(
     existing: &mut HashMap<u16, String>,
     delta: &HashMap<u16, String>,
@@ -637,12 +636,47 @@ pub fn validate_and_merge_ns_delta(
     if delta.is_empty() {
         return Ok(());
     }
-    // Delegate to NamespaceCodes for centralized conflict checking.
-    let mut codes = NamespaceCodes::from_code_to_prefix(existing.clone());
-    codes.merge_delta(delta)?;
-    // Apply validated entries to the raw map.
+
+    // Build a temporary reverse index from the existing table for O(1)
+    // prefix→code lookups. This borrows `existing` immutably, so we
+    // collect validated new entries and apply them after the loop.
+    let reverse: HashMap<&str, u16> = existing
+        .iter()
+        .map(|(&code, prefix)| (prefix.as_str(), code))
+        .collect();
+
+    // Validated new entries to insert after the loop (avoids mutating
+    // `existing` while the reverse map borrows it).
+    let mut new_entries: Vec<(u16, String)> = Vec::new();
+
     for (&code, prefix) in delta {
-        existing.entry(code).or_insert_with(|| prefix.clone());
+        // Check code → prefix direction
+        if let Some(existing_prefix) = existing.get(&code) {
+            if existing_prefix != prefix {
+                return Err(NsAllocError::CodeConflict {
+                    code,
+                    new_prefix: prefix.clone(),
+                    existing_prefix: existing_prefix.clone(),
+                });
+            }
+            continue;
+        }
+        // Check prefix → code direction
+        if let Some(&existing_code) = reverse.get(prefix.as_str()) {
+            if existing_code != code {
+                return Err(NsAllocError::PrefixConflict {
+                    prefix: prefix.clone(),
+                    new_code: code,
+                    existing_code,
+                });
+            }
+            continue;
+        }
+        new_entries.push((code, prefix.clone()));
+    }
+
+    for (code, prefix) in new_entries {
+        existing.insert(code, prefix);
     }
     Ok(())
 }
