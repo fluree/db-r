@@ -1621,7 +1621,22 @@ fn test_modify_with_using() {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
             assert!(modify.using.is_some());
             let using = modify.using.as_ref().unwrap();
-            assert!(using.default_graph.is_some());
+            assert_eq!(using.default_graphs.len(), 1);
+        }
+        _ => panic!("Expected Modify operation"),
+    }
+}
+
+#[test]
+fn test_modify_with_multiple_using() {
+    let ast = assert_parses(
+        "DELETE { ?s ex:old ?o } USING <http://example.org/g1> USING <http://example.org/g2> WHERE { ?s ex:old ?o }",
+    );
+    match &ast.body {
+        QueryBody::Update(UpdateOperation::Modify(modify)) => {
+            assert!(modify.using.is_some());
+            let using = modify.using.as_ref().unwrap();
+            assert_eq!(using.default_graphs.len(), 2);
         }
         _ => panic!("Expected Modify operation"),
     }

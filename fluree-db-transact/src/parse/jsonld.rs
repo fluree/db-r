@@ -122,6 +122,7 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         false,
         &mut graph_ids,
         None,
+        &HashMap::new(),
     )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
@@ -164,6 +165,7 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         false,
         &mut graph_ids,
         None,
+        &HashMap::new(),
     )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
@@ -203,11 +205,39 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Extract transaction metadata (only from envelope-form documents with @graph)
     let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
 
+    // Optional WHERE dataset scoping using query-style dataset keys.
+    // - `from.graph` (or `"from": "<graph IRI>"`, or `"from": ["<g1>", "<g2>"]`) scopes WHERE
+    //   default graph(s) (USING equivalent; multiple graphs are merged for default-graph patterns)
+    // - `from-named` restricts visible named graphs for WHERE (USING NAMED equivalent)
+    let where_named_graphs = parse_update_where_named_graphs(obj.get("from-named"), &context)?;
+    let from_named_aliases: HashMap<String, String> = where_named_graphs
+        .as_ref()
+        .map(|v| {
+            v.iter()
+                .filter_map(|g| g.alias.as_ref().map(|a| (a.clone(), g.iri.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Optional transaction-level default graph.
     // This applies to:
     // - WHERE patterns (scopes default-graph patterns to the named graph)
     // - DELETE/INSERT templates that do not specify per-node @graph
-    let default_graph = parse_update_default_graph(obj.get("graph"), &context, &mut graph_ids)?;
+    let template_default_graph = parse_update_template_default_graph(
+        obj.get("graph"),
+        &context,
+        &from_named_aliases,
+        &mut graph_ids,
+    )?;
+
+    let where_default_graph_iris =
+        parse_update_where_default_graph_iris(obj.get("from"), &context, &from_named_aliases)?
+            .unwrap_or_else(|| {
+                template_default_graph
+                    .as_ref()
+                    .map(|(_, iri)| vec![iri.clone()])
+                    .unwrap_or_default()
+            });
 
     let has_where = obj.get("where").is_some();
     let has_values = obj.get("values").is_some();
@@ -242,15 +272,16 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse DELETE clause
     let delete_templates = if let Some(delete_val) = obj.get("delete") {
         validate_type_fields(delete_val)?;
-        let templates = parse_update_templates(
-            delete_val,
+        let mut ctx = TemplateParseCtx::new(
             &context,
             &mut vars,
             ns_registry,
             object_var_parsing,
             &mut graph_ids,
-            default_graph.as_ref().map(|(g_id, _)| *g_id),
-        )?;
+            template_default_graph.as_ref().map(|(g_id, _)| *g_id),
+            &from_named_aliases,
+        );
+        let templates = parse_update_templates_with_ctx(delete_val, &mut ctx)?;
         if templates.is_empty() {
             // An explicit empty delete (e.g. `"delete": []`) is a no-op.
             // Still reject structurally-empty deletes like `{ "@id": "ex:foo" }`.
@@ -271,15 +302,16 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse INSERT clause
     let insert_templates = if let Some(insert_val) = obj.get("insert") {
         validate_type_fields(insert_val)?;
-        let templates = parse_update_templates(
-            insert_val,
+        let mut ctx = TemplateParseCtx::new(
             &context,
             &mut vars,
             ns_registry,
             object_var_parsing,
             &mut graph_ids,
-            default_graph.as_ref().map(|(g_id, _)| *g_id),
-        )?;
+            template_default_graph.as_ref().map(|(g_id, _)| *g_id),
+            &from_named_aliases,
+        );
+        let templates = parse_update_templates_with_ctx(insert_val, &mut ctx)?;
         if templates.is_empty() {
             return Err(TransactError::Parse(
                 "insert must contain at least one predicate or @type (an object with only @id is not a valid insert)"
@@ -299,7 +331,8 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         .with_opts(opts)
         .with_txn_meta(txn_meta);
     txn.graph_delta = graph_ids.delta();
-    txn.update_where_graph_iri = default_graph.map(|(_g_id, iri)| iri);
+    txn.update_where_default_graph_iris = Some(where_default_graph_iris);
+    txn.update_where_named_graphs = where_named_graphs;
 
     if let Some(values_val) = obj.get("values") {
         let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry)?;
@@ -307,6 +340,217 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     }
 
     Ok(txn)
+}
+
+fn parse_update_template_default_graph(
+    graph_val: Option<&Value>,
+    context: &ParsedContext,
+    from_named_aliases: &HashMap<String, String>,
+    graph_ids: &mut GraphIdAssigner,
+) -> Result<Option<(u16, String)>> {
+    let Some(v) = graph_val else {
+        return Ok(None);
+    };
+
+    // Allow `"graph": "default"` as a no-op.
+    if matches!(v, Value::String(s) if s == "default") {
+        return Ok(None);
+    }
+
+    // Disallow txn-meta as a write target.
+    if matches!(v, Value::String(s) if s == "txn-meta") {
+        return Err(TransactError::Parse(
+            "graph: \"txn-meta\" is not a valid update write target".to_string(),
+        ));
+    }
+
+    let resolved = resolve_graph_selector_value_for_update(v, from_named_aliases);
+    parse_update_default_graph(Some(&resolved), context, graph_ids)
+}
+
+fn parse_update_where_default_graph_iris(
+    from_val: Option<&Value>,
+    context: &ParsedContext,
+    from_named_aliases: &HashMap<String, String>,
+) -> Result<Option<Vec<String>>> {
+    let Some(v) = from_val else {
+        return Ok(None);
+    };
+
+    // Normalize a single graph selector value after alias resolution.
+    // Returns Ok(None) for "default" (skip), Ok(Some(iri)) for a real graph,
+    // or Err for "txn-meta".
+    let resolve_single = |item: &Value| -> Result<Option<String>> {
+        let resolved = resolve_graph_selector_value_for_update(item, from_named_aliases);
+        match &resolved {
+            Value::String(s) if s == "default" => Ok(None),
+            Value::String(s) if s == "txn-meta" => Err(TransactError::Parse(
+                "from: \"txn-meta\" is not currently supported as a default graph selector in updates"
+                    .to_string(),
+            )),
+            _ => Ok(Some(expand_update_graph_iri(&resolved, context)?)),
+        }
+    };
+
+    match v {
+        // String shorthand
+        Value::String(_) => match resolve_single(v)? {
+            Some(iri) => Ok(Some(vec![iri])),
+            None => Ok(Some(Vec::new())),
+        },
+        // Array form: multiple default graphs (merged for default-graph patterns).
+        Value::Array(arr) => {
+            let mut out: Vec<String> = Vec::new();
+            for item in arr {
+                if let Some(iri) = resolve_single(item)? {
+                    out.push(iri);
+                }
+            }
+            Ok(Some(out))
+        }
+        // Object form: allow {"graph": ...} and ignore other dataset fields.
+        Value::Object(obj) => {
+            if let Some(graph) = obj.get("graph") {
+                parse_update_where_default_graph_iris(Some(graph), context, from_named_aliases)
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Err(TransactError::Parse(
+            "from must be a string graph selector, an array of graph selectors, or an object with a 'graph' field"
+                .to_string(),
+        )),
+    }
+}
+
+fn resolve_graph_selector_value_for_update(
+    v: &Value,
+    from_named_aliases: &HashMap<String, String>,
+) -> Value {
+    match v {
+        Value::String(s) => from_named_aliases
+            .get(s)
+            .map(|iri| Value::String(iri.clone()))
+            .unwrap_or_else(|| Value::String(s.clone())),
+        _ => v.clone(),
+    }
+}
+
+fn parse_update_where_named_graphs(
+    from_named_val: Option<&Value>,
+    context: &ParsedContext,
+) -> Result<Option<Vec<crate::ir::UpdateNamedGraph>>> {
+    let Some(v) = from_named_val else {
+        return Ok(None);
+    };
+
+    let mut out: Vec<crate::ir::UpdateNamedGraph> = Vec::new();
+
+    let items: Vec<Value> = match v {
+        Value::Array(arr) => arr.clone(),
+        _ => vec![v.clone()],
+    };
+
+    for item in items {
+        match item {
+            Value::String(_) | Value::Object(_) | Value::Array(_) => {
+                if let Value::Object(obj) = &item {
+                    // Accept query-style graph source objects: { "@id": "...", "graph": "<iri>", "alias": "x" }
+                    let explicit_alias = obj
+                        .get("alias")
+                        .and_then(|a| a.as_str())
+                        .map(|s| s.to_string());
+                    let graph_val = obj.get("graph").ok_or_else(|| {
+                        TransactError::Parse(
+                            "from-named objects must include a 'graph' field".to_string(),
+                        )
+                    })?;
+                    // If no alias provided, use the raw graph selector string as an implicit alias.
+                    // This makes `from-named: ["ex:g2"]` usable as `["graph", "ex:g2", ...]`
+                    // in WHERE patterns even though GRAPH names are not expanded via @context.
+                    let implicit_alias = graph_val.as_str().map(|s| s.to_string());
+                    let iri = expand_update_graph_iri(graph_val, context)?;
+                    out.push(crate::ir::UpdateNamedGraph {
+                        iri,
+                        alias: explicit_alias.or(implicit_alias),
+                    });
+                } else {
+                    // String shorthand (or other selector shape): treat as graph IRI
+                    let implicit_alias = item.as_str().map(|s| s.to_string());
+                    let iri = expand_update_graph_iri(&item, context)?;
+                    out.push(crate::ir::UpdateNamedGraph {
+                        iri,
+                        alias: implicit_alias,
+                    });
+                }
+            }
+            _ => {
+                return Err(TransactError::Parse(
+                    "from-named must be a string, an object, or an array of those".to_string(),
+                ))
+            }
+        }
+    }
+
+    Ok(Some(out))
+}
+
+fn expand_update_graph_iri(v: &Value, context: &ParsedContext) -> Result<String> {
+    let selector = match v {
+        Value::String(s) => Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert("@id".to_string(), Value::String(s.clone()));
+            m
+        }),
+        Value::Object(obj) => Value::Object(obj.clone()),
+        Value::Array(arr) => {
+            // JSON-LD expansion often represents a single node as a one-element array.
+            // For graph selectors, multi-element arrays are ambiguous, so reject them
+            // instead of silently truncating.
+            if arr.len() != 1 {
+                return Err(TransactError::Parse(
+                    "graph selector array must contain exactly one element".to_string(),
+                ));
+            }
+            let first = &arr[0];
+            match first {
+                Value::String(s) => Value::Object({
+                    let mut m = serde_json::Map::new();
+                    m.insert("@id".to_string(), Value::String(s.clone()));
+                    m
+                }),
+                Value::Object(obj) => Value::Object(obj.clone()),
+                _ => {
+                    return Err(TransactError::Parse(
+                        "graph selector must be a string IRI (or {\"@id\": ...})".to_string(),
+                    ))
+                }
+            }
+        }
+        _ => {
+            return Err(TransactError::Parse(
+                "graph selector must be a string IRI (or {\"@id\": ...})".to_string(),
+            ))
+        }
+    };
+
+    let expanded = expand_with_context(&selector, context)?;
+    let iri = match &expanded {
+        Value::Array(arr) => arr
+            .first()
+            .and_then(|x| x.as_object())
+            .and_then(|o| o.get("@id"))
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string()),
+        Value::Object(o) => o
+            .get("@id")
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+    .ok_or_else(|| TransactError::Parse("graph selector must expand to an @id IRI".to_string()))?;
+
+    Ok(iri)
 }
 
 fn parse_update_default_graph(
@@ -370,14 +614,43 @@ fn parse_update_default_graph(
     Ok(Some((g_id, iri)))
 }
 
-fn parse_update_templates(
-    val: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
+struct TemplateParseCtx<'a> {
+    context: &'a ParsedContext,
+    vars: &'a mut VarRegistry,
+    ns_registry: &'a mut NamespaceRegistry,
     object_var_parsing: bool,
-    graph_ids: &mut GraphIdAssigner,
+    graph_ids: &'a mut GraphIdAssigner,
     default_graph_id: Option<u16>,
+    from_named_aliases: &'a HashMap<String, String>,
+    blank_counter: usize,
+}
+
+impl<'a> TemplateParseCtx<'a> {
+    fn new(
+        context: &'a ParsedContext,
+        vars: &'a mut VarRegistry,
+        ns_registry: &'a mut NamespaceRegistry,
+        object_var_parsing: bool,
+        graph_ids: &'a mut GraphIdAssigner,
+        default_graph_id: Option<u16>,
+        from_named_aliases: &'a HashMap<String, String>,
+    ) -> Self {
+        Self {
+            context,
+            vars,
+            ns_registry,
+            object_var_parsing,
+            graph_ids,
+            default_graph_id,
+            from_named_aliases,
+            blank_counter: 0,
+        }
+    }
+}
+
+fn parse_update_templates_with_ctx(
+    val: &Value,
+    ctx: &mut TemplateParseCtx<'_>,
 ) -> Result<Vec<TripleTemplate>> {
     // Template sugar: allow arrays of the form ["graph", <graph-iri>, <pattern>]
     if let Value::Array(items) = val {
@@ -387,20 +660,21 @@ fn parse_update_templates(
         for item in items {
             if let Value::Array(arr) = item {
                 if arr.len() == 3 && arr[0].as_str() == Some("graph") {
-                    let graph = parse_update_default_graph(Some(&arr[1]), context, graph_ids)?
-                        .ok_or_else(|| {
-                            TransactError::Parse("graph wrapper requires a graph IRI".to_string())
-                        })?;
-                    let expanded = expand_with_context(&arr[2], context)?;
-                    let templates = parse_expanded_triples(
-                        &expanded,
-                        context,
-                        vars,
-                        ns_registry,
-                        object_var_parsing,
-                        graph_ids,
-                        Some(graph.0),
-                    )?;
+                    let resolved_graph =
+                        resolve_graph_selector_value_for_update(&arr[1], ctx.from_named_aliases);
+                    let graph = parse_update_default_graph(
+                        Some(&resolved_graph),
+                        ctx.context,
+                        ctx.graph_ids,
+                    )?
+                    .ok_or_else(|| {
+                        TransactError::Parse("graph wrapper requires a graph IRI".to_string())
+                    })?;
+                    let expanded = expand_with_context(&arr[2], ctx.context)?;
+                    let prev_default = ctx.default_graph_id;
+                    ctx.default_graph_id = Some(graph.0);
+                    let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
+                    ctx.default_graph_id = prev_default;
                     out.extend(templates);
                     continue;
                 }
@@ -409,16 +683,8 @@ fn parse_update_templates(
         }
 
         if !plain_items.is_empty() {
-            let expanded = expand_with_context(&Value::Array(plain_items), context)?;
-            let templates = parse_expanded_triples(
-                &expanded,
-                context,
-                vars,
-                ns_registry,
-                object_var_parsing,
-                graph_ids,
-                default_graph_id,
-            )?;
+            let expanded = expand_with_context(&Value::Array(plain_items), ctx.context)?;
+            let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
             out.extend(templates);
         }
 
@@ -426,16 +692,8 @@ fn parse_update_templates(
     }
 
     // Non-array templates: parse normally.
-    let expanded = expand_with_context(val, context)?;
-    parse_expanded_triples(
-        &expanded,
-        context,
-        vars,
-        ns_registry,
-        object_var_parsing,
-        graph_ids,
-        default_graph_id,
-    )
+    let expanded = expand_with_context(val, ctx.context)?;
+    parse_expanded_triples_with_ctx(&expanded, ctx)
 }
 
 /// Extract and parse the @context from a JSON-LD document
@@ -661,42 +919,19 @@ fn parse_values_cell(
 /// Parse expanded JSON-LD into triple templates
 ///
 /// Handles both single objects and arrays of objects.
-fn parse_expanded_triples(
+fn parse_expanded_triples_with_ctx(
     expanded: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
-    object_var_parsing: bool,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
+    ctx: &mut TemplateParseCtx<'_>,
 ) -> Result<Vec<TripleTemplate>> {
-    let mut blank_counter: usize = 0;
+    ctx.blank_counter = 0;
     match expanded {
         Value::Array(arr) => arr.iter().try_fold(Vec::new(), |mut templates, item| {
-            let (_subject, item_templates) = parse_expanded_object(
-                item,
-                context,
-                vars,
-                ns_registry,
-                object_var_parsing,
-                graph_ids,
-                default_graph_id,
-                &mut blank_counter,
-            )?;
+            let (_subject, item_templates) = parse_expanded_object_with_ctx(item, ctx)?;
             templates.extend(item_templates);
             Ok(templates)
         }),
         Value::Object(_) => {
-            let (_subject, templates) = parse_expanded_object(
-                expanded,
-                context,
-                vars,
-                ns_registry,
-                object_var_parsing,
-                graph_ids,
-                default_graph_id,
-                &mut blank_counter,
-            )?;
+            let (_subject, templates) = parse_expanded_object_with_ctx(expanded, ctx)?;
             Ok(templates)
         }
         _ => Err(TransactError::Parse(
@@ -705,12 +940,11 @@ fn parse_expanded_triples(
     }
 }
 
-/// Parse a single expanded JSON-LD object into triple templates.
-///
-/// Returns the subject term assigned to this node (IRI, variable, or blank node)
-/// along with the generated triples. Callers that need to reference this node
-/// (e.g., as the object of a parent triple) use the returned subject directly.
-fn parse_expanded_object(
+// Compatibility wrapper used by non-update template parsing + unit tests.
+// This keeps the public (module-local) call sites stable while the internal
+// recursive parsing chain uses `TemplateParseCtx`.
+#[allow(clippy::too_many_arguments)]
+fn parse_expanded_triples(
     expanded: &Value,
     context: &ParsedContext,
     vars: &mut VarRegistry,
@@ -718,7 +952,28 @@ fn parse_expanded_object(
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
     default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
+    from_named_aliases: &HashMap<String, String>,
+) -> Result<Vec<TripleTemplate>> {
+    let mut ctx = TemplateParseCtx::new(
+        context,
+        vars,
+        ns_registry,
+        object_var_parsing,
+        graph_ids,
+        default_graph_id,
+        from_named_aliases,
+    );
+    parse_expanded_triples_with_ctx(expanded, &mut ctx)
+}
+
+/// Parse a single expanded JSON-LD object into triple templates.
+///
+/// Returns the subject term assigned to this node (IRI, variable, or blank node)
+/// along with the generated triples. Callers that need to reference this node
+/// (e.g., as the object of a parent triple) use the returned subject directly.
+fn parse_expanded_object_with_ctx(
+    expanded: &Value,
+    ctx: &mut TemplateParseCtx<'_>,
 ) -> Result<(TemplateTerm, Vec<TripleTemplate>)> {
     let obj = expanded
         .as_object()
@@ -745,16 +1000,19 @@ fn parse_expanded_object(
             }),
             _ => None,
         })
-        .map(|iri| graph_ids.get_or_assign(iri));
-    let graph_id = graph_id.or(default_graph_id);
+        .map(|raw| {
+            let resolved = resolve_graph_selector_str_for_templates(raw, ctx);
+            ctx.graph_ids.get_or_assign(&resolved)
+        });
+    let graph_id = graph_id.or(ctx.default_graph_id);
 
     // Get subject from @id (already expanded IRI or variable)
     let subject = if let Some(id) = obj.get("@id") {
-        parse_expanded_id(id, vars, ns_registry)?
+        parse_expanded_id_with_ctx(id, ctx)?
     } else {
         // Generate a blank node if no @id
-        let n = *blank_counter;
-        *blank_counter += 1;
+        let n = ctx.blank_counter;
+        ctx.blank_counter += 1;
         TemplateTerm::BlankNode(format!("_:b{}", n))
     };
 
@@ -768,7 +1026,7 @@ fn parse_expanded_object(
         if key == "@type" {
             // @type becomes rdf:type triples
             let rdf_type_iri = TYPE;
-            let predicate = TemplateTerm::Sid(ns_registry.sid_for_iri(rdf_type_iri));
+            let predicate = TemplateTerm::Sid(ctx.ns_registry.sid_for_iri(rdf_type_iri));
 
             let types = match value {
                 Value::Array(arr) => arr.iter().collect::<Vec<_>>(),
@@ -778,10 +1036,10 @@ fn parse_expanded_object(
             for type_val in types {
                 if let Some(type_iri) = type_val.as_str() {
                     let object = if type_iri.starts_with('?') {
-                        let var_id = vars.get_or_insert(type_iri);
+                        let var_id = ctx.vars.get_or_insert(type_iri);
                         TemplateTerm::Var(var_id)
                     } else {
-                        TemplateTerm::Sid(ns_registry.sid_for_iri(type_iri))
+                        TemplateTerm::Sid(ctx.ns_registry.sid_for_iri(type_iri))
                     };
                     let mut t = TripleTemplate::new(subject.clone(), predicate.clone(), object);
                     if let Some(g_id) = graph_id {
@@ -807,23 +1065,13 @@ fn parse_expanded_object(
 
         // Regular predicate (expanded IRI)
         let predicate = if key.starts_with('?') {
-            let var_id = vars.get_or_insert(key);
+            let var_id = ctx.vars.get_or_insert(key);
             TemplateTerm::Var(var_id)
         } else {
-            TemplateTerm::Sid(ns_registry.sid_for_iri(key))
+            TemplateTerm::Sid(ctx.ns_registry.sid_for_iri(key))
         };
 
-        let parsed_values = parse_expanded_objects(
-            value,
-            context,
-            vars,
-            ns_registry,
-            &mut templates,
-            object_var_parsing,
-            graph_ids,
-            default_graph_id,
-            blank_counter,
-        )?;
+        let parsed_values = parse_expanded_objects_with_ctx(value, ctx, &mut templates)?;
 
         for parsed_value in parsed_values {
             let mut template =
@@ -844,24 +1092,31 @@ fn parse_expanded_object(
     Ok((subject, templates))
 }
 
+fn resolve_graph_selector_str_for_templates(raw: &str, ctx: &TemplateParseCtx<'_>) -> String {
+    if let Some(iri) = ctx.from_named_aliases.get(raw) {
+        return iri.clone();
+    }
+    let (expanded, _) = details(raw, ctx.context);
+    expanded
+}
+
 /// Parse an expanded @id value
-fn parse_expanded_id(
+fn parse_expanded_id_with_ctx(
     value: &Value,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
+    ctx: &mut TemplateParseCtx<'_>,
 ) -> Result<TemplateTerm> {
     match value {
         Value::String(s) => {
             if s.starts_with('?') {
                 // Variable
-                let var_id = vars.get_or_insert(s);
+                let var_id = ctx.vars.get_or_insert(s);
                 Ok(TemplateTerm::Var(var_id))
             } else if s.starts_with("_:") {
                 // Blank node
                 Ok(TemplateTerm::BlankNode(s.clone()))
             } else {
                 // Expanded IRI - encode as SID
-                Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(s)))
+                Ok(TemplateTerm::Sid(ctx.ns_registry.sid_for_iri(s)))
             }
         }
         _ => Err(TransactError::Parse(format!(
@@ -869,6 +1124,28 @@ fn parse_expanded_id(
             value
         ))),
     }
+}
+
+/// Compatibility wrapper used by unit tests (parses an expanded `@id`).
+#[cfg(test)]
+fn parse_expanded_id(
+    value: &Value,
+    vars: &mut VarRegistry,
+    ns_registry: &mut NamespaceRegistry,
+) -> Result<TemplateTerm> {
+    let context = ParsedContext::new();
+    let mut graph_ids = GraphIdAssigner::new();
+    let empty_aliases: HashMap<String, String> = HashMap::new();
+    let mut ctx = TemplateParseCtx::new(
+        &context,
+        vars,
+        ns_registry,
+        true,
+        &mut graph_ids,
+        None,
+        &empty_aliases,
+    );
+    parse_expanded_id_with_ctx(value, &mut ctx)
 }
 
 /// Parsed value with optional datatype constraint and list index
@@ -905,16 +1182,10 @@ impl ParsedValue {
 /// Handles @list specially by expanding list elements into multiple ParsedValues with
 /// list_index set.
 #[allow(clippy::too_many_arguments)]
-fn parse_expanded_objects(
+fn parse_expanded_objects_with_ctx(
     value: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
+    ctx: &mut TemplateParseCtx<'_>,
     templates: &mut Vec<TripleTemplate>,
-    object_var_parsing: bool,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     match value {
         Value::Array(arr) => {
@@ -924,47 +1195,17 @@ fn parse_expanded_objects(
                 if let Value::Object(obj) = v {
                     if let Some(list_val) = obj.get("@list") {
                         // Parse list and add all elements with their indices
-                        let list_items = parse_list_values(
-                            list_val,
-                            context,
-                            vars,
-                            ns_registry,
-                            object_var_parsing,
-                            templates,
-                            graph_ids,
-                            default_graph_id,
-                            blank_counter,
-                        )?;
+                        let list_items = parse_list_values_with_ctx(list_val, ctx, templates)?;
                         results.extend(list_items);
                         continue;
                     }
                 }
                 // Not a @list, parse normally
-                results.push(parse_expanded_value(
-                    v,
-                    context,
-                    vars,
-                    ns_registry,
-                    templates,
-                    object_var_parsing,
-                    graph_ids,
-                    default_graph_id,
-                    blank_counter,
-                )?);
+                results.push(parse_expanded_value_with_ctx(v, ctx, templates)?);
             }
             Ok(results)
         }
-        _ => Ok(vec![parse_expanded_value(
-            value,
-            context,
-            vars,
-            ns_registry,
-            templates,
-            object_var_parsing,
-            graph_ids,
-            default_graph_id,
-            blank_counter,
-        )?]),
+        _ => Ok(vec![parse_expanded_value_with_ctx(value, ctx, templates)?]),
     }
 }
 
@@ -979,16 +1220,10 @@ fn parse_expanded_objects(
 /// - `{"@variable": "..."}` - Fluree variable extension
 /// - `{...}` - nested blank node (no @id/@value/@list/@variable)
 #[allow(clippy::too_many_arguments)]
-fn parse_expanded_value(
+fn parse_expanded_value_with_ctx(
     value: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
+    ctx: &mut TemplateParseCtx<'_>,
     templates: &mut Vec<TripleTemplate>,
-    object_var_parsing: bool,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match value {
         Value::Object(obj) => {
@@ -999,19 +1234,10 @@ fn parse_expanded_value(
                     .keys()
                     .any(|k| k.as_str() != "@id" && k.as_str() != "@context");
                 if has_nested_props {
-                    let (_subject, nested_templates) = parse_expanded_object(
-                        value,
-                        context,
-                        vars,
-                        ns_registry,
-                        object_var_parsing,
-                        graph_ids,
-                        default_graph_id,
-                        blank_counter,
-                    )?;
+                    let (_subject, nested_templates) = parse_expanded_object_with_ctx(value, ctx)?;
                     templates.extend(nested_templates);
                 }
-                return Ok(ParsedValue::new(parse_expanded_id(id, vars, ns_registry)?));
+                return Ok(ParsedValue::new(parse_expanded_id_with_ctx(id, ctx)?));
             }
 
             // Check for @value (literal)
@@ -1019,26 +1245,16 @@ fn parse_expanded_value(
                 return parse_literal_value_with_meta(
                     val,
                     obj,
-                    context,
-                    vars,
-                    ns_registry,
-                    object_var_parsing,
+                    ctx.context,
+                    ctx.vars,
+                    ctx.ns_registry,
+                    ctx.object_var_parsing,
                 );
             }
 
             // Check for @list (ordered collection)
             if let Some(list_val) = obj.get("@list") {
-                return parse_list_value(
-                    list_val,
-                    context,
-                    vars,
-                    ns_registry,
-                    object_var_parsing,
-                    templates,
-                    graph_ids,
-                    default_graph_id,
-                    blank_counter,
-                );
+                return parse_list_value_with_ctx(list_val, ctx, templates);
             }
 
             if let Some(var_val) = obj.get("@variable") {
@@ -1070,7 +1286,7 @@ fn parse_expanded_value(
                         "@variable value must start with '?'".to_string(),
                     ));
                 }
-                let var_id = vars.get_or_insert(var);
+                let var_id = ctx.vars.get_or_insert(var);
                 return Ok(ParsedValue::new(TemplateTerm::Var(var_id)));
             }
 
@@ -1079,23 +1295,14 @@ fn parse_expanded_value(
             // JSON-LD value keywords (@id, @value, @list, @variable), so it must
             // be a node object. Per the JSON-LD spec, a node without @id is a
             // blank node — regardless of whether it has @type or not.
-            let (subject, nested_templates) = parse_expanded_object(
-                value,
-                context,
-                vars,
-                ns_registry,
-                object_var_parsing,
-                graph_ids,
-                default_graph_id,
-                blank_counter,
-            )?;
+            let (subject, nested_templates) = parse_expanded_object_with_ctx(value, ctx)?;
             templates.extend(nested_templates);
             Ok(ParsedValue::new(subject))
         }
         // Direct values (shouldn't happen in properly expanded JSON-LD, but handle for robustness)
         Value::String(s) => {
-            if s.starts_with('?') && object_var_parsing {
-                let var_id = vars.get_or_insert(s);
+            if s.starts_with('?') && ctx.object_var_parsing {
+                let var_id = ctx.vars.get_or_insert(s);
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
                 // Fluree extension: treat compact IRIs and absolute IRIs
@@ -1103,7 +1310,7 @@ fn parse_expanded_value(
                 // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
                 let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
                 if looks_like_iri {
-                    let (expanded, _) = details(s, context);
+                    let (expanded, _) = details(s, ctx.context);
                     if expanded.starts_with("http://")
                         || expanded.starts_with("https://")
                         || expanded.starts_with("did:")
@@ -1111,7 +1318,7 @@ fn parse_expanded_value(
                         || expanded.starts_with("urn:")
                     {
                         return Ok(ParsedValue::new(TemplateTerm::Sid(
-                            ns_registry.sid_for_iri(expanded.as_ref()),
+                            ctx.ns_registry.sid_for_iri(expanded.as_ref()),
                         )));
                     }
                 }
@@ -1140,6 +1347,36 @@ fn parse_expanded_value(
             value
         ))),
     }
+}
+
+// Compatibility wrapper used by unit tests.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn parse_expanded_value(
+    value: &Value,
+    context: &ParsedContext,
+    vars: &mut VarRegistry,
+    ns_registry: &mut NamespaceRegistry,
+    templates: &mut Vec<TripleTemplate>,
+    object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
+    from_named_aliases: &HashMap<String, String>,
+    blank_counter: &mut usize,
+) -> Result<ParsedValue> {
+    let mut ctx = TemplateParseCtx::new(
+        context,
+        vars,
+        ns_registry,
+        object_var_parsing,
+        graph_ids,
+        default_graph_id,
+        from_named_aliases,
+    );
+    ctx.blank_counter = *blank_counter;
+    let out = parse_expanded_value_with_ctx(value, &mut ctx, templates);
+    *blank_counter = ctx.blank_counter;
+    out
 }
 
 /// Parse a literal value with optional @type or @language, returning full metadata
@@ -1320,16 +1557,10 @@ fn convert_typed_value_with_meta(
 /// Empty lists produce an error here since we can't return "no value" - the proper
 /// empty list handling happens in `parse_expanded_objects` via `parse_list_values`.
 #[allow(clippy::too_many_arguments)]
-fn parse_list_value(
+fn parse_list_value_with_ctx(
     list_val: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
-    object_var_parsing: bool,
+    ctx: &mut TemplateParseCtx<'_>,
     templates: &mut Vec<TripleTemplate>,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     // @list should contain an array
     let items = match list_val {
@@ -1354,33 +1585,17 @@ fn parse_list_value(
 
     // Parse the first element with index 0
     let first = &items[0];
-    let mut parsed = parse_single_list_item(
-        first,
-        context,
-        vars,
-        ns_registry,
-        object_var_parsing,
-        templates,
-        graph_ids,
-        default_graph_id,
-        blank_counter,
-    )?;
+    let mut parsed = parse_single_list_item_with_ctx(first, ctx, templates)?;
     parsed.list_index = Some(0);
     Ok(parsed)
 }
 
 /// Parse list items from a @list value, returning all elements with their indices
 #[allow(clippy::too_many_arguments)]
-fn parse_list_values(
+fn parse_list_values_with_ctx(
     list_val: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
-    object_var_parsing: bool,
+    ctx: &mut TemplateParseCtx<'_>,
     templates: &mut Vec<TripleTemplate>,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     // @list should contain an array
     let items = match list_val {
@@ -1400,22 +1615,41 @@ fn parse_list_values(
     // Parse each item with its index
     let mut results = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let mut parsed = parse_single_list_item(
-            item,
-            context,
-            vars,
-            ns_registry,
-            object_var_parsing,
-            templates,
-            graph_ids,
-            default_graph_id,
-            blank_counter,
-        )?;
+        let mut parsed = parse_single_list_item_with_ctx(item, ctx, templates)?;
         parsed.list_index = Some(index as i32);
         results.push(parsed);
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn parse_list_values(
+    list_val: &Value,
+    context: &ParsedContext,
+    vars: &mut VarRegistry,
+    ns_registry: &mut NamespaceRegistry,
+    object_var_parsing: bool,
+    templates: &mut Vec<TripleTemplate>,
+    graph_ids: &mut GraphIdAssigner,
+    default_graph_id: Option<u16>,
+    from_named_aliases: &HashMap<String, String>,
+    blank_counter: &mut usize,
+) -> Result<Vec<ParsedValue>> {
+    let mut ctx = TemplateParseCtx::new(
+        context,
+        vars,
+        ns_registry,
+        object_var_parsing,
+        graph_ids,
+        default_graph_id,
+        from_named_aliases,
+    );
+    ctx.blank_counter = *blank_counter;
+    let out = parse_list_values_with_ctx(list_val, &mut ctx, templates);
+    *blank_counter = ctx.blank_counter;
+    out
 }
 
 /// Parse a single item from a @list array
@@ -1424,16 +1658,10 @@ fn parse_list_values(
 /// handles all object shapes: `@id` refs, `@value` literals, `@list`, `@variable`,
 /// and blank node objects (nested objects without JSON-LD keywords).
 #[allow(clippy::too_many_arguments)]
-fn parse_single_list_item(
+fn parse_single_list_item_with_ctx(
     item: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
-    object_var_parsing: bool,
+    ctx: &mut TemplateParseCtx<'_>,
     templates: &mut Vec<TripleTemplate>,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match item {
         Value::Object(obj) => {
@@ -1444,28 +1672,18 @@ fn parse_single_list_item(
                     "Nested @list not supported".to_string(),
                 ));
             }
-            parse_expanded_value(
-                item,
-                context,
-                vars,
-                ns_registry,
-                templates,
-                object_var_parsing,
-                graph_ids,
-                default_graph_id,
-                blank_counter,
-            )
+            parse_expanded_value_with_ctx(item, ctx, templates)
         }
         // Direct values
         Value::String(s) => {
             if s.starts_with('?') {
-                let var_id = vars.get_or_insert(s);
+                let var_id = ctx.vars.get_or_insert(s);
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
                 // Same IRI heuristic as `parse_expanded_value` for list items.
                 let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
                 if looks_like_iri {
-                    let (expanded, _) = details(s, context);
+                    let (expanded, _) = details(s, ctx.context);
                     if expanded.starts_with("http://")
                         || expanded.starts_with("https://")
                         || expanded.starts_with("did:")
@@ -1473,7 +1691,7 @@ fn parse_single_list_item(
                         || expanded.starts_with("urn:")
                     {
                         return Ok(ParsedValue::new(TemplateTerm::Sid(
-                            ns_registry.sid_for_iri(expanded.as_ref()),
+                            ctx.ns_registry.sid_for_iri(expanded.as_ref()),
                         )));
                     }
                 }
@@ -1550,6 +1768,83 @@ mod tests {
         assert_eq!(txn.where_patterns.len(), 1);
         assert_eq!(txn.delete_templates.len(), 1);
         assert_eq!(txn.insert_templates.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_update_from_named_sets_where_named_graphs() {
+        let mut ns_registry = test_registry();
+        let json = json!({
+            "@context": {"ex": "http://example.org/"},
+            "from-named": [
+                { "alias": "g2", "graph": "http://example.org/g2" }
+            ],
+            "where": [
+                ["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]
+            ],
+            "insert": [
+                ["graph", "http://example.org/g2", { "@id": "ex:s", "ex:q": "?o" }]
+            ]
+        });
+
+        let txn = parse_update(&json, TxnOpts::default(), &mut ns_registry).unwrap();
+        let named = txn
+            .update_where_named_graphs
+            .as_ref()
+            .expect("expected from-named to populate txn.update_where_named_graphs");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].iri, "http://example.org/g2");
+        assert_eq!(named[0].alias.as_deref(), Some("g2"));
+    }
+
+    #[test]
+    fn test_parse_update_from_named_string_is_implicit_alias() {
+        let mut ns_registry = test_registry();
+        let json = json!({
+            "@context": {"ex": "http://example.org/ns/"},
+            "from-named": ["ex:g2"],
+            "where": [
+                ["graph", "ex:g2", { "@id": "ex:s", "ex:p": "?o" }]
+            ],
+            "insert": [
+                ["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]
+            ]
+        });
+
+        let txn = parse_update(&json, TxnOpts::default(), &mut ns_registry).unwrap();
+        let named = txn
+            .update_where_named_graphs
+            .as_ref()
+            .expect("expected from-named to populate txn.update_where_named_graphs");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].iri, "http://example.org/ns/g2");
+        assert_eq!(named[0].alias.as_deref(), Some("ex:g2"));
+    }
+
+    #[test]
+    fn test_parse_update_allows_from_named_alias_in_template_graph_selector() {
+        let mut ns_registry = test_registry();
+        let json = json!({
+            "@context": {"ex": "http://example.org/"},
+            "from-named": [
+                { "alias": "g2", "graph": "http://example.org/g2" }
+            ],
+            "values": ["?x", [1]],
+            "insert": [
+                ["graph", "g2", { "@id": "ex:s", "ex:p": "v" }]
+            ]
+        });
+
+        let txn = parse_update(&json, TxnOpts::default(), &mut ns_registry).unwrap();
+        assert!(
+            txn.graph_delta
+                .values()
+                .any(|iri| iri == "http://example.org/g2"),
+            "expected graph_delta to contain resolved graph IRI for alias g2"
+        );
+        assert!(
+            txn.insert_templates.iter().any(|t| t.graph_id.is_some()),
+            "expected insert templates to be tagged with a graph_id"
+        );
     }
 
     #[test]
@@ -1667,6 +1962,7 @@ mod tests {
             true,
             &mut graph_ids,
             None,
+            &HashMap::new(),
             &mut blank_counter,
         )
         .unwrap();
@@ -1698,6 +1994,7 @@ mod tests {
             true,
             &mut graph_ids,
             None,
+            &HashMap::new(),
             &mut blank_counter,
         )
         .unwrap();
@@ -1705,7 +2002,13 @@ mod tests {
             result.term,
             TemplateTerm::Value(FlakeValue::String(_))
         ));
-        assert_eq!(result.dtc.as_ref().and_then(|d| d.lang_tag()), Some("en"));
+        assert_eq!(
+            result
+                .dtc
+                .as_ref()
+                .and_then(|d: &DatatypeConstraint| d.lang_tag()),
+            Some("en")
+        );
     }
 
     #[test]
@@ -1728,6 +2031,7 @@ mod tests {
             &mut templates,
             &mut graph_ids,
             None,
+            &HashMap::new(),
             &mut blank_counter,
         )
         .unwrap();
@@ -1774,6 +2078,7 @@ mod tests {
             &mut templates,
             &mut graph_ids,
             None,
+            &HashMap::new(),
             &mut blank_counter,
         )
         .unwrap();
@@ -1805,6 +2110,7 @@ mod tests {
             true,
             &mut graph_ids,
             None,
+            &HashMap::new(),
         )
         .unwrap();
 
@@ -1856,6 +2162,7 @@ mod tests {
             false,
             &mut graph_ids,
             None,
+            &HashMap::new(),
         )
         .unwrap();
 
@@ -1920,6 +2227,7 @@ mod tests {
             false,
             &mut graph_ids,
             None,
+            &HashMap::new(),
         )
         .unwrap();
 
@@ -1971,6 +2279,7 @@ mod tests {
             false,
             &mut graph_ids,
             None,
+            &HashMap::new(),
         )
         .unwrap();
 

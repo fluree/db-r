@@ -270,7 +270,8 @@ fn lower_insert_data(
         delete_templates: Vec::new(),
         insert_templates,
         values: None,
-        update_where_graph_iri: None,
+        update_where_default_graph_iris: None,
+        update_where_named_graphs: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -299,7 +300,8 @@ fn lower_delete_data(
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
-        update_where_graph_iri: None,
+        update_where_default_graph_iris: None,
+        update_where_named_graphs: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -377,7 +379,8 @@ fn lower_delete_where(
         delete_templates,
         insert_templates: Vec::new(),
         values: None,
-        update_where_graph_iri: None,
+        update_where_default_graph_iris: None,
+        update_where_named_graphs: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
@@ -396,29 +399,46 @@ fn lower_modify(
     bnodes: &mut BlankNodeCounter,
     opts: TxnOpts,
 ) -> Result<Txn, LowerError> {
-    // Reject USING clause
-    if let Some(using) = &modify.using {
-        return Err(LowerError::UnsupportedFeature {
-            feature: "USING clause",
-            span: using.span,
-        });
-    }
-
     // Store WHERE clause for staging-time SPARQL lowering (full graph-pattern support).
     //
     // Note: `lower_sparql_update` takes `&UpdateOperation`, so we can't move out of the AST here.
     // Cloning keeps the lowering interface simple and ensures the transaction IR owns its WHERE.
     let mut graph_ids = TemplateGraphIds::new();
-    let default_template_graph_id: Option<u16> = if let Some(iri) = modify.with_iri.as_ref() {
-        let expanded = expand_iri(iri, prologue)?;
-        Some(graph_ids.get_or_assign(expanded))
+    let with_graph_iri: Option<String> = if let Some(iri) = modify.with_iri.as_ref() {
+        Some(expand_iri(iri, prologue)?)
     } else {
         None
     };
 
+    let using_default_graph_iris: Vec<String> = if let Some(using) = modify.using.as_ref() {
+        using
+            .default_graphs
+            .iter()
+            .map(|iri| expand_iri(iri, prologue))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
+    let using_named_graph_iris: Vec<String> = if let Some(using) = modify.using.as_ref() {
+        using
+            .named_graphs
+            .iter()
+            .map(|iri| expand_iri(iri, prologue))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
+    let default_template_graph_id: Option<u16> = with_graph_iri
+        .as_ref()
+        .map(|iri| graph_ids.get_or_assign(iri.clone()));
+
     let sparql_where = SparqlWhereClause {
         prologue: prologue.clone(),
-        with_iri: modify.with_iri.clone(),
+        with_graph_iri,
+        using_default_graph_iris,
+        using_named_graph_iris,
         pattern: modify.where_clause.clone(),
     };
 
@@ -459,7 +479,8 @@ fn lower_modify(
         delete_templates,
         insert_templates,
         values: None,
-        update_where_graph_iri: None,
+        update_where_default_graph_iris: None,
+        update_where_named_graphs: None,
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),

@@ -369,20 +369,38 @@ impl<'a> super::Parser<'a> {
             return None;
         }
 
-        let start = self.stream.current_span();
-        self.stream.advance(); // consume USING
+        let mut out: Option<UsingClause> = None;
+        while self.stream.check_keyword(TokenKind::KwUsing) {
+            let start = self.stream.current_span();
+            self.stream.advance(); // consume USING
 
-        // Check for NAMED
-        if self.stream.check_keyword(TokenKind::KwNamed) {
-            self.stream.advance(); // consume NAMED
+            // Check for NAMED
+            if self.stream.check_keyword(TokenKind::KwNamed) {
+                self.stream.advance(); // consume NAMED
+                let iri = self.parse_iri_term()?;
+                let span = start.union(iri.span);
+                match &mut out {
+                    Some(using) => {
+                        using.named_graphs.push(iri);
+                        using.span = using.span.union(span);
+                    }
+                    None => out = Some(UsingClause::with_named_graph(iri, span)),
+                }
+                continue;
+            }
+
+            // Default graph
             let iri = self.parse_iri_term()?;
             let span = start.union(iri.span);
-            return Some(UsingClause::named_graph(iri, span));
+            match &mut out {
+                Some(using) => {
+                    using.default_graphs.push(iri);
+                    using.span = using.span.union(span);
+                }
+                None => out = Some(UsingClause::with_default_graph(iri, span)),
+            }
         }
 
-        // Default graph
-        let iri = self.parse_iri_term()?;
-        let span = start.union(iri.span);
-        Some(UsingClause::default_graph(iri, span))
+        out
     }
 }

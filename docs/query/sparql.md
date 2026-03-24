@@ -866,6 +866,14 @@ WHERE {
 }
 ```
 
+### Dataset scoping for MODIFY (`WITH` / `USING` / `USING NAMED`)
+
+SPARQL UPDATE `MODIFY` supports dataset scoping for named graphs:
+
+- **`WITH <iri>`**: sets the default graph for INSERT/DELETE templates that don’t use an explicit `GRAPH <iri> { ... }` block.
+- **`USING <iri>`**: scopes the default graph(s) for `WHERE` evaluation. Repeated `USING` clauses are evaluated as a **merged default graph**.
+- **`USING NAMED <iri>`**: scopes which named graphs are visible to `WHERE` `GRAPH <iri> { ... }` patterns. Repeated `USING NAMED` clauses allow multiple named graphs.
+
 ### Blank Nodes in INSERT
 
 Blank nodes can be used in INSERT templates to create new entities:
@@ -910,30 +918,13 @@ INSERT DATA {
 
 ### SPARQL UPDATE Restrictions
 
-Current restrictions:
+Current restrictions / boundaries:
 
-- **USING clauses**: Dataset scoping via USING / USING NAMED is not yet supported.
-- **Named graphs in templates**: `GRAPH <iri> { ... }` blocks are supported in INSERT/DELETE templates, but **graph variables** (e.g., `GRAPH ?g { ... }`) are not yet supported.
-- **DELETE WHERE**: `GRAPH { ... }` blocks are not yet supported inside `DELETE WHERE { ... }`.
-
-Supported in UPDATE `WHERE` (same query engine as SPARQL SELECT):
-
-- Basic triple patterns
-- `FILTER`, `BIND`
-- `OPTIONAL`, `UNION`, `VALUES`, `MINUS`
-- Subqueries (including aggregates like `MAX`, `COUNT`, etc.)
-
-Notes / boundaries:
-
-- **SERVICE**: Supported for local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` (dataset-driven); arbitrary remote HTTP SERVICE endpoints are not supported.
-- **GRAPH**: Graph patterns in `WHERE` are supported; UPDATE templates support `GRAPH <iri> { ... }` but not `GRAPH ?var { ... }`.
+- **Graph management operations**: `LOAD`, `CLEAR`, `DROP`, `CREATE`, `ADD`, `MOVE`, `COPY` are not yet supported.
+- **Template graph variables**: INSERT/DELETE templates support `GRAPH <iri> { ... }` blocks, but `GRAPH ?g { ... }` is not yet supported.
+- **DELETE WHERE + GRAPH blocks**: `GRAPH <iri> { ... }` blocks are not yet supported inside `DELETE WHERE { ... }`.
+- **SERVICE**: Only local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` are supported; arbitrary remote HTTP `SERVICE` endpoints are not supported.
 - **Property paths**: Supported in `WHERE` (subject to Fluree capability settings).
-
-Phase 2:
-
-- **WITH**: `WITH <iri>` is supported for MODIFY operations. It scopes the default graph for both:
-  - INSERT/DELETE templates that do not specify an explicit `GRAPH <iri> { ... }` block
-  - WHERE patterns that are not already inside an explicit `GRAPH` pattern
 
 ### Endpoint Usage
 

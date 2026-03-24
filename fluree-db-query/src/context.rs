@@ -532,7 +532,15 @@ impl<'a> ExecutionContext<'a> {
     /// single-ledger mode. Individual call sites may layer additional
     /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
     pub fn has_binary_store(&self) -> bool {
-        !self.is_multi_ledger() && self.binary_store.is_some()
+        if self.is_multi_ledger() || self.binary_store.is_none() {
+            return false;
+        }
+        // Binary scan fast paths only support a single active graph.
+        match (&self.dataset, &self.active_graph) {
+            (None, _) => true,
+            (Some(ds), ActiveGraph::Default) => ds.default_graphs().len() == 1,
+            (Some(ds), ActiveGraph::Named(iri)) => ds.named_graph(iri).is_some(),
+        }
     }
 
     /// Return a `BinaryGraphView` for the current graph, combining the binary store
@@ -542,6 +550,9 @@ impl<'a> ExecutionContext<'a> {
     /// once at operator construction and store it — not call it in tight loops
     /// (each call clones an Arc).
     pub fn graph_view(&self) -> Option<BinaryGraphView> {
+        if !self.has_binary_store() {
+            return None;
+        }
         let store = self.binary_store.as_ref()?;
         Some(store.graph_with_novelty(self.binary_g_id, self.dict_novelty.clone()))
     }
@@ -593,6 +604,13 @@ impl<'a> ExecutionContext<'a> {
     /// This is cheap: just creates a new context with a different `active_graph` enum.
     /// Used by `GraphOperator` to switch graph context during GRAPH pattern execution.
     pub fn with_active_graph(&self, iri: Arc<str>) -> Self {
+        // In dataset mode, ensure binary scans route to the active graph's g_id.
+        // Without this, `BinaryScanOperator` would continue scanning the original graph
+        // even inside a `GRAPH <iri> { ... }` pattern.
+        let binary_g_id = self
+            .dataset
+            .and_then(|ds| ds.named_graph(&iri).map(|g| g.g_id))
+            .unwrap_or(self.binary_g_id);
         Self {
             snapshot: self.snapshot,
             vars: self.vars,
@@ -612,7 +630,7 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_g_id: self.binary_g_id,
+            binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
@@ -623,6 +641,19 @@ impl<'a> ExecutionContext<'a> {
     ///
     /// Returns to querying the default graph(s) after a GRAPH pattern.
     pub fn with_default_graph(&self) -> Self {
+        // In dataset mode, ensure binary scans route back to the default graph's g_id.
+        // When multiple default graphs are active, binary scans can't represent a union;
+        // in those cases, operators should fall back to range scans (dataset-aware).
+        let binary_g_id = self
+            .dataset
+            .and_then(|ds| {
+                if ds.default_graphs().len() == 1 {
+                    ds.default_graphs().first().map(|g| g.g_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(self.binary_g_id);
         Self {
             snapshot: self.snapshot,
             vars: self.vars,
@@ -642,7 +673,7 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_g_id: self.binary_g_id,
+            binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,

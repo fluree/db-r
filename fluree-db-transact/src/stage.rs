@@ -228,7 +228,22 @@ pub async fn stage(
             .iter()
             .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
             .collect();
-        let reverse_graph = build_reverse_graph_lookup(&graph_sids);
+        // Build reverse graph routing for novelty application.
+        //
+        // IMPORTANT: `txn.graph_delta` keys are *transaction-local* graph IDs used by templates.
+        // Novelty routing, however, must use the ledger's `GraphRegistry` IDs (g_id=3+ for user graphs).
+        // Use `GraphRegistry::provisional_ids()` so new graphs referenced in this txn route consistently
+        // during staging even before the commit is applied.
+        let provisional_graph_ids = ledger
+            .snapshot
+            .graph_registry
+            .provisional_ids(&txn.graph_delta.values().cloned().collect::<Vec<_>>());
+        let mut reverse_graph: HashMap<Sid, GraphId> = HashMap::new();
+        for iri in txn.graph_delta.values() {
+            if let Some(g_id) = provisional_graph_ids.get(iri.as_str()).copied() {
+                reverse_graph.insert(ns_registry.sid_for_iri(iri), g_id);
+            }
+        }
 
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
@@ -645,72 +660,175 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
         return Batch::empty(schema).map_err(|e| TransactError::Query(e.into()));
     }
 
-    // Select the default graph for WHERE execution.
+    // Select the default graph(s) for WHERE execution.
     //
-    // - Standard case: default graph (g_id=0)
-    // - JSON-LD update with top-level `graph`: execute WHERE against that named graph
-    let base_g_id: GraphId = if let Some(iri) = txn.update_where_graph_iri.as_deref() {
+    // SPARQL Update semantics:
+    // - `USING <g>` clauses scope WHERE evaluation (default graphs). Multiple USING clauses
+    //   are evaluated as a merged default graph.
+    // - `WITH <g>` scopes WHERE evaluation only when no USING is present
+    //
+    // JSON-LD Update semantics:
+    // - top-level `graph` scopes WHERE evaluation (default graph)
+    let desired_where_default_graph_iris: Vec<&str> =
+        if let Some(sparql_where) = txn.sparql_where.as_ref() {
+            if !sparql_where.using_default_graph_iris.is_empty() {
+                sparql_where
+                    .using_default_graph_iris
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect()
+            } else if let Some(with) = sparql_where.with_graph_iri.as_deref() {
+                vec![with]
+            } else {
+                Vec::new()
+            }
+        } else if let Some(iris) = txn.update_where_default_graph_iris.as_deref() {
+            iris.iter().map(|s| s.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+
+    // Resolve IRI -> graph id, preferring the snapshot registry with a binary-store fallback.
+    let binary_store: Option<Arc<fluree_db_binary_index::BinaryIndexStore>> =
+        ledger.binary_store.as_ref().and_then(|te| {
+            Arc::clone(&te.0)
+                .downcast::<fluree_db_binary_index::BinaryIndexStore>()
+                .ok()
+        });
+    let resolve_graph_id = |iri: &str| -> Option<GraphId> {
         ledger
             .snapshot
             .graph_registry
             .graph_id_for_iri(iri)
-            .or_else(|| {
-                ledger.binary_store.as_ref().and_then(|te| {
-                    Arc::clone(&te.0)
-                        .downcast::<fluree_db_binary_index::BinaryIndexStore>()
-                        .ok()
-                        .and_then(|store| store.graph_id_for_iri(iri))
-                })
-            })
-            .unwrap_or(0)
-    } else {
-        0
+            .or_else(|| binary_store.as_ref().and_then(|s| s.graph_id_for_iri(iri)))
     };
 
-    // Provide a runtime dataset so GRAPH patterns can resolve named graphs by IRI.
-    //
-    // Without a dataset, `GRAPH <iri> { ... }` only executes when <iri> matches the
-    // db's ledger_id alias. Named graph IRIs require `DataSet` to map IRI → g_id.
-    let base_db = ledger.as_graph_db_ref(base_g_id);
-    let mut runtime_dataset = fluree_db_query::DataSet::new().with_default_graph(
-        fluree_db_query::GraphRef::from_db(base_db.snapshot, base_db.overlay, base_db.t),
-    );
+    // Base GraphDbRef is used to provide snapshot/overlay/time; dataset controls active graphs.
+    // For multi-default-graph datasets we use g_id=0 as the base reference.
+    let base_db = if desired_where_default_graph_iris.len() <= 1 {
+        let base_g_id: GraphId = desired_where_default_graph_iris
+            .first()
+            .and_then(|iri| resolve_graph_id(iri))
+            .unwrap_or(0);
+        ledger.as_graph_db_ref(base_g_id)
+    } else {
+        ledger.as_graph_db_ref(0)
+    };
+
+    let make_graph_ref = |g_id: GraphId| -> fluree_db_query::GraphRef {
+        fluree_db_query::GraphRef::new(
+            base_db.snapshot,
+            g_id,
+            base_db.overlay,
+            base_db.t,
+            base_db.snapshot.ledger_id.as_str(),
+        )
+    };
+
+    let composite_graph_key =
+        |iri: &str| -> String { format!("{}#{}", base_db.snapshot.ledger_id, iri) };
+
+    let mut runtime_dataset = if desired_where_default_graph_iris.len() <= 1 {
+        fluree_db_query::DataSet::new().with_default_graph(make_graph_ref(base_db.g_id))
+    } else {
+        let mut ds = fluree_db_query::DataSet::new();
+        for iri in &desired_where_default_graph_iris {
+            let Some(g_id) = resolve_graph_id(iri) else {
+                continue;
+            };
+            ds = ds.with_default_graph(make_graph_ref(g_id));
+        }
+        ds
+    };
 
     // Prefer snapshot GraphRegistry, but also include binary-store graph entries as a fallback.
     // This mirrors the query path's safety fallback when registry is temporarily missing entries.
-    let mut seen_named_iris: HashSet<Arc<str>> = HashSet::new();
-    for (g_id, iri) in ledger.snapshot.graph_registry.iter_entries() {
-        let iri: Arc<str> = Arc::from(iri);
-        if seen_named_iris.insert(Arc::clone(&iri)) {
-            runtime_dataset = runtime_dataset.with_named_graph(
-                Arc::clone(&iri),
-                fluree_db_query::GraphRef::new(
-                    base_db.snapshot,
-                    g_id,
-                    base_db.overlay,
-                    base_db.t,
-                    base_db.snapshot.ledger_id.as_str(),
-                ),
-            );
-        }
-    }
+    //
+    // Named-graph visibility restrictions:
+    // - SPARQL UPDATE `USING NAMED <iri>` restricts WHERE-visible named graphs to that one graph
+    // - JSON-LD update `from-named` restricts WHERE-visible named graphs to the provided set,
+    //   optionally providing dataset-local aliases for `["graph", "<alias>", ...]` patterns.
+    let allowed_named_graphs: Option<Vec<(String, Option<String>)>> =
+        if let Some(w) = txn.sparql_where.as_ref() {
+            if w.using_named_graph_iris.is_empty() {
+                None
+            } else {
+                Some(
+                    w.using_named_graph_iris
+                        .iter()
+                        .map(|iri| (iri.clone(), None))
+                        .collect(),
+                )
+            }
+        } else {
+            txn.update_where_named_graphs
+                .as_ref()
+                .map(|v| v.iter().map(|g| (g.iri.clone(), g.alias.clone())).collect())
+        };
 
-    if let Some(te) = &ledger.binary_store {
-        if let Ok(store) = Arc::clone(&te.0).downcast::<fluree_db_binary_index::BinaryIndexStore>()
-        {
+    let mut seen_named_keys: HashSet<Arc<str>> = HashSet::new();
+
+    if let Some(allowlist) = allowed_named_graphs {
+        for (iri, alias) in allowlist {
+            let g_id = resolve_graph_id(&iri);
+            let Some(g_id) = g_id else {
+                continue;
+            };
+
+            let iri_key: Arc<str> = Arc::from(iri.as_str());
+            if seen_named_keys.insert(Arc::clone(&iri_key)) {
+                runtime_dataset =
+                    runtime_dataset.with_named_graph(Arc::clone(&iri_key), make_graph_ref(g_id));
+            }
+
+            // Also register a composite ledger-local graph identifier:
+            // `<ledger_id>#<graph_iri>`. This matches the syntax used to reference a named
+            // graph as a queryable graph source (e.g., via `from`), and allows GRAPH patterns
+            // to use that same identifier when desired.
+            let composite = composite_graph_key(iri_key.as_ref());
+            let composite_key: Arc<str> = Arc::from(composite.as_str());
+            if seen_named_keys.insert(Arc::clone(&composite_key)) {
+                runtime_dataset = runtime_dataset
+                    .with_named_graph(Arc::clone(&composite_key), make_graph_ref(g_id));
+            }
+
+            if let Some(alias) = alias {
+                let alias_key: Arc<str> = Arc::from(alias.as_str());
+                if seen_named_keys.insert(Arc::clone(&alias_key)) {
+                    runtime_dataset = runtime_dataset
+                        .with_named_graph(Arc::clone(&alias_key), make_graph_ref(g_id));
+                }
+            }
+        }
+    } else {
+        for (g_id, iri) in ledger.snapshot.graph_registry.iter_entries() {
+            let iri: Arc<str> = Arc::from(iri);
+            if seen_named_keys.insert(Arc::clone(&iri)) {
+                runtime_dataset =
+                    runtime_dataset.with_named_graph(Arc::clone(&iri), make_graph_ref(g_id));
+            }
+
+            let composite = composite_graph_key(iri.as_ref());
+            let composite_key: Arc<str> = Arc::from(composite.as_str());
+            if seen_named_keys.insert(Arc::clone(&composite_key)) {
+                runtime_dataset = runtime_dataset
+                    .with_named_graph(Arc::clone(&composite_key), make_graph_ref(g_id));
+            }
+        }
+
+        if let Some(store) = &binary_store {
             for (g_id, iri) in store.graph_entries() {
                 let iri: Arc<str> = Arc::from(iri);
-                if seen_named_iris.insert(Arc::clone(&iri)) {
-                    runtime_dataset = runtime_dataset.with_named_graph(
-                        Arc::clone(&iri),
-                        fluree_db_query::GraphRef::new(
-                            base_db.snapshot,
-                            g_id,
-                            base_db.overlay,
-                            base_db.t,
-                            base_db.snapshot.ledger_id.as_str(),
-                        ),
-                    );
+                if seen_named_keys.insert(Arc::clone(&iri)) {
+                    runtime_dataset =
+                        runtime_dataset.with_named_graph(Arc::clone(&iri), make_graph_ref(g_id));
+                }
+
+                let composite = composite_graph_key(iri.as_ref());
+                let composite_key: Arc<str> = Arc::from(composite.as_str());
+                if seen_named_keys.insert(Arc::clone(&composite_key)) {
+                    runtime_dataset = runtime_dataset
+                        .with_named_graph(Arc::clone(&composite_key), make_graph_ref(g_id));
                 }
             }
         }
@@ -750,17 +868,7 @@ fn lower_sparql_where_patterns(
 ) -> Result<Vec<Pattern>> {
     // Propagate the original parsed span so lowering errors report helpful locations.
     let span = sparql_where.pattern.span();
-    let pattern = if let Some(with_iri) = sparql_where.with_iri.as_ref() {
-        fluree_db_sparql::ast::GraphPattern::Graph {
-            name: fluree_db_sparql::ast::GraphName::Iri(with_iri.clone()),
-            pattern: Box::new(sparql_where.pattern.clone()),
-            span,
-        }
-    } else {
-        sparql_where.pattern.clone()
-    };
-
-    let where_clause = SparqlWhereClauseAst::new(pattern, true, span);
+    let where_clause = SparqlWhereClauseAst::new(sparql_where.pattern.clone(), true, span);
     let select = SelectClause::star(span);
     let modifiers = SolutionModifiers::new();
     let select_query = SelectQuery::new(select, where_clause, modifiers, span);

@@ -36,7 +36,7 @@ use crate::ast::query::{
 use crate::ast::term::{PredicateTerm, SubjectTerm, Term};
 use crate::ast::update::{
     DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, QuadPatternElement,
-    UpdateOperation, UsingClause,
+    UpdateOperation,
 };
 use crate::diag::{DiagCode, Diagnostic, Label};
 use crate::span::SourceSpan;
@@ -167,11 +167,6 @@ impl<'a> Validator<'a> {
 
     /// Validate Modify (INSERT/DELETE with WHERE).
     fn validate_modify(&mut self, modify: &Modify) {
-        // Check USING clause restrictions
-        if let Some(using) = &modify.using {
-            self.validate_using_clause(using);
-        }
-
         // DELETE and INSERT templates can have variables (bound by WHERE)
         // No ground validation needed for templates
         if let Some(delete_clause) = &modify.delete_clause {
@@ -277,24 +272,6 @@ impl<'a> Validator<'a> {
                     "Use DELETE WHERE or INSERT/DELETE with WHERE clause for patterns with variables.",
                 ),
             );
-        }
-    }
-
-    /// Validate USING clause restrictions.
-    fn validate_using_clause(&mut self, using: &UsingClause) {
-        // USING NAMED is not supported
-        if !using.named_graphs.is_empty() {
-            for named in &using.named_graphs {
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        DiagCode::UnsupportedUsingNamed,
-                        "USING NAMED is not supported in SPARQL Update",
-                        named.span,
-                    )
-                    .with_label(Label::new(named.span, "USING NAMED not supported"))
-                    .with_help("Use USING with a default graph instead, or use WITH clause."),
-                );
-            }
         }
     }
 

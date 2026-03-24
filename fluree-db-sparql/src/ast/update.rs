@@ -9,8 +9,6 @@
 //! ## Fluree Restrictions
 //!
 //! Not all SPARQL Update features are supported by Fluree:
-//! - USING NAMED is not supported
-//! - Multiple USING clauses are not supported
 //! - GRAPH in INSERT/DELETE templates only supports IRI graph names (no variables)
 //!
 //! These restrictions are enforced at the validation layer, not during parsing.
@@ -212,14 +210,13 @@ pub enum QuadPatternElement {
 /// USING clause for Modify operations.
 ///
 /// Specifies the dataset for the WHERE pattern.
-///
-/// ## Fluree Restrictions
-/// - Only a single USING clause is supported
-/// - USING NAMED is not supported
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsingClause {
-    /// Default graph (USING <iri>)
-    pub default_graph: Option<Iri>,
+    /// Default graphs (USING <iri>)
+    ///
+    /// Multiple USING clauses are allowed. Semantics follow SPARQL dataset rules:
+    /// the WHERE clause evaluates over the merged default graph of these entries.
+    pub default_graphs: Vec<Iri>,
     /// Named graphs (USING NAMED <iri>) - not supported by Fluree
     pub named_graphs: Vec<Iri>,
     /// Source span
@@ -227,22 +224,32 @@ pub struct UsingClause {
 }
 
 impl UsingClause {
-    /// Create a new USING clause with a default graph.
-    pub fn default_graph(iri: Iri, span: SourceSpan) -> Self {
+    /// Create a new USING clause with a single default graph.
+    pub fn with_default_graph(iri: Iri, span: SourceSpan) -> Self {
         Self {
-            default_graph: Some(iri),
+            default_graphs: vec![iri],
             named_graphs: Vec::new(),
             span,
         }
     }
 
-    /// Create a new USING NAMED clause.
-    pub fn named_graph(iri: Iri, span: SourceSpan) -> Self {
+    /// Create a new USING NAMED clause with a single named graph.
+    pub fn with_named_graph(iri: Iri, span: SourceSpan) -> Self {
         Self {
-            default_graph: None,
+            default_graphs: Vec::new(),
             named_graphs: vec![iri],
             span,
         }
+    }
+
+    #[deprecated(note = "Use UsingClause::with_default_graph")]
+    pub fn default_graph(iri: Iri, span: SourceSpan) -> Self {
+        Self::with_default_graph(iri, span)
+    }
+
+    #[deprecated(note = "Use UsingClause::with_named_graph")]
+    pub fn named_graph(iri: Iri, span: SourceSpan) -> Self {
+        Self::with_named_graph(iri, span)
     }
 }
 

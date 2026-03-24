@@ -109,6 +109,101 @@ Notes:
 - `graph` is a **graph IRI** (a string like `"http://example.org/graphs/audit"`)
 - Named-graph reads are available after indexing completes (see `docs/query/datasets.md`)
 
+## Dataset scoping for WHERE (`from` / `from-named`)
+
+JSON-LD update reuses the **same dataset keys as JSON-LD query** to control where the `where` clause reads from:
+
+- **`from`**: scopes the default graph used for `where` evaluation (equivalent to SPARQL UPDATE `USING <iri>`)
+- **`from-named`**: restricts which named graphs are visible to `where` `["graph", ...]` patterns (equivalent to SPARQL UPDATE `USING NAMED <iri>`)
+
+This is why JSON-LD update uses `from` rather than introducing new keywords: it matches the existing JSON-LD query language vocabulary and keeps dataset configuration consistent across read-only queries and updates.
+
+### `from` (WHERE default graph)
+
+When `from` is present, it scopes the `where` clause evaluation without changing where templates write:
+
+- `graph` (if present) controls the default graph for DELETE/INSERT templates (SPARQL UPDATE `WITH`)
+- `from` controls the default graph(s) for `where` evaluation (SPARQL UPDATE `USING`)
+
+Notes:
+- `from` can be:
+  - a string graph IRI (shorthand for `{"graph": "<iri>"}`)
+  - an object with `{"graph": "<iri>"}` (or `{"graph": ["<iri1>", "<iri2>"]}`)
+  - an array of graph IRIs/selectors (multiple graphs are evaluated as a merged default graph)
+- If your `insert` / `delete` templates write into the same graph as the top-level `graph`, you can omit per-template graph selection. The top-level `graph` becomes the default target for templates that don't specify `@graph` (or `["graph", ...]` sugar).
+- If you want to write to **multiple** graphs in one update, keep a top-level `graph` as the default (optional) and use per-template `["graph", ...]` for the exceptions.
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/g2",
+  "from": { "graph": "http://example.org/g1" },
+  "where": { "@id": "ex:s", "schema:description": "?d" },
+  "insert": [{ "@id": "ex:s", "schema:copyFromG1": "?d" }]
+}
+```
+
+Example: read from one graph, write to two graphs
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/g2",
+  "from": { "graph": "http://example.org/g1" },
+  "where": { "@id": "ex:s", "schema:description": "?d" },
+  "insert": [
+    { "@id": "ex:s", "schema:copyFromG1": "?d" },
+    ["graph", "http://example.org/audit", { "@id": "ex:event1", "schema:description": "copied description" }]
+  ]
+}
+```
+
+### `from-named` (WHERE named graphs allowlist)
+
+Use `from-named` to allow (and optionally alias) named graphs for `where` `["graph", ...]` patterns:
+
+Notes:
+- In `where` GRAPH patterns, you can reference the graph by **alias** (e.g. `"g2"`) or by the **graph IRI** (e.g. `"http://example.org/g2"`). Aliases are just convenience names for matching.
+- In `insert` / `delete` templates, graph selection is a **write target**. You can use:
+  - the full graph IRI (`"http://example.org/g2"`)
+  - a compact IRI/term that expands via `@context` (e.g. `"ex:g2"`)
+  - the `from-named` **alias** (e.g. `"g2"`) for consistency within the same update transaction
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from-named": [
+    { "alias": "g2", "graph": "http://example.org/g2" }
+  ],
+  "where": [
+    ["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]
+  ],
+  "insert": [["graph", "g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
+Same example, but with a compacted graph IRI via `@context`:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from-named": [{ "alias": "g2", "graph": "ex:g2" }],
+  "where": [["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]],
+  "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
+Same idea without an explicit alias (the `from-named` string acts as its own identifier):
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from-named": ["ex:g2"],
+  "where": [["graph", "ex:g2", { "@id": "ex:s", "ex:p": "?o" }]],
+  "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
 ## Simple Property Update
 
 Update a single property value:
