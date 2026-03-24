@@ -710,12 +710,12 @@ pub async fn explain_ledger_tail(
 /// Check if a query requires dataset features (multi-ledger, named graphs, etc.)
 ///
 /// Dataset features that require the connection execution path:
-/// - `from-named`: Named graphs in the dataset
+/// - `fromNamed` / `from-named`: Named graphs in the dataset
 /// - `from` as array: Multiple default graphs
 /// - `from` as object with special fields: graph selector, alias, time-travel
 fn requires_dataset_features(query: &JsonValue) -> bool {
-    // Check for from-named
-    if query.get("from-named").is_some() {
+    // Check for fromNamed (new) or from-named (legacy)
+    if query.get("fromNamed").is_some() || query.get("from-named").is_some() {
         return true;
     }
 
@@ -935,7 +935,7 @@ async fn execute_query(
             .map(IntoResponse::into_response);
     }
 
-    // Check for dataset features (from-named, from array, from object with graph/alias/time)
+    // Check for dataset features (fromNamed, from array, from object with graph/alias/time)
     // These require the connection execution path for proper dataset handling
     if requires_dataset_features(query_json) {
         if let Some(fmt) = delimited {
@@ -2124,11 +2124,11 @@ async fn execute_history_query(
     }
 }
 
-/// Execute a dataset query (query with from-named, from array, or structured from object)
+/// Execute a dataset query (query with fromNamed, from array, or structured from object)
 ///
 /// Dataset queries must go through the connection/dataset path to properly handle:
 /// - Multiple default graphs (from array)
-/// - Named graphs (from-named)
+/// - Named graphs (fromNamed)
 /// - Graph selectors (from object with graph field)
 /// - Dataset-local aliases for GRAPH patterns
 ///
@@ -2143,7 +2143,7 @@ async fn execute_dataset_query(
     let mut query = query_json.clone();
 
     // If query doesn't have a `from` key, inject the ledger ID from the URL path
-    // This allows users to POST to /:ledger/query with just `{ "from-named": [...], ... }`
+    // This allows users to POST to /:ledger/query with just `{ "fromNamed": {...}, ... }`
     if query.get("from").is_none() {
         if let Some(obj) = query.as_object_mut() {
             obj.insert("from".to_string(), JsonValue::String(ledger_id.to_string()));

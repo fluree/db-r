@@ -114,16 +114,17 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Expand the document
     let expanded = expand_with_context(json, &context)?;
 
-    let templates = parse_expanded_triples(
-        &expanded,
+    let empty_aliases = HashMap::new();
+    let mut ctx = TemplateParseCtx::new(
         &context,
         &mut vars,
         ns_registry,
         false,
         &mut graph_ids,
         None,
-        &HashMap::new(),
-    )?;
+        &empty_aliases,
+    );
+    let templates = parse_expanded_triples_with_ctx(&expanded, &mut ctx)?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Insert must contain at least one predicate or @type (an object with only @id is not a valid insert)"
@@ -157,16 +158,17 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
 
     let expanded = expand_with_context(json, &context)?;
 
-    let templates = parse_expanded_triples(
-        &expanded,
+    let empty_aliases = HashMap::new();
+    let mut ctx = TemplateParseCtx::new(
         &context,
         &mut vars,
         ns_registry,
         false,
         &mut graph_ids,
         None,
-        &HashMap::new(),
-    )?;
+        &empty_aliases,
+    );
+    let templates = parse_expanded_triples_with_ctx(&expanded, &mut ctx)?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Upsert must contain at least one predicate or @type (an object with only @id is not a valid upsert)"
@@ -208,8 +210,11 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Optional WHERE dataset scoping using query-style dataset keys.
     // - `from.graph` (or `"from": "<graph IRI>"`, or `"from": ["<g1>", "<g2>"]`) scopes WHERE
     //   default graph(s) (USING equivalent; multiple graphs are merged for default-graph patterns)
-    // - `from-named` restricts visible named graphs for WHERE (USING NAMED equivalent)
-    let where_named_graphs = parse_update_where_named_graphs(obj.get("from-named"), &context)?;
+    // - `fromNamed` (or legacy `from-named`) restricts visible named graphs for WHERE (USING NAMED equivalent)
+    let where_named_graphs = parse_update_where_named_graphs(
+        obj.get("fromNamed").or_else(|| obj.get("from-named")),
+        &context,
+    )?;
     let from_named_aliases: HashMap<String, String> = where_named_graphs
         .as_ref()
         .map(|v| {
@@ -462,11 +467,11 @@ fn parse_update_where_named_graphs(
                         .map(|s| s.to_string());
                     let graph_val = obj.get("graph").ok_or_else(|| {
                         TransactError::Parse(
-                            "from-named objects must include a 'graph' field".to_string(),
+                            "fromNamed objects must include a 'graph' field".to_string(),
                         )
                     })?;
                     // If no alias provided, use the raw graph selector string as an implicit alias.
-                    // This makes `from-named: ["ex:g2"]` usable as `["graph", "ex:g2", ...]`
+                    // This makes `fromNamed: ["ex:g2"]` usable as `["graph", "ex:g2", ...]`
                     // in WHERE patterns even though GRAPH names are not expanded via @context.
                     let implicit_alias = graph_val.as_str().map(|s| s.to_string());
                     let iri = expand_update_graph_iri(graph_val, context)?;
@@ -486,7 +491,7 @@ fn parse_update_where_named_graphs(
             }
             _ => {
                 return Err(TransactError::Parse(
-                    "from-named must be a string, an object, or an array of those".to_string(),
+                    "fromNamed must be a string, an object, or an array of those".to_string(),
                 ))
             }
         }
@@ -938,32 +943,6 @@ fn parse_expanded_triples_with_ctx(
             "Expected expanded object or array of objects".to_string(),
         )),
     }
-}
-
-// Compatibility wrapper used by non-update template parsing + unit tests.
-// This keeps the public (module-local) call sites stable while the internal
-// recursive parsing chain uses `TemplateParseCtx`.
-#[allow(clippy::too_many_arguments)]
-fn parse_expanded_triples(
-    expanded: &Value,
-    context: &ParsedContext,
-    vars: &mut VarRegistry,
-    ns_registry: &mut NamespaceRegistry,
-    object_var_parsing: bool,
-    graph_ids: &mut GraphIdAssigner,
-    default_graph_id: Option<u16>,
-    from_named_aliases: &HashMap<String, String>,
-) -> Result<Vec<TripleTemplate>> {
-    let mut ctx = TemplateParseCtx::new(
-        context,
-        vars,
-        ns_registry,
-        object_var_parsing,
-        graph_ids,
-        default_graph_id,
-        from_named_aliases,
-    );
-    parse_expanded_triples_with_ctx(expanded, &mut ctx)
 }
 
 /// Parse a single expanded JSON-LD object into triple templates.
@@ -1775,7 +1754,7 @@ mod tests {
         let mut ns_registry = test_registry();
         let json = json!({
             "@context": {"ex": "http://example.org/"},
-            "from-named": [
+            "fromNamed": [
                 { "alias": "g2", "graph": "http://example.org/g2" }
             ],
             "where": [
@@ -1790,7 +1769,7 @@ mod tests {
         let named = txn
             .update_where_named_graphs
             .as_ref()
-            .expect("expected from-named to populate txn.update_where_named_graphs");
+            .expect("expected fromNamed to populate txn.update_where_named_graphs");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].iri, "http://example.org/g2");
         assert_eq!(named[0].alias.as_deref(), Some("g2"));
@@ -1801,7 +1780,7 @@ mod tests {
         let mut ns_registry = test_registry();
         let json = json!({
             "@context": {"ex": "http://example.org/ns/"},
-            "from-named": ["ex:g2"],
+            "fromNamed": ["ex:g2"],
             "where": [
                 ["graph", "ex:g2", { "@id": "ex:s", "ex:p": "?o" }]
             ],
@@ -1814,7 +1793,7 @@ mod tests {
         let named = txn
             .update_where_named_graphs
             .as_ref()
-            .expect("expected from-named to populate txn.update_where_named_graphs");
+            .expect("expected fromNamed to populate txn.update_where_named_graphs");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].iri, "http://example.org/ns/g2");
         assert_eq!(named[0].alias.as_deref(), Some("ex:g2"));
@@ -1825,7 +1804,7 @@ mod tests {
         let mut ns_registry = test_registry();
         let json = json!({
             "@context": {"ex": "http://example.org/"},
-            "from-named": [
+            "fromNamed": [
                 { "alias": "g2", "graph": "http://example.org/g2" }
             ],
             "values": ["?x", [1]],
@@ -2102,17 +2081,17 @@ mod tests {
 
         let mut vars = VarRegistry::new();
         let mut graph_ids = GraphIdAssigner::new();
-        let templates = parse_expanded_triples(
-            &json,
+        let empty_aliases = HashMap::new();
+        let mut parse_ctx = TemplateParseCtx::new(
             &ctx,
             &mut vars,
             &mut ns_registry,
             true,
             &mut graph_ids,
             None,
-            &HashMap::new(),
-        )
-        .unwrap();
+            &empty_aliases,
+        );
+        let templates = parse_expanded_triples_with_ctx(&json, &mut parse_ctx).unwrap();
 
         // Should have 3 templates, one for each list item
         assert_eq!(templates.len(), 3);
@@ -2154,17 +2133,17 @@ mod tests {
             }]
         }]);
 
-        let templates = parse_expanded_triples(
-            &expanded,
+        let empty_aliases = HashMap::new();
+        let mut parse_ctx = TemplateParseCtx::new(
             &ctx,
             &mut vars,
             &mut ns_registry,
             false,
             &mut graph_ids,
             None,
-            &HashMap::new(),
-        )
-        .unwrap();
+            &empty_aliases,
+        );
+        let templates = parse_expanded_triples_with_ctx(&expanded, &mut parse_ctx).unwrap();
 
         // Should have 3 triples (order: nested triples first, then parent reference):
         //   _:b0    rdf:type  Widget           (nested, materialized first)
@@ -2219,17 +2198,17 @@ mod tests {
             }]
         }]);
 
-        let templates = parse_expanded_triples(
-            &expanded,
+        let empty_aliases = HashMap::new();
+        let mut parse_ctx = TemplateParseCtx::new(
             &ctx,
             &mut vars,
             &mut ns_registry,
             false,
             &mut graph_ids,
             None,
-            &HashMap::new(),
-        )
-        .unwrap();
+            &empty_aliases,
+        );
+        let templates = parse_expanded_triples_with_ctx(&expanded, &mut parse_ctx).unwrap();
 
         // Collect all blank node labels used as subjects
         let bnode_subjects: Vec<&str> = templates
@@ -2271,17 +2250,17 @@ mod tests {
             }]
         }]);
 
-        let templates = parse_expanded_triples(
-            &expanded,
+        let empty_aliases = HashMap::new();
+        let mut parse_ctx = TemplateParseCtx::new(
             &ctx,
             &mut vars,
             &mut ns_registry,
             false,
             &mut graph_ids,
             None,
-            &HashMap::new(),
-        )
-        .unwrap();
+            &empty_aliases,
+        );
+        let templates = parse_expanded_triples_with_ctx(&expanded, &mut parse_ctx).unwrap();
 
         // Collect blank node labels used as objects of the parent (the references)
         let bnode_refs: Vec<&str> = templates
