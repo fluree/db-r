@@ -237,6 +237,12 @@ where
             }
         }
 
+        // Copy the source index into the branch namespace before replay.
+        // This gives the branch an index to reload against when novelty
+        // grows too large mid-rebase, avoiding unbounded memory growth.
+        self.copy_source_index(&source_id, &branch_id, &source_record)
+            .await;
+
         // Load source state as the replay base.
         let mut current_state = LedgerState::load(
             &self.nameservice,
@@ -297,12 +303,19 @@ where
             // loudly.
             current_state = self.replay_commit(current_state, flakes, commit).await?;
             report.replayed += 1;
+
+            // Flush novelty when it exceeds the soft threshold by building
+            // an inline index and reloading the state. The reload picks up
+            // the new index and reconstructs novelty only from commits since
+            // the index point, bounding memory usage during large rebases.
+            if current_state.should_reindex(&self.index_config) {
+                current_state = self
+                    .flush_rebase_novelty(&branch_id, &branch_record)
+                    .await?;
+            }
         }
 
-        // Finalize: copy index, update branch point, force reload.
-        self.copy_source_index(&source_id, &branch_id, &source_record)
-            .await;
-
+        // Finalize: update branch point and force reload.
         let new_bp = BranchPoint {
             source: bp.source.clone(),
             commit_id: source_head_id,
@@ -486,6 +499,60 @@ where
         }
 
         Ok(retractions)
+    }
+
+    /// Build an inline index for the branch mid-rebase to flush novelty.
+    ///
+    /// Uses `rebuild_index_from_commits_with_store` with a `BranchedContentStore`
+    /// so the indexer can follow the branch's commit chain through parent
+    /// namespaces. Publishes the result to the nameservice, then reloads the
+    /// `LedgerState` so novelty only contains commits since the new index.
+    async fn flush_rebase_novelty(
+        &self,
+        branch_id: &str,
+        branch_record: &fluree_db_nameservice::NsRecord,
+    ) -> Result<LedgerState> {
+        tracing::debug!(
+            branch_id,
+            "building inline index mid-rebase to flush novelty"
+        );
+
+        let branch_store = LedgerState::build_branched_store(
+            &self.nameservice,
+            branch_record,
+            self.connection.storage(),
+        )
+        .await?;
+
+        let record = self
+            .nameservice
+            .lookup(branch_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(branch_id.to_string()))?;
+
+        let indexer_config = crate::build_indexer_config(self.connection.config());
+
+        let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
+            self.connection.storage(),
+            branch_store,
+            branch_id,
+            &record,
+            indexer_config,
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("Mid-rebase index build failed: {e}")))?;
+
+        self.nameservice
+            .publish_index(branch_id, index_result.index_t, &index_result.root_id)
+            .await?;
+
+        LedgerState::load(
+            &self.nameservice,
+            branch_id,
+            self.connection.storage().clone(),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Copy index artifacts from source to branch (best-effort).

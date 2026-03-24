@@ -41,6 +41,25 @@ pub async fn rebuild_index_from_commits<S>(
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
+    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
+    rebuild_index_from_commits_with_store(storage, content_store, ledger_id, record, config).await
+}
+
+/// Like [`rebuild_index_from_commits`], but accepts a caller-provided
+/// [`ContentStore`] for reading commit blobs. Use this when commit history
+/// spans multiple storage namespaces (e.g. rebasing a branch whose commit
+/// chain falls through to parent namespaces via `BranchedContentStore`).
+pub async fn rebuild_index_from_commits_with_store<S, C>(
+    storage: &S,
+    commit_store: C,
+    ledger_id: &str,
+    record: &fluree_db_nameservice::NsRecord,
+    config: IndexerConfig,
+) -> Result<IndexResult>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    C: ContentStore + Clone + Send + Sync + 'static,
+{
     use fluree_db_novelty::commit_v2::read_commit_envelope;
     use run_index::resolver::{RebuildChunk, SharedResolverState};
     use run_index::spool::SortedCommitInfo;
@@ -84,9 +103,7 @@ where
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Build a content store bridge for CID → address resolution
-            let content_store =
-                fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
+            let content_store = commit_store;
 
             // Phase spans below use .entered() — safe because block_on inside
             // spawn_blocking pins this async task to a single OS thread.
