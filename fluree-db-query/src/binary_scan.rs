@@ -2130,7 +2130,7 @@ fn value_to_otype_okey(
 /// Reconstructs the IRI from the Sid and matches against well-known XSD types.
 /// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
 fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStore) -> Option<OType> {
-    let iri = store.sid_to_iri(dt_sid);
+    let iri = store.sid_to_iri(dt_sid)?;
     fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
 }
 

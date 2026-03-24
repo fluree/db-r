@@ -153,6 +153,11 @@ pub(crate) struct Fir6Inputs {
     pub ledger_id: String,
     pub index_t: i64,
     pub namespace_codes: BTreeMap<u16, String>,
+    /// Commit-derived namespace table for Rule 5 reconciliation.
+    /// If provided, `encode_and_write_root_v6` validates that the index root's
+    /// `namespace_codes` matches the commit-derived table entry-by-entry.
+    /// A mismatch indicates an indexer/publisher bug.
+    pub commit_derived_ns: Option<std::collections::HashMap<u16, String>>,
     pub predicate_sids: Vec<(u16, String)>,
     pub uploaded_dicts: UploadedDicts,
     pub v3_uploaded: UploadedIndexes,
@@ -184,6 +189,40 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
+    // Rule 5 reconciliation: if a commit-derived namespace table is provided,
+    // validate that every entry in the index root's table matches it.
+    if let Some(ref commit_ns) = inputs.commit_derived_ns {
+        for (code, root_prefix) in &inputs.namespace_codes {
+            if let Some(commit_prefix) = commit_ns.get(code) {
+                if commit_prefix != root_prefix {
+                    return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
+                        format!(
+                            "Rule 5 violation at index publish: code {} maps to {:?} in index root \
+                             but {:?} in commit chain — indexer/publisher bug",
+                            code, root_prefix, commit_prefix
+                        ),
+                    )));
+                }
+            }
+        }
+        // Also check reverse: commit chain has entries the root doesn't
+        for (code, commit_prefix) in commit_ns {
+            if let Some(root_prefix) = inputs.namespace_codes.get(code) {
+                if root_prefix != commit_prefix {
+                    return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
+                        format!(
+                            "Rule 5 violation at index publish: code {} maps to {:?} in commit chain \
+                             but {:?} in index root — indexer/publisher bug",
+                            code, commit_prefix, root_prefix
+                        ),
+                    )));
+                }
+            }
+            // Note: commit_ns having extra codes that the root doesn't is expected
+            // (post-index allocations); only conflicts matter.
+        }
+    }
+
     // Convert DictRefs for root assembly.
     let dr = inputs.uploaded_dicts.dict_refs;
     let dict_refs = DictRefs {

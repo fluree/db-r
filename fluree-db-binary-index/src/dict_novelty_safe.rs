@@ -24,7 +24,18 @@ fn subject_is_persisted(store: &BinaryIndexStore, sid: &Sid) -> io::Result<bool>
     // persisted in the index, so return false.
     match store.sid_to_s_id(sid) {
         Ok(found) => Ok(found.is_some()),
-        Err(_) => Ok(false),
+        Err(e) => {
+            // Namespace code not in the binary store's table. Most commonly this
+            // is a post-index allocation (expected), but could also indicate
+            // corruption if the code should have been present.
+            tracing::warn!(
+                ns_code = sid.namespace_code,
+                suffix = %sid.name,
+                error = %e,
+                "sid_to_s_id failed (post-index namespace code); treating as not persisted"
+            );
+            Ok(false)
+        }
     }
 }
 

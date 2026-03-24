@@ -330,7 +330,11 @@ impl Materializer {
                     JoinKeyMode::MultiLedger => {
                         // In multi-ledger mode, namespace codes may differ across ledgers,
                         // so we must use the full canonical IRI for comparison
-                        let iri = self.graph_view.store().sid_to_iri(sid);
+                        let iri = self
+                            .graph_view
+                            .store()
+                            .sid_to_iri(sid)
+                            .unwrap_or_else(|| sid.name.to_string());
                         JoinKey::IriOwned(Arc::from(iri))
                     }
                 }
@@ -464,7 +468,12 @@ impl Materializer {
             Binding::Sid(sid) => {
                 // Decode to full IRI string.
                 // IMPORTANT: `namespace_code:name` is an internal representation and is not a full IRI.
-                Some(Arc::from(self.graph_view.store().sid_to_iri(sid)))
+                let iri = self
+                    .graph_view
+                    .store()
+                    .sid_to_iri(sid)
+                    .unwrap_or_else(|| sid.name.to_string());
+                Some(Arc::from(iri))
             }
 
             Binding::IriMatch { iri, .. } => Some(Arc::clone(iri)),

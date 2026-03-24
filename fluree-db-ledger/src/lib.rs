@@ -315,7 +315,7 @@ impl LedgerState {
         }
 
         // Apply all accumulated deltas to the snapshot in one shot.
-        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)?;
 
         // Stamp commit metadata flakes with txn-meta graph SID now that
         // namespace_codes are complete.
@@ -631,7 +631,7 @@ impl LedgerState {
 
         // Apply namespace + graph deltas to snapshot
         self.snapshot
-            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris);
+            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris)?;
 
         // Apply ns_split_mode if present (only in genesis commit).
         if let Some(mode) = commit.ns_split_mode {

@@ -735,7 +735,9 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                                 .get(*dt_id as usize)
                                 .cloned()
                                 .unwrap_or_else(|| Sid::new(0, ""));
-                            let dt_iri = store_ref.sid_to_iri(&dt_sid);
+                            let dt_iri = store_ref
+                                .sid_to_iri(&dt_sid)
+                                .unwrap_or_else(|| dt_sid.name.to_string());
                             let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
                                 TransactError::Query(fluree_db_query::QueryError::Internal(
                                     format!("encode_iri returned None for datatype IRI: {dt_iri}"),

@@ -403,17 +403,21 @@ impl LedgerHandle {
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
 
             // Augment store's namespace codes with entries from novelty commits
-            store.augment_namespace_codes(&state.snapshot.namespace_codes);
+            store
+                .augment_namespace_codes(&state.snapshot.namespace_codes)
+                .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
+            store.set_ns_split_mode(state.snapshot.ns_split_mode);
 
             // Copy store's namespace codes back to snapshot for result formatting
             for (code, prefix) in store.namespace_codes() {
                 if let Some(existing) = state.snapshot.namespace_codes.get(code) {
-                    debug_assert_eq!(
-                        existing, prefix,
-                        "Rule 5 violation: index root ns code {} maps to {:?} \
-                         but commit chain has {:?} — possible indexer/publisher bug",
-                        code, prefix, existing
-                    );
+                    if existing != prefix {
+                        return Err(ApiError::internal(format!(
+                            "Rule 5 violation: index root ns code {} maps to {:?} \
+                             but commit chain has {:?} — possible indexer/publisher bug",
+                            code, prefix, existing
+                        )));
+                    }
                 }
                 state
                     .snapshot
@@ -590,7 +594,10 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
     // Augment namespace codes with entries from novelty commits (see loading.rs).
-    store.augment_namespace_codes(&state.snapshot.namespace_codes);
+    store
+        .augment_namespace_codes(&state.snapshot.namespace_codes)
+        .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
+    store.set_ns_split_mode(state.snapshot.ns_split_mode);
 
     // Re-populate DictNovelty from already-loaded novelty flakes, but *only* for
     // entries not present in the persisted dictionaries (canonical IDs must win).
@@ -614,12 +621,13 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // from the index root that the commit-chain snapshot doesn't have).
     for (code, prefix) in store.namespace_codes() {
         if let Some(existing) = state.snapshot.namespace_codes.get(code) {
-            debug_assert_eq!(
-                existing, prefix,
-                "Rule 5 violation: index root ns code {} maps to {:?} \
-                 but commit chain has {:?} — possible indexer/publisher bug",
-                code, prefix, existing
-            );
+            if existing != prefix {
+                return Err(ApiError::internal(format!(
+                    "Rule 5 violation: index root ns code {} maps to {:?} \
+                     but commit chain has {:?} — possible indexer/publisher bug",
+                    code, prefix, existing
+                )));
+            }
         }
         state
             .snapshot

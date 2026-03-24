@@ -277,7 +277,7 @@ impl HistoricalLedgerView {
         }
 
         // Apply accumulated deltas to snapshot (ns codes + graph IRIs)
-        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)?;
 
         // Resolve the txn-meta graph Sid now that namespace_codes are complete.
         // This produces the same Sid that build_reverse_graph() will map to g_id=1.

@@ -173,6 +173,13 @@ mod inner {
             // 3. Update cumulative flake count
             state.cumulative_flakes += op_count as u64;
 
+            // Persist split mode in genesis commit (first chunk, no previous ref).
+            let ns_split_mode = if state.previous_ref.is_none() {
+                Some(state.ns_registry.split_mode())
+            } else {
+                None
+            };
+
             let envelope = CommitV2Envelope {
                 t: new_t,
                 previous_ref: state.previous_ref.clone(),
@@ -183,7 +190,7 @@ mod inner {
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
-                ns_split_mode: None,
+                ns_split_mode,
             };
 
             (writer, op_count, spool_result, envelope)
@@ -312,6 +319,13 @@ mod inner {
 
             state.cumulative_flakes += op_count as u64;
 
+            // Persist split mode in genesis commit (first chunk, no previous ref).
+            let ns_split_mode = if state.previous_ref.is_none() {
+                Some(state.ns_registry.split_mode())
+            } else {
+                None
+            };
+
             let envelope = CommitV2Envelope {
                 t: new_t,
                 previous_ref: state.previous_ref.clone(),
@@ -322,7 +336,7 @@ mod inner {
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
-                ns_split_mode: None,
+                ns_split_mode,
             };
 
             (writer, op_count, spool_result, envelope)
@@ -534,6 +548,13 @@ mod inner {
 
         state.cumulative_flakes += op_count as u64;
 
+        // Persist split mode in genesis commit (first chunk, no previous ref).
+        let ns_split_mode = if state.previous_ref.is_none() {
+            Some(state.ns_registry.split_mode())
+        } else {
+            None
+        };
+
         let envelope = CommitV2Envelope {
             t: new_t,
             previous_ref: state.previous_ref.clone(),
@@ -544,7 +565,7 @@ mod inner {
             txn_signature: None,
             txn_meta,
             graph_delta,
-            ns_split_mode: None,
+            ns_split_mode,
         };
 
         // 7. Finalize blob
@@ -971,12 +992,21 @@ mod inner {
         // Merge published namespaces into serial registry to keep it in sync
         // (needed for TriG serial paths and the final namespace snapshot).
         for (code, prefix) in &ns_delta {
-            state.ns_registry.ensure_code(*code, prefix);
+            state.ns_registry.ensure_code(*code, prefix).map_err(|e| {
+                TransactError::FlakeGeneration(format!("namespace code conflict: {}", e))
+            })?;
         }
         // Merge turtle prefix short names into session state
         state.prefix_map.extend(parsed.prefix_map);
 
         state.cumulative_flakes += parsed.op_count as u64;
+
+        // Persist split mode in genesis commit (first chunk, no previous ref).
+        let ns_split_mode = if state.previous_ref.is_none() {
+            Some(state.ns_registry.split_mode())
+        } else {
+            None
+        };
 
         let envelope = CommitV2Envelope {
             t: new_t,
@@ -988,7 +1018,7 @@ mod inner {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
-            ns_split_mode: None,
+            ns_split_mode,
         };
 
         let result = parsed.writer.finish(&envelope)?;

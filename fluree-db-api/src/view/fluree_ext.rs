@@ -185,18 +185,22 @@ where
                 .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
                 // Augment namespace codes with entries from novelty commits.
-                store.augment_namespace_codes(&snapshot.snapshot.namespace_codes);
+                store
+                    .augment_namespace_codes(&snapshot.snapshot.namespace_codes)
+                    .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
+                store.set_ns_split_mode(snapshot.snapshot.ns_split_mode);
 
                 // Copy store's namespace codes back to the snapshot so
                 // result formatting can decode all namespace codes.
                 for (code, prefix) in store.namespace_codes() {
                     if let Some(existing) = snapshot.snapshot.namespace_codes.get(code) {
-                        debug_assert_eq!(
-                            existing, prefix,
-                            "Rule 5 violation: index root ns code {} maps to {:?} \
-                             but commit chain has {:?} — possible indexer/publisher bug",
-                            code, prefix, existing
-                        );
+                        if existing != prefix {
+                            return Err(ApiError::internal(format!(
+                                "Rule 5 violation: index root ns code {} maps to {:?} \
+                                 but commit chain has {:?} — possible indexer/publisher bug",
+                                code, prefix, existing
+                            )));
+                        }
                     }
                     snapshot
                         .snapshot
@@ -321,7 +325,12 @@ where
                     })?;
 
                     // Augment namespace codes with entries from novelty commits.
-                    store.augment_namespace_codes(&view.snapshot.namespace_codes);
+                    store
+                        .augment_namespace_codes(&view.snapshot.namespace_codes)
+                        .map_err(|e| {
+                            ApiError::internal(format!("augment namespace codes: {}", e))
+                        })?;
+                    store.set_ns_split_mode(view.snapshot.ns_split_mode);
 
                     // Populate dict novelty safely (persisted dict wins).
                     if let Some(novelty) = view.novelty.as_ref() {

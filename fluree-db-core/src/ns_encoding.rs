@@ -61,14 +61,31 @@ pub enum NsSplitMode {
     HostPlusN(u8),
 }
 
+/// Maximum `n` value for `HostPlusN(n)` that can be persisted without
+/// wrapping. `HostPlusN(254)` encodes as byte `0xFF`; values above 254
+/// would wrap to `0x00` (MostGranular) on round-trip.
+pub const HOST_PLUS_N_MAX: u8 = 254;
+
 impl NsSplitMode {
     /// Encode to a single byte for binary persistence.
     ///
     /// Layout: `0x00` = MostGranular, `0x01..=0xFF` = HostPlusN(n-1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n > 254` (would wrap to `MostGranular` on decode).
     pub fn to_byte(self) -> u8 {
         match self {
             Self::MostGranular => 0,
-            Self::HostPlusN(n) => n.wrapping_add(1),
+            Self::HostPlusN(n) => {
+                assert!(
+                    n <= HOST_PLUS_N_MAX,
+                    "HostPlusN({}) exceeds maximum persistable value {}",
+                    n,
+                    HOST_PLUS_N_MAX
+                );
+                n + 1
+            }
         }
     }
 
@@ -76,7 +93,7 @@ impl NsSplitMode {
     pub fn from_byte(b: u8) -> Self {
         match b {
             0 => Self::MostGranular,
-            n => Self::HostPlusN(n.wrapping_sub(1)),
+            n => Self::HostPlusN(n - 1),
         }
     }
 }
@@ -588,6 +605,54 @@ impl Default for NamespaceCodes {
 }
 
 // ============================================================================
+// Standalone validation for raw namespace tables
+// ============================================================================
+
+/// Validate and apply a namespace delta to a raw `code → prefix` map.
+///
+/// Checks both directions of the bimap invariant (Rule 3/6):
+/// - A code that already maps to a different prefix is a conflict.
+/// - A prefix that already maps to a different code is a conflict.
+///
+/// New mappings are inserted; matching duplicates are skipped.
+///
+/// Returns `Err(NsAllocError::Conflict)` on the first violation.
+pub fn validate_and_merge_ns_delta(
+    existing: &mut HashMap<u16, String>,
+    delta: &HashMap<u16, String>,
+) -> Result<(), NsAllocError> {
+    for (&code, prefix) in delta {
+        // Check code → prefix direction
+        if let Some(existing_prefix) = existing.get(&code) {
+            if existing_prefix != prefix {
+                return Err(NsAllocError::Conflict {
+                    code,
+                    new_prefix: prefix.clone(),
+                    existing_prefix: existing_prefix.clone(),
+                });
+            }
+            continue; // Already registered with matching prefix
+        }
+        // Check prefix → code direction
+        for (&existing_code, existing_prefix) in existing.iter() {
+            if existing_prefix == prefix && existing_code != code {
+                return Err(NsAllocError::Conflict {
+                    code,
+                    new_prefix: prefix.clone(),
+                    existing_prefix: format!(
+                        "(prefix {:?} already has code {})",
+                        prefix, existing_code
+                    ),
+                });
+            }
+        }
+        // New mapping — insert
+        existing.insert(code, prefix.clone());
+    }
+    Ok(())
+}
+
+// ============================================================================
 // NsLookup trait
 // ============================================================================
 
@@ -664,9 +729,15 @@ mod tests {
             NsSplitMode::HostPlusN(1)
         );
         assert_eq!(
-            NsSplitMode::from_byte(NsSplitMode::HostPlusN(254).to_byte()),
-            NsSplitMode::HostPlusN(254)
+            NsSplitMode::from_byte(NsSplitMode::HostPlusN(HOST_PLUS_N_MAX).to_byte()),
+            NsSplitMode::HostPlusN(HOST_PLUS_N_MAX)
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds maximum persistable value")]
+    fn test_split_mode_host_plus_255_panics() {
+        NsSplitMode::HostPlusN(255).to_byte();
     }
 
     // ---- canonical_split: normative test table ----
@@ -1083,6 +1154,41 @@ mod tests {
             let _ = codes.allocate_prefix(prefix);
             let sid = codes
                 .encode_iri(iri, NsSplitMode::HostPlusN(0))
+                .expect("encode must succeed after allocate");
+            let decoded = codes.decode_sid_strict(&sid).expect("decode must succeed");
+            assert_eq!(
+                decoded, iri,
+                "encode/decode round-trip failed for {:?}",
+                iri
+            );
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_host_plus_1() {
+        let mut codes = NamespaceCodes::new();
+        let iris = &[
+            "https://example.com/api/v1/users",
+            "https://example.com/api/",
+            "https://example.com//foo/bar",
+            "https://example.com//foo/bar?x=1#y",
+            "arn:aws:iam::123456789012:role/Admin",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", // built-in
+            "http://www.w3.org/2001/XMLSchema#string",         // built-in
+            "@type",                                           // JSON-LD keyword
+        ];
+        for &iri in iris {
+            let (prefix, suffix) = canonical_split(iri, NsSplitMode::HostPlusN(1));
+            assert_eq!(
+                format!("{}{}", prefix, suffix),
+                iri,
+                "canonical_split round-trip failed for {:?}",
+                iri
+            );
+
+            let _ = codes.allocate_prefix(prefix);
+            let sid = codes
+                .encode_iri(iri, NsSplitMode::HostPlusN(1))
                 .expect("encode must succeed after allocate");
             let decoded = codes.decode_sid_strict(&sid).expect("decode must succeed");
             assert_eq!(

@@ -209,21 +209,14 @@ impl NamespaceRegistry {
     /// serial registry (e.g., after commit-order publication). If the prefix
     /// is already registered (under any code), this is a no-op. OVERFLOW codes
     /// are ignored since they are pure sentinels and should never be registered.
-    /// # Panics
-    ///
-    /// Panics on a namespace conflict (Rule 3 violation).
-    pub fn ensure_code(&mut self, code: u16, prefix: &str) {
+    /// Returns `Err` on a namespace conflict (Rule 3 violation).
+    pub fn ensure_code(&mut self, code: u16, prefix: &str) -> Result<(), NsAllocError> {
         if code >= OVERFLOW {
-            return; // OVERFLOW is a sentinel, never register it
+            return Ok(()); // OVERFLOW is a sentinel, never register it
         }
         let mut delta = HashMap::new();
         delta.insert(code, prefix.to_string());
-        if let Err(e) = self.codes.merge_delta(&delta) {
-            panic!(
-                "namespace conflict in ensure_code (Rule 3 violation): {}",
-                e
-            );
-        }
+        self.codes.merge_delta(&delta)
     }
 
     /// Create a Sid for a blank node.
@@ -375,18 +368,11 @@ impl SharedNamespaceAllocator {
     /// Used after serial import paths where namespace codes were allocated
     /// in the registry but not in the shared allocator. Preserves exact code
     /// assignments from the registry.
-    /// # Panics
-    ///
-    /// Panics on a namespace conflict (Rule 3 violation).
-    pub fn sync_from_registry(&self, reg: &NamespaceRegistry) {
+    /// Returns `Err` on a namespace conflict (Rule 3 violation).
+    pub fn sync_from_registry(&self, reg: &NamespaceRegistry) -> Result<(), NsAllocError> {
         let delta = reg.codes.code_to_prefix_map().clone();
         let mut inner = self.inner.write();
-        if let Err(e) = inner.merge_delta(&delta) {
-            panic!(
-                "namespace conflict in sync_from_registry (Rule 3 violation): {}",
-                e
-            );
-        }
+        inner.merge_delta(&delta)
     }
 
     /// Take a snapshot of the current state for worker initialization.

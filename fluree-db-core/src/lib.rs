@@ -111,7 +111,8 @@ pub use namespaces::{
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
 };
 pub use ns_encoding::{
-    builtin_prefix_trie, canonical_split, NamespaceCodes, NsAllocError, NsLookup, NsSplitMode,
+    builtin_prefix_trie, canonical_split, validate_and_merge_ns_delta, NamespaceCodes,
+    NsAllocError, NsLookup, NsSplitMode, HOST_PLUS_N_MAX,
 };
 pub use o_type::{DecodeKind, OType};
 pub use o_type_registry::OTypeRegistry;

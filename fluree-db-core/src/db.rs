@@ -11,7 +11,7 @@ use crate::ids::GraphId;
 use crate::index_schema::IndexSchema;
 use crate::index_stats::IndexStats;
 use crate::namespaces::default_namespace_codes;
-use crate::ns_encoding::{canonical_split, NsSplitMode};
+use crate::ns_encoding::{canonical_split, validate_and_merge_ns_delta, NsSplitMode};
 use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
 use crate::sid::Sid;
@@ -244,33 +244,19 @@ impl LedgerSnapshot {
         }
     }
 
-    /// Shared IRI → SID encoding using canonical-first strategy.
+    /// Shared IRI → SID encoding using canonical splitting (Rule 2).
     ///
-    /// 1. **Canonical**: `canonical_split(iri, mode)` + exact-prefix lookup.
-    ///    This matches the transact layer's allocation behavior.
-    /// 2. **Fallback**: longest-prefix-match for built-in prefixes that are
-    ///    coarser than the canonical split (e.g., `urn:fluree:`).
-    /// 3. **EMPTY**: code 0 with full IRI as name if neither path matches.
+    /// Uses `canonical_split(iri, mode)` + exact-prefix lookup. If the
+    /// canonical prefix is not registered, falls back to `Sid(EMPTY, iri)`.
+    /// No longest-prefix-match — Rule 2 prohibits `starts_with` matching.
     fn encode_iri_inner(&self, iri: &str) -> Sid {
-        // 1. Canonical: exact-prefix lookup after canonical_split
         let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
         for (&code, ns_prefix) in &self.namespace_codes {
             if ns_prefix == canonical_prefix {
                 return Sid::new(code, canonical_suffix);
             }
         }
-
-        // 2. Fallback: longest-prefix-match for built-in/legacy prefixes
-        let mut best_match: Option<(u16, usize)> = None;
-        for (&code, prefix) in &self.namespace_codes {
-            if iri.starts_with(prefix) && prefix.len() > best_match.map(|(_, l)| l).unwrap_or(0) {
-                best_match = Some((code, prefix.len()));
-            }
-        }
-        match best_match {
-            Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-            None => Sid::new(EMPTY, iri),
-        }
+        Sid::new(EMPTY, iri)
     }
 
     /// Build a reverse lookup from graph Sid → GraphId.
@@ -334,40 +320,17 @@ impl LedgerSnapshot {
     /// **Rule 6 enforcement**: each namespace delta entry is validated against
     /// the current table. A code that already maps to a different prefix, or
     /// a prefix that already maps to a different code, is a conflict that
-    /// indicates an invalid commit chain. This panics rather than silently
-    /// accepting divergent mappings.
+    /// indicates an invalid commit chain. Returns `Err` so the caller can
+    /// reject the commit rather than crashing the process.
     pub fn apply_envelope_deltas(
         &mut self,
         ns_delta: &HashMap<u16, String>,
         graph_iris: impl IntoIterator<Item = impl AsRef<str>>,
-    ) {
-        // Build reverse map for prefix→code conflict checking
-        // (namespace_codes is code→prefix; we need the inverse)
-        for (&code, prefix) in ns_delta {
-            // Check code → prefix direction
-            if let Some(existing) = self.namespace_codes.get(&code) {
-                if existing != prefix {
-                    panic!(
-                        "namespace conflict (Rule 6 violation): code {} already maps to {:?} \
-                         but commit delta declares {:?}",
-                        code, existing, prefix
-                    );
-                }
-                continue; // Already registered with matching prefix
-            }
-            // Check prefix → code direction
-            for (&existing_code, existing_prefix) in &self.namespace_codes {
-                if existing_prefix == prefix && existing_code != code {
-                    panic!(
-                        "namespace conflict (Rule 6 violation): prefix {:?} already has code {} \
-                         but commit delta declares code {}",
-                        prefix, existing_code, code
-                    );
-                }
-            }
-            self.namespace_codes.insert(code, prefix.clone());
-        }
+    ) -> Result<()> {
+        validate_and_merge_ns_delta(&mut self.namespace_codes, ns_delta)
+            .map_err(|e| Error::invalid_index(format!("namespace conflict (Rule 6): {}", e)))?;
         self.graph_registry.apply_delta(graph_iris);
+        Ok(())
     }
 
     /// Get the schema hierarchy for RDFS reasoning.
@@ -801,15 +764,27 @@ mod tests {
         let txn_meta_iri = crate::graph_registry::txn_meta_graph_iri("mydb:main");
         assert_eq!(txn_meta_iri, "urn:fluree:mydb:main#txn-meta");
 
-        // encode_iri uses longest-prefix-match: finds "urn:fluree:" (FLUREE_URN=12).
+        // Canonical split (MostGranular) for this opaque IRI: prefix = "urn:fluree:mydb:main#"
+        // Genesis db only has "urn:fluree:" (FLUREE_URN) — canonical prefix not registered.
+        // Rule 2: no starts_with fallback → EMPTY.
         let sid = db
             .encode_iri(&txn_meta_iri)
-            .expect("encode_iri must work for txn-meta");
-        assert_eq!(sid.namespace_code, fluree_vocab::namespaces::FLUREE_URN);
-        assert_eq!(sid.name.as_ref(), "mydb:main#txn-meta");
+            .expect("encode_iri always returns Some via EMPTY fallback");
+        assert_eq!(sid.namespace_code, EMPTY);
+        assert_eq!(sid.name.as_ref(), "urn:fluree:mydb:main#txn-meta");
 
-        // Round-trip back to IRI
+        // Round-trip: EMPTY code decodes to sid.name (the full IRI).
         let decoded = db.decode_sid(&sid).unwrap();
         assert_eq!(decoded, txn_meta_iri);
+
+        // Once the canonical prefix is registered (by the transact layer),
+        // encode uses the exact prefix.
+        let mut db2 = db.clone();
+        db2.namespace_codes
+            .insert(100, "urn:fluree:mydb:main#".to_string());
+        let sid2 = db2.encode_iri(&txn_meta_iri).unwrap();
+        assert_eq!(sid2.namespace_code, 100);
+        assert_eq!(sid2.name.as_ref(), "txn-meta");
+        assert_eq!(db2.decode_sid(&sid2).unwrap(), txn_meta_iri);
     }
 }

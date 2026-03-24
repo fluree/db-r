@@ -178,9 +178,26 @@ where
             reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
         }
 
+        // Accumulate namespace table for Rule 6 cross-commit validation.
+        let mut accumulated_ns: HashMap<u16, String> = base_state.snapshot.namespace_codes.clone();
+
         for c in &decoded {
             // Current state is base db + evolving novelty.
             let current_t = base_state.snapshot.t.max(evolving_novelty.t);
+
+            // 4.0.1 Rule 6: namespace delta must be conflict-free against
+            // the accumulated namespace table from parent + prior commits.
+            fluree_db_core::ns_encoding::validate_and_merge_ns_delta(
+                &mut accumulated_ns,
+                &c.commit.namespace_delta,
+            )
+            .map_err(|e| {
+                PushError::Invalid(format!(
+                    "commit t={}: namespace delta conflict (Rule 6): {}",
+                    c.commit.t, e
+                ))
+                .into_api_error()
+            })?;
 
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
@@ -302,7 +319,8 @@ where
             &accepted_all_flakes,
             &decoded,
             &stored_commits,
-        );
+        )
+        .map_err(|e| e.into_api_error())?;
 
         // 8) Compute indexing status from the updated state.
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -415,7 +433,9 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
 
     for g_sid in &graph_sids_set {
         let resolved = if let Some(store) = &binary_store {
-            let iri = store.sid_to_iri(g_sid);
+            let iri = store
+                .sid_to_iri(g_sid)
+                .unwrap_or_else(|| g_sid.name.to_string());
             store.graph_id_for_iri(&iri)
         } else {
             None
@@ -779,7 +799,7 @@ fn apply_pushed_commits_to_state(
     accepted_all_flakes: &[(i64, Vec<Flake>)],
     decoded: &[PushCommitDecoded],
     stored_commits: &[StoredCommit],
-) -> LedgerState {
+) -> std::result::Result<LedgerState, PushError> {
     // Extract namespace deltas and graph IRIs from the decoded commits,
     // then apply to the snapshot so that build_reverse_graph() has complete data.
     {
@@ -800,7 +820,8 @@ fn apply_pushed_commits_to_state(
             }
         }
         base.snapshot
-            .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+            .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)
+            .map_err(|e| PushError::Internal(format!("apply_envelope_deltas failed: {}", e)))?;
     }
 
     // Build reverse_graph now that namespace_codes and graph_registry are complete.
@@ -861,7 +882,7 @@ fn apply_pushed_commits_to_state(
             r.commit_t = last.t;
         }
     }
-    base
+    Ok(base)
 }
 
 /// Extract and **verify** the canonical content hash from a commit-v2 blob.
@@ -1415,7 +1436,8 @@ where
             .collect();
 
         let new_state =
-            apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits);
+            apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits)
+                .map_err(|e| e.into_api_error())?;
 
         // 9) Compute indexing status from the updated state.
         let index_config = self.default_index_config();

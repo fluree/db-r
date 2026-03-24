@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
-use fluree_db_core::ns_encoding::{canonical_split, NsSplitMode};
+use fluree_db_core::ns_encoding::{
+    canonical_split, validate_and_merge_ns_delta, NsLookup, NsSplitMode,
+};
 use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -243,6 +245,9 @@ pub struct BinaryIndexStore {
     base_t: i64,
     language_tags: Vec<String>,
     lex_sorted_string_ids: bool,
+    /// Ledger-fixed split mode for canonical IRI encoding.
+    /// Set from the snapshot's `ns_split_mode` after loading.
+    ns_split_mode: NsSplitMode,
 }
 
 impl BinaryIndexStore {
@@ -360,6 +365,7 @@ impl BinaryIndexStore {
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
             lex_sorted_string_ids: root.lex_sorted_string_ids,
+            ns_split_mode: NsSplitMode::default(),
         })
     }
 
@@ -371,6 +377,13 @@ impl BinaryIndexStore {
 
     pub fn base_t(&self) -> i64 {
         self.base_t
+    }
+
+    /// Set the ledger's split mode for canonical IRI encoding.
+    ///
+    /// Called after loading to sync with the snapshot's `ns_split_mode`.
+    pub fn set_ns_split_mode(&mut self, mode: NsSplitMode) {
+        self.ns_split_mode = mode;
     }
 
     /// True if `StringId` / `LEX_ID` ordering is lexicographic by UTF-8 bytes.
@@ -844,22 +857,17 @@ impl BinaryIndexStore {
         self.dicts.predicate_reverse.get(iri).copied()
     }
 
-    /// Encode an IRI to a namespaced `Sid` using canonical-first strategy.
+    /// Encode an IRI to a namespaced `Sid` using canonical splitting (Rule 2).
     ///
-    /// 1. Canonical: `canonical_split` + exact-prefix lookup via reverse map.
-    /// 2. Fallback: trie longest-prefix-match (for built-in/legacy prefixes).
-    /// 3. EMPTY (code 0) if neither path matches.
+    /// Uses `canonical_split` + exact-prefix lookup via reverse map. If the
+    /// canonical prefix is not registered, returns `Sid(EMPTY, iri)`.
+    /// No longest-prefix-match — Rule 2 prohibits `starts_with` matching.
     pub fn encode_iri(&self, iri: &str) -> Sid {
-        // 1. Canonical path
-        let (canonical_prefix, canonical_suffix) = canonical_split(iri, NsSplitMode::default());
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
         if let Some(&code) = self.dicts.namespace_reverse.get(canonical_prefix) {
             return Sid::new(code, canonical_suffix);
         }
-        // 2. Fallback: trie longest-prefix-match
-        match self.dicts.prefix_trie.longest_match(iri) {
-            Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-            None => Sid::new(0, iri),
-        }
+        Sid::new(0, iri)
     }
 
     /// Resolve language ID to BCP 47 tag string.
@@ -895,20 +903,20 @@ impl BinaryIndexStore {
             .map(|&idx| &self.o_type_table[idx])
     }
 
-    /// Reconstruct the full IRI string from a `Sid`.
+    /// Reconstruct the full IRI string from a `Sid` (strict decode, Rule 5).
     ///
-    /// - `EMPTY (0)` / `OVERFLOW (0xFFFE)`: returns `sid.name` (full IRI).
-    /// - Registered code: returns `prefix + name`.
-    /// - Unknown code: returns empty string (lenient fallback).
-    pub fn sid_to_iri(&self, sid: &Sid) -> String {
+    /// - `EMPTY (0)` / `OVERFLOW (0xFFFE)`: returns `Some(sid.name)`.
+    /// - Registered code: returns `Some(prefix + name)`.
+    /// - Unknown code: returns `None`.
+    pub fn sid_to_iri(&self, sid: &Sid) -> Option<String> {
         // EMPTY (0) and OVERFLOW (0xFFFE) store the full IRI as sid.name
         if sid.namespace_code == 0 || sid.namespace_code == 0xFFFE {
-            return sid.name.to_string();
+            return Some(sid.name.to_string());
         }
-        match self.dicts.namespace_codes.get(&sid.namespace_code) {
-            Some(prefix) => format!("{}{}", prefix, sid.name),
-            None => String::new(),
-        }
+        self.dicts
+            .namespace_codes
+            .get(&sid.namespace_code)
+            .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
     /// Reverse subject lookup: find the u64 s_id for a given IRI.
@@ -927,14 +935,22 @@ impl BinaryIndexStore {
     }
 
     /// Translate a `Sid` to `s_id` via the reverse subject dictionary.
+    ///
+    /// Returns `Ok(None)` if the namespace code is unknown (post-index
+    /// allocation) or if the IRI is not in the persisted dictionary.
     pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u64>> {
-        let iri = self.sid_to_iri(sid);
-        self.find_subject_id(&iri)
+        match self.sid_to_iri(sid) {
+            Some(iri) => self.find_subject_id(&iri),
+            None => Ok(None), // unknown ns_code → can't be persisted
+        }
     }
 
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
+    ///
+    /// Returns `None` if the namespace code is unknown or the predicate
+    /// is not in the persisted dictionary.
     pub fn sid_to_p_id(&self, sid: &Sid) -> Option<u32> {
-        let iri = self.sid_to_iri(sid);
+        let iri = self.sid_to_iri(sid)?;
         self.find_predicate_id(&iri)
     }
 
@@ -1050,39 +1066,27 @@ impl BinaryIndexStore {
     ///
     /// # Panics
     ///
-    /// Panics on a namespace conflict (Rule 3 violation). A conflict indicates
-    /// corrupted namespace state or invalid commit history.
-    pub fn augment_namespace_codes(&mut self, codes: &std::collections::HashMap<u16, String>) {
-        for (&code, prefix) in codes {
-            // Check code → prefix direction
-            if let Some(existing) = self.dicts.namespace_codes.get(&code) {
-                if existing != prefix {
-                    panic!(
-                        "namespace conflict in augment_namespace_codes (Rule 3 violation): \
-                         code {} maps to {:?} but {:?} was requested",
-                        code, existing, prefix
-                    );
-                }
-                // Already registered with matching prefix — skip
-                continue;
-            }
-            // Check prefix → code direction
-            if let Some(&existing_code) = self.dicts.namespace_reverse.get(prefix.as_str()) {
-                if existing_code != code {
-                    panic!(
-                        "namespace conflict in augment_namespace_codes (Rule 3 violation): \
-                         prefix {:?} maps to code {} but code {} was requested",
-                        prefix, existing_code, code
-                    );
-                }
-                continue;
-            }
-            // New mapping — insert
-            self.dicts.namespace_codes.insert(code, prefix.clone());
-            self.dicts.namespace_reverse.insert(prefix.clone(), code);
-        }
-        // Rebuild prefix trie to include new entries.
+    /// Returns `Err` on a namespace conflict (Rule 3 violation) so the caller
+    /// can reject the invalid state rather than crashing the process.
+    pub fn augment_namespace_codes(
+        &mut self,
+        codes: &std::collections::HashMap<u16, String>,
+    ) -> io::Result<()> {
+        validate_and_merge_ns_delta(&mut self.dicts.namespace_codes, codes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("namespace conflict (Rule 3): {}", e),
+            )
+        })?;
+        // Rebuild reverse map and prefix trie to include new entries.
+        self.dicts.namespace_reverse = self
+            .dicts
+            .namespace_codes
+            .iter()
+            .map(|(&code, prefix)| (prefix.clone(), code))
+            .collect();
         self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
+        Ok(())
     }
 
     /// Access the namespace codes table.
@@ -1301,6 +1305,20 @@ fn compare_prefix_suffix_bytes(
         }
     }
     a_total.cmp(&b_total)
+}
+
+// ============================================================================
+// NsLookup implementation
+// ============================================================================
+
+impl NsLookup for BinaryIndexStore {
+    fn code_for_prefix(&self, prefix: &str) -> Option<u16> {
+        self.dicts.namespace_reverse.get(prefix).copied()
+    }
+
+    fn prefix_for_code(&self, code: u16) -> Option<&str> {
+        self.dicts.namespace_codes.get(&code).map(|s| s.as_str())
+    }
 }
 
 // ============================================================================

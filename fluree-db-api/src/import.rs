@@ -1978,7 +1978,11 @@ where
                     )
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
-                    shared_alloc.sync_from_registry(&state.ns_registry);
+                    shared_alloc
+                        .sync_from_registry(&state.ns_registry)
+                        .map_err(|e| {
+                            ImportError::Transact(format!("namespace sync conflict: {}", e))
+                        })?;
                     published_codes.extend(state.ns_registry.all_codes());
                     r
                 } else {

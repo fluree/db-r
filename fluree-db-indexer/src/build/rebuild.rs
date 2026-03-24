@@ -1130,6 +1130,8 @@ where
                 ledger_id: ledger_id.clone(),
                 index_t: commit_t,
                 namespace_codes: ns_codes,
+                // TODO: plumb commit-derived namespace table through for Rule 5 validation
+                commit_derived_ns: None,
                 predicate_sids,
                 uploaded_dicts,
                 v3_uploaded,
