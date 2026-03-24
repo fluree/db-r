@@ -179,7 +179,7 @@ where
         }
 
         // Accumulate namespace table for cross-commit namespace conflict validation.
-        let mut accumulated_ns: HashMap<u16, String> = base_state.snapshot.namespace_codes.clone();
+        let mut accumulated_ns: HashMap<u16, String> = base_state.snapshot.namespaces().clone();
 
         for c in &decoded {
             // Current state is base db + evolving novelty.

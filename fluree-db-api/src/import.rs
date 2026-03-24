@@ -3021,7 +3021,11 @@ where
 
         // Build predicate_sids (done inline here since
         // the shared code runs after V3 would have already returned).
-        let trie_v6 = fluree_db_core::PrefixTrie::from_namespace_codes(input.namespace_codes);
+        let ns_reverse_v6: std::collections::HashMap<String, u16> = input
+            .namespace_codes
+            .iter()
+            .map(|(&code, prefix)| (prefix.clone(), code))
+            .collect();
         let pred_path = input.run_dir.join("predicates.json");
         let predicate_sids_v6: Vec<(u16, String)> = if pred_path.exists() {
             let bytes = std::fs::read(&pred_path)?;
@@ -3030,9 +3034,15 @@ where
             })?;
             by_id
                 .iter()
-                .map(|iri| match trie_v6.longest_match(iri) {
-                    Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                    None => (0u16, iri.clone()),
+                .map(|iri| {
+                    let (prefix, suffix) = fluree_db_core::canonical_split(
+                        iri,
+                        fluree_db_core::NsSplitMode::default(),
+                    );
+                    match ns_reverse_v6.get(prefix) {
+                        Some(&code) => (code, suffix.to_string()),
+                        None => (0u16, iri.clone()),
+                    }
                 })
                 .collect()
         } else {

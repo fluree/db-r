@@ -1651,9 +1651,13 @@ async fn build_dictionary_set(
     let dt_sids: Vec<Sid> = root
         .datatype_iris
         .iter()
-        .map(|iri| match prefix_trie.longest_match(iri) {
-            Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-            None => Sid::new(0, iri),
+        .map(|iri| {
+            let (canonical_prefix, canonical_suffix) = canonical_split(iri, root.ns_split_mode);
+            if let Some(&code) = namespace_reverse.get(canonical_prefix) {
+                Sid::new(code, canonical_suffix)
+            } else {
+                Sid::new(0, iri)
+            }
         })
         .collect();
 

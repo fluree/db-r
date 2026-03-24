@@ -27,7 +27,7 @@ pub fn sync_store_and_snapshot_ns(
 ) -> Result<()> {
     // 1. Augment the store with snapshot namespace codes (post-index allocations).
     store
-        .augment_namespace_codes(&snapshot.namespace_codes)
+        .augment_namespace_codes(snapshot.namespaces())
         .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
 
     // 2. Sync split mode.
@@ -35,7 +35,7 @@ pub fn sync_store_and_snapshot_ns(
 
     // 3. Reconcile store codes back into snapshot (validation + insert).
     for (code, prefix) in store.namespace_codes() {
-        if let Some(existing) = snapshot.namespace_codes.get(code) {
+        if let Some(existing) = snapshot.namespaces().get(code) {
             if existing != prefix {
                 return Err(ApiError::internal(format!(
                     "namespace reconciliation failure: index root ns code {} maps to {:?} \

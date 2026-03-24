@@ -1172,8 +1172,8 @@ pub async fn stage_with_shacl(
     }
 
     // Rebuild graph_sids from the cloned graph_delta + returned ns_registry.
-    // These IRIs were already resolved during stage(), so sid_for_iri will hit
-    // the trie cache — no new allocations.
+    // These IRIs were already resolved during stage(), so sid_for_iri will find
+    // the prefix already registered — no new allocations.
     let graph_sids: HashMap<GraphId, Sid> = graph_delta
         .iter()
         .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))

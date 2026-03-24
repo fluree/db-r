@@ -303,10 +303,13 @@ where
                     })?;
 
                     // Augment store with snapshot namespace codes and sync split mode.
-                    // Note: view.snapshot is Arc<LedgerSnapshot> so we only augment
-                    // store→snapshot direction (read-only access to snapshot).
+                    // Unlike the primary load path (sync_store_and_snapshot_ns), we can't
+                    // reconcile store codes back into the snapshot because view.snapshot
+                    // is Arc<LedgerSnapshot> (shared/read-only). This is safe because the
+                    // index root's namespace table is a subset of the commit-derived table
+                    // (the root is a materialized cache at index_t ≤ view.to_t).
                     store
-                        .augment_namespace_codes(&view.snapshot.namespace_codes)
+                        .augment_namespace_codes(view.snapshot.namespaces())
                         .map_err(|e| {
                             ApiError::internal(format!("augment namespace codes: {}", e))
                         })?;

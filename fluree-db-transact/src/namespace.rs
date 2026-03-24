@@ -72,21 +72,40 @@ impl NamespaceRegistry {
         }
     }
 
-    /// Create a registry seeded from a database's namespace codes
+    /// Create a registry seeded from a database's namespace codes.
     ///
-    /// This merges the database's codes with the predefined defaults,
-    /// with the database taking precedence for any conflicts.
+    /// Merges snapshot codes into predefined defaults with bimap conflict
+    /// validation. A conflict between snapshot and defaults indicates
+    /// corruption — logged as error but not fatal (the snapshot's value wins
+    /// to match historical behavior).
     pub fn from_db(snapshot: &LedgerSnapshot) -> Self {
-        // Start with defaults
-        let mut names = fluree_db_core::default_namespace_codes();
-
-        // Merge in database codes (overwriting defaults if needed)
-        for (code, prefix) in &snapshot.namespace_codes {
-            names.insert(*code, prefix.clone());
+        let mut codes = NamespaceCodes::new(); // seeded with defaults
+        let snapshot_ns: HashMap<u16, String> = snapshot
+            .namespaces()
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
+        if let Err(e) = codes.merge_delta(&snapshot_ns) {
+            // Conflict between snapshot and built-in defaults. This shouldn't
+            // happen with valid data, but log prominently rather than crashing.
+            tracing::error!(
+                error = %e,
+                "namespace conflict merging snapshot into defaults in from_db — \
+                 snapshot codes may be corrupt"
+            );
+            // Fall back to raw merge so the registry is usable.
+            let mut names = fluree_db_core::default_namespace_codes();
+            for (code, prefix) in snapshot.namespaces() {
+                names.insert(*code, prefix.clone());
+            }
+            return Self {
+                codes: NamespaceCodes::from_code_to_prefix(names),
+                split_mode: snapshot.ns_split_mode,
+            };
         }
 
         Self {
-            codes: NamespaceCodes::from_code_to_prefix(names),
+            codes,
             split_mode: snapshot.ns_split_mode,
         }
     }
@@ -122,15 +141,9 @@ impl NamespaceRegistry {
         match self.codes.allocate_prefix(prefix) {
             Ok(code) => code,
             Err(NsAllocError::Overflow) => OVERFLOW,
-            Err(NsAllocError::Conflict {
-                code,
-                new_prefix,
-                existing_prefix,
-            }) => {
+            Err(e @ (NsAllocError::CodeConflict { .. } | NsAllocError::PrefixConflict { .. })) => {
                 tracing::error!(
-                    code,
-                    new_prefix = %new_prefix,
-                    existing_prefix = %existing_prefix,
+                    error = %e,
                     "namespace bimap conflict — corrupted namespace state or invalid \
                      commit history; encoding IRI as OVERFLOW to avoid crash"
                 );
@@ -314,15 +327,9 @@ impl SharedNamespaceAllocator {
         match inner.allocate_prefix(prefix) {
             Ok(code) => code,
             Err(NsAllocError::Overflow) => OVERFLOW,
-            Err(NsAllocError::Conflict {
-                code,
-                new_prefix,
-                existing_prefix,
-            }) => {
+            Err(e @ (NsAllocError::CodeConflict { .. } | NsAllocError::PrefixConflict { .. })) => {
                 tracing::error!(
-                    code,
-                    new_prefix = %new_prefix,
-                    existing_prefix = %existing_prefix,
+                    error = %e,
                     "namespace bimap conflict — encoding IRI as OVERFLOW to avoid crash"
                 );
                 OVERFLOW

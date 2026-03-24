@@ -307,52 +307,45 @@ fn split_opaque(iri: &str, mode: NsSplitMode) -> (&str, &str) {
             // Split rest into colon segments: scheme:seg1:seg2:...
             // Prefix = scheme: + first segment + up to n additional colon segments + trailing ':'
             let rest_start = scheme_end + 1;
+            let rest = &bytes[rest_start..no_query_end];
 
-            // Find colon segment boundaries in no_query portion after scheme
-            let segments = colon_segment_boundaries(&bytes[rest_start..no_query_end]);
+            // Walk colon-delimited segments, taking the first 1 + n.
+            // Each segment ends at the next `:` or end of `rest`.
+            let take = 1 + n as usize;
+            let mut pos = 0;
+            let mut counted = 0;
+            let mut last_seg_end = 0;
 
-            // We need the "first segment" (host-equivalent) + n additional
-            let take = (1 + n as usize).min(segments.len());
+            while counted < take {
+                let seg_end = rest[pos..]
+                    .iter()
+                    .position(|&b| b == b':')
+                    .map(|i| pos + i)
+                    .unwrap_or(rest.len());
+                last_seg_end = seg_end;
+                counted += 1;
+                if seg_end >= rest.len() {
+                    break;
+                }
+                pos = seg_end + 1; // skip the `:`
+            }
 
-            if take == 0 || segments.is_empty() {
+            if counted == 0 {
                 // No segments after scheme — prefix is just "scheme:"
                 return (&iri[..=scheme_end], &iri[scheme_end + 1..]);
             }
 
             // The prefix ends after the last taken segment's trailing `:`
-            let last_seg_end = rest_start + segments[take - 1];
-            // Include the trailing `:` if present
-            let prefix_end = if last_seg_end < no_query_end && bytes[last_seg_end] == b':' {
-                last_seg_end + 1
+            let abs_seg_end = rest_start + last_seg_end;
+            let prefix_end = if abs_seg_end < no_query_end && bytes[abs_seg_end] == b':' {
+                abs_seg_end + 1
             } else {
-                last_seg_end
+                abs_seg_end
             };
 
             (&iri[..prefix_end], &iri[prefix_end..])
         }
     }
-}
-
-/// Find the end positions of colon-delimited segments (not counting scheme colon).
-/// Each entry is the offset (relative to `rest`) of the byte just past the segment content
-/// (i.e., pointing at the next `:` or end of slice).
-fn colon_segment_boundaries(rest: &[u8]) -> Vec<usize> {
-    let mut boundaries = Vec::new();
-    let mut pos = 0;
-    loop {
-        // Find next `:` or end
-        let seg_end = rest[pos..]
-            .iter()
-            .position(|&b| b == b':')
-            .map(|i| pos + i)
-            .unwrap_or(rest.len());
-        boundaries.push(seg_end);
-        if seg_end >= rest.len() {
-            break;
-        }
-        pos = seg_end + 1; // skip the `:`
-    }
-    boundaries
 }
 
 // ============================================================================
@@ -366,13 +359,18 @@ pub enum NsAllocError {
     /// are exhausted).
     Overflow,
 
-    /// Attempted to register a mapping that conflicts with an existing one.
-    /// Either the code already maps to a different prefix, or the prefix
-    /// already maps to a different code (namespace bimap conflict).
-    Conflict {
+    /// A code already maps to a different prefix than requested.
+    CodeConflict {
         code: u16,
         new_prefix: String,
         existing_prefix: String,
+    },
+
+    /// A prefix already maps to a different code than requested.
+    PrefixConflict {
+        prefix: String,
+        new_code: u16,
+        existing_code: u16,
     },
 }
 
@@ -384,7 +382,7 @@ impl fmt::Display for NsAllocError {
                 "namespace code overflow: all codes in {}..{} are exhausted",
                 USER_START, OVERFLOW
             ),
-            Self::Conflict {
+            Self::CodeConflict {
                 code,
                 new_prefix,
                 existing_prefix,
@@ -392,6 +390,15 @@ impl fmt::Display for NsAllocError {
                 f,
                 "namespace conflict: code {} maps to {:?} but {:?} was requested",
                 code, existing_prefix, new_prefix
+            ),
+            Self::PrefixConflict {
+                prefix,
+                new_code,
+                existing_code,
+            } => write!(
+                f,
+                "namespace conflict: prefix {:?} maps to code {} but code {} was requested",
+                prefix, existing_code, new_code
             ),
         }
     }
@@ -437,6 +444,17 @@ impl NamespaceCodes {
             .map(|(&code, prefix)| (prefix.clone(), code))
             .collect();
 
+        // Bimap uniqueness: if two codes mapped to the same prefix, the reverse
+        // map will be shorter. This indicates corrupted input data.
+        debug_assert_eq!(
+            prefix_to_code.len(),
+            code_to_prefix.len(),
+            "namespace bimap violated: {} codes but only {} unique prefixes — \
+             two codes map to the same prefix string",
+            code_to_prefix.len(),
+            prefix_to_code.len()
+        );
+
         let max_code = code_to_prefix
             .keys()
             .filter(|&&c| c < OVERFLOW)
@@ -471,8 +489,8 @@ impl NamespaceCodes {
     /// Returns:
     /// - `Ok(code)` — the existing or newly allocated code
     /// - `Err(NsAllocError::Overflow)` — no more allocatable codes
-    /// - `Err(NsAllocError::Conflict)` — namespace bimap conflict (should not happen
-    ///   in well-formed usage since we check prefix first)
+    /// - `Err(NsAllocError::CodeConflict)` — namespace bimap conflict (should not
+    ///   happen in well-formed usage since we check prefix first)
     pub fn allocate_prefix(&mut self, prefix: &str) -> Result<u16, NsAllocError> {
         // Fast path: prefix already registered
         if let Some(&code) = self.prefix_to_code.get(prefix) {
@@ -501,13 +519,13 @@ impl NamespaceCodes {
     /// - If `prefix` exists, its code must match
     /// - Otherwise the mapping is a valid extension
     ///
-    /// Returns `Err(NsAllocError::Conflict)` on the first violation.
+    /// Returns `Err(NsAllocError::CodeConflict | PrefixConflict)` on the first violation.
     pub fn merge_delta(&mut self, delta: &HashMap<u16, String>) -> Result<(), NsAllocError> {
         for (&code, prefix) in delta {
             // Check code → prefix direction
             if let Some(existing) = self.code_to_prefix.get(&code) {
                 if existing != prefix {
-                    return Err(NsAllocError::Conflict {
+                    return Err(NsAllocError::CodeConflict {
                         code,
                         new_prefix: prefix.clone(),
                         existing_prefix: existing.clone(),
@@ -520,13 +538,10 @@ impl NamespaceCodes {
             // Check prefix → code direction
             if let Some(&existing_code) = self.prefix_to_code.get(prefix.as_str()) {
                 if existing_code != code {
-                    return Err(NsAllocError::Conflict {
-                        code,
-                        new_prefix: prefix.clone(),
-                        existing_prefix: format!(
-                            "(prefix {:?} already has code {})",
-                            prefix, existing_code
-                        ),
+                    return Err(NsAllocError::PrefixConflict {
+                        prefix: prefix.clone(),
+                        new_code: code,
+                        existing_code,
                     });
                 }
                 // Already registered — skip
@@ -607,13 +622,14 @@ impl Default for NamespaceCodes {
 
 /// Validate and apply a namespace delta to a raw `code → prefix` map.
 ///
-/// Checks both directions of the bimap uniqueness invariant:
-/// - A code that already maps to a different prefix is a conflict.
-/// - A prefix that already maps to a different code is a conflict.
+/// This is a convenience wrapper for callers that carry a raw `HashMap`
+/// (e.g., `LedgerSnapshot`, `BinaryIndexStore`) rather than `NamespaceCodes`.
+/// It delegates to `NamespaceCodes::merge_delta` for the actual conflict
+/// checking so the bimap validation logic is not duplicated.
 ///
-/// New mappings are inserted; matching duplicates are skipped.
-///
-/// Returns `Err(NsAllocError::Conflict)` on the first violation.
+/// The raw HashMap ergonomic wrapper exists because converting all namespace
+/// table holders to `NamespaceCodes` is a larger refactor; this function
+/// bridges the gap while keeping validation centralized.
 pub fn validate_and_merge_ns_delta(
     existing: &mut HashMap<u16, String>,
     delta: &HashMap<u16, String>,
@@ -621,43 +637,12 @@ pub fn validate_and_merge_ns_delta(
     if delta.is_empty() {
         return Ok(());
     }
-
-    // Build reverse index once: O(n). Each delta entry then does O(1) lookup
-    // instead of O(n) scan — total O(n + m) instead of O(n * m).
-    let mut reverse: HashMap<String, u16> = HashMap::with_capacity(existing.len());
-    for (&code, prefix) in existing.iter() {
-        reverse.insert(prefix.clone(), code);
-    }
-
+    // Delegate to NamespaceCodes for centralized conflict checking.
+    let mut codes = NamespaceCodes::from_code_to_prefix(existing.clone());
+    codes.merge_delta(delta)?;
+    // Apply validated entries to the raw map.
     for (&code, prefix) in delta {
-        // Check code → prefix direction
-        if let Some(existing_prefix) = existing.get(&code) {
-            if existing_prefix != prefix {
-                return Err(NsAllocError::Conflict {
-                    code,
-                    new_prefix: prefix.clone(),
-                    existing_prefix: existing_prefix.clone(),
-                });
-            }
-            continue;
-        }
-        // Check prefix → code direction: O(1) via reverse index
-        if let Some(&existing_code) = reverse.get(prefix) {
-            if existing_code != code {
-                return Err(NsAllocError::Conflict {
-                    code,
-                    new_prefix: prefix.clone(),
-                    existing_prefix: format!(
-                        "(prefix {:?} already has code {})",
-                        prefix, existing_code
-                    ),
-                });
-            }
-            continue;
-        }
-        // New mapping — insert into both forward and reverse
-        existing.insert(code, prefix.clone());
-        reverse.insert(prefix.clone(), code);
+        existing.entry(code).or_insert_with(|| prefix.clone());
     }
     Ok(())
 }

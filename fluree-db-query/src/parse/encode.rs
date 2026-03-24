@@ -74,12 +74,16 @@ impl MemoryEncoder {
 }
 
 impl IriEncoder for MemoryEncoder {
+    /// Always returns `Some(...)` — falls back to `Sid(EMPTY, iri)` for
+    /// unregistered prefixes rather than returning `None`. This deviates
+    /// from the `IriEncoder` trait doc ("Returns None if not registered")
+    /// but matches `LedgerSnapshot::encode_iri` behavior and is convenient
+    /// for testing where unknown IRIs should produce empty results, not errors.
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
         let (prefix, suffix) = canonical_split(iri, self.split_mode);
         if let Some(&code) = self.namespaces.get(prefix) {
             Some(Sid::new(code, suffix))
         } else {
-            // Fall back to EMPTY namespace (code 0) with full IRI as name
             Some(Sid::new(fluree_vocab::namespaces::EMPTY, iri))
         }
     }

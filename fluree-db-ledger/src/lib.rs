@@ -571,11 +571,8 @@ impl LedgerState {
                 .collect();
 
             // Merge namespace codes: old entries not in new → carried forward
-            for (code, prefix) in &self.snapshot.namespace_codes {
-                merged_snapshot
-                    .namespace_codes
-                    .entry(*code)
-                    .or_insert_with(|| prefix.clone());
+            for (code, prefix) in self.snapshot.namespaces() {
+                merged_snapshot.insert_namespace_code(*code, prefix.clone());
             }
 
             // Merge graph IRIs via apply_delta (idempotent — skips already-registered)
@@ -1339,7 +1336,7 @@ mod tests {
 
         // Namespace code should be in snapshot
         assert_eq!(
-            state.snapshot.namespace_codes.get(&100),
+            state.snapshot.namespaces().get(&100),
             Some(&"http://example.org/ns/".to_string())
         );
         // Graph should be registered
@@ -1400,8 +1397,7 @@ mod tests {
         // Simulate commit t=1: add namespace code + flake
         state
             .snapshot
-            .namespace_codes
-            .insert(100, "http://example.org/ns/".to_string());
+            .insert_namespace_code(100, "http://example.org/ns/".to_string());
         let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
         let flakes_t1 = vec![make_flake(10, 1, 100, 1)];
         Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t1);
@@ -1429,7 +1425,7 @@ mod tests {
         // Key assertion: namespace code 100 must be preserved because
         // remaining novelty (t=2) may reference subjects/predicates using it
         assert_eq!(
-            state.snapshot.namespace_codes.get(&100),
+            state.snapshot.namespaces().get(&100),
             Some(&"http://example.org/ns/".to_string()),
             "namespace code from post-index commit should be preserved"
         );
@@ -1509,8 +1505,7 @@ mod tests {
         // Add custom namespace to old snapshot
         state
             .snapshot
-            .namespace_codes
-            .insert(200, "http://old.example.org/".to_string());
+            .insert_namespace_code(200, "http://old.example.org/".to_string());
 
         // Add novelty at t=1 only
         let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
@@ -1534,7 +1529,7 @@ mod tests {
         // Old namespace code 200 should NOT be carried forward since
         // there's no remaining novelty that needs it
         assert!(
-            !state.snapshot.namespace_codes.contains_key(&200),
+            !state.snapshot.namespaces().contains_key(&200),
             "old namespace codes should not leak into new snapshot when novelty is empty"
         );
     }

@@ -221,7 +221,7 @@ where
             .ledger_cached(&self.graph.ledger_id)
             .await?;
         let snapshot = handle.snapshot().await;
-        let namespace_codes = &snapshot.snapshot.namespace_codes;
+        let namespace_codes = snapshot.snapshot.namespaces();
 
         // 2. Resolve commit reference to a full CID
         let commit_id = match self.commit_ref {

@@ -105,7 +105,7 @@ async fn repro_upsert_repeated_ids_create_duplicate_subject_ids() {
             assert!(
                 ledger_indexed
                     .snapshot
-                    .namespace_codes
+                    .namespaces()
                     .values()
                     .any(|p| p == "https://ns.flur.ee/messaging/"),
                 "expected messaging/ namespace prefix in indexed snapshot"
@@ -232,7 +232,7 @@ async fn repro_upsert_repeated_ids_create_duplicate_subject_ids() {
             assert_eq!(row_count, 1);
 
             let bg = raw_bindings.binary_graph.as_ref();
-            let codes = &ledger2_loaded.snapshot.namespace_codes;
+            let codes = ledger2_loaded.snapshot.namespaces();
 
             let mut encoded_ids: Vec<u64> = Vec::new();
             let mut decoded_iris: Vec<String> = Vec::new();

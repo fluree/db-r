@@ -61,8 +61,11 @@ pub struct LedgerSnapshot {
     /// Index version
     pub version: i32,
 
-    /// Namespace code -> IRI prefix mapping
-    pub namespace_codes: HashMap<u16, String>,
+    /// Namespace code -> IRI prefix mapping.
+    ///
+    /// Private to enforce bimap invariant with `namespace_reverse`.
+    /// Use `namespaces()` for read access, `insert_namespace_code()` for mutation.
+    namespace_codes: HashMap<u16, String>,
 
     /// Reverse: IRI prefix -> namespace code (for O(1) canonical encode lookup).
     /// Kept in sync with `namespace_codes` by all mutation paths.

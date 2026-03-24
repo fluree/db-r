@@ -331,9 +331,11 @@ impl Materializer {
                         // In multi-ledger mode, namespace codes may differ across ledgers,
                         // so we must use the full canonical IRI for comparison
                         let iri = self.graph_view.store().sid_to_iri(sid).unwrap_or_else(|| {
-                            tracing::debug!(
+                            tracing::warn!(
                                 ns_code = sid.namespace_code,
-                                "sid_to_iri: unknown namespace code in materializer join_key"
+                                suffix = %sid.name,
+                                "sid_to_iri: unknown namespace code in materializer join_key \
+                                 — join key will use suffix only (possible data corruption)"
                             );
                             sid.name.to_string()
                         });
@@ -471,9 +473,11 @@ impl Materializer {
                 // Decode to full IRI string.
                 // IMPORTANT: `namespace_code:name` is an internal representation and is not a full IRI.
                 let iri = self.graph_view.store().sid_to_iri(sid).unwrap_or_else(|| {
-                    tracing::debug!(
+                    tracing::warn!(
                         ns_code = sid.namespace_code,
-                        "sid_to_iri: unknown namespace code in materializer as_string"
+                        suffix = %sid.name,
+                        "sid_to_iri: unknown namespace code in materializer as_string \
+                         — output will use suffix only (possible data corruption)"
                     );
                     sid.name.to_string()
                 });
@@ -596,7 +600,14 @@ impl Materializer {
 
         let iri = match self.graph_view.resolve_subject_iri(s_id) {
             Ok(iri) => Arc::from(iri),
-            Err(_) => Arc::from(format!("_:unknown_{}", s_id)),
+            Err(e) => {
+                tracing::warn!(
+                    s_id,
+                    error = %e,
+                    "resolve_subject_iri failed — fabricating placeholder IRI"
+                );
+                Arc::from(format!("_:unknown_{}", s_id))
+            }
         };
 
         self.iri_cache.insert(s_id, Arc::clone(&iri));
@@ -629,7 +640,13 @@ impl Materializer {
 
         let sid = match self.graph_view.store().resolve_predicate_iri(p_id) {
             Some(iri) => self.graph_view.store().encode_iri(iri),
-            None => Sid::new(0, format!("_:unknown_p_{}", p_id)),
+            None => {
+                tracing::warn!(
+                    p_id,
+                    "resolve_predicate_iri failed — fabricating placeholder predicate"
+                );
+                Sid::new(0, format!("_:unknown_p_{}", p_id))
+            }
         };
 
         self.pid_cache.insert(p_id, sid.clone());

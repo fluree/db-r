@@ -2079,23 +2079,7 @@ where
             }
         }
 
-        // Namespace reconciliation at publish time: ensure the root's materialized
-        // namespace table matches the commit-derived table (resolver state).
-        {
-            let expected: std::collections::BTreeMap<u16, String> = novelty
-                .shared
-                .ns_prefixes
-                .iter()
-                .map(|(&code, prefix)| (code, prefix.clone()))
-                .collect();
-            if final_root.namespace_codes != expected {
-                return Err(IndexerError::Core(CoreError::invalid_index(format!(
-                    "namespace reconciliation failure at index publish (index_t={}): incremental root namespace_codes \
-                     does not match commit-derived table — indexer/publisher bug",
-                    final_root.index_t
-                ))));
-            }
-        }
+        reconcile_ns_at_publish(&final_root, &novelty.shared.ns_prefixes)?;
 
         let root_bytes = final_root.encode();
         let write_result = storage
@@ -2158,22 +2142,7 @@ where
             }
         }
 
-        // Namespace reconciliation at publish time (no-garbage path): same check.
-        {
-            let expected: std::collections::BTreeMap<u16, String> = novelty
-                .shared
-                .ns_prefixes
-                .iter()
-                .map(|(&code, prefix)| (code, prefix.clone()))
-                .collect();
-            if final_root.namespace_codes != expected {
-                return Err(IndexerError::Core(CoreError::invalid_index(format!(
-                    "namespace reconciliation failure at index publish (index_t={}): incremental root namespace_codes \
-                     does not match commit-derived table — indexer/publisher bug",
-                    final_root.index_t
-                ))));
-            }
-        }
+        reconcile_ns_at_publish(&final_root, &novelty.shared.ns_prefixes)?;
         let root_bytes = final_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
@@ -2239,6 +2208,27 @@ where
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         }
+    }
+    Ok(())
+}
+
+/// Validate that the index root's materialized namespace table matches the
+/// commit-derived table (resolver state). A mismatch indicates an indexer or
+/// publisher bug — fail fast rather than silently diverging.
+fn reconcile_ns_at_publish(
+    root: &fluree_db_binary_index::format::index_root::IndexRoot,
+    commit_derived_ns: &std::collections::HashMap<u16, String>,
+) -> Result<()> {
+    let expected: std::collections::BTreeMap<u16, String> = commit_derived_ns
+        .iter()
+        .map(|(&code, prefix)| (code, prefix.clone()))
+        .collect();
+    if root.namespace_codes != expected {
+        return Err(IndexerError::Core(CoreError::invalid_index(format!(
+            "namespace reconciliation failure at index publish (index_t={}): incremental root \
+             namespace_codes does not match commit-derived table — indexer/publisher bug",
+            root.index_t
+        ))));
     }
     Ok(())
 }
