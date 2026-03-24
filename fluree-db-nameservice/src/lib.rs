@@ -478,6 +478,24 @@ pub trait NameService: Debug + Send + Sync {
     /// Returns [`NotFound`](NameServiceError::NotFound) if the branch
     /// record does not exist.
     async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
+
+    /// Update a branch's branch point after a rebase operation.
+    ///
+    /// Replaces the existing [`BranchPoint`] on the branch's [`NsRecord`]
+    /// with `new_branch_point`, effectively re-anchoring the branch to a
+    /// new position on its source branch.
+    ///
+    /// # Arguments
+    /// * `ledger_id` - The full ledger:branch identifier (e.g., `"mydb:feature-x"`)
+    /// * `new_branch_point` - The updated branch point referencing the source's current HEAD
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: BranchPoint,
+    ) -> Result<()>;
 }
 
 /// Publisher trait for writing nameservice records

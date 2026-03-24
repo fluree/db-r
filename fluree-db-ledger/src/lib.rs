@@ -157,7 +157,7 @@ impl LedgerState {
     ///
     /// Each branch gets its own namespace store with its parent(s) as fallbacks.
     /// Currently branches have a single parent; merges will add multiple parents.
-    pub(crate) async fn build_branched_store<S: Storage + Clone + 'static, N: NameService>(
+    pub async fn build_branched_store<S: Storage + Clone + 'static, N: NameService>(
         ns: &N,
         record: &NsRecord,
         storage: &S,

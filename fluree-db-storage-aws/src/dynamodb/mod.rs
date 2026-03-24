@@ -815,6 +815,55 @@ impl NameService for DynamoDbNameService {
             None => Ok(None),
         }
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        match self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :t")
+            .expression_attribute_names("#bps", ATTR_BP_SOURCE)
+            .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
+            .expression_attribute_names("#bpt", ATTR_BP_T)
+            .expression_attribute_values(
+                ":source",
+                AttributeValue::S(new_branch_point.source),
+            )
+            .expression_attribute_values(
+                ":commit_id",
+                AttributeValue::S(new_branch_point.commit_id.to_string()),
+            )
+            .expression_attribute_values(
+                ":t",
+                AttributeValue::N(new_branch_point.t.to_string()),
+            )
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::update_item::UpdateItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                Err(NameServiceError::not_found(ledger_id))
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB update_branch_point failed: {e}"
+            ))),
+        }
+    }
 }
 
 // ─── Publisher ──────────────────────────────────────────────────────────────

@@ -671,6 +671,28 @@ where
             None => Ok(None),
         }
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        self.cas_update::<NsFileV2, _>(&key, |existing| {
+            let mut file = existing?;
+            file.branch_point = Some(BranchPointRef {
+                source: new_branch_point.source.clone(),
+                commit_cid: Some(new_branch_point.commit_id.to_string()),
+                t: new_branch_point.t,
+            });
+            Some(file)
+        })
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]

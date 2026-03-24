@@ -837,6 +837,32 @@ impl RemoteLedgerClient {
         .await
     }
 
+    /// Rebase a branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/rebase` with a JSON body.
+    pub async fn rebase_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+        strategy: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("rebase");
+        let mut body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        if let Some(s) = strategy {
+            body["strategy"] = serde_json::Value::String(s.to_string());
+        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
     /// List all branches for a ledger on the remote server.
     ///
     /// Calls `GET {base_url}/branch/{ledger}`.

@@ -28,6 +28,7 @@ pub mod address;
 pub mod address_path;
 pub mod coerce;
 pub mod comparator;
+pub mod conflict_key;
 pub mod content_id;
 pub mod content_kind;
 pub mod datatype_constraint;
@@ -74,6 +75,7 @@ pub use address::{
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
+pub use conflict_key::ConflictKey;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
 pub use content_kind::{
     ContentKind, DictKind, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB, CODEC_FLUREE_GARBAGE,

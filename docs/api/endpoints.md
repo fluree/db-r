@@ -1510,6 +1510,91 @@ curl -X POST http://localhost:8090/v1/fluree/drop-branch \
   -d '{"ledger": "mydb", "branch": "dev"}'
 ```
 
+### POST /fluree/rebase
+
+Rebase a branch onto its source branch's current HEAD. Admin-protected.
+
+**URL:**
+```
+POST /fluree/rebase
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x",
+  "strategy": "take-both"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | Branch name to rebase (e.g., "feature-x") |
+| `strategy` | string | No | Conflict resolution strategy (default: "take-both"). Options: `take-both`, `abort`, `take-source`, `take-branch`, `skip` |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "branch": "feature-x",
+  "fast_forward": false,
+  "replayed": 3,
+  "skipped": 0,
+  "conflicts": 1,
+  "failures": 0,
+  "total_commits": 3,
+  "new_branch_point_t": 8
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | string | Full ledger:branch identifier |
+| `branch` | string | Branch name |
+| `fast_forward` | bool | `true` if the branch had no unique commits |
+| `replayed` | number | Number of commits successfully replayed |
+| `skipped` | number | Number of commits skipped (Skip strategy) |
+| `conflicts` | number | Number of conflicts detected |
+| `failures` | number | Number of commits that failed validation |
+| `total_commits` | number | Total branch commits considered |
+| `new_branch_point_t` | number | Transaction time of the new branch point |
+
+**Conflict strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `take-both` | Replay as-is, both values coexist (multi-cardinality) |
+| `abort` | Fail on first conflict, no changes applied |
+| `take-source` | Drop branch's conflicting flakes (source wins) |
+| `take-branch` | Keep branch's flakes, retract source's conflicting values |
+| `skip` | Skip entire commit if any flakes conflict |
+
+**Status codes:**
+
+- `200 OK` - Rebase completed successfully
+- `400 Bad Request` - Cannot rebase main, invalid strategy, or missing branch point
+- `404 Not Found` - Ledger or branch does not exist
+- `409 Conflict` - Rebase aborted due to conflict (abort strategy)
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Rebase with default strategy (take-both)
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Rebase with abort strategy (fail on conflicts)
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x", "strategy": "abort"}'
+```
+
 ### GET /fluree/info
 
 Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.

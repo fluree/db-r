@@ -919,6 +919,140 @@ async fn drop_branch_local(
     .await
 }
 
+// =============================================================================
+// Rebase Branch
+// =============================================================================
+
+/// Rebase branch request body
+#[derive(Deserialize)]
+pub struct RebaseBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// Branch name to rebase (e.g., "feature-x")
+    pub branch: String,
+    /// Conflict resolution strategy (optional, defaults to "take-both")
+    #[serde(default)]
+    pub strategy: Option<String>,
+}
+
+/// Rebase branch response
+#[derive(Serialize)]
+pub struct RebaseBranchResponse {
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Branch name
+    pub branch: String,
+    /// Whether this was a fast-forward (no unique branch commits)
+    pub fast_forward: bool,
+    /// Number of commits replayed
+    pub replayed: usize,
+    /// Number of commits skipped
+    pub skipped: usize,
+    /// Number of conflicts detected
+    pub conflicts: usize,
+    /// Number of failures
+    pub failures: usize,
+    /// Total commits considered
+    pub total_commits: usize,
+    /// New branch point t
+    pub new_branch_point_t: i64,
+}
+
+/// Rebase a branch onto its source branch's current HEAD
+///
+/// POST /fluree/rebase
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `branch`: Branch name to rebase (e.g., "feature-x")
+/// - `strategy`: Conflict strategy (optional: "take-both", "abort", "take-source", "take-branch", "skip")
+///
+/// Cannot rebase the "main" branch.
+pub async fn rebase(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    rebase_local(state, request).await.into_response()
+}
+
+async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
+    let (parts, body) = request.into_parts();
+    let headers = FlureeHeaders::from_headers(&parts.headers)?;
+
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: RebaseBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let strategy = match req.strategy.as_deref() {
+        Some(s) => fluree_db_api::ConflictStrategy::from_str_name(s)
+            .ok_or_else(|| ServerError::bad_request(format!("Unknown conflict strategy: {}", s)))?,
+        None => fluree_db_api::ConflictStrategy::default(),
+    };
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+    let span = create_request_span(
+        "branch:rebase",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&req.ledger),
+        None,
+        None,
+    );
+
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            branch = %req.branch,
+            strategy = strategy.as_str(),
+            "branch rebase requested"
+        );
+
+        let report = match state
+            .fluree
+            .as_file()
+            .rebase_branch(&req.ledger, &req.branch, strategy)
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchRebaseFailed");
+                tracing::error!(error = %server_error, "branch rebase failed");
+                return Err(server_error);
+            }
+        };
+
+        let ledger_id = fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &req.branch);
+        let response = RebaseBranchResponse {
+            ledger_id,
+            branch: req.branch,
+            fast_forward: report.fast_forward,
+            replayed: report.replayed,
+            skipped: report.skipped,
+            conflicts: report.conflicts.len(),
+            failures: report.failures.len(),
+            total_commits: report.total_commits,
+            new_branch_point_t: report.new_branch_point_t,
+        };
+
+        tracing::info!(
+            status = "success",
+            fast_forward = report.fast_forward,
+            replayed = report.replayed,
+            "branch rebased"
+        );
+        Ok((StatusCode::OK, Json(response)))
+    }
+    .instrument(span)
+    .await
+}
+
 /// Forward a write request to the transaction server (peer mode)
 async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {

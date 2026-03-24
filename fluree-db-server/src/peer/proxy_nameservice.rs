@@ -188,6 +188,17 @@ impl NameService for ProxyNameService {
             "drop_branch not supported in proxy mode".to_string(),
         ))
     }
+
+    async fn update_branch_point(
+        &self,
+        _ledger_id: &str,
+        _new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> Result<()> {
+        // Proxy peers forward rebase to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "update_branch_point not supported in proxy mode".to_string(),
+        ))
+    }
 }
 
 #[async_trait]
