@@ -37,6 +37,10 @@ pub enum TransactError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    /// SPARQL lowering error (structured, includes source spans)
+    #[error("SPARQL lowering error: {0}")]
+    SparqlLower(#[from] fluree_db_sparql::LowerError),
+
     /// Flake generation error
     #[error("Flake generation error: {0}")]
     FlakeGeneration(String),

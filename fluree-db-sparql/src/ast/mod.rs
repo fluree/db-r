@@ -32,7 +32,7 @@ pub mod update;
 // Re-export commonly used types at the ast module level
 pub use expr::{AggregateFunction, BinaryOp, Expression, FunctionName, UnaryOp};
 pub use path::{NegatedPredicate, PropertyPath};
-pub use pattern::{GraphPattern, TriplePattern};
+pub use pattern::{GraphName, GraphPattern, TriplePattern};
 pub use query::{
     AskQuery, BaseDecl, ConstructQuery, ConstructTemplate, DatasetClause, DescribeQuery,
     DescribeTarget, GroupByClause, GroupCondition, HavingClause, LimitClause, OffsetClause,
@@ -45,6 +45,6 @@ pub use term::{
     QuotedTriple, Spanned, SubjectTerm, Term, Var,
 };
 pub use update::{
-    DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, UpdateOperation,
-    UsingClause, WherePattern,
+    DeleteData, DeleteWhere, InsertData, Modify, QuadData, QuadPattern, QuadPatternElement,
+    UpdateOperation, UsingClause,
 };

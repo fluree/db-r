@@ -67,85 +67,6 @@ fn find_ns_mismatch(root_ns: &BTreeMap<u16, String>, commit_ns: &BTreeMap<u16, S
     "tables differ (no specific mismatch found)".to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn btree(pairs: &[(u16, &str)]) -> BTreeMap<u16, String> {
-        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
-    }
-
-    fn hash(pairs: &[(u16, &str)]) -> HashMap<u16, String> {
-        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
-    }
-
-    #[test]
-    fn reconcile_ns_at_publish_matching_tables() {
-        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
-        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
-        reconcile_ns_at_publish(&root, &commit, 5).expect("matching tables should succeed");
-    }
-
-    #[test]
-    fn reconcile_ns_at_publish_rejects_prefix_mismatch() {
-        // Root has code 1 → "http://a.org/", commit has code 1 → "http://WRONG.org/"
-        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
-        let commit = hash(&[(1, "http://WRONG.org/"), (2, "http://b.org/")]);
-        let err = reconcile_ns_at_publish(&root, &commit, 7).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("namespace reconciliation failure"),
-            "expected reconciliation error, got: {msg}"
-        );
-        assert!(msg.contains("index_t=7"));
-    }
-
-    #[test]
-    fn reconcile_ns_at_publish_rejects_extra_root_code() {
-        // Root has an extra code that commit doesn't.
-        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/"), (3, "http://c.org/")]);
-        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
-        let err = reconcile_ns_at_publish(&root, &commit, 10).unwrap_err();
-        assert!(err.to_string().contains("namespace reconciliation failure"));
-    }
-
-    #[test]
-    fn reconcile_ns_at_publish_rejects_extra_commit_code() {
-        // Commit has an extra code that root doesn't.
-        let root = btree(&[(1, "http://a.org/")]);
-        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
-        let err = reconcile_ns_at_publish(&root, &commit, 3).unwrap_err();
-        assert!(err.to_string().contains("namespace reconciliation failure"));
-    }
-
-    #[test]
-    fn reconcile_ns_at_publish_empty_tables_match() {
-        let root = BTreeMap::new();
-        let commit = HashMap::new();
-        reconcile_ns_at_publish(&root, &commit, 0).expect("empty tables should match");
-    }
-
-    #[test]
-    fn find_ns_mismatch_reports_prefix_difference() {
-        let root = btree(&[(1, "http://a.org/")]);
-        let commit = btree(&[(1, "http://b.org/")]);
-        let msg = find_ns_mismatch(&root, &commit);
-        assert!(msg.contains("code 1"), "should name the conflicting code: {msg}");
-    }
-
-    #[test]
-    fn find_ns_mismatch_reports_missing_from_root() {
-        let root = BTreeMap::new();
-        let commit = btree(&[(5, "http://x.org/")]);
-        let msg = find_ns_mismatch(&root, &commit);
-        assert!(
-            msg.contains("code 5") && msg.contains("root=None"),
-            "should report missing root entry: {msg}"
-        );
-    }
-}
-
 /// Context for linking the GC chain to a previous index root.
 ///
 /// Used by both pipelines, but computed differently:
@@ -477,4 +398,87 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
             ..result_stats
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn btree(pairs: &[(u16, &str)]) -> BTreeMap<u16, String> {
+        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
+    }
+
+    fn hash(pairs: &[(u16, &str)]) -> HashMap<u16, String> {
+        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_matching_tables() {
+        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        reconcile_ns_at_publish(&root, &commit, 5).expect("matching tables should succeed");
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_prefix_mismatch() {
+        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let commit = hash(&[(1, "http://WRONG.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 7).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("namespace reconciliation failure"),
+            "expected reconciliation error, got: {msg}"
+        );
+        assert!(msg.contains("index_t=7"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_extra_root_code() {
+        let root = btree(&[
+            (1, "http://a.org/"),
+            (2, "http://b.org/"),
+            (3, "http://c.org/"),
+        ]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 10).unwrap_err();
+        assert!(err.to_string().contains("namespace reconciliation failure"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_extra_commit_code() {
+        let root = btree(&[(1, "http://a.org/")]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 3).unwrap_err();
+        assert!(err.to_string().contains("namespace reconciliation failure"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_empty_tables_match() {
+        let root = BTreeMap::new();
+        let commit = HashMap::new();
+        reconcile_ns_at_publish(&root, &commit, 0).expect("empty tables should match");
+    }
+
+    #[test]
+    fn find_ns_mismatch_reports_prefix_difference() {
+        let root = btree(&[(1, "http://a.org/")]);
+        let commit = btree(&[(1, "http://b.org/")]);
+        let msg = find_ns_mismatch(&root, &commit);
+        assert!(
+            msg.contains("code 1"),
+            "should name the conflicting code: {msg}"
+        );
+    }
+
+    #[test]
+    fn find_ns_mismatch_reports_missing_from_root() {
+        let root = BTreeMap::new();
+        let commit = btree(&[(5, "http://x.org/")]);
+        let msg = find_ns_mismatch(&root, &commit);
+        assert!(
+            msg.contains("code 5") && msg.contains("root=None"),
+            "should report missing root entry: {msg}"
+        );
+    }
 }

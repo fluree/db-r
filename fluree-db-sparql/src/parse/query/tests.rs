@@ -1537,7 +1537,7 @@ fn test_delete_where_simple() {
     let ast = assert_parses("DELETE WHERE { ?s ex:obsolete ?o }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::DeleteWhere(delete)) => {
-            assert_eq!(delete.pattern.triples.len(), 1);
+            assert_eq!(delete.pattern.patterns.len(), 1);
         }
         _ => panic!("Expected DELETE WHERE"),
     }
@@ -1548,7 +1548,7 @@ fn test_delete_where_multiple_patterns() {
     let ast = assert_parses("DELETE WHERE { ?s ex:old ?o . ?s ex:deprecated ?x }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::DeleteWhere(delete)) => {
-            assert_eq!(delete.pattern.triples.len(), 2);
+            assert_eq!(delete.pattern.patterns.len(), 2);
         }
         _ => panic!("Expected DELETE WHERE"),
     }
@@ -1562,7 +1562,13 @@ fn test_modify_delete_insert() {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
             assert!(modify.delete_clause.is_some());
             assert!(modify.insert_clause.is_some());
-            assert_eq!(modify.where_clause.triples.len(), 1);
+            // where_clause is now a GraphPattern; a single-BGP body parses as Bgp directly.
+            match &modify.where_clause {
+                crate::ast::GraphPattern::Bgp { patterns, .. } => {
+                    assert_eq!(patterns.len(), 1, "expected one triple pattern");
+                }
+                other => panic!("Expected Bgp, got: {:?}", other),
+            }
         }
         _ => panic!("Expected Modify operation"),
     }
@@ -1615,7 +1621,22 @@ fn test_modify_with_using() {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
             assert!(modify.using.is_some());
             let using = modify.using.as_ref().unwrap();
-            assert!(using.default_graph.is_some());
+            assert_eq!(using.default_graphs.len(), 1);
+        }
+        _ => panic!("Expected Modify operation"),
+    }
+}
+
+#[test]
+fn test_modify_with_multiple_using() {
+    let ast = assert_parses(
+        "DELETE { ?s ex:old ?o } USING <http://example.org/g1> USING <http://example.org/g2> WHERE { ?s ex:old ?o }",
+    );
+    match &ast.body {
+        QueryBody::Update(UpdateOperation::Modify(modify)) => {
+            assert!(modify.using.is_some());
+            let using = modify.using.as_ref().unwrap();
+            assert_eq!(using.default_graphs.len(), 2);
         }
         _ => panic!("Expected Modify operation"),
     }

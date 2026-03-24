@@ -169,6 +169,16 @@ impl<'a> TransactCore<'a> {
                 hint: "Call .insert(), .upsert(), .update(), .insert_turtle(), .upsert_turtle(), or .txn()",
             });
         }
+        // Pre-built Txn IR currently bypasses the tracked+policy path (it has no original txn_json),
+        // so refuse the configuration rather than silently skipping policy enforcement.
+        if self.pre_built_txn.is_some() && self.policy.is_some() {
+            errors.push(BuilderError::Invalid {
+                field: "policy",
+                message:
+                    "policy enforcement is not supported when using a pre-built txn; provide a JSON transaction operation instead"
+                        .to_string(),
+            });
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -346,11 +356,82 @@ where
     pub async fn execute(self) -> Result<TransactResult> {
         self.core.validate().map_err(ApiError::Builder)?;
 
-        let op = self.core.operation.unwrap(); // safe: validate checks
+        let index_config = self.core.index_config.unwrap_or_default();
+
+        // Pre-built Txn IR path (e.g., SPARQL UPDATE lowered to Txn)
+        if let Some(txn) = self.core.pre_built_txn {
+            let txn_type = txn.txn_type;
+            let StageResult {
+                view,
+                ns_registry,
+                txn_meta,
+                graph_delta,
+            } = self
+                .fluree
+                .stage_transaction_from_txn(self.ledger, txn, Some(&index_config))
+                .await?;
+
+            // Add extracted transaction metadata and graph delta to commit opts
+            let commit_opts = self
+                .core
+                .commit_opts
+                .with_txn_meta(txn_meta)
+                .with_graph_delta(graph_delta.into_iter().collect());
+
+            // No-op updates: return success without committing.
+            let (receipt, ledger) =
+                if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+                    let (base, flakes) = view.into_parts();
+                    debug_assert!(
+                        flakes.is_empty(),
+                        "no-op transaction path requires zero staged flakes"
+                    );
+                    (
+                        fluree_db_transact::CommitReceipt {
+                            commit_id: ContentId::new(ContentKind::Commit, &[]),
+                            t: base.t(),
+                            flake_count: 0,
+                        },
+                        base,
+                    )
+                } else {
+                    self.fluree
+                        .commit_staged(view, ns_registry, &index_config, commit_opts)
+                        .await?
+                };
+
+            // Compute indexing status AFTER publish_commit succeeds
+            let indexing_enabled =
+                self.fluree.indexing_mode.is_enabled() && self.fluree.defaults_indexing_enabled();
+            let indexing_needed = ledger.should_reindex(&index_config);
+            let indexing_status = IndexingStatus {
+                enabled: indexing_enabled,
+                needed: indexing_needed,
+                novelty_size: ledger.novelty_size(),
+                index_t: ledger.index_t(),
+                commit_t: receipt.t,
+            };
+
+            // Trigger indexing AFTER publish_commit succeeds (fast operation)
+            if let IndexingMode::Background(handle) = &self.fluree.indexing_mode {
+                if indexing_enabled && indexing_needed {
+                    handle.trigger(ledger.ledger_id(), receipt.t).await;
+                }
+            }
+
+            return Ok(TransactResult {
+                receipt,
+                ledger,
+                indexing: indexing_status,
+            });
+        }
+
+        let op = self.core.operation.unwrap_or_else(|| {
+            unreachable!("validate ensures operation exists when pre_built_txn is None")
+        });
 
         // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
         if let TransactOperation::InsertTurtle(turtle) = op {
-            let index_config = self.core.index_config.unwrap_or_default();
             return self
                 .fluree
                 .insert_turtle_with_opts(
@@ -369,7 +450,6 @@ where
         let txn_json = parsed.json;
         let trig_meta = parsed.trig_meta;
         let named_graphs = parsed.named_graphs;
-        let index_config = self.core.index_config.unwrap_or_default();
 
         // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
         // (e.g., signed credential envelope for provenance).
@@ -414,11 +494,26 @@ where
     pub async fn stage(self) -> Result<Staged> {
         self.core.validate().map_err(ApiError::Builder)?;
 
-        let op = self.core.operation.unwrap();
+        let index_config = self.core.index_config.unwrap_or_default();
+
+        // Pre-built Txn IR path
+        if let Some(txn) = self.core.pre_built_txn {
+            let stage_result = self
+                .fluree
+                .stage_transaction_from_txn(self.ledger, txn, Some(&index_config))
+                .await?;
+            return Ok(Staged {
+                view: stage_result.view,
+                ns_registry: stage_result.ns_registry,
+            });
+        }
+
+        let op = self.core.operation.unwrap_or_else(|| {
+            unreachable!("validate ensures operation exists when pre_built_txn is None")
+        });
 
         // Direct flake path for InsertTurtle
         if let TransactOperation::InsertTurtle(turtle) = op {
-            let index_config = self.core.index_config.unwrap_or_default();
             let stage_result = self
                 .fluree
                 .stage_turtle_insert(self.ledger, turtle, Some(&index_config))
@@ -435,7 +530,6 @@ where
         let txn_json = parsed.json;
         let trig_meta = parsed.trig_meta;
         let named_graphs = parsed.named_graphs;
-        let index_config = self.core.index_config.unwrap_or_default();
 
         // If policy is set, use the tracked+policy staging path
         // TODO: Add named_graphs support to tracked+policy path
@@ -1092,6 +1186,56 @@ mod tests {
         assert!(staged.is_ok());
         let staged = staged.unwrap();
         assert!(staged.view.has_staged());
+    }
+
+    #[tokio::test]
+    async fn test_owned_builder_execute_pre_built_txn_ir() {
+        let fluree = FlureeBuilder::memory().build_memory();
+        let ledger = fluree.create_ledger("testdb").await.unwrap();
+
+        // Seed data at t=1
+        let seed = json!({
+            "insert": [{
+                "@id": "http://example.org/a",
+                "http://example.org/seq": 1
+            }]
+        });
+        let seeded = fluree
+            .stage_owned(ledger)
+            .insert(&seed)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(seeded.receipt.t, 1);
+
+        // Build a SPARQL UPDATE Txn IR (Modify) and execute via stage_owned().txn(txn).execute().
+        // This must NOT panic (regression for OwnedTransactBuilder::execute unwrap bug).
+        let sparql_update = r#"
+            INSERT { <http://example.org/counter> <http://example.org/next> ?next }
+            WHERE  {
+              <http://example.org/a> <http://example.org/seq> ?n .
+              BIND((?n + 1) AS ?next)
+            }
+        "#;
+        let parsed = fluree_db_sparql::parse_sparql(sparql_update);
+        assert!(
+            !parsed.has_errors(),
+            "SPARQL parse failed: {:?}",
+            parsed.diagnostics
+        );
+        let ast = parsed.ast.expect("expected SPARQL AST");
+
+        let mut ns = NamespaceRegistry::from_db(&seeded.ledger.snapshot);
+        let txn = fluree_db_transact::lower_sparql_update_ast(&ast, &mut ns, TxnOpts::default())
+            .expect("lower SPARQL UPDATE AST to Txn IR");
+
+        let result = fluree
+            .stage_owned(seeded.ledger)
+            .txn(txn)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.receipt.t, 2);
     }
 
     #[tokio::test]

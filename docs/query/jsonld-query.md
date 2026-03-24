@@ -260,6 +260,33 @@ Match data from multiple alternative patterns:
 }
 ```
 
+### Graph Patterns
+
+Scope patterns to a named graph:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from": "mydb:main",
+  "fromNamed": {
+    "products": {
+      "@id": "mydb:main",
+      "@graph": "http://example.org/graphs/products"
+    }
+  },
+  "select": ["?product", "?name"],
+  "where": [
+    ["graph", "products", { "@id": "?product", "ex:name": "?name" }]
+  ]
+}
+```
+
+Notes:
+- `fromNamed` is an object whose keys are dataset-local aliases. Each value is an object with `@id` (ledger reference) and optional `@graph` (graph selector IRI).
+- The second element of `["graph", ...]` can be a dataset-local alias (recommended) or a graph IRI.
+- The legacy `"from-named": [...]` array format is still accepted for backward compatibility.
+- For dataset and named-graph configuration details, see `docs/query/datasets.md`.
+
 ### Filter Patterns
 
 Apply conditions to filter results:
