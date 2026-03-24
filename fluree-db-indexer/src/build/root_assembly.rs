@@ -189,37 +189,51 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
-    // Rule 5 reconciliation: if a commit-derived namespace table is provided,
-    // validate that every entry in the index root's table matches it.
+    // Rule 5 reconciliation at publish time:
+    // If a commit-derived namespace table is provided for this `index_t`,
+    // it must match the index root's materialized table exactly.
     if let Some(ref commit_ns) = inputs.commit_derived_ns {
-        for (code, root_prefix) in &inputs.namespace_codes {
-            if let Some(commit_prefix) = commit_ns.get(code) {
-                if commit_prefix != root_prefix {
-                    return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
-                        format!(
-                            "Rule 5 violation at index publish: code {} maps to {:?} in index root \
-                             but {:?} in commit chain — indexer/publisher bug",
-                            code, root_prefix, commit_prefix
-                        ),
-                    )));
+        let commit_bt: BTreeMap<u16, String> = commit_ns
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
+        if commit_bt != inputs.namespace_codes {
+            // Find a representative mismatch for a targeted error message.
+            let mut mismatch: Option<(u16, Option<&String>, Option<&String>)> = None;
+            for (code, commit_prefix) in &commit_bt {
+                match inputs.namespace_codes.get(code) {
+                    Some(root_prefix) if root_prefix == commit_prefix => {}
+                    other => {
+                        mismatch = Some((*code, Some(commit_prefix), other));
+                        break;
+                    }
                 }
             }
-        }
-        // Also check reverse: commit chain has entries the root doesn't
-        for (code, commit_prefix) in commit_ns {
-            if let Some(root_prefix) = inputs.namespace_codes.get(code) {
-                if root_prefix != commit_prefix {
-                    return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
-                        format!(
-                            "Rule 5 violation at index publish: code {} maps to {:?} in commit chain \
-                             but {:?} in index root — indexer/publisher bug",
-                            code, commit_prefix, root_prefix
-                        ),
-                    )));
+            if mismatch.is_none() {
+                for (code, root_prefix) in &inputs.namespace_codes {
+                    if !commit_bt.contains_key(code) {
+                        mismatch = Some((*code, None, Some(root_prefix)));
+                        break;
+                    }
                 }
             }
-            // Note: commit_ns having extra codes that the root doesn't is expected
-            // (post-index allocations); only conflicts matter.
+
+            let detail = if let Some((code, commit_p, root_p)) = mismatch {
+                format!(
+                    "example mismatch: code {code} commit={:?} root={:?}",
+                    commit_p, root_p
+                )
+            } else {
+                "mismatch: tables differ".to_string()
+            };
+
+            return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
+                format!(
+                    "Rule 5 violation at index publish (index_t={}): index root namespace_codes does not match \
+                     commit-derived table — indexer/publisher bug ({detail})",
+                    inputs.index_t
+                ),
+            )));
         }
     }
 

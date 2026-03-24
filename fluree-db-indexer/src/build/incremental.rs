@@ -23,6 +23,7 @@ use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
 use fluree_db_core::{ContentId, ContentKind, Storage};
+use fluree_db_core::Error as CoreError;
 
 use crate::error::{IndexerError, Result};
 use crate::gc;
@@ -2068,6 +2069,24 @@ where
             }
         }
 
+        // Rule 5 reconciliation at publish time: ensure the root's materialized
+        // namespace table matches the commit-derived table (resolver state).
+        {
+            let expected: std::collections::BTreeMap<u16, String> = novelty
+                .shared
+                .ns_prefixes
+                .iter()
+                .map(|(&code, prefix)| (code, prefix.clone()))
+                .collect();
+            if final_root.namespace_codes != expected {
+                return Err(IndexerError::Core(CoreError::invalid_index(format!(
+                    "Rule 5 violation at index publish (index_t={}): incremental root namespace_codes \
+                     does not match commit-derived table — indexer/publisher bug",
+                    final_root.index_t
+                ))));
+            }
+        }
+
         let root_bytes = final_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
@@ -2126,6 +2145,23 @@ where
                         }
                     }
                 }
+            }
+        }
+
+        // Rule 5 reconciliation at publish time (no-garbage path): same check.
+        {
+            let expected: std::collections::BTreeMap<u16, String> = novelty
+                .shared
+                .ns_prefixes
+                .iter()
+                .map(|(&code, prefix)| (code, prefix.clone()))
+                .collect();
+            if final_root.namespace_codes != expected {
+                return Err(IndexerError::Core(CoreError::invalid_index(format!(
+                    "Rule 5 violation at index publish (index_t={}): incremental root namespace_codes \
+                     does not match commit-derived table — indexer/publisher bug",
+                    final_root.index_t
+                ))));
             }
         }
         let root_bytes = final_root.encode();

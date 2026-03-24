@@ -283,9 +283,14 @@ pub fn decode_leaf_block(
                 .decode_value(o_type, o_key, p_id)
                 .map_err(BlockFetchError::LeafDecode)?;
             if let fluree_db_core::FlakeValue::Ref(sid) = &o {
-                let iri = store
-                    .sid_to_iri(sid)
-                    .unwrap_or_else(|| sid.name.to_string());
+                let iri = store.sid_to_iri(sid).unwrap_or_else(|| {
+                    tracing::warn!(
+                        ns_code = sid.namespace_code,
+                        suffix = %sid.name,
+                        "sid_to_iri: unknown namespace code in block_fetch object ref"
+                    );
+                    sid.name.to_string()
+                });
                 o = fluree_db_core::FlakeValue::Ref(
                     snapshot
                         .encode_iri(&iri)
@@ -296,9 +301,14 @@ pub fn decode_leaf_block(
             let dt = store.resolve_datatype_sid(o_type).map_or_else(
                 || fluree_db_core::Sid::new(0, ""),
                 |sid| {
-                    let iri = store
-                        .sid_to_iri(&sid)
-                        .unwrap_or_else(|| sid.name.to_string());
+                    let iri = store.sid_to_iri(&sid).unwrap_or_else(|| {
+                        tracing::warn!(
+                            ns_code = sid.namespace_code,
+                            suffix = %sid.name,
+                            "sid_to_iri: unknown namespace code in block_fetch datatype"
+                        );
+                        sid.name.to_string()
+                    });
                     snapshot
                         .encode_iri(&iri)
                         .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri))

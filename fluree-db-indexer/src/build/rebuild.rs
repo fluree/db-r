@@ -1130,8 +1130,12 @@ where
                 ledger_id: ledger_id.clone(),
                 index_t: commit_t,
                 namespace_codes: ns_codes,
-                // TODO: plumb commit-derived namespace table through for Rule 5 validation
-                commit_derived_ns: None,
+                // Rule 5 validation at publish time: `shared.ns_prefixes` is the
+                // commit-derived namespace table at `commit_t` (after applying all
+                // commit namespace deltas in forward order with Rule 3/6 validation).
+                // Root assembly will diff this against the root's materialized table
+                // and fail fast on divergence (indexer/publisher bug).
+                commit_derived_ns: Some(shared.ns_prefixes.clone()),
                 predicate_sids,
                 uploaded_dicts,
                 v3_uploaded,

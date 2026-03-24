@@ -621,6 +621,17 @@ pub fn validate_and_merge_ns_delta(
     existing: &mut HashMap<u16, String>,
     delta: &HashMap<u16, String>,
 ) -> Result<(), NsAllocError> {
+    if delta.is_empty() {
+        return Ok(());
+    }
+
+    // Build reverse index once: O(n). Each delta entry then does O(1) lookup
+    // instead of O(n) scan — total O(n + m) instead of O(n * m).
+    let mut reverse: HashMap<String, u16> = HashMap::with_capacity(existing.len());
+    for (&code, prefix) in existing.iter() {
+        reverse.insert(prefix.clone(), code);
+    }
+
     for (&code, prefix) in delta {
         // Check code → prefix direction
         if let Some(existing_prefix) = existing.get(&code) {
@@ -631,11 +642,11 @@ pub fn validate_and_merge_ns_delta(
                     existing_prefix: existing_prefix.clone(),
                 });
             }
-            continue; // Already registered with matching prefix
+            continue;
         }
-        // Check prefix → code direction
-        for (&existing_code, existing_prefix) in existing.iter() {
-            if existing_prefix == prefix && existing_code != code {
+        // Check prefix → code direction: O(1) via reverse index
+        if let Some(&existing_code) = reverse.get(prefix) {
+            if existing_code != code {
                 return Err(NsAllocError::Conflict {
                     code,
                     new_prefix: prefix.clone(),
@@ -645,9 +656,11 @@ pub fn validate_and_merge_ns_delta(
                     ),
                 });
             }
+            continue;
         }
-        // New mapping — insert
+        // New mapping — insert into both forward and reverse
         existing.insert(code, prefix.clone());
+        reverse.insert(prefix.clone(), code);
     }
     Ok(())
 }

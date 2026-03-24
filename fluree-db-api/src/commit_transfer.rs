@@ -433,9 +433,17 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
 
     for g_sid in &graph_sids_set {
         let resolved = if let Some(store) = &binary_store {
-            let iri = store
-                .sid_to_iri(g_sid)
-                .unwrap_or_else(|| g_sid.name.to_string());
+            let iri = match store.sid_to_iri(g_sid) {
+                Some(iri) => iri,
+                None => {
+                    tracing::error!(
+                        ns_code = g_sid.namespace_code,
+                        suffix = %g_sid.name,
+                        "sid_to_iri failed for graph SID — namespace code not in binary store"
+                    );
+                    continue; // skip unresolvable graph SID
+                }
+            };
             store.graph_id_for_iri(&iri)
         } else {
             None

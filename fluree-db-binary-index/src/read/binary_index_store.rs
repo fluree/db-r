@@ -920,14 +920,23 @@ impl BinaryIndexStore {
     }
 
     /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    ///
+    /// Uses canonical encoding (Rule 2) to build the reverse-tree key,
+    /// matching the encoding used when the reverse dictionary was built.
     pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (ns_code, prefix_len) =
-                    self.dicts.prefix_trie.longest_match(iri).unwrap_or((0, 0));
-                let suffix = &iri[prefix_len..];
-                let key =
-                    crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix.as_bytes());
+                let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+                let ns_code = self
+                    .dicts
+                    .namespace_reverse
+                    .get(canonical_prefix)
+                    .copied()
+                    .unwrap_or(0);
+                let key = crate::dict::reverse_leaf::subject_reverse_key(
+                    ns_code,
+                    canonical_suffix.as_bytes(),
+                );
                 tree.reverse_lookup(&key)
             }
             None => Ok(None),
@@ -1072,20 +1081,30 @@ impl BinaryIndexStore {
         &mut self,
         codes: &std::collections::HashMap<u16, String>,
     ) -> io::Result<()> {
+        // Only insert genuinely new entries into the forward map, reverse map, and trie.
+        // validate_and_merge_ns_delta handles the forward map; we track new entries
+        // to incrementally update reverse + trie without a full rebuild.
+        let mut new_entries: Vec<(u16, String)> = Vec::new();
+        for (&code, prefix) in codes {
+            if !self.dicts.namespace_codes.contains_key(&code) {
+                new_entries.push((code, prefix.clone()));
+            }
+        }
+
         validate_and_merge_ns_delta(&mut self.dicts.namespace_codes, codes).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("namespace conflict (Rule 3): {}", e),
             )
         })?;
-        // Rebuild reverse map and prefix trie to include new entries.
-        self.dicts.namespace_reverse = self
-            .dicts
-            .namespace_codes
-            .iter()
-            .map(|(&code, prefix)| (prefix.clone(), code))
-            .collect();
-        self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
+
+        // Incrementally update reverse map and trie with only new entries.
+        for (code, prefix) in new_entries {
+            if !prefix.is_empty() {
+                self.dicts.prefix_trie.insert(&prefix, code);
+            }
+            self.dicts.namespace_reverse.insert(prefix, code);
+        }
         Ok(())
     }
 
