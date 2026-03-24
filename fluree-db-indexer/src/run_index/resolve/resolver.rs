@@ -1996,6 +1996,7 @@ mod tests {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -2329,6 +2330,7 @@ mod tests {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
 
         let count = resolver
@@ -2433,6 +2435,7 @@ mod tests {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
 
         let count = resolver
@@ -2501,6 +2504,7 @@ mod tests {
                 ),
             ],
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
 
         let count = resolver

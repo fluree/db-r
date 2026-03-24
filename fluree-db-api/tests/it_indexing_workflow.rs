@@ -1356,24 +1356,14 @@ async fn new_namespace_after_indexing_is_queryable() {
                 "index time should still be 1 (only first commit was indexed)"
             );
 
-            // Verify LedgerSnapshot.namespace_codes has the new prefix.
+            // Verify LedgerSnapshot namespace codes has the new prefix.
             assert!(
                 loaded
                     .snapshot
-                    .namespace_codes
+                    .namespaces()
                     .values()
                     .any(|p| p == "http://newprefix.org/"),
-                "LedgerSnapshot.namespace_codes should include the new prefix from novelty"
-            );
-
-            // Verify the LedgerSnapshot.namespace_codes includes the new prefix (sanity check).
-            assert!(
-                loaded
-                    .snapshot
-                    .namespace_codes
-                    .values()
-                    .any(|p| p == "http://newprefix.org/"),
-                "LedgerSnapshot.namespace_codes should include the new prefix from novelty"
+                "LedgerSnapshot namespace codes should include the new prefix from novelty"
             );
 
             // Step 4: Query that forces resolution of a subject IRI using the new

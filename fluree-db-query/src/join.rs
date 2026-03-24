@@ -855,10 +855,19 @@ impl Operator for NestedLoopJoinOperator {
                     let store = ctx.binary_store.as_deref();
                     match left_batch.get_by_col(left_row, left_col) {
                         Binding::EncodedSid { s_id } => Some(*s_id),
-                        Binding::Sid(sid) => store.and_then(|s| s.sid_to_s_id(sid).ok().flatten()),
-                        Binding::IriMatch { primary_sid, .. } => {
-                            store.and_then(|s| s.sid_to_s_id(primary_sid).ok().flatten())
-                        }
+                        Binding::Sid(sid) => store.and_then(|s| {
+                            s.find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                                .ok()
+                                .flatten()
+                        }),
+                        Binding::IriMatch { primary_sid, .. } => store.and_then(|s| {
+                            s.find_subject_id_by_parts(
+                                primary_sid.namespace_code,
+                                &primary_sid.name,
+                            )
+                            .ok()
+                            .flatten()
+                        }),
                         Binding::Unbound => None,
                         _ => {
                             // For subject/predicate bindings we already screened invalid types.

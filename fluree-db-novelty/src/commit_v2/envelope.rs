@@ -13,6 +13,7 @@
 use super::error::CommitV2Error;
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
 use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
+use fluree_db_core::ns_encoding::NsSplitMode;
 use fluree_db_core::ContentId;
 use std::collections::HashMap;
 
@@ -64,6 +65,9 @@ pub struct CommitV2Envelope {
     pub txn_meta: Vec<TxnMetaEntry>,
     /// Named graph IRI to g_id mappings introduced by this commit.
     pub graph_delta: HashMap<u16, String>,
+    /// Ledger-fixed split mode for canonical IRI encoding.
+    /// Set once in the genesis commit; absent in subsequent commits.
+    pub ns_split_mode: Option<NsSplitMode>,
 }
 
 impl CommitV2Envelope {
@@ -78,6 +82,7 @@ impl CommitV2Envelope {
             txn_signature: commit.txn_signature.clone(),
             txn_meta: commit.txn_meta.clone(),
             graph_delta: commit.graph_delta.clone(),
+            ns_split_mode: commit.ns_split_mode,
         }
     }
 }
@@ -163,6 +168,18 @@ pub fn encode_envelope_fields(
         }
         buf.push(1);
         encode_graph_delta(&envelope.graph_delta, buf);
+    } else {
+        buf.push(0);
+    }
+
+    // ns_split_mode (trailing optional extension)
+    if let Some(mode) = envelope.ns_split_mode {
+        buf.push(1);
+        buf.push(
+            mode.to_byte().map_err(|e| {
+                CommitV2Error::EnvelopeDecode(format!("ns_split_mode encode: {}", e))
+            })?,
+        );
     } else {
         buf.push(0);
     }
@@ -289,6 +306,24 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         HashMap::new()
     };
 
+    // ns_split_mode (trailing optional extension)
+    let ns_split_mode = if pos < data.len() {
+        let has_mode = data[pos] != 0;
+        pos += 1;
+        if has_mode {
+            if pos >= data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let mode_byte = data[pos];
+            pos += 1;
+            Some(NsSplitMode::from_byte(mode_byte))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if pos != data.len() {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "trailing bytes: consumed {} of {} bytes",
@@ -306,6 +341,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         txn_signature,
         txn_meta,
         graph_delta,
+        ns_split_mode,
     })
 }
 
@@ -804,6 +840,8 @@ mod tests {
         encode_varint(txn_bytes.len() as u64, &mut expected);
         expected.extend_from_slice(&txn_bytes);
         // trailing graph_delta = 0 (empty)
+        expected.push(0);
+        // trailing ns_split_mode = 0 (absent)
         expected.push(0);
 
         assert_eq!(

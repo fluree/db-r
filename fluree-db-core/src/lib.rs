@@ -45,6 +45,7 @@ pub mod index_stats;
 pub mod ledger_config;
 pub mod ledger_id;
 pub mod namespaces;
+pub mod ns_encoding;
 pub mod ns_vec_bi_dict;
 pub mod o_type;
 pub mod o_type_registry;
@@ -108,6 +109,10 @@ pub use namespaces::{
     is_owl_inverse_of, is_owl_same_as, is_owl_symmetric_property, is_owl_transitive_property,
     is_rdf_first, is_rdf_nil, is_rdf_rest, is_rdf_type, is_rdfs_domain, is_rdfs_range,
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
+};
+pub use ns_encoding::{
+    builtin_prefix_trie, canonical_split, NamespaceCodes, NsAllocError, NsLookup, NsSplitMode,
+    HOST_PLUS_N_MAX,
 };
 pub use o_type::{DecodeKind, OType};
 pub use o_type_registry::OTypeRegistry;

@@ -16,6 +16,136 @@ use crate::error::{IndexerError, Result};
 use crate::gc;
 use crate::{IndexResult, IndexStats};
 
+/// Validate that an index root's materialized namespace table matches the
+/// commit-derived table exactly. A mismatch indicates an indexer or publisher
+/// bug — fail fast rather than silently diverging.
+pub(crate) fn reconcile_ns_at_publish(
+    root_ns: &BTreeMap<u16, String>,
+    commit_derived_ns: &std::collections::HashMap<u16, String>,
+    index_t: i64,
+) -> Result<()> {
+    let expected: BTreeMap<u16, String> = commit_derived_ns
+        .iter()
+        .map(|(&code, prefix)| (code, prefix.clone()))
+        .collect();
+    if *root_ns != expected {
+        // Find a representative mismatch for a targeted error message.
+        let detail = find_ns_mismatch(root_ns, &expected);
+        return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
+            format!(
+                "namespace reconciliation failure at index publish (index_t={index_t}): \
+                 root namespace_codes does not match commit-derived table \
+                 — indexer/publisher bug ({detail})"
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Find a representative mismatch between two namespace tables for diagnostics.
+fn find_ns_mismatch(root_ns: &BTreeMap<u16, String>, commit_ns: &BTreeMap<u16, String>) -> String {
+    for (code, commit_prefix) in commit_ns {
+        match root_ns.get(code) {
+            Some(root_prefix) if root_prefix == commit_prefix => {}
+            other => {
+                return format!(
+                    "example mismatch: code {code} commit={:?} root={:?}",
+                    Some(commit_prefix),
+                    other
+                );
+            }
+        }
+    }
+    for (code, root_prefix) in root_ns {
+        if !commit_ns.contains_key(code) {
+            return format!(
+                "example mismatch: code {code} commit=None root={:?}",
+                Some(root_prefix)
+            );
+        }
+    }
+    "tables differ (no specific mismatch found)".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn btree(pairs: &[(u16, &str)]) -> BTreeMap<u16, String> {
+        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
+    }
+
+    fn hash(pairs: &[(u16, &str)]) -> HashMap<u16, String> {
+        pairs.iter().map(|&(c, p)| (c, p.to_string())).collect()
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_matching_tables() {
+        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        reconcile_ns_at_publish(&root, &commit, 5).expect("matching tables should succeed");
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_prefix_mismatch() {
+        // Root has code 1 → "http://a.org/", commit has code 1 → "http://WRONG.org/"
+        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let commit = hash(&[(1, "http://WRONG.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 7).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("namespace reconciliation failure"),
+            "expected reconciliation error, got: {msg}"
+        );
+        assert!(msg.contains("index_t=7"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_extra_root_code() {
+        // Root has an extra code that commit doesn't.
+        let root = btree(&[(1, "http://a.org/"), (2, "http://b.org/"), (3, "http://c.org/")]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 10).unwrap_err();
+        assert!(err.to_string().contains("namespace reconciliation failure"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_rejects_extra_commit_code() {
+        // Commit has an extra code that root doesn't.
+        let root = btree(&[(1, "http://a.org/")]);
+        let commit = hash(&[(1, "http://a.org/"), (2, "http://b.org/")]);
+        let err = reconcile_ns_at_publish(&root, &commit, 3).unwrap_err();
+        assert!(err.to_string().contains("namespace reconciliation failure"));
+    }
+
+    #[test]
+    fn reconcile_ns_at_publish_empty_tables_match() {
+        let root = BTreeMap::new();
+        let commit = HashMap::new();
+        reconcile_ns_at_publish(&root, &commit, 0).expect("empty tables should match");
+    }
+
+    #[test]
+    fn find_ns_mismatch_reports_prefix_difference() {
+        let root = btree(&[(1, "http://a.org/")]);
+        let commit = btree(&[(1, "http://b.org/")]);
+        let msg = find_ns_mismatch(&root, &commit);
+        assert!(msg.contains("code 1"), "should name the conflicting code: {msg}");
+    }
+
+    #[test]
+    fn find_ns_mismatch_reports_missing_from_root() {
+        let root = BTreeMap::new();
+        let commit = btree(&[(5, "http://x.org/")]);
+        let msg = find_ns_mismatch(&root, &commit);
+        assert!(
+            msg.contains("code 5") && msg.contains("root=None"),
+            "should report missing root entry: {msg}"
+        );
+    }
+}
+
 /// Context for linking the GC chain to a previous index root.
 ///
 /// Used by both pipelines, but computed differently:
@@ -153,6 +283,12 @@ pub(crate) struct Fir6Inputs {
     pub ledger_id: String,
     pub index_t: i64,
     pub namespace_codes: BTreeMap<u16, String>,
+    /// Commit-derived namespace table for index-root/commit-chain namespace reconciliation.
+    /// `encode_and_write_root_v6` validates that the index root's `namespace_codes`
+    /// matches this table entry-by-entry. A mismatch indicates an indexer/publisher bug.
+    pub commit_derived_ns: std::collections::HashMap<u16, String>,
+    /// Ledger-fixed split mode — persisted in the index root.
+    pub ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode,
     pub predicate_sids: Vec<(u16, String)>,
     pub uploaded_dicts: UploadedDicts,
     pub v3_uploaded: UploadedIndexes,
@@ -184,6 +320,12 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
+    reconcile_ns_at_publish(
+        &inputs.namespace_codes,
+        &inputs.commit_derived_ns,
+        inputs.index_t,
+    )?;
+
     // Convert DictRefs for root assembly.
     let dr = inputs.uploaded_dicts.dict_refs;
     let dict_refs = DictRefs {
@@ -215,6 +357,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         subject_id_encoding: inputs.uploaded_dicts.subject_id_encoding,
         namespace_codes: inputs.namespace_codes,
         predicate_sids: inputs.predicate_sids,
+        ns_split_mode: inputs.ns_split_mode,
         graph_iris: inputs.uploaded_dicts.graph_iris,
         datatype_iris: inputs.datatype_iris,
         language_tags: inputs.language_tags.clone(),

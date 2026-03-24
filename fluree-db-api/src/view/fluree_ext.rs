@@ -184,18 +184,8 @@ where
                 .await
                 .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
-                // Augment namespace codes with entries from novelty commits.
-                store.augment_namespace_codes(&snapshot.snapshot.namespace_codes);
-
-                // Copy store's namespace codes back to the snapshot so
-                // result formatting can decode all namespace codes.
-                for (code, prefix) in store.namespace_codes() {
-                    snapshot
-                        .snapshot
-                        .namespace_codes
-                        .entry(*code)
-                        .or_insert_with(|| prefix.clone());
-                }
+                // Sync namespace codes between store and snapshot (bimap validation).
+                crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut snapshot.snapshot)?;
 
                 let arc_store = Arc::new(store);
                 let dn = snapshot.dict_novelty.clone();
@@ -261,7 +251,7 @@ where
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = GraphDb::from_historical(&historical);
 
-        // Attach and populate dict_novelty derived from the historical Db's watermarks.
+        // Attach dict_novelty derived from the historical Db's watermarks.
         //
         // Historical views can have an overlay (novelty) even when the binary index
         // is behind the view's `t`. We must populate DictNovelty from the overlay
@@ -271,14 +261,10 @@ where
             view.snapshot.subject_watermarks.clone(),
             view.snapshot.string_watermark,
         );
-        if let Some(novelty) = view.novelty.as_ref() {
-            let flakes: Vec<&fluree_db_core::Flake> = novelty
-                .iter_index(IndexType::Spot)
-                .map(|id| novelty.get_flake(id))
-                .collect();
-            dict_novelty.populate_from_flakes_iter(flakes);
-        }
-        view.dict_novelty = Some(Arc::new(dict_novelty));
+        // NOTE: If we successfully attach a BinaryIndexStore below, we will populate
+        // dict_novelty using persisted-first routing to avoid allocating IDs for
+        // already-indexed entries. For overlay-only historical views (no binary store),
+        // we populate without a store (everything is treated as novel).
 
         // Load the binary index store (for index-backed historical queries only).
         //
@@ -316,9 +302,26 @@ where
                         ))
                     })?;
 
-                    // Augment namespace codes with entries from novelty commits.
-                    store.augment_namespace_codes(&view.snapshot.namespace_codes);
+                    // Augment store with snapshot namespace codes and sync split mode.
+                    // Unlike the primary load path (sync_store_and_snapshot_ns), we can't
+                    // reconcile store codes back into the snapshot because view.snapshot
+                    // is Arc<LedgerSnapshot> (shared/read-only). This is safe because the
+                    // index root's namespace table is a subset of the commit-derived table
+                    // (the root is a materialized cache at index_t ≤ view.to_t).
+                    store
+                        .augment_namespace_codes(view.snapshot.namespaces())
+                        .map_err(|e| {
+                            ApiError::internal(format!("augment namespace codes: {}", e))
+                        })?;
+                    store.set_ns_split_mode(view.snapshot.ns_split_mode());
 
+                    // Populate dict novelty safely (persisted dict wins).
+                    populate_dict_novelty_from_view(
+                        &mut dict_novelty,
+                        Some(&store),
+                        view.novelty.as_ref(),
+                    )?;
+                    view.dict_novelty = Some(Arc::new(dict_novelty));
                     view.binary_store = Some(Arc::new(store));
 
                     // Historical views loaded from an index root are metadata-only by default
@@ -338,8 +341,24 @@ where
                         db.range_provider = Some(Arc::new(provider));
                         view.snapshot = Arc::new(db);
                     }
+                } else {
+                    // Commits exist but no index is available — populate without a store.
+                    populate_dict_novelty_from_view(
+                        &mut dict_novelty,
+                        None,
+                        view.novelty.as_ref(),
+                    )?;
+                    view.dict_novelty = Some(Arc::new(dict_novelty));
                 }
+            } else {
+                // Snapshot has commits but nameservice record is missing.
+                populate_dict_novelty_from_view(&mut dict_novelty, None, view.novelty.as_ref())?;
+                view.dict_novelty = Some(Arc::new(dict_novelty));
             }
+        } else {
+            // Overlay-only historical view: no persisted dictionaries available.
+            populate_dict_novelty_from_view(&mut dict_novelty, None, view.novelty.as_ref())?;
+            view.dict_novelty = Some(Arc::new(dict_novelty));
         }
 
         Ok(view)
@@ -608,6 +627,32 @@ where
             None => view,
         }
     }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Populate `DictNovelty` from a view's novelty overlay, routing through the
+/// persisted dictionaries when a `BinaryIndexStore` is available.
+///
+/// This is the common pattern used across all historical view load paths.
+fn populate_dict_novelty_from_view(
+    dict_novelty: &mut DictNovelty,
+    store: Option<&BinaryIndexStore>,
+    novelty: Option<&Arc<fluree_db_novelty::Novelty>>,
+) -> crate::Result<()> {
+    if let Some(novelty) = novelty {
+        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+            dict_novelty,
+            store,
+            novelty
+                .iter_index(IndexType::Spot)
+                .map(|id| novelty.get_flake(id)),
+        )
+        .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

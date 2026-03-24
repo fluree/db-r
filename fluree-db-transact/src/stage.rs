@@ -735,7 +735,14 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
                                 .get(*dt_id as usize)
                                 .cloned()
                                 .unwrap_or_else(|| Sid::new(0, ""));
-                            let dt_iri = store_ref.sid_to_iri(&dt_sid);
+                            let dt_iri = store_ref.sid_to_iri(&dt_sid).ok_or_else(|| {
+                                TransactError::Query(fluree_db_query::QueryError::Internal(
+                                    format!(
+                                        "sid_to_iri failed: unknown namespace code {} for datatype {:?}",
+                                        dt_sid.namespace_code, dt_sid.name
+                                    ),
+                                ))
+                            })?;
                             let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
                                 TransactError::Query(fluree_db_query::QueryError::Internal(
                                     format!("encode_iri returned None for datatype IRI: {dt_iri}"),
@@ -1165,8 +1172,8 @@ pub async fn stage_with_shacl(
     }
 
     // Rebuild graph_sids from the cloned graph_delta + returned ns_registry.
-    // These IRIs were already resolved during stage(), so sid_for_iri will hit
-    // the trie cache — no new allocations.
+    // These IRIs were already resolved during stage(), so sid_for_iri will find
+    // the prefix already registered — no new allocations.
     let graph_sids: HashMap<GraphId, Sid> = graph_delta
         .iter()
         .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))

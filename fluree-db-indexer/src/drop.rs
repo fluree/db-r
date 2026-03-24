@@ -293,6 +293,7 @@ mod tests {
             garbage,
             sketch_ref: None,
             o_type_table: IndexRoot::build_o_type_table(&[], &[]),
+            ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode::default(),
         };
         root.encode()
     }
@@ -321,6 +322,7 @@ mod tests {
             commit_signatures: Vec::new(),
             txn_meta: Vec::new(),
             graph_delta: std::collections::HashMap::new(),
+            ns_split_mode: None,
         };
 
         let result = write_commit(&commit, false, None).expect("write_commit");
