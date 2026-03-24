@@ -621,7 +621,7 @@ async fn dataset_from_json_named() {
     let _ledger1 = seed_people_ledger(&fluree, "default:main").await;
     let _ledger2 = seed_orgs_ledger(&fluree, "graph1:main").await;
 
-    // Parse from JSON query with "fromNamed"
+    // Parse from JSON query with "fromNamed" (string array shorthand)
     let query = json!({
         "@context": {
             "ex": "http://example.org/ns/",
