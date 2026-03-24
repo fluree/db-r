@@ -749,8 +749,8 @@ fn translate_term_to_v6(
     match term {
         Term::Sid(sid) => {
             let s_id = store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))?
                 .ok_or_else(|| {
                     QueryError::execution("bound object SID not found in V6 dict".to_string())
                 })?;

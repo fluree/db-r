@@ -330,7 +330,7 @@ pub async fn prepare_execution(
             let stats_view = db.snapshot.stats.as_ref().map(|s| {
                 Arc::new(StatsView::from_db_stats_with_namespaces(
                     s,
-                    &db.snapshot.namespace_codes,
+                    db.snapshot.namespaces(),
                 ))
             });
             build_operator_tree(&rewritten_query, &query.options, stats_view)?

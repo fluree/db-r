@@ -185,7 +185,7 @@ fn explain_from_parsed(
     query_echo: JsonValue,
     where_clause: Option<JsonValue>,
 ) -> Result<JsonValue> {
-    let compactor = IriCompactor::new(&snapshot.namespace_codes, &parsed.context);
+    let compactor = IriCompactor::new(snapshot.namespaces(), &parsed.context);
 
     // Extract triple patterns in query order.
     // Normalize any IRI terms into SID when possible so that
@@ -261,7 +261,7 @@ fn explain_from_parsed(
     let stats_view = snapshot
         .stats
         .as_ref()
-        .map(|s| StatsView::from_db_stats_with_namespaces(s, &snapshot.namespace_codes));
+        .map(|s| StatsView::from_db_stats_with_namespaces(s, snapshot.namespaces()));
     let stats_available = stats_view
         .as_ref()
         .map(|s| s.has_property_stats())

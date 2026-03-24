@@ -14,6 +14,8 @@ use std::sync::Arc;
 use crate::format::branch::BranchManifest;
 use crate::format::run_record::RunSortOrder;
 use crate::format::run_record_v2::cmp_v2_for_order;
+use crate::format::run_record_v2::{read_ordered_key_v2, RunRecordV2};
+use crate::read::types::cmp_overlay_vs_record;
 use crate::read::types::{cmp_row_vs_overlay, OverlayOp};
 
 use super::binary_index_store::BinaryIndexStore;
@@ -278,7 +280,12 @@ impl BinaryCursor {
 
                     // Apply overlay merge if we have overlay ops.
                     let batch = if has_ov {
-                        self.merge_overlay_into_batch(batch)
+                        // Drain overlay ops only up to this leaflet's key range.
+                        // Draining past the leaflet boundary can emit an overlay assert
+                        // before the base row appears in a later leaflet, yielding duplicates.
+                        let leaflet_last_key: RunRecordV2 =
+                            read_ordered_key_v2(self.order, &entry.last_key);
+                        self.merge_overlay_into_batch(batch, &leaflet_last_key)
                     } else {
                         batch
                     };
@@ -337,7 +344,11 @@ impl BinaryCursor {
     ///
     /// Consumes overlay ops that fall within this batch's sort-order range.
     /// Returns a new batch with merged rows.
-    fn merge_overlay_into_batch(&mut self, base: ColumnBatch) -> ColumnBatch {
+    fn merge_overlay_into_batch(
+        &mut self,
+        base: ColumnBatch,
+        leaflet_last_key: &RunRecordV2,
+    ) -> ColumnBatch {
         let order = self.order;
         let to_t = self.to_t;
 
@@ -356,11 +367,17 @@ impl BinaryCursor {
         while ri < row_count || self.overlay_pos < ov_end {
             // Determine which side to advance.
             if ri >= row_count {
-                // Rows exhausted — drain remaining overlay asserts for this leaf.
+                // Rows exhausted — drain overlay asserts that sort within this leaflet's key range.
                 if self.overlay_pos >= ov_end {
                     break;
                 }
                 let ov = &self.overlay_ops[self.overlay_pos];
+
+                // Stop if the overlay op sorts AFTER this leaflet.
+                if cmp_overlay_vs_record(ov, leaflet_last_key, order) == std::cmp::Ordering::Greater
+                {
+                    break;
+                }
 
                 if ov.op && ov.t <= to_t && self.filter_overlay(ov) {
                     push_overlay_row(

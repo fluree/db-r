@@ -27,8 +27,8 @@ use base64::Engine as _;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
-    range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, GraphId, IndexType,
-    Sid, TXN_META_GRAPH_ID,
+    range_with_overlay, ContentAddressedWrite, ContentKind, Flake, GraphId, IndexType, Sid,
+    TXN_META_GRAPH_ID,
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
@@ -130,7 +130,7 @@ where
 
         // 0) Lock ledger state for write (serialize with transactions).
         let mut guard = handle.lock_for_write().await;
-        let base_state = guard.clone_state();
+        let mut base_state = guard.clone_state();
 
         // 1) Read current head ref (CAS expected).
         let current_ref = self
@@ -178,9 +178,40 @@ where
             reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
         }
 
+        // Accumulate namespace table for cross-commit namespace conflict validation.
+        // Uses NamespaceCodes (validated bimap) rather than raw HashMap to enforce
+        // bimap uniqueness/immutability through the canonical type.
+        let mut accumulated_ns = fluree_db_core::ns_encoding::NamespaceCodes::from_code_to_prefix(
+            base_state.snapshot.namespaces().clone(),
+        )
+        .map_err(|e| {
+            PushError::Invalid(format!("base snapshot namespace corruption: {}", e))
+                .into_api_error()
+        })?;
+
         for c in &decoded {
             // Current state is base db + evolving novelty.
             let current_t = base_state.snapshot.t.max(evolving_novelty.t);
+
+            // 4.0.1 Cross-commit namespace validation: namespace delta must be
+            // conflict-free against the accumulated namespace table from parent + prior commits.
+            accumulated_ns
+                .merge_delta(&c.commit.namespace_delta)
+                .map_err(|e| {
+                    PushError::Invalid(format!(
+                        "commit t={}: namespace delta conflict: {}",
+                        c.commit.t, e
+                    ))
+                    .into_api_error()
+                })?;
+
+            // ns_split_mode immutability: locked once user namespaces are allocated.
+            if let Some(mode) = c.commit.ns_split_mode {
+                base_state
+                    .snapshot
+                    .set_ns_split_mode(mode, c.commit.t)
+                    .map_err(|e| PushError::Invalid(e.to_string()).into_api_error())?;
+            }
 
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
@@ -302,7 +333,8 @@ where
             &accepted_all_flakes,
             &decoded,
             &stored_commits,
-        );
+        )
+        .map_err(|e| e.into_api_error())?;
 
         // 8) Compute indexing status from the updated state.
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -415,7 +447,17 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
 
     for g_sid in &graph_sids_set {
         let resolved = if let Some(store) = &binary_store {
-            let iri = store.sid_to_iri(g_sid);
+            let iri = match store.sid_to_iri(g_sid) {
+                Some(iri) => iri,
+                None => {
+                    tracing::error!(
+                        ns_code = g_sid.namespace_code,
+                        suffix = %g_sid.name,
+                        "sid_to_iri failed for graph SID — namespace code not in binary store"
+                    );
+                    continue; // skip unresolvable graph SID
+                }
+            };
             store.graph_id_for_iri(&iri)
         } else {
             None
@@ -779,7 +821,7 @@ fn apply_pushed_commits_to_state(
     accepted_all_flakes: &[(i64, Vec<Flake>)],
     decoded: &[PushCommitDecoded],
     stored_commits: &[StoredCommit],
-) -> LedgerState {
+) -> std::result::Result<LedgerState, PushError> {
     // Extract namespace deltas and graph IRIs from the decoded commits,
     // then apply to the snapshot so that build_reverse_graph() has complete data.
     {
@@ -794,9 +836,16 @@ fn apply_pushed_commits_to_state(
             for iri in c.commit.graph_delta.values() {
                 all_graph_iris.insert(iri.clone());
             }
+            // Apply ns_split_mode (immutable after user namespace allocation).
+            if let Some(mode) = c.commit.ns_split_mode {
+                base.snapshot
+                    .set_ns_split_mode(mode, c.commit.t)
+                    .map_err(|e| PushError::Internal(e.to_string()))?;
+            }
         }
         base.snapshot
-            .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+            .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)
+            .map_err(|e| PushError::Internal(format!("apply_envelope_deltas failed: {}", e)))?;
     }
 
     // Build reverse_graph now that namespace_codes and graph_registry are complete.
@@ -824,17 +873,30 @@ fn apply_pushed_commits_to_state(
     let mut novelty = (*base.novelty).clone();
     let mut dict_novelty = base.dict_novelty.clone();
 
+    let store_opt: Option<&BinaryIndexStore> = base
+        .binary_store
+        .as_ref()
+        .and_then(|te| te.0.as_ref().downcast_ref::<BinaryIndexStore>());
+
     for (t, flakes) in accepted_all_flakes {
         // Populate dict novelty similarly to transact commit path.
-        populate_dict_novelty(Arc::make_mut(&mut dict_novelty), flakes);
+        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+            Arc::make_mut(&mut dict_novelty),
+            store_opt,
+            flakes.iter(),
+        )
+        .map_err(|e| {
+            PushError::Internal(format!(
+                "populate_dict_novelty_safe failed at t={}: {}",
+                t, e
+            ))
+        })?;
         // Apply to novelty.
-        if let Err(e) = novelty.apply_commit(flakes.clone(), *t, &reverse_graph) {
-            error!(
-                error = ?e,
-                commit_t = *t,
-                "post-CAS novelty apply_commit failed; in-memory state may be stale until reload"
-            );
-        }
+        novelty
+            .apply_commit(flakes.clone(), *t, &reverse_graph)
+            .map_err(|e| {
+                PushError::Internal(format!("novelty apply_commit failed at t={}: {}", t, e))
+            })?;
     }
 
     base.novelty = Arc::new(novelty);
@@ -846,11 +908,7 @@ fn apply_pushed_commits_to_state(
             r.commit_t = last.t;
         }
     }
-    base
-}
-
-fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.populate_from_flakes(flakes);
+    Ok(base)
 }
 
 /// Extract and **verify** the canonical content hash from a commit-v2 blob.
@@ -1404,7 +1462,8 @@ where
             .collect();
 
         let new_state =
-            apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits);
+            apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits)
+                .map_err(|e| e.into_api_error())?;
 
         // 9) Compute indexing status from the updated state.
         let index_config = self.default_index_config();

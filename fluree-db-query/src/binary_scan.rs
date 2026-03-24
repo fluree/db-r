@@ -726,17 +726,16 @@ impl BinaryScanOperator {
 
     /// Build a `BinaryFilter` from bound pattern terms.
     fn build_filter_from_snapshot_sids(
-        snapshot: &LedgerSnapshot,
         store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
         let s_id = match s_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_s_id(snapshot, store, sid)?,
+            Some(sid) => sid_iri::sid_to_store_s_id(store, sid)?,
             None => None,
         };
         let p_id = match p_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_p_id(snapshot, store, sid),
+            Some(sid) => sid_iri::sid_to_store_p_id(store, sid),
             None => None,
         };
 
@@ -1312,8 +1311,8 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = sid_iri::sid_to_full_iri(ctx.snapshot, sid) {
-            snapshot.encode_iri(iri.as_ref())
+        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+            snapshot.encode_iri(&iri)
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
             // raw SID. This is important when the namespace table has been
@@ -1417,9 +1416,8 @@ impl Operator for BinaryScanOperator {
         // by translating through full IRIs into store namespace space.
         let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter =
-            Self::build_filter_from_snapshot_sids(ctx.snapshot, store_ref, &s_sid, &p_sid)
-                .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        let mut filter = Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
+            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
             s_bound = s_sid.is_some(),
@@ -1942,7 +1940,7 @@ fn resolve_subject_v3(
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 ) -> std::io::Result<u64> {
-    // 1. Persisted
+    // 1. Persisted (canonical encoding guarantees exact-parts match)
     if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
         return Ok(id);
     }
@@ -2126,7 +2124,7 @@ fn value_to_otype_okey(
 /// Reconstructs the IRI from the Sid and matches against well-known XSD types.
 /// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
 fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStore) -> Option<OType> {
-    let iri = store.sid_to_iri(dt_sid);
+    let iri = store.sid_to_iri(dt_sid)?;
     fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
 }
 
@@ -2160,8 +2158,8 @@ pub(crate) fn value_to_otype_okey_simple(
         }
         FlakeValue::Ref(sid) => {
             let s_id = store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))?
                 .ok_or_else(|| {
                     QueryError::execution("ref object not found in V6 dict".to_string())
                 })?;

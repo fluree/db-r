@@ -70,20 +70,10 @@ where
                     ))
                 })?;
 
-                binary_index_store.augment_namespace_codes(&state.snapshot.namespace_codes);
-
-                // Augment the snapshot's namespace table with codes from
-                // the root. After a rebuild, the root may have namespace
-                // codes that the snapshot (loaded from the commit chain)
-                // doesn't have. Without this, SPARQL result formatting
-                // fails with UnknownNamespace errors.
-                for (code, prefix) in binary_index_store.namespace_codes() {
-                    state
-                        .snapshot
-                        .namespace_codes
-                        .entry(*code)
-                        .or_insert_with(|| prefix.clone());
-                }
+                crate::ns_helpers::sync_store_and_snapshot_ns(
+                    &mut binary_index_store,
+                    &mut state.snapshot,
+                )?;
 
                 // Extract stats from the FIR6 root if present.
                 // Decode FIR6 root metadata once and apply:
@@ -101,13 +91,20 @@ where
                 ));
                 // Re-populate DictNovelty with any already-loaded novelty flakes so
                 // overlay translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+                //
+                // Important: only allocate novelty IDs for entries *not* present in the
+                // persisted dictionaries (canonical IDs must win).
                 if !state.novelty.is_empty() {
                     let novelty = state.novelty.as_ref();
-                    Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+                    let dn = Arc::make_mut(&mut state.dict_novelty);
+                    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                        dn,
+                        Some(&binary_index_store),
                         novelty
                             .iter_index(fluree_db_core::IndexType::Post)
                             .map(|id| novelty.get_flake(id)),
-                    );
+                    )
+                    .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
                 }
 
                 // Stats + schema.

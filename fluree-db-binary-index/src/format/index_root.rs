@@ -128,6 +128,9 @@ pub struct IndexRoot {
     // ── Namespace / predicate metadata ─────────────────────────────
     pub namespace_codes: BTreeMap<u16, String>,
     pub predicate_sids: Vec<(u16, String)>,
+    /// Ledger-fixed split mode for canonical IRI encoding.
+    /// Persisted here so it survives independent of the commit chain.
+    pub ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode,
 
     // ── Inline small dictionaries ──────────────────────────────────
     pub graph_iris: Vec<String>,
@@ -523,6 +526,13 @@ impl IndexRoot {
             fluree_db_core::SubjectIdEncoding::Wide => 1,
         });
 
+        // ---- ns_split_mode (1 byte) ----
+        buf.push(
+            self.ns_split_mode
+                .to_byte()
+                .expect("ns_split_mode must be persistable"),
+        );
+
         // ---- Namespace codes (sorted by ns_code) ----
         buf.extend_from_slice(&(self.namespace_codes.len() as u16).to_le_bytes());
         for (&ns_code, prefix) in &self.namespace_codes {
@@ -689,6 +699,10 @@ impl IndexRoot {
             1 => fluree_db_core::SubjectIdEncoding::Wide,
             other => return Err(io_err(&format!("root v6: unknown encoding {other}"))),
         };
+
+        // ns_split_mode
+        let ns_split_mode_byte = read_u8_at(data, &mut pos)?;
+        let ns_split_mode = fluree_db_core::ns_encoding::NsSplitMode::from_byte(ns_split_mode_byte);
 
         // Namespace codes
         let ns_count = read_u16_at(data, &mut pos)? as usize;
@@ -872,6 +886,7 @@ impl IndexRoot {
             subject_id_encoding,
             namespace_codes,
             predicate_sids,
+            ns_split_mode,
             graph_iris,
             datatype_iris,
             language_tags,
@@ -1159,6 +1174,7 @@ mod tests {
             prev_index: None,
             garbage: None,
             sketch_ref: None,
+            ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode::default(),
         }
     }
 

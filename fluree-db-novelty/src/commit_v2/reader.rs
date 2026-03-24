@@ -214,6 +214,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         commit_signatures,
         txn_meta: envelope.txn_meta,
         graph_delta: envelope.graph_delta,
+        ns_split_mode: envelope.ns_split_mode,
     })
 }
 
@@ -250,6 +251,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
         txn: env.txn,
         namespace_delta: env.namespace_delta,
         txn_meta: env.txn_meta,
+        ns_split_mode: env.ns_split_mode,
     })
 }
 
