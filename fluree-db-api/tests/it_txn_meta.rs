@@ -1255,23 +1255,25 @@ async fn test_insert_with_txn_meta_preserves_graph_data() {
             let results = results.to_jsonld(&ledger_snap.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
-            let has_alice = arr
-                .iter()
-                .any(|v| v.as_str() == Some("Alice") || v.as_array().map(|r| r.iter().any(|x| x.as_str() == Some("Alice"))).unwrap_or(false));
-            let has_bob = arr
-                .iter()
-                .any(|v| v.as_str() == Some("Bob") || v.as_array().map(|r| r.iter().any(|x| x.as_str() == Some("Bob"))).unwrap_or(false));
+            let has_alice = arr.iter().any(|v| {
+                v.as_str() == Some("Alice")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("Alice")))
+                        .unwrap_or(false)
+            });
+            let has_bob = arr.iter().any(|v| {
+                v.as_str() == Some("Bob")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("Bob")))
+                        .unwrap_or(false)
+            });
 
             assert!(
                 has_alice,
                 "Alice should be in default graph, got: {:?}",
                 arr
             );
-            assert!(
-                has_bob,
-                "Bob should be in default graph, got: {:?}",
-                arr
-            );
+            assert!(has_bob, "Bob should be in default graph, got: {:?}", arr);
 
             // Also verify txn-meta was stored
             let meta_query = json!({
@@ -1354,15 +1356,14 @@ async fn test_upsert_with_txn_meta_preserves_graph_data() {
             let results = results.to_jsonld(&ledger_snap.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
-            let has_99 = arr
-                .iter()
-                .any(|v| json_as_i64(v) == Some(99) || v.as_array().map(|r| r.iter().any(|x| json_as_i64(x) == Some(99))).unwrap_or(false));
+            let has_99 = arr.iter().any(|v| {
+                json_as_i64(v) == Some(99)
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| json_as_i64(x) == Some(99)))
+                        .unwrap_or(false)
+            });
 
-            assert!(
-                has_99,
-                "upsert should have set score to 99, got: {:?}",
-                arr
-            );
+            assert!(has_99, "upsert should have set score to 99, got: {:?}", arr);
         })
         .await;
 }
