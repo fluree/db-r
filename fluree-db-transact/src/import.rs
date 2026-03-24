@@ -185,7 +185,7 @@ mod inner {
             state.cumulative_flakes += op_count as u64;
 
             // Persist split mode in genesis commit (first chunk, no previous ref).
-            let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
+            let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
             let envelope = CommitV2Envelope {
                 t: new_t,
@@ -327,7 +327,7 @@ mod inner {
             state.cumulative_flakes += op_count as u64;
 
             // Persist split mode in genesis commit (first chunk, no previous ref).
-            let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
+            let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
             let envelope = CommitV2Envelope {
                 t: new_t,
@@ -552,7 +552,7 @@ mod inner {
         state.cumulative_flakes += op_count as u64;
 
         // Persist split mode in genesis commit (first chunk, no previous ref).
-        let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
+        let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
         let envelope = CommitV2Envelope {
             t: new_t,
@@ -1001,7 +1001,7 @@ mod inner {
         state.cumulative_flakes += parsed.op_count as u64;
 
         // Persist split mode in genesis commit (first chunk, no previous ref).
-        let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
+        let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
         let envelope = CommitV2Envelope {
             t: new_t,

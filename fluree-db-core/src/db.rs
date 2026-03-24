@@ -259,6 +259,11 @@ impl LedgerSnapshot {
     /// the EMPTY namespace for unknown IRIs. Use this when the caller needs
     /// to distinguish between known and unknown namespaces (e.g., validating
     /// user-supplied IRIs in BIND expressions or policy identity resolution).
+    ///
+    /// Note: bare strings with no scheme (e.g., `"just-a-string"`) canonically
+    /// split to the EMPTY prefix `""` and are intentionally rejected here, even
+    /// though EMPTY is a registered code. This is correct — such strings are not
+    /// valid IRIs in any known namespace.
     pub fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
         let sid = self.encode_iri_inner(iri);
         if sid.namespace_code == fluree_vocab::namespaces::EMPTY {
@@ -366,7 +371,14 @@ impl LedgerSnapshot {
     /// `Ok(false)` if the code was already registered (no-op), or `Err` if the
     /// prefix is already mapped to a different code (bimap conflict).
     pub fn insert_namespace_code(&mut self, code: u16, prefix: String) -> Result<bool> {
-        if self.namespace_codes.contains_key(&code) {
+        if let Some(existing) = self.namespace_codes.get(&code) {
+            if existing != &prefix {
+                return Err(Error::invalid_index(format!(
+                    "namespace bimap conflict: code {} already maps to {:?} \
+                     but {:?} was requested",
+                    code, existing, prefix
+                )));
+            }
             return Ok(false);
         }
         if let Some(&existing_code) = self.namespace_reverse.get(&prefix) {

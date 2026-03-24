@@ -189,10 +189,18 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     // Use insert_namespace_code to keep the reverse map in sync (needed for
     // canonical encode_iri lookups). Codes 3, 4, 6 already exist in defaults
     // but are harmless no-ops; code 100 is the critical new one.
-    snapshot.insert_namespace_code(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
-    snapshot.insert_namespace_code(4, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    snapshot.insert_namespace_code(6, "http://www.w3.org/2002/07/owl#".to_string());
-    snapshot.insert_namespace_code(100, "http://example.org/".to_string());
+    snapshot
+        .insert_namespace_code(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string())
+        .unwrap();
+    snapshot
+        .insert_namespace_code(4, "http://www.w3.org/2000/01/rdf-schema#".to_string())
+        .unwrap();
+    snapshot
+        .insert_namespace_code(6, "http://www.w3.org/2002/07/owl#".to_string())
+        .unwrap();
+    snapshot
+        .insert_namespace_code(100, "http://example.org/".to_string())
+        .unwrap();
 
     // Vocabulary
     let person = sid_ex("Person");

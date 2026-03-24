@@ -75,10 +75,13 @@ impl NamespaceRegistry {
     /// Create a registry seeded from a database's namespace codes.
     ///
     /// Merges snapshot codes into predefined defaults with bimap conflict
-    /// validation. A conflict between snapshot and defaults indicates
-    /// corruption — logged as error but not fatal. Built-in codes (< USER_START)
-    /// are always preserved; only user codes from the snapshot are accepted in
-    /// the fallback path.
+    /// validation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the snapshot's namespace codes conflict with the built-in
+    /// defaults. This indicates corrupt persisted data — no legacy data
+    /// exists to recover from, so failing fast is the correct behavior.
     pub fn from_db(snapshot: &LedgerSnapshot) -> Self {
         let mut codes = NamespaceCodes::new(); // seeded with defaults
         let snapshot_ns: HashMap<u16, String> = snapshot
@@ -86,36 +89,12 @@ impl NamespaceRegistry {
             .iter()
             .map(|(&k, v)| (k, v.clone()))
             .collect();
-        if let Err(e) = codes.merge_delta(&snapshot_ns) {
-            // Conflict between snapshot and built-in defaults. This shouldn't
-            // happen with valid data, but log prominently rather than crashing.
-            tracing::error!(
-                error = %e,
-                "namespace conflict merging snapshot into defaults in from_db — \
-                 snapshot codes may be corrupt"
+        codes.merge_delta(&snapshot_ns).unwrap_or_else(|e| {
+            panic!(
+                "namespace conflict merging snapshot into defaults — \
+                 snapshot namespace codes are corrupt: {e}"
             );
-            // Fall back to raw merge: built-in codes always win, only user
-            // codes (>= USER_START) from the snapshot are accepted.
-            let mut names = fluree_db_core::default_namespace_codes();
-            for (&code, prefix) in snapshot.namespaces() {
-                if code >= USER_START {
-                    names.insert(code, prefix.clone());
-                } else {
-                    tracing::warn!(
-                        code,
-                        snapshot_prefix = %prefix,
-                        "ignoring corrupt snapshot override of built-in namespace code"
-                    );
-                }
-            }
-            return Self {
-                codes: NamespaceCodes::from_code_to_prefix(names).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "fallback namespace map also has bimap conflict — using defaults only");
-                    NamespaceCodes::new()
-                }),
-                split_mode: snapshot.ns_split_mode(),
-            };
-        }
+        });
 
         Self {
             codes,

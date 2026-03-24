@@ -395,7 +395,8 @@ async fn e2e_r2rml_query_iceberg_table() {
     // Register example.org namespace
     ledger
         .snapshot
-        .insert_namespace_code(9_999, "http://example.org/".to_string());
+        .insert_namespace_code(9_999, "http://example.org/".to_string())
+        .unwrap();
 
     // Build query: SELECT ?airline ?name ?country WHERE { GRAPH <gs:main> { ?airline ex:name ?name ; ex:country ?country } }
     let mut vars = VarRegistry::new();
@@ -569,7 +570,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     let mut ledger = genesis_ledger(&fluree, "e2e-provider:main");
     ledger
         .snapshot
-        .insert_namespace_code(9_999, "http://example.org/".to_string());
+        .insert_namespace_code(9_999, "http://example.org/".to_string())
+        .unwrap();
 
     // Step 1: Store the R2RML mapping in Fluree storage
     eprintln!("Step 1: Storing R2RML mapping...");
@@ -1045,7 +1047,8 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     // returns None and the operator will skip all rows as "IRI not encodable".
     ledger
         .snapshot
-        .insert_namespace_code(9_999, "http://example.org/".to_string());
+        .insert_namespace_code(9_999, "http://example.org/".to_string())
+        .unwrap();
 
     // Compile the airline mapping
     let mapping = compile_airline_mapping();
@@ -1804,7 +1807,8 @@ async fn engine_e2e_ref_object_map_join_execution() {
     // Register example.org namespace
     ledger
         .snapshot
-        .insert_namespace_code(9_999, "http://example.org/".to_string());
+        .insert_namespace_code(9_999, "http://example.org/".to_string())
+        .unwrap();
 
     // Build query: SELECT ?route ?airline WHERE { GRAPH <gs:main> { ?route ex:operatedBy ?airline } }
     let mut vars = VarRegistry::new();
