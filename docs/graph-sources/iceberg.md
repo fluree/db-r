@@ -15,80 +15,122 @@ Apache Iceberg is an open table format for huge analytical datasets. It provides
 
 ## Configuration
 
-### Create Iceberg Graph Source
+### Catalog Modes
 
-```bash
-curl -X POST http://localhost:8090/graph-source \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "warehouse-orders",
-    "type": "iceberg",
-    "catalog": "glue",
-    "warehouse": "s3://my-data-warehouse/",
-    "table": "sales.orders",
-    "mapping": {
-      "order_id": "ex:orderId",
-      "customer_id": "ex:customerId",
-      "product_id": "ex:productId",
-      "quantity": "ex:quantity",
-      "total": "ex:total",
-      "order_date": "ex:orderDate"
-    }
-  }'
+Fluree supports two ways to discover Iceberg metadata:
+
+- **REST catalog**: discover table metadata via an Iceberg REST catalog API (e.g., Polaris).
+- **Direct S3 (no catalog server)**: bypass REST discovery and read `version-hint.text` from the table’s `metadata/` directory to resolve the current `vN.metadata.json`.
+
+### Rust API
+
+**REST catalog mode (Polaris-style):**
+
+```rust
+use fluree_db_api::IcebergCreateConfig;
+
+let config = IcebergCreateConfig::new(
+    "warehouse-orders",
+    "https://polaris.example.com/api/catalog",
+    "sales.orders",
+)
+.with_warehouse("my-warehouse")
+.with_auth_bearer("my-token")
+.with_vended_credentials(true);
+
+fluree.create_iceberg_graph_source(config).await?;
 ```
 
-### Catalog Types
+**Direct S3 mode (no REST catalog):**
 
-**AWS Glue:**
-```json
-{
-  "catalog": "glue",
-  "warehouse": "s3://bucket/path/",
-  "aws_region": "us-east-1"
-}
+```rust
+use fluree_db_api::IcebergCreateConfig;
+
+let config = IcebergCreateConfig::new_direct(
+    "execution-log",
+    "s3://bucket/warehouse/logs/execution_log",
+)
+.with_s3_region("us-east-1")
+.with_s3_path_style(true);
+
+fluree.create_iceberg_graph_source(config).await?;
 ```
 
-**Hive Metastore:**
-```json
-{
-  "catalog": "hive",
-  "metastore_uri": "thrift://localhost:9083",
-  "warehouse": "hdfs://namenode:8020/warehouse/"
-}
-```
+### Stored Configuration Format (Nameservice)
 
-**REST Catalog:**
-```json
-{
-  "catalog": "rest",
-  "catalog_uri": "http://localhost:8181/",
-  "warehouse": "s3://bucket/path/"
-}
-```
+Iceberg graph sources are persisted as an `IcebergGsConfig` JSON document in the nameservice record’s `config` field.
 
-**Hadoop:**
-```json
-{
-  "catalog": "hadoop",
-  "warehouse": "s3://bucket/path/"
-}
-```
+Note the nesting: the graph source is “Iceberg” (this page), and `catalog.type` selects the **catalog mode** (`rest` vs `direct`) used to discover Iceberg metadata.
 
-## Column Mapping
-
-Map Iceberg columns to RDF predicates:
+**REST catalog config:**
 
 ```json
 {
-  "mapping": {
-    "id": "ex:id",
-    "name": "schema:name",
-    "email": "schema:email",
-    "created_at": "ex:createdAt",
-    "status": "ex:status"
+  "catalog": {
+    "type": "rest",
+    "uri": "https://polaris.example.com/api/catalog",
+    "warehouse": "my-warehouse",
+    "auth": { "type": "bearer", "token": { "env_var": "POLARIS_TOKEN" } }
+  },
+  "table": "sales.orders",
+  "io": {
+    "vended_credentials": true,
+    "s3_region": "us-east-1",
+    "s3_endpoint": null,
+    "s3_path_style": false
   }
 }
 ```
+
+**Direct S3 config:**
+
+```json
+{
+  "catalog": {
+    "type": "direct",
+    "table_location": "s3://bucket/warehouse/logs/execution_log"
+  },
+  "table": "",
+  "io": {
+    "vended_credentials": false,
+    "s3_region": "us-east-1",
+    "s3_endpoint": null,
+    "s3_path_style": true
+  }
+}
+```
+
+**Direct mode requirements:**
+
+- `catalog.table_location` must be an S3 URI (`s3://` or `s3a://`) pointing to the table root directory.
+- The table must contain a `metadata/` subdirectory with:
+  - `version-hint.text` (single integer)
+  - `vN.metadata.json` files
+- Direct mode uses ambient AWS credentials (IAM roles, env vars, `~/.aws/credentials`). It does **not** support vended credentials.
+
+**How Direct metadata resolution works:**
+
+- Fluree does **not** require you to provide a path to `version-hint.text` in the config. You provide the **table root** (`table_location`), and Fluree reads:
+  - `"{table_location}/metadata/version-hint.text"` to determine the current version \(N\)
+  - `"{table_location}/metadata/vN.metadata.json"` as the table’s current metadata
+- If `version-hint.text` is missing or malformed, Direct mode fails with an error mentioning `version-hint.text`.
+
+**Iceberg table setup must already exist:**
+
+Direct mode assumes `table_location` points at a **valid Iceberg table layout** (created by `iceberg-rust`, Spark, etc.), including the `metadata/` directory and referenced metadata/manifest files. Fluree does not create or “bootstrap” Iceberg tables; it only reads them.
+
+**When to use Direct vs REST:**
+| Scenario | Recommended |
+|----------|-------------|
+| Shared catalog (multiple consumers) | REST |
+| Writer and reader are the same system | Direct |
+| `iceberg-rust` / Spark appending to known S3 path | Direct |
+| Need catalog-managed credentials (vended) | REST |
+| Minimizing infrastructure (no catalog server) | Direct |
+
+## RDF Mapping (R2RML)
+
+Fluree maps Iceberg table rows to RDF triples using an R2RML mapping (Turtle). See [R2RML](r2rml.md) for details.
 
 ### Type Mapping
 
@@ -276,13 +318,7 @@ Iceberg optimizations:
 
 ## Schema Evolution
 
-Iceberg supports schema evolution. Update graph source when schema changes:
-
-```bash
-curl -X POST http://localhost:8090/graph-source/warehouse-orders:main/refresh-schema
-```
-
-Fluree will reload Iceberg schema and update mapping.
+Iceberg supports schema evolution via metadata updates. If a schema change renames/removes columns used by your R2RML mapping, update the mapping accordingly.
 
 ## Configuration Options
 
@@ -379,9 +415,8 @@ ORDER BY DESC(?total)
 ## Limitations
 
 1. **Read-Only:** Iceberg graph sources are read-only (no writes via Fluree)
-2. **Eventual Consistency:** May lag behind Iceberg table updates
-3. **Complex Joins:** Large joins between Fluree and Iceberg may be slow
-4. **No Full-Text Search:** Use Fluree's BM25 for text search
+2. **Complex Joins:** Large joins between Fluree and Iceberg may be slow
+3. **No Full-Text Search:** Use Fluree's BM25 for text search
 
 ## Troubleshooting
 
@@ -409,8 +444,7 @@ ORDER BY DESC(?total)
 ```
 
 **Solutions:**
-- Refresh schema: `POST /graph-source/.../refresh-schema`
-- Update mapping configuration
+- Update R2RML mapping configuration (if the mapping references missing columns)
 - Verify table name and catalog
 
 ### Slow Queries

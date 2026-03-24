@@ -125,6 +125,11 @@ name = "it_storage_s3_testcontainers"
 path = "tests/it_storage_s3_testcontainers.rs"
 required-features = ["aws-testcontainers"]
 
+[[test]]
+name = "it_iceberg_direct"
+path = "tests/it_iceberg_direct.rs"
+required-features = ["iceberg", "aws-testcontainers"]
+
 [[bench]]
 name = "vector_query"
 harness = false

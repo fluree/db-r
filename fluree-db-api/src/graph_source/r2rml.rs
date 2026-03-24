@@ -6,7 +6,7 @@
 //! This module is only available with the `iceberg` feature.
 
 use crate::graph_source::cache::R2rmlCache;
-use crate::graph_source::config::{IcebergCreateConfig, R2rmlCreateConfig};
+use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateConfig};
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
@@ -47,22 +47,27 @@ where
         let graph_source_id = config.graph_source_id();
         info!(
             graph_source_id = %graph_source_id,
-            catalog_uri = %config.catalog_uri,
-            table = %config.table_identifier,
+            catalog = %config.catalog_uri_or_location(),
+            table = %config.table_identifier_display(),
             "Creating Iceberg graph source"
         );
 
         // 1. Validate configuration
         config.validate()?;
 
-        // 2. Test catalog connection (optional but recommended)
-        let connection_tested = self.test_iceberg_connection(&config).await.is_ok();
-        if !connection_tested {
-            warn!(
-                graph_source_id = %graph_source_id,
-                "Could not verify catalog connection - graph source will be created but may fail at query time"
-            );
-        }
+        // 2. Test catalog connection (REST mode only — Direct mode verified at query time)
+        let connection_tested = if config.is_rest() {
+            let ok = self.test_iceberg_connection(&config).await.is_ok();
+            if !ok {
+                warn!(
+                    graph_source_id = %graph_source_id,
+                    "Could not verify catalog connection - graph source will be created but may fail at query time"
+                );
+            }
+            ok
+        } else {
+            false
+        };
 
         // 3. Convert config to storage format
         let iceberg_config = config.to_iceberg_gs_config();
@@ -89,8 +94,8 @@ where
 
         Ok(IcebergCreateResult {
             graph_source_id,
-            table_identifier: config.table_identifier.clone(),
-            catalog_uri: config.catalog_uri.clone(),
+            table_identifier: config.table_identifier_display(),
+            catalog_uri: config.catalog_uri_or_location().to_string(),
             connection_tested,
         })
     }
@@ -109,8 +114,8 @@ where
         let graph_source_id = config.graph_source_id();
         info!(
             graph_source_id = %graph_source_id,
-            catalog_uri = %config.iceberg.catalog_uri,
-            table = %config.iceberg.table_identifier,
+            catalog = %config.iceberg.catalog_uri_or_location(),
+            table = %config.iceberg.table_identifier_display(),
             mapping = %config.mapping_source,
             "Creating R2RML graph source"
         );
@@ -132,14 +137,19 @@ where
                 (0, false)
             });
 
-        // 3. Test catalog connection (optional but recommended)
-        let connection_tested = self.test_iceberg_connection(&config.iceberg).await.is_ok();
-        if !connection_tested {
-            warn!(
-                graph_source_id = %graph_source_id,
-                "Could not verify catalog connection - graph source will be created but may fail at query time"
-            );
-        }
+        // 3. Test catalog connection (REST mode only)
+        let connection_tested = if config.iceberg.is_rest() {
+            let ok = self.test_iceberg_connection(&config.iceberg).await.is_ok();
+            if !ok {
+                warn!(
+                    graph_source_id = %graph_source_id,
+                    "Could not verify catalog connection - graph source will be created but may fail at query time"
+                );
+            }
+            ok
+        } else {
+            false
+        };
 
         // 4. Convert config to storage format
         let iceberg_config = config.to_iceberg_gs_config();
@@ -168,8 +178,8 @@ where
 
         Ok(R2rmlCreateResult {
             graph_source_id,
-            table_identifier: config.iceberg.table_identifier.clone(),
-            catalog_uri: config.iceberg.catalog_uri.clone(),
+            table_identifier: config.iceberg.table_identifier_display(),
+            catalog_uri: config.iceberg.catalog_uri_or_location().to_string(),
             mapping_source: config.mapping_source.clone(),
             triples_map_count,
             connection_tested,
@@ -177,22 +187,30 @@ where
         })
     }
 
-    /// Test connection to an Iceberg catalog.
+    /// Test connection to an Iceberg REST catalog.
     ///
-    /// This performs a lightweight connection test by attempting to load
-    /// the table metadata from the catalog.
+    /// Only applicable to REST mode. Direct mode has no catalog to test.
     async fn test_iceberg_connection(&self, config: &IcebergCreateConfig) -> Result<()> {
         use fluree_db_iceberg::catalog::parse_table_identifier;
 
+        let rest = match &config.catalog_mode {
+            CatalogMode::Rest(rest) => rest,
+            CatalogMode::Direct { .. } => {
+                return Err(crate::ApiError::Config(
+                    "Connection test is not supported for Direct catalog mode".to_string(),
+                ));
+            }
+        };
+
         // Create auth provider
-        let auth = config.auth.create_provider_arc().map_err(|e| {
+        let auth = rest.auth.create_provider_arc().map_err(|e| {
             crate::ApiError::Config(format!("Failed to create auth provider: {}", e))
         })?;
 
         // Create catalog client
         let catalog_config = RestCatalogConfig {
-            uri: config.catalog_uri.clone(),
-            warehouse: config.warehouse.clone(),
+            uri: rest.catalog_uri.clone(),
+            warehouse: rest.warehouse.clone(),
             ..Default::default()
         };
 
@@ -201,12 +219,12 @@ where
         })?;
 
         // Parse table identifier
-        let table_id = parse_table_identifier(&config.table_identifier)
+        let table_id = parse_table_identifier(&rest.table_identifier)
             .map_err(|e| crate::ApiError::Config(format!("Invalid table identifier: {}", e)))?;
 
         // Attempt to load table metadata (this tests the connection)
         catalog
-            .load_table(&table_id, config.vended_credentials)
+            .load_table(&table_id, rest.vended_credentials)
             .await
             .map_err(|e| {
                 crate::ApiError::Config(format!("Failed to load table from catalog: {}", e))
@@ -520,82 +538,138 @@ where
         info!(
             graph_source_id = %graph_source_id,
             table_name = %table_name,
-            catalog_uri = %iceberg_config.catalog.uri,
             projection = ?projection,
             "Starting Iceberg table scan"
         );
 
-        // Create auth provider
-        let auth = iceberg_config
-            .catalog
-            .auth
-            .create_provider_arc()
-            .map_err(|e| QueryError::Internal(format!("Failed to create auth provider: {}", e)))?;
-
-        // Create REST catalog client
-        let catalog_config = RestCatalogConfig {
-            uri: iceberg_config.catalog.uri.clone(),
-            warehouse: iceberg_config.catalog.warehouse.clone(),
-            ..Default::default()
-        };
-
-        let catalog = RestCatalogClient::new(catalog_config, auth)
-            .map_err(|e| QueryError::Internal(format!("Failed to create catalog client: {}", e)))?;
+        // Branch on catalog mode: REST vs Direct
+        use fluree_db_iceberg::config::CatalogConfig;
+        use fluree_db_iceberg::SendDirectCatalogClient;
 
         // Parse the table identifier
         use fluree_db_iceberg::catalog::parse_table_identifier;
-        let table_id = if table_name.is_empty() {
-            iceberg_config.table_identifier().map_err(|e| {
-                QueryError::Internal(format!("Failed to parse table identifier: {}", e))
-            })?
-        } else {
+        let table_id = if !table_name.is_empty() {
             parse_table_identifier(table_name).map_err(|e| {
                 QueryError::Internal(format!(
                     "Failed to parse table identifier '{}': {}",
                     table_name, e
                 ))
             })?
+        } else {
+            iceberg_config.table_identifier().map_err(|e| {
+                QueryError::Internal(format!("Failed to parse table identifier: {}", e))
+            })?
         };
 
-        info!(
-            namespace = %table_id.namespace,
-            table = %table_id.table,
-            "Loading table from catalog"
-        );
+        // Resolve metadata location and create storage based on catalog mode
+        let (load_response, storage) = match &iceberg_config.catalog {
+            CatalogConfig::Rest {
+                uri,
+                warehouse,
+                auth,
+                ..
+            } => {
+                info!(
+                    catalog_uri = %uri,
+                    namespace = %table_id.namespace,
+                    table = %table_id.table,
+                    "Loading table from REST catalog"
+                );
 
-        // Load table metadata from catalog
-        let load_response = catalog
-            .load_table(&table_id, iceberg_config.io.vended_credentials)
-            .await
-            .map_err(|e| {
-                QueryError::Internal(format!("Failed to load table from catalog: {}", e))
-            })?;
+                let auth_provider = auth.create_provider_arc().map_err(|e| {
+                    QueryError::Internal(format!("Failed to create auth provider: {}", e))
+                })?;
 
-        info!(
-            metadata_location = %load_response.metadata_location,
-            has_credentials = load_response.credentials.is_some(),
-            "Loaded table metadata location"
-        );
+                let catalog_config = RestCatalogConfig {
+                    uri: uri.clone(),
+                    warehouse: warehouse.clone(),
+                    ..Default::default()
+                };
 
-        // Create S3 storage
-        let storage = if let Some(credentials) = load_response.credentials {
-            info!("Using vended credentials from catalog");
-            S3IcebergStorage::from_vended_credentials(&credentials)
-                .await
-                .map_err(|e| QueryError::Internal(format!("Failed to create S3 storage: {}", e)))?
-        } else {
-            info!(
-                region = ?iceberg_config.io.s3_region,
-                endpoint = ?iceberg_config.io.s3_endpoint,
-                "Using ambient AWS credentials"
-            );
-            S3IcebergStorage::from_default_chain(
-                iceberg_config.io.s3_region.as_deref(),
-                iceberg_config.io.s3_endpoint.as_deref(),
-                iceberg_config.io.s3_path_style,
-            )
-            .await
-            .map_err(|e| QueryError::Internal(format!("Failed to create S3 storage: {}", e)))?
+                let catalog =
+                    RestCatalogClient::new(catalog_config, auth_provider).map_err(|e| {
+                        QueryError::Internal(format!("Failed to create catalog client: {}", e))
+                    })?;
+
+                let load_response = catalog
+                    .load_table(&table_id, iceberg_config.io.vended_credentials)
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to load table from catalog: {}", e))
+                    })?;
+
+                info!(
+                    metadata_location = %load_response.metadata_location,
+                    has_credentials = load_response.credentials.is_some(),
+                    "Loaded table metadata location"
+                );
+
+                let storage = if let Some(ref credentials) = load_response.credentials {
+                    info!("Using vended credentials from catalog");
+                    S3IcebergStorage::from_vended_credentials(credentials)
+                        .await
+                        .map_err(|e| {
+                            QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                        })?
+                } else {
+                    info!(
+                        region = ?iceberg_config.io.s3_region,
+                        endpoint = ?iceberg_config.io.s3_endpoint,
+                        "Using ambient AWS credentials"
+                    );
+                    S3IcebergStorage::from_default_chain(
+                        iceberg_config.io.s3_region.as_deref(),
+                        iceberg_config.io.s3_endpoint.as_deref(),
+                        iceberg_config.io.s3_path_style,
+                    )
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                    })?
+                };
+
+                (load_response, Arc::new(storage))
+            }
+            CatalogConfig::Direct { table_location } => {
+                info!(
+                    table_location = %table_location,
+                    "Loading table via direct S3 access"
+                );
+
+                // Direct mode: create storage once, share via Arc
+                let storage = Arc::new(
+                    S3IcebergStorage::from_default_chain(
+                        iceberg_config.io.s3_region.as_deref(),
+                        iceberg_config.io.s3_endpoint.as_deref(),
+                        iceberg_config.io.s3_path_style,
+                    )
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                    })?,
+                );
+
+                let direct_catalog =
+                    SendDirectCatalogClient::new(table_location.clone(), Arc::clone(&storage));
+
+                let load_response =
+                    direct_catalog
+                        .load_table(&table_id, false)
+                        .await
+                        .map_err(|e| {
+                            QueryError::Internal(format!(
+                                "Failed to resolve table metadata from {}: {}",
+                                table_location, e
+                            ))
+                        })?;
+
+                info!(
+                    metadata_location = %load_response.metadata_location,
+                    "Resolved table metadata via version-hint.text"
+                );
+
+                (load_response, storage)
+            }
         };
 
         // Check cache for table metadata
@@ -608,9 +682,13 @@ where
         } else {
             debug!(metadata_location = %metadata_location, "Table metadata cache miss");
 
-            let metadata_bytes = storage.read(metadata_location).await.map_err(|e| {
-                QueryError::Internal(format!("Failed to read table metadata: {}", e))
-            })?;
+            let metadata_bytes = storage
+                .as_ref()
+                .read(metadata_location)
+                .await
+                .map_err(|e| {
+                    QueryError::Internal(format!("Failed to read table metadata: {}", e))
+                })?;
 
             let parsed = TableMetadata::from_json(&metadata_bytes).map_err(|e| {
                 QueryError::Internal(format!("Failed to parse table metadata: {}", e))
@@ -668,7 +746,7 @@ where
         let scan_config = ScanConfig::new().with_projection(projected_field_ids.clone());
 
         // Create scan planner and generate scan plan
-        let planner = SendScanPlanner::new(&storage, &metadata, scan_config);
+        let planner = SendScanPlanner::new(storage.as_ref(), &metadata, scan_config);
         let plan = planner
             .plan_scan()
             .await
@@ -687,7 +765,7 @@ where
         }
 
         // Read data files
-        let reader = SendParquetReader::new(&storage);
+        let reader = SendParquetReader::new(storage.as_ref());
         let mut all_batches = Vec::new();
 
         for task in &plan.tasks {

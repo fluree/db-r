@@ -140,20 +140,41 @@ Non-ledger graph sources are registered in nameservice:
 
 **Purpose:** Analytics on data lake
 
-**Configuration:**
+**Configuration (REST catalog):**
 ```json
 {
   "type": "iceberg",
-  "catalog": "glue",
-  "warehouse": "s3://data-warehouse/",
+  "catalog": {
+    "type": "rest",
+    "uri": "https://polaris.example.com/api/catalog",
+    "warehouse": "my-warehouse",
+    "auth": { "type": "bearer", "token": { "env_var": "POLARIS_TOKEN" } }
+  },
   "table": "sales.orders",
-  "mapping": {
-    "order_id": "ex:orderId",
-    "customer_id": "ex:customerId",
-    "total": "ex:total"
+  "io": { "vended_credentials": true }
+}
+```
+
+Note the nesting: the outer `"type": "iceberg"` is the graph source backend; the inner `catalog.type` selects the Iceberg catalog **mode** (`rest` vs `direct`).
+
+**Configuration (Direct S3 — no catalog server):**
+```json
+{
+  "type": "iceberg",
+  "catalog": {
+    "type": "direct",
+    "table_location": "s3://bucket/warehouse/sales/orders"
+  },
+  "table": "",
+  "io": {
+    "vended_credentials": false,
+    "s3_region": "us-east-1",
+    "s3_path_style": true
   }
 }
 ```
+
+**Note:** In Direct mode, Fluree resolves the current metadata by reading `metadata/version-hint.text` under `table_location` and then loading `metadata/vN.metadata.json`. The Iceberg table’s `metadata/` directory and files must already exist.
 
 **Query:**
 ```json
@@ -196,39 +217,22 @@ Non-ledger graph sources are registered in nameservice:
 
 ## Creating Graph Sources
 
-### Via HTTP API
+### Via Rust API
 
-```bash
-curl -X POST http://localhost:8090/graph-source \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "products-search",
-    "type": "bm25",
-    "source": "products:main",
-    "config": {
-      "fields": [...]
-    }
-  }'
-```
+Graph sources are created and registered via the `fluree-db-api` Rust API, which publishes the graph source record into the nameservice.
 
-### Via Transaction
+```rust
+use fluree_db_api::{FlureeBuilder, IcebergCreateConfig};
 
-Define graph source as RDF:
+let fluree = FlureeBuilder::default().build().await?;
 
-```json
-{
-  "@graph": [
-    {
-      "@id": "gs:products-search",
-      "@type": "f:IndexSource",
-      "f:type": "bm25",
-      "f:source": "products:main",
-      "f:config": {
-        "f:fields": [...]
-      }
-    }
-  ]
-}
+let config = IcebergCreateConfig::new_direct(
+    "execution-log",
+    "s3://bucket/warehouse/logs/execution_log",
+)
+.with_s3_region("us-east-1");
+
+fluree.create_iceberg_graph_source(config).await?;
 ```
 
 ## Querying Graph Sources

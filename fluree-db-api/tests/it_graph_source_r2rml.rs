@@ -1341,8 +1341,13 @@ fn test_iceberg_create_config_builder() {
         .with_s3_path_style(true);
 
     assert_eq!(config.graph_source_id(), "my-gs:dev");
-    assert_eq!(config.warehouse, Some("my-warehouse".to_string()));
-    assert!(!config.vended_credentials);
+    match &config.catalog_mode {
+        fluree_db_api::CatalogMode::Rest(rest) => {
+            assert_eq!(rest.warehouse, Some("my-warehouse".to_string()));
+            assert!(!rest.vended_credentials);
+        }
+        _ => panic!("Expected REST catalog mode"),
+    }
     assert_eq!(config.s3_region, Some("us-west-2".to_string()));
     assert_eq!(
         config.s3_endpoint,
@@ -1412,7 +1417,12 @@ fn test_r2rml_create_config_builder() {
     assert_eq!(config.graph_source_id(), "airlines-rdf:staging");
     assert_eq!(config.mapping_source, "s3://bucket/mappings/airlines.ttl");
     assert_eq!(config.mapping_media_type, Some("text/turtle".to_string()));
-    assert_eq!(config.iceberg.warehouse, Some("analytics".to_string()));
+    match &config.iceberg.catalog_mode {
+        fluree_db_api::CatalogMode::Rest(rest) => {
+            assert_eq!(rest.warehouse, Some("analytics".to_string()));
+        }
+        _ => panic!("Expected REST catalog mode"),
+    }
 
     // Validation should pass
     assert!(config.validate().is_ok());
@@ -1437,9 +1447,14 @@ fn test_iceberg_graph_source_config_serialization() {
     use fluree_db_iceberg::IcebergGsConfig;
     let parsed = IcebergGsConfig::from_json(&json).expect("parsing should succeed");
 
-    assert_eq!(parsed.catalog.uri, "https://polaris.example.com");
+    match &parsed.catalog {
+        fluree_db_iceberg::CatalogConfig::Rest { uri, warehouse, .. } => {
+            assert_eq!(uri, "https://polaris.example.com");
+            assert_eq!(warehouse, &Some("my-warehouse".to_string()));
+        }
+        other => panic!("Expected Rest variant, got {:?}", other),
+    }
     assert_eq!(parsed.table.identifier(), "ns.table");
-    assert_eq!(parsed.catalog.warehouse, Some("my-warehouse".to_string()));
     assert!(parsed.io.vended_credentials);
     assert!(parsed.mapping.is_none());
 }
