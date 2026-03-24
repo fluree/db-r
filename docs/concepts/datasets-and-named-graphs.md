@@ -34,7 +34,7 @@ In Fluree, named graphs are used in several ways:
 
 Fluree exposes two query styles over HTTP:
 
-- **Connection-scoped** (`POST /query`): the ledger(s) and graphs are identified by `from` / `from-named` (JSON-LD) or `FROM` / `FROM NAMED` (SPARQL). This is the dataset path and supports multi-ledger datasets.
+- **Connection-scoped** (`POST /query`): the ledger(s) and graphs are identified by `from` / `fromNamed` (JSON-LD) or `FROM` / `FROM NAMED` (SPARQL). This is the dataset path and supports multi-ledger datasets.
 - **Ledger-scoped** (`POST /query/{ledger}`): the ledger is fixed by the URL. The request may still select a **named graph inside that ledger**:
   - JSON-LD: `"from": "default"`, `"from": "txn-meta"`, or `"from": "<graph IRI>"`
   - SPARQL: `FROM <default>`, `FROM <txn-meta>`, `FROM <graph IRI>`, and `FROM NAMED <graph IRI>`

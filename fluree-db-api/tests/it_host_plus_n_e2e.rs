@@ -215,7 +215,11 @@ async fn host_plus_n_insert_index_reload_query() {
                 .unwrap()
                 .to_jsonld(&ledger_reloaded.snapshot)
                 .unwrap();
-            assert_eq!(widget_count, json!([2]), "should find 2 widgets after reload");
+            assert_eq!(
+                widget_count,
+                json!([2]),
+                "should find 2 widgets after reload"
+            );
             assert_eq!(item_count, json!([2]), "should find 2 items after reload");
         })
         .await;

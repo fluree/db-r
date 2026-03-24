@@ -456,7 +456,7 @@ async fn test_update_from_multiple_default_graphs_merge_where() {
 
 #[tokio::test]
 async fn test_update_from_named_alias_usable_in_templates() {
-    // Ensure `from-named.alias` can be used consistently in UPDATE templates
+    // Ensure `fromNamed.alias` can be used consistently in UPDATE templates
     // (not just in WHERE graph patterns).
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
@@ -473,10 +473,10 @@ async fn test_update_from_named_alias_usable_in_templates() {
         .run_until(async move {
             let ledger = genesis_ledger(&fluree, ledger_id);
 
-            // Insert into g2 using the from-named alias as the template graph selector.
+            // Insert into g2 using the fromNamed alias as the template graph selector.
             let insert = json!({
                 "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
-                "from-named": [
+                "fromNamed": [
                     { "alias": "g2", "graph": "http://example.org/g2" }
                 ],
                 "values": ["?x", [1]],

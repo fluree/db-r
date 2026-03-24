@@ -77,7 +77,10 @@ fn iri_value_to_string(iri: &IriValue) -> String {
 /// ```json
 /// {
 ///   "from": "ledger:main",
-///   "from-named": ["graph1", "graph2"]
+///   "fromNamed": {
+///     "graph1": { "@id": "graph1:main" },
+///     "graph2": { "@id": "graph2:main" }
+///   }
 /// }
 /// ```
 ///
@@ -502,7 +505,7 @@ use std::collections::HashMap;
 pub enum DatasetParseError {
     /// Invalid "from" value type
     InvalidFrom(String),
-    /// Invalid "from-named" value type
+    /// Invalid "fromNamed" / "from-named" value type
     InvalidFromNamed(String),
     /// Invalid graph source object
     InvalidGraphSource(String),
@@ -518,7 +521,7 @@ impl std::fmt::Display for DatasetParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidFrom(msg) => write!(f, "Invalid 'from' value: {}", msg),
-            Self::InvalidFromNamed(msg) => write!(f, "Invalid 'from-named' value: {}", msg),
+            Self::InvalidFromNamed(msg) => write!(f, "Invalid 'fromNamed' value: {}", msg),
             Self::InvalidGraphSource(msg) => write!(f, "Invalid graph source: {}", msg),
             Self::InvalidOptions(msg) => write!(f, "Invalid query options: {}", msg),
             Self::DuplicateAlias(alias) => {
@@ -540,7 +543,7 @@ impl std::error::Error for DatasetParseError {}
 impl DatasetSpec {
     /// Parse a DatasetSpec from JSON-LD query options
     ///
-    /// Extracts "from" and "from-named" keys from the query object.
+    /// Extracts "from" and "fromNamed" keys from the query object.
     ///
     /// # Supported formats
     ///
@@ -549,25 +552,31 @@ impl DatasetSpec {
     /// - Array of strings: `"from": ["ledger1:main", "ledger2:main"]`
     /// - Object with time: `"from": {"@id": "ledger:main", "t": 42}`
     /// - Array of objects: `"from": [{"@id": "ledger1", "t": 10}, "ledger2"]`
-    /// - **New**: Object with alias/graph: `"from": {"@id": "ledger:main", "alias": "a", "graph": "txn-meta"}`
+    /// - Object with alias/graph: `"from": {"@id": "ledger:main", "alias": "a", "graph": "txn-meta"}`
     ///
-    /// **"from-named" (named graphs)**:
+    /// **"fromNamed" (named graphs)** — object format (preferred):
+    /// - Keys are dataset-local aliases, values have `@id` and optional `@graph`:
+    ///   `"fromNamed": { "products": { "@id": "mydb:main", "@graph": "http://example.org/products" } }`
+    ///
+    /// **"from-named" (legacy)** — array format (backward compatible):
     /// - Single string: `"from-named": "graph1"`
     /// - Array: `"from-named": ["graph1", "graph2"]`
-    /// - **New**: Objects with alias/graph/policy
+    /// - Objects with alias/graph/policy
     ///
     /// # Example
     ///
     /// ```ignore
     /// let query = json!({
-    ///     "from": ["ledger1:main", "ledger2:main"],
-    ///     "from-named": ["graph1"],
+    ///     "from": "ledger1:main",
+    ///     "fromNamed": {
+    ///         "graph1": { "@id": "graph1:main" }
+    ///     },
     ///     "select": ["?s"],
     ///     "where": {"@id": "?s"}
     /// });
     ///
     /// let spec = DatasetSpec::from_json(&query)?;
-    /// assert_eq!(spec.num_graphs(), 3);
+    /// assert_eq!(spec.num_graphs(), 2);
     /// ```
     pub fn from_json(json: &JsonValue) -> Result<Self, DatasetParseError> {
         let obj = match json.as_object() {
@@ -623,8 +632,18 @@ impl DatasetSpec {
             ));
         }
 
-        // Parse "from-named" (named graphs)
-        if let Some(from_named_val) = obj.get("from-named") {
+        // Parse "fromNamed" (new object format) or "from-named" (legacy array format).
+        // "fromNamed" takes precedence if both are present.
+        if let Some(from_named_val) = obj.get("fromNamed") {
+            if let Some(named_obj) = from_named_val.as_object() {
+                spec.named_graphs = parse_named_graph_object(named_obj)?;
+            } else {
+                return Err(DatasetParseError::InvalidFromNamed(
+                    "'fromNamed' must be an object whose keys are dataset-local aliases"
+                        .to_string(),
+                ));
+            }
+        } else if let Some(from_named_val) = obj.get("from-named") {
             spec.named_graphs = parse_graph_sources(from_named_val, "from-named")?;
         }
 
@@ -637,9 +656,10 @@ impl DatasetSpec {
     /// Parse dataset + connection options from a query JSON object.
     ///
     /// Mirrors `query-connection` semantics:
-    /// - Dataset spec may live at top-level (`from`, `from-named`, `ledger`) OR inside `opts`.
+    /// - Dataset spec may live at top-level (`from`, `fromNamed`, `ledger`) OR inside `opts`.
     /// - Connection/policy-related options are read from `opts`.
     /// - History queries use explicit `to` key: `{ "from": "ledger@t:1", "to": "ledger@t:latest" }`
+    /// - Both `fromNamed` (object) and `from-named` (array, legacy) are accepted.
     pub fn from_query_json(
         json: &JsonValue,
     ) -> Result<(Self, QueryConnectionOptions), DatasetParseError> {
@@ -652,7 +672,7 @@ impl DatasetSpec {
 
         // Dataset location precedence:
         // default aliases: opts.from || opts.ledger || query.from || query.ledger
-        // named aliases:   opts.from-named || query.from-named
+        // named aliases:   opts.fromNamed || opts.from-named || query.fromNamed || query.from-named
         // to (history):    opts.to || query.to
         let from_val = opts_obj
             .and_then(|o| o.get("from"))
@@ -660,8 +680,10 @@ impl DatasetSpec {
             .or_else(|| obj.get("from"))
             .or_else(|| obj.get("ledger"));
 
+        // "fromNamed" (new) takes precedence over "from-named" (legacy).
         let from_named_val = opts_obj
-            .and_then(|o| o.get("from-named"))
+            .and_then(|o| o.get("fromNamed").or_else(|| o.get("from-named")))
+            .or_else(|| obj.get("fromNamed"))
             .or_else(|| obj.get("from-named"));
 
         let to_val = opts_obj.and_then(|o| o.get("to")).or_else(|| obj.get("to"));
@@ -711,7 +733,11 @@ impl DatasetSpec {
         }
 
         if let Some(v) = from_named_val {
-            spec.named_graphs = parse_graph_sources(v, "from-named")?;
+            if let Some(named_obj) = v.as_object() {
+                spec.named_graphs = parse_named_graph_object(named_obj)?;
+            } else {
+                spec.named_graphs = parse_graph_sources(v, "from-named")?;
+            }
         }
 
         // Validate alias uniqueness across all sources
@@ -925,6 +951,95 @@ fn parse_graph_sources(
     }
 }
 
+/// Parse named graph sources from the new object format.
+///
+/// Accepts a JSON object where keys are dataset-local aliases and values are
+/// objects with `@id` (optional ledger ref) and `@graph` (graph selector):
+///
+/// ```json
+/// {
+///   "products": {
+///     "@id": "mydb:main",
+///     "@graph": "http://example.org/graphs/products"
+///   },
+///   "services": {
+///     "@id": "mydb:main",
+///     "@graph": "http://example.org/graphs/services"
+///   }
+/// }
+/// ```
+///
+/// Keys become the `source_alias`. The `@id` field is required (ledger reference).
+/// The `@graph` field is optional (graph selector — "default", "txn-meta", or IRI).
+fn parse_named_graph_object(
+    obj: &serde_json::Map<String, JsonValue>,
+) -> Result<Vec<GraphSource>, DatasetParseError> {
+    let mut sources = Vec::with_capacity(obj.len());
+    for (alias, entry_val) in obj {
+        let entry = entry_val.as_object().ok_or_else(|| {
+            DatasetParseError::InvalidFromNamed(format!(
+                "fromNamed entry '{}' must be an object",
+                alias
+            ))
+        })?;
+
+        let raw_identifier = entry
+            .get("@id")
+            .or_else(|| entry.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                DatasetParseError::InvalidGraphSource(format!(
+                    "fromNamed entry '{}' must have an '@id' string field",
+                    alias
+                ))
+            })?;
+
+        let (identifier, time_spec) = parse_ledger_id_time_travel(raw_identifier)?;
+        let mut source = GraphSource::new(&identifier);
+        source.time_spec = time_spec;
+        source.source_alias = Some(alias.clone());
+
+        // Parse time specification from explicit keys (overrides string suffix)
+        if let Some(t_val) = entry.get("t") {
+            if let Some(t) = t_val.as_i64() {
+                source.time_spec = Some(TimeSpec::AtT(t));
+            }
+        } else if let Some(at_val) = entry.get("at") {
+            if let Some(at_str) = at_val.as_str() {
+                if let Some(commit_hash) = at_str.strip_prefix("commit:") {
+                    source.time_spec = Some(TimeSpec::AtCommit(commit_hash.to_string()));
+                } else {
+                    source.time_spec = Some(TimeSpec::AtTime(at_str.to_string()));
+                }
+            }
+        }
+
+        // Parse graph selector from @graph
+        if let Some(graph_val) = entry.get("@graph") {
+            if identifier.contains("#txn-meta") {
+                return Err(DatasetParseError::AmbiguousGraphSelector(
+                    raw_identifier.to_string(),
+                ));
+            }
+            if let Some(graph_str) = graph_val.as_str() {
+                source.graph_selector = Some(GraphSelector::from_str(graph_str));
+            } else {
+                return Err(DatasetParseError::InvalidGraphSource(
+                    "'@graph' must be a string ('default', 'txn-meta', or a graph IRI)".to_string(),
+                ));
+            }
+        }
+
+        // Parse policy override
+        if let Some(policy_val) = entry.get("policy") {
+            source.policy_override = Some(parse_source_policy_override(policy_val)?);
+        }
+
+        sources.push(source);
+    }
+    Ok(sources)
+}
+
 /// Parse a single graph source from a JSON value
 ///
 /// Accepts:
@@ -1104,7 +1219,7 @@ fn parse_source_policy_override(
 /// Validate that all dataset-local aliases are unique across the dataset spec.
 ///
 /// Per the handoff spec: "if an alias appears more than once in the request
-/// (across both 'from' and 'from-named'), return an error."
+/// (across both 'from' and 'fromNamed'), return an error."
 ///
 /// Also validates that aliases don't collide with identifiers, since the dataset
 /// builder adds both identifier and alias as lookup keys in the runtime dataset.
@@ -1426,7 +1541,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_from_named() {
+    fn test_parse_from_named_legacy_array() {
+        // Legacy array format: "from-named": ["graph1", "graph2"]
         let query = json!({
             "from": "default:main",
             "from-named": ["graph1", "graph2"],
@@ -1439,6 +1555,97 @@ mod tests {
         assert_eq!(spec.named_graphs.len(), 2);
         assert_eq!(spec.named_graphs[0].identifier, "graph1");
         assert_eq!(spec.named_graphs[1].identifier, "graph2");
+    }
+
+    #[test]
+    fn test_parse_from_named_object_format() {
+        // New object format: "fromNamed": { alias: { "@id": ..., "@graph": ... } }
+        let query = json!({
+            "from": "default:main",
+            "fromNamed": {
+                "products": {
+                    "@id": "mydb:main",
+                    "@graph": "http://example.org/graphs/products"
+                },
+                "services": {
+                    "@id": "mydb:main",
+                    "@graph": "http://example.org/graphs/services"
+                }
+            },
+            "select": ["?s"],
+            "where": {"@id": "?s"}
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.named_graphs.len(), 2);
+
+        // Find by alias (order not guaranteed in JSON objects)
+        let products = spec
+            .named_graphs
+            .iter()
+            .find(|g| g.source_alias.as_deref() == Some("products"))
+            .expect("should have products alias");
+        assert_eq!(products.identifier, "mydb:main");
+        assert!(matches!(
+            &products.graph_selector,
+            Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/graphs/products"
+        ));
+
+        let services = spec
+            .named_graphs
+            .iter()
+            .find(|g| g.source_alias.as_deref() == Some("services"))
+            .expect("should have services alias");
+        assert_eq!(services.identifier, "mydb:main");
+        assert!(matches!(
+            &services.graph_selector,
+            Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/graphs/services"
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_named_object_takes_precedence_over_legacy() {
+        // When both "fromNamed" and "from-named" are present, "fromNamed" wins.
+        let query = json!({
+            "from": "default:main",
+            "fromNamed": {
+                "products": { "@id": "mydb:main", "@graph": "http://example.org/products" }
+            },
+            "from-named": ["should-be-ignored"],
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.named_graphs.len(), 1);
+        assert_eq!(
+            spec.named_graphs[0].source_alias,
+            Some("products".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_from_named_object_rejects_non_object_entries() {
+        let query = json!({
+            "fromNamed": {
+                "bad": "not-an-object"
+            },
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_from_named_object_rejects_non_object_value() {
+        let query = json!({
+            "fromNamed": ["should", "be", "object"],
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2057,42 +2264,43 @@ mod tests {
     #[test]
     fn test_parse_from_named_with_graph_iri() {
         // Cross-ledger named graphs with collision disambiguation (handoff spec example)
+        // New object format: keys are aliases, @graph for graph selector
         let query = json!({
-            "from-named": [
-                {
+            "fromNamed": {
+                "salesProducts": {
                     "@id": "sales:main",
-                    "alias": "salesProducts",
-                    "graph": "http://example.org/vocab#products"
+                    "@graph": "http://example.org/vocab#products"
                 },
-                {
+                "inventoryProducts": {
                     "@id": "inventory:main",
-                    "alias": "inventoryProducts",
-                    "graph": "http://example.org/vocab#products"
+                    "@graph": "http://example.org/vocab#products"
                 }
-            ],
+            },
             "select": ["?g", "?sku"]
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.named_graphs.len(), 2);
 
-        assert_eq!(spec.named_graphs[0].identifier, "sales:main");
-        assert_eq!(
-            spec.named_graphs[0].source_alias,
-            Some("salesProducts".to_string())
-        );
+        let sales = spec
+            .named_graphs
+            .iter()
+            .find(|g| g.source_alias.as_deref() == Some("salesProducts"))
+            .expect("should have salesProducts alias");
+        assert_eq!(sales.identifier, "sales:main");
         assert!(matches!(
-            &spec.named_graphs[0].graph_selector,
+            &sales.graph_selector,
             Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
         ));
 
-        assert_eq!(spec.named_graphs[1].identifier, "inventory:main");
-        assert_eq!(
-            spec.named_graphs[1].source_alias,
-            Some("inventoryProducts".to_string())
-        );
+        let inventory = spec
+            .named_graphs
+            .iter()
+            .find(|g| g.source_alias.as_deref() == Some("inventoryProducts"))
+            .expect("should have inventoryProducts alias");
+        assert_eq!(inventory.identifier, "inventory:main");
         assert!(matches!(
-            &spec.named_graphs[1].graph_selector,
+            &inventory.graph_selector,
             Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
         ));
     }
@@ -2164,14 +2372,16 @@ mod tests {
     fn test_duplicate_alias_across_from_and_from_named_error() {
         let query = json!({
             "from": {"@id": "ledger1:main", "alias": "shared"},
-            "from-named": [{"@id": "ledger2:main", "alias": "shared"}],
+            "fromNamed": {
+                "shared": { "@id": "ledger2:main" }
+            },
             "select": ["?s"]
         });
 
         let result = DatasetSpec::from_json(&query);
         assert!(
             result.is_err(),
-            "Duplicate aliases across from/from-named should error"
+            "Duplicate aliases across from/fromNamed should error"
         );
         let err = result.unwrap_err();
         assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "shared"));
@@ -2179,10 +2389,12 @@ mod tests {
 
     #[test]
     fn test_alias_collides_with_identifier_error() {
-        // Alias "ledger2:main" collides with the identifier of another source
+        // Alias "ledger1:main" collides with the identifier of another source
         let query = json!({
             "from": "ledger1:main",
-            "from-named": [{"@id": "ledger2:main", "alias": "ledger1:main"}],
+            "fromNamed": {
+                "ledger1:main": { "@id": "ledger2:main" }
+            },
             "select": ["?s"]
         });
 

@@ -109,12 +109,12 @@ Notes:
 - `graph` is a **graph IRI** (a string like `"http://example.org/graphs/audit"`)
 - Named-graph reads are available after indexing completes (see `docs/query/datasets.md`)
 
-## Dataset scoping for WHERE (`from` / `from-named`)
+## Dataset scoping for WHERE (`from` / `fromNamed`)
 
 JSON-LD update reuses the **same dataset keys as JSON-LD query** to control where the `where` clause reads from:
 
 - **`from`**: scopes the default graph used for `where` evaluation (equivalent to SPARQL UPDATE `USING <iri>`)
-- **`from-named`**: restricts which named graphs are visible to `where` `["graph", ...]` patterns (equivalent to SPARQL UPDATE `USING NAMED <iri>`)
+- **`fromNamed`**: restricts which named graphs are visible to `where` `["graph", ...]` patterns (equivalent to SPARQL UPDATE `USING NAMED <iri>`)
 
 This is why JSON-LD update uses `from` rather than introducing new keywords: it matches the existing JSON-LD query language vocabulary and keeps dataset configuration consistent across read-only queries and updates.
 
@@ -158,21 +158,21 @@ Example: read from one graph, write to two graphs
 }
 ```
 
-### `from-named` (WHERE named graphs allowlist)
+### `fromNamed` (WHERE named graphs allowlist)
 
-Use `from-named` to allow (and optionally alias) named graphs for `where` `["graph", ...]` patterns:
+Use `fromNamed` to allow (and optionally alias) named graphs for `where` `["graph", ...]` patterns:
 
 Notes:
 - In `where` GRAPH patterns, you can reference the graph by **alias** (e.g. `"g2"`) or by the **graph IRI** (e.g. `"http://example.org/g2"`). Aliases are just convenience names for matching.
 - In `insert` / `delete` templates, graph selection is a **write target**. You can use:
   - the full graph IRI (`"http://example.org/g2"`)
   - a compact IRI/term that expands via `@context` (e.g. `"ex:g2"`)
-  - the `from-named` **alias** (e.g. `"g2"`) for consistency within the same update transaction
+  - the `fromNamed` **alias** (e.g. `"g2"`) for consistency within the same update transaction
 
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from-named": [
+  "fromNamed": [
     { "alias": "g2", "graph": "http://example.org/g2" }
   ],
   "where": [
@@ -187,18 +187,18 @@ Same example, but with a compacted graph IRI via `@context`:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from-named": [{ "alias": "g2", "graph": "ex:g2" }],
+  "fromNamed": [{ "alias": "g2", "graph": "ex:g2" }],
   "where": [["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]],
   "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
 }
 ```
 
-Same idea without an explicit alias (the `from-named` string acts as its own identifier):
+Same idea without an explicit alias (the `fromNamed` string acts as its own identifier):
 
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from-named": ["ex:g2"],
+  "fromNamed": ["ex:g2"],
   "where": [["graph", "ex:g2", { "@id": "ex:s", "ex:p": "?o" }]],
   "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
 }

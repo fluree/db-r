@@ -746,7 +746,7 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     //
     // Named-graph visibility restrictions:
     // - SPARQL UPDATE `USING NAMED <iri>` restricts WHERE-visible named graphs to that one graph
-    // - JSON-LD update `from-named` restricts WHERE-visible named graphs to the provided set,
+    // - JSON-LD update `fromNamed` restricts WHERE-visible named graphs to the provided set,
     //   optionally providing dataset-local aliases for `["graph", "<alias>", ...]` patterns.
     let allowed_named_graphs: Option<Vec<(String, Option<String>)>> =
         if let Some(w) = txn.sparql_where.as_ref() {

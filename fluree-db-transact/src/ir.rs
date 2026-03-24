@@ -144,7 +144,7 @@ pub struct Txn {
 
     /// Optional allowlist of named graphs visible to JSON-LD update WHERE evaluation.
     ///
-    /// When present (parsed from the JSON-LD update top-level `from-named` key), staging
+    /// When present (parsed from the JSON-LD update top-level `fromNamed` key), staging
     /// restricts the runtime dataset's named graphs to this set. Any `alias` entries are
     /// added as additional named-graph keys, allowing `["graph", "<alias>", ...]` patterns.
     pub update_where_named_graphs: Option<Vec<UpdateNamedGraph>>,

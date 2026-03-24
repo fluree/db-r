@@ -539,13 +539,13 @@ After ingesting TriG data, query specific graphs using JSON-LD with the structur
 }
 ```
 
-For cross-graph queries, use `from-named` with aliases:
+For cross-graph queries, use `fromNamed` with aliases:
 
 ```json
 {
   "@context": { "schema": "http://schema.org/" },
   "from": "mydb:main",
-  "from-named": [
+  "fromNamed": [
     { "@id": "mydb:main", "alias": "products", "graph": "http://example.org/graphs/products" },
     { "@id": "mydb:main", "alias": "inventory", "graph": "http://example.org/graphs/inventory" }
   ],
