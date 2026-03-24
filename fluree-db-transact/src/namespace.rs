@@ -112,11 +112,12 @@ impl NamespaceRegistry {
     /// The caller (`sid_for_iri`) handles overflow by using the full IRI as
     /// the SID name.
     ///
-    /// # Panics
+    /// Returns the code for an existing prefix or allocates a new one.
     ///
-    /// Panics on a namespace bimap conflict. A conflict means
-    /// the namespace table is corrupted or the commit history is invalid —
-    /// this is never a recoverable runtime condition.
+    /// On overflow, returns the `OVERFLOW` sentinel. On a bimap conflict
+    /// (corrupted namespace state), logs an error and returns `OVERFLOW`
+    /// so the server stays up — the affected IRI will encode as
+    /// `Sid(OVERFLOW, full_iri)` which is lossy but not a crash.
     pub fn get_or_allocate(&mut self, prefix: &str) -> u16 {
         match self.codes.allocate_prefix(prefix) {
             Ok(code) => code,
@@ -126,12 +127,14 @@ impl NamespaceRegistry {
                 new_prefix,
                 existing_prefix,
             }) => {
-                panic!(
-                    "namespace bimap conflict: code {} maps to {:?} \
-                     but {:?} was requested — this indicates corrupted namespace state \
-                     or invalid commit history",
-                    code, existing_prefix, new_prefix
+                tracing::error!(
+                    code,
+                    new_prefix = %new_prefix,
+                    existing_prefix = %existing_prefix,
+                    "namespace bimap conflict — corrupted namespace state or invalid \
+                     commit history; encoding IRI as OVERFLOW to avoid crash"
                 );
+                OVERFLOW
             }
         }
     }
@@ -266,7 +269,11 @@ impl SharedNamespaceAllocator {
     pub fn from_registry(reg: &NamespaceRegistry) -> Self {
         Self {
             inner: RwLock::new(reg.codes.clone()),
-            split_mode: AtomicU8::new(reg.split_mode.to_byte()),
+            split_mode: AtomicU8::new(
+                reg.split_mode
+                    .to_byte()
+                    .expect("split_mode must be persistable"),
+            ),
         }
     }
 
@@ -275,7 +282,10 @@ impl SharedNamespaceAllocator {
     /// Safe to call from any thread (atomic). Must be called before workers
     /// start parsing.
     pub fn set_split_mode(&self, mode: NsSplitMode) {
-        self.split_mode.store(mode.to_byte(), Ordering::Relaxed);
+        self.split_mode.store(
+            mode.to_byte().expect("split_mode must be persistable"),
+            Ordering::Relaxed,
+        );
     }
 
     /// Get the current split mode.
@@ -286,11 +296,8 @@ impl SharedNamespaceAllocator {
 
     /// Thread-safe get-or-allocate with read-lock fast path.
     ///
-    /// Returns `OVERFLOW` sentinel when codes are exhausted (never registers it).
-    ///
-    /// # Panics
-    ///
-    /// Panics on a namespace bimap conflict.
+    /// Returns `OVERFLOW` sentinel when codes are exhausted or on a bimap
+    /// conflict (logged as error). Does not panic.
     pub fn get_or_allocate(&self, prefix: &str) -> u16 {
         // Fast path: read lock
         {
@@ -312,11 +319,13 @@ impl SharedNamespaceAllocator {
                 new_prefix,
                 existing_prefix,
             }) => {
-                panic!(
-                    "namespace bimap conflict: code {} maps to {:?} \
-                     but {:?} was requested",
-                    code, existing_prefix, new_prefix
+                tracing::error!(
+                    code,
+                    new_prefix = %new_prefix,
+                    existing_prefix = %existing_prefix,
+                    "namespace bimap conflict — encoding IRI as OVERFLOW to avoid crash"
                 );
+                OVERFLOW
             }
         }
     }
@@ -705,5 +714,50 @@ mod tests {
         // HostPlusN(1): prefix="http://example.com/api/"
         assert!(registry.has_prefix("http://example.com/api/"));
         assert_eq!(sid.name.as_ref(), "v1/users");
+    }
+
+    #[test]
+    fn test_shared_alloc_concurrent_no_collisions() {
+        use std::sync::Arc;
+
+        let registry = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&registry));
+
+        let handles: Vec<_> = (0..8)
+            .map(|thread_id| {
+                let alloc = Arc::clone(&alloc);
+                std::thread::spawn(move || {
+                    let mut cache = WorkerCache::new(alloc);
+                    let mut sids = Vec::new();
+                    for i in 0..100 {
+                        let iri = format!("http://thread{}.example.org/item{}", thread_id, i);
+                        sids.push(cache.sid_for_iri(&iri));
+                    }
+                    sids
+                })
+            })
+            .collect();
+
+        let all_sids: Vec<Vec<Sid>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Each thread's IRIs within the same prefix should get the same namespace code.
+        for thread_sids in &all_sids {
+            let first_code = thread_sids[0].namespace_code;
+            for sid in thread_sids {
+                assert_eq!(
+                    sid.namespace_code, first_code,
+                    "all IRIs from the same thread-specific host should share a prefix code"
+                );
+            }
+        }
+
+        // Different threads have different host prefixes → different codes.
+        let codes: std::collections::HashSet<u16> =
+            all_sids.iter().map(|sids| sids[0].namespace_code).collect();
+        assert_eq!(
+            codes.len(),
+            8,
+            "8 threads should allocate 8 distinct prefix codes"
+        );
     }
 }

@@ -246,8 +246,10 @@ pub struct BinaryIndexStore {
     language_tags: Vec<String>,
     lex_sorted_string_ids: bool,
     /// Ledger-fixed split mode for canonical IRI encoding.
-    /// Set from the snapshot's `ns_split_mode` after loading.
+    /// Set from the snapshot's `ns_split_mode` via `set_ns_split_mode()`.
     ns_split_mode: NsSplitMode,
+    /// Whether `set_ns_split_mode` was called. Debug-asserted on first encode.
+    ns_split_mode_set: bool,
 }
 
 impl BinaryIndexStore {
@@ -365,7 +367,8 @@ impl BinaryIndexStore {
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
             lex_sorted_string_ids: root.lex_sorted_string_ids,
-            ns_split_mode: NsSplitMode::default(),
+            ns_split_mode: root.ns_split_mode,
+            ns_split_mode_set: true,
         })
     }
 
@@ -384,6 +387,7 @@ impl BinaryIndexStore {
     /// Called after loading to sync with the snapshot's `ns_split_mode`.
     pub fn set_ns_split_mode(&mut self, mode: NsSplitMode) {
         self.ns_split_mode = mode;
+        self.ns_split_mode_set = true;
     }
 
     /// True if `StringId` / `LEX_ID` ordering is lexicographic by UTF-8 bytes.
@@ -863,6 +867,10 @@ impl BinaryIndexStore {
     /// canonical prefix is not registered, returns `Sid(EMPTY, iri)`.
     /// No longest-prefix-match — canonical encoding prohibits `starts_with` matching.
     pub fn encode_iri(&self, iri: &str) -> Sid {
+        debug_assert!(
+            self.ns_split_mode_set,
+            "BinaryIndexStore::encode_iri called before ns_split_mode was set"
+        );
         let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
         if let Some(&code) = self.dicts.namespace_reverse.get(canonical_prefix) {
             return Sid::new(code, canonical_suffix);

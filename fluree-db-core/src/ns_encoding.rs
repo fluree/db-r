@@ -73,18 +73,15 @@ impl NsSplitMode {
     ///
     /// # Panics
     ///
-    /// Panics if `n > 254` (would wrap to `MostGranular` on decode).
-    pub fn to_byte(self) -> u8 {
+    /// Returns `Err` if `n > 254` (would wrap to `MostGranular` on decode).
+    pub fn to_byte(self) -> Result<u8, NsAllocError> {
         match self {
-            Self::MostGranular => 0,
+            Self::MostGranular => Ok(0),
             Self::HostPlusN(n) => {
-                assert!(
-                    n <= HOST_PLUS_N_MAX,
-                    "HostPlusN({}) exceeds maximum persistable value {}",
-                    n,
-                    HOST_PLUS_N_MAX
-                );
-                n + 1
+                if n > HOST_PLUS_N_MAX {
+                    return Err(NsAllocError::Overflow);
+                }
+                Ok(n + 1)
             }
         }
     }
@@ -730,27 +727,26 @@ mod tests {
     #[test]
     fn test_split_mode_byte_roundtrip() {
         assert_eq!(
-            NsSplitMode::from_byte(NsSplitMode::MostGranular.to_byte()),
+            NsSplitMode::from_byte(NsSplitMode::MostGranular.to_byte().unwrap()),
             NsSplitMode::MostGranular
         );
         assert_eq!(
-            NsSplitMode::from_byte(NsSplitMode::HostPlusN(0).to_byte()),
+            NsSplitMode::from_byte(NsSplitMode::HostPlusN(0).to_byte().unwrap()),
             NsSplitMode::HostPlusN(0)
         );
         assert_eq!(
-            NsSplitMode::from_byte(NsSplitMode::HostPlusN(1).to_byte()),
+            NsSplitMode::from_byte(NsSplitMode::HostPlusN(1).to_byte().unwrap()),
             NsSplitMode::HostPlusN(1)
         );
         assert_eq!(
-            NsSplitMode::from_byte(NsSplitMode::HostPlusN(HOST_PLUS_N_MAX).to_byte()),
+            NsSplitMode::from_byte(NsSplitMode::HostPlusN(HOST_PLUS_N_MAX).to_byte().unwrap()),
             NsSplitMode::HostPlusN(HOST_PLUS_N_MAX)
         );
     }
 
     #[test]
-    #[should_panic(expected = "exceeds maximum persistable value")]
-    fn test_split_mode_host_plus_255_panics() {
-        NsSplitMode::HostPlusN(255).to_byte();
+    fn test_split_mode_host_plus_255_returns_err() {
+        assert!(NsSplitMode::HostPlusN(255).to_byte().is_err());
     }
 
     // ---- canonical_split: normative test table ----

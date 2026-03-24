@@ -175,7 +175,11 @@ pub fn encode_envelope_fields(
     // ns_split_mode (trailing optional extension)
     if let Some(mode) = envelope.ns_split_mode {
         buf.push(1);
-        buf.push(mode.to_byte());
+        buf.push(
+            mode.to_byte().map_err(|e| {
+                CommitV2Error::EnvelopeDecode(format!("ns_split_mode encode: {}", e))
+            })?,
+        );
     } else {
         buf.push(0);
     }

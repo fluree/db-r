@@ -338,6 +338,21 @@ impl LedgerSnapshot {
         true
     }
 
+    /// Validate that an incoming `ns_split_mode` doesn't conflict with the
+    /// established mode. Returns `Ok(())` if the mode is acceptable (either
+    /// no user namespaces allocated yet, or the mode matches). Returns `Err`
+    /// if user namespaces exist under a different mode.
+    pub fn validate_ns_split_mode(&self, incoming: NsSplitMode, commit_t: i64) -> Result<()> {
+        if self.has_user_namespace_codes() && self.ns_split_mode != incoming {
+            return Err(Error::invalid_index(format!(
+                "ns_split_mode conflict: commit t={} declares {:?} \
+                 but ledger already has user namespaces under {:?}",
+                commit_t, incoming, self.ns_split_mode
+            )));
+        }
+        Ok(())
+    }
+
     /// Apply commit envelope deltas (namespace + graph) to this snapshot.
     ///
     /// Called at commit-apply time only. Centralizes all snapshot mutations

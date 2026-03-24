@@ -527,7 +527,11 @@ impl IndexRoot {
         });
 
         // ---- ns_split_mode (1 byte) ----
-        buf.push(self.ns_split_mode.to_byte());
+        buf.push(
+            self.ns_split_mode
+                .to_byte()
+                .expect("ns_split_mode must be persistable"),
+        );
 
         // ---- Namespace codes (sorted by ns_code) ----
         buf.extend_from_slice(&(self.namespace_codes.len() as u16).to_le_bytes());

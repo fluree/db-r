@@ -22,11 +22,22 @@ mod inner {
     use crate::namespace::{NamespaceRegistry, NsAllocator, SharedNamespaceAllocator, WorkerCache};
     use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
     use crate::value_convert::convert_string_literal;
+    use fluree_db_core::ns_encoding::NsSplitMode;
     use fluree_db_core::{
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid,
         CODEC_FLUREE_COMMIT,
     };
     use fluree_db_novelty::CommitRef;
+
+    /// Returns `Some(mode)` for the genesis commit (no parent), `None` otherwise.
+    /// The split mode is only persisted in the genesis commit envelope.
+    fn genesis_split_mode(state: &ImportState, mode: NsSplitMode) -> Option<NsSplitMode> {
+        if state.previous_ref.is_none() {
+            Some(mode)
+        } else {
+            None
+        }
+    }
     use fluree_graph_turtle::splitter::TurtlePrelude;
     use rustc_hash::FxHashSet;
     use std::collections::HashMap;
@@ -174,11 +185,7 @@ mod inner {
             state.cumulative_flakes += op_count as u64;
 
             // Persist split mode in genesis commit (first chunk, no previous ref).
-            let ns_split_mode = if state.previous_ref.is_none() {
-                Some(state.ns_registry.split_mode())
-            } else {
-                None
-            };
+            let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
 
             let envelope = CommitV2Envelope {
                 t: new_t,
@@ -320,11 +327,7 @@ mod inner {
             state.cumulative_flakes += op_count as u64;
 
             // Persist split mode in genesis commit (first chunk, no previous ref).
-            let ns_split_mode = if state.previous_ref.is_none() {
-                Some(state.ns_registry.split_mode())
-            } else {
-                None
-            };
+            let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
 
             let envelope = CommitV2Envelope {
                 t: new_t,
@@ -549,11 +552,7 @@ mod inner {
         state.cumulative_flakes += op_count as u64;
 
         // Persist split mode in genesis commit (first chunk, no previous ref).
-        let ns_split_mode = if state.previous_ref.is_none() {
-            Some(state.ns_registry.split_mode())
-        } else {
-            None
-        };
+        let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
 
         let envelope = CommitV2Envelope {
             t: new_t,
@@ -1002,11 +1001,7 @@ mod inner {
         state.cumulative_flakes += parsed.op_count as u64;
 
         // Persist split mode in genesis commit (first chunk, no previous ref).
-        let ns_split_mode = if state.previous_ref.is_none() {
-            Some(state.ns_registry.split_mode())
-        } else {
-            None
-        };
+        let ns_split_mode = genesis_split_mode(&state, state.ns_registry.split_mode());
 
         let envelope = CommitV2Envelope {
             t: new_t,

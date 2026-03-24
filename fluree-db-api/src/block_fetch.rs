@@ -283,14 +283,15 @@ pub fn decode_leaf_block(
                 .decode_value(o_type, o_key, p_id)
                 .map_err(BlockFetchError::LeafDecode)?;
             if let fluree_db_core::FlakeValue::Ref(sid) = &o {
-                let iri = store.sid_to_iri(sid).unwrap_or_else(|| {
-                    tracing::warn!(
-                        ns_code = sid.namespace_code,
-                        suffix = %sid.name,
-                        "sid_to_iri: unknown namespace code in block_fetch object ref"
-                    );
-                    sid.name.to_string()
-                });
+                let iri = store.sid_to_iri(sid).ok_or_else(|| {
+                    BlockFetchError::LeafDecode(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "sid_to_iri failed: unknown namespace code {} for object ref {:?}",
+                            sid.namespace_code, sid.name
+                        ),
+                    ))
+                })?;
                 o = fluree_db_core::FlakeValue::Ref(
                     snapshot
                         .encode_iri(&iri)

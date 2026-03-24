@@ -308,13 +308,7 @@ impl LedgerState {
 
             // Extract ns_split_mode (immutable once user namespaces are allocated).
             if let Some(mode) = commit.ns_split_mode {
-                if snapshot.has_user_namespace_codes() && snapshot.ns_split_mode != mode {
-                    return Err(LedgerError::InvalidData(format!(
-                        "ns_split_mode conflict: commit t={} declares {:?} \
-                         but ledger already has user namespaces under {:?}",
-                        commit.t, mode, snapshot.ns_split_mode
-                    )));
-                }
+                snapshot.validate_ns_split_mode(mode, commit.t)?;
                 snapshot.ns_split_mode = mode;
             }
         }
@@ -642,13 +636,7 @@ impl LedgerState {
         // may set the mode. If a non-genesis commit carries a different mode,
         // it's an invalid commit chain.
         if let Some(mode) = commit.ns_split_mode {
-            if self.snapshot.has_user_namespace_codes() && self.snapshot.ns_split_mode != mode {
-                return Err(LedgerError::InvalidData(format!(
-                    "ns_split_mode conflict: commit t={} declares {:?} \
-                     but ledger already has user namespaces under {:?}",
-                    commit_t, mode, self.snapshot.ns_split_mode
-                )));
-            }
+            self.snapshot.validate_ns_split_mode(mode, commit_t)?;
             self.snapshot.ns_split_mode = mode;
         }
 

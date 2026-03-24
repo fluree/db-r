@@ -201,16 +201,10 @@ where
 
             // ns_split_mode immutability: locked once user namespaces are allocated.
             if let Some(mode) = c.commit.ns_split_mode {
-                if base_state.snapshot.has_user_namespace_codes()
-                    && base_state.snapshot.ns_split_mode != mode
-                {
-                    return Err(PushError::Invalid(format!(
-                        "commit t={}: ns_split_mode conflict: declares {:?} \
-                         but ledger already has user namespaces under {:?}",
-                        c.commit.t, mode, base_state.snapshot.ns_split_mode
-                    ))
-                    .into_api_error());
-                }
+                base_state
+                    .snapshot
+                    .validate_ns_split_mode(mode, c.commit.t)
+                    .map_err(|e| PushError::Invalid(e.to_string()).into_api_error())?;
             }
 
             // 4.1 Retraction invariant (strict).
@@ -878,21 +872,23 @@ fn apply_pushed_commits_to_state(
 
     for (t, flakes) in accepted_all_flakes {
         // Populate dict novelty similarly to transact commit path.
-        if let Err(e) = fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+        fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
             Arc::make_mut(&mut dict_novelty),
             store_opt,
             flakes.iter(),
-        ) {
-            error!(error = %e, "populate_dict_novelty_safe failed during commit transfer");
-        }
+        )
+        .map_err(|e| {
+            PushError::Internal(format!(
+                "populate_dict_novelty_safe failed at t={}: {}",
+                t, e
+            ))
+        })?;
         // Apply to novelty.
-        if let Err(e) = novelty.apply_commit(flakes.clone(), *t, &reverse_graph) {
-            error!(
-                error = ?e,
-                commit_t = *t,
-                "post-CAS novelty apply_commit failed; in-memory state may be stale until reload"
-            );
-        }
+        novelty
+            .apply_commit(flakes.clone(), *t, &reverse_graph)
+            .map_err(|e| {
+                PushError::Internal(format!("novelty apply_commit failed at t={}: {}", t, e))
+            })?;
     }
 
     base.novelty = Arc::new(novelty);
