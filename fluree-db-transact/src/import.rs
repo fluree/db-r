@@ -183,6 +183,7 @@ mod inner {
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
+                ns_split_mode: None,
             };
 
             (writer, op_count, spool_result, envelope)
@@ -321,6 +322,7 @@ mod inner {
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
+                ns_split_mode: None,
             };
 
             (writer, op_count, spool_result, envelope)
@@ -542,6 +544,7 @@ mod inner {
             txn_signature: None,
             txn_meta,
             graph_delta,
+            ns_split_mode: None,
         };
 
         // 7. Finalize blob
@@ -985,6 +988,7 @@ mod inner {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
 
         let result = parsed.writer.finish(&envelope)?;

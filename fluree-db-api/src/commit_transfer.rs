@@ -794,6 +794,10 @@ fn apply_pushed_commits_to_state(
             for iri in c.commit.graph_delta.values() {
                 all_graph_iris.insert(iri.clone());
             }
+            // Extract ns_split_mode (last seen = genesis = authoritative)
+            if let Some(mode) = c.commit.ns_split_mode {
+                base.snapshot.ns_split_mode = mode;
+            }
         }
         base.snapshot
             .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);

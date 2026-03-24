@@ -77,7 +77,20 @@ where
                 // codes that the snapshot (loaded from the commit chain)
                 // doesn't have. Without this, SPARQL result formatting
                 // fails with UnknownNamespace errors.
+                //
+                // Rule 5 reconciliation (debug builds): verify that the
+                // index root's namespace table doesn't conflict with the
+                // commit-derived table. Conflicts indicate an indexer bug
+                // or storage corruption.
                 for (code, prefix) in binary_index_store.namespace_codes() {
+                    if let Some(existing) = state.snapshot.namespace_codes.get(code) {
+                        debug_assert_eq!(
+                            existing, prefix,
+                            "Rule 5 violation: index root ns code {} maps to {:?} \
+                             but commit chain has {:?} — possible indexer/publisher bug",
+                            code, prefix, existing
+                        );
+                    }
                     state
                         .snapshot
                         .namespace_codes

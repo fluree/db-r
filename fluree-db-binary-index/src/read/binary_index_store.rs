@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
+use fluree_db_core::ns_encoding::{canonical_split, NsSplitMode};
 use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -843,8 +844,18 @@ impl BinaryIndexStore {
         self.dicts.predicate_reverse.get(iri).copied()
     }
 
-    /// Encode an IRI to a namespaced `Sid`.
+    /// Encode an IRI to a namespaced `Sid` using canonical-first strategy.
+    ///
+    /// 1. Canonical: `canonical_split` + exact-prefix lookup via reverse map.
+    /// 2. Fallback: trie longest-prefix-match (for built-in/legacy prefixes).
+    /// 3. EMPTY (code 0) if neither path matches.
     pub fn encode_iri(&self, iri: &str) -> Sid {
+        // 1. Canonical path
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, NsSplitMode::default());
+        if let Some(&code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            return Sid::new(code, canonical_suffix);
+        }
+        // 2. Fallback: trie longest-prefix-match
         match self.dicts.prefix_trie.longest_match(iri) {
             Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
             None => Sid::new(0, iri),
@@ -885,14 +896,19 @@ impl BinaryIndexStore {
     }
 
     /// Reconstruct the full IRI string from a `Sid`.
+    ///
+    /// - `EMPTY (0)` / `OVERFLOW (0xFFFE)`: returns `sid.name` (full IRI).
+    /// - Registered code: returns `prefix + name`.
+    /// - Unknown code: returns empty string (lenient fallback).
     pub fn sid_to_iri(&self, sid: &Sid) -> String {
-        let prefix = self
-            .dicts
-            .namespace_codes
-            .get(&sid.namespace_code)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        format!("{}{}", prefix, sid.name)
+        // EMPTY (0) and OVERFLOW (0xFFFE) store the full IRI as sid.name
+        if sid.namespace_code == 0 || sid.namespace_code == 0xFFFE {
+            return sid.name.to_string();
+        }
+        match self.dicts.namespace_codes.get(&sid.namespace_code) {
+            Some(prefix) => format!("{}{}", prefix, sid.name),
+            None => String::new(),
+        }
     }
 
     /// Reverse subject lookup: find the u64 s_id for a given IRI.
@@ -1027,16 +1043,43 @@ impl BinaryIndexStore {
     }
 
     /// Augment namespace codes with entries from novelty commits.
+    ///
+    /// Validates uniqueness/immutability (Rule 3): a delta entry is rejected
+    /// if the code already maps to a different prefix or the prefix already
+    /// maps to a different code.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a namespace conflict (Rule 3 violation). A conflict indicates
+    /// corrupted namespace state or invalid commit history.
     pub fn augment_namespace_codes(&mut self, codes: &std::collections::HashMap<u16, String>) {
         for (&code, prefix) in codes {
-            self.dicts
-                .namespace_codes
-                .entry(code)
-                .or_insert_with(|| prefix.clone());
-            self.dicts
-                .namespace_reverse
-                .entry(prefix.clone())
-                .or_insert(code);
+            // Check code → prefix direction
+            if let Some(existing) = self.dicts.namespace_codes.get(&code) {
+                if existing != prefix {
+                    panic!(
+                        "namespace conflict in augment_namespace_codes (Rule 3 violation): \
+                         code {} maps to {:?} but {:?} was requested",
+                        code, existing, prefix
+                    );
+                }
+                // Already registered with matching prefix — skip
+                continue;
+            }
+            // Check prefix → code direction
+            if let Some(&existing_code) = self.dicts.namespace_reverse.get(prefix.as_str()) {
+                if existing_code != code {
+                    panic!(
+                        "namespace conflict in augment_namespace_codes (Rule 3 violation): \
+                         prefix {:?} maps to code {} but code {} was requested",
+                        prefix, existing_code, code
+                    );
+                }
+                continue;
+            }
+            // New mapping — insert
+            self.dicts.namespace_codes.insert(code, prefix.clone());
+            self.dicts.namespace_reverse.insert(prefix.clone(), code);
         }
         // Rebuild prefix trie to include new entries.
         self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);

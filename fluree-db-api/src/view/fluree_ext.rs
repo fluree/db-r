@@ -190,6 +190,14 @@ where
                 // Copy store's namespace codes back to the snapshot so
                 // result formatting can decode all namespace codes.
                 for (code, prefix) in store.namespace_codes() {
+                    if let Some(existing) = snapshot.snapshot.namespace_codes.get(code) {
+                        debug_assert_eq!(
+                            existing, prefix,
+                            "Rule 5 violation: index root ns code {} maps to {:?} \
+                             but commit chain has {:?} — possible indexer/publisher bug",
+                            code, prefix, existing
+                        );
+                    }
                     snapshot
                         .snapshot
                         .namespace_codes

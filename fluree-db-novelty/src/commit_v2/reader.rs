@@ -214,6 +214,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         commit_signatures,
         txn_meta: envelope.txn_meta,
         graph_delta: envelope.graph_delta,
+        ns_split_mode: envelope.ns_split_mode,
     })
 }
 

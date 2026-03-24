@@ -292,6 +292,11 @@ where
             commit_record.graph_delta = graph_delta;
         }
 
+        // Persist the split mode in the genesis commit (first commit, no parent).
+        if base.head_commit_id.is_none() {
+            commit_record.ns_split_mode = Some(ns_registry.split_mode());
+        }
+
         // Build previous commit reference from the head commit's ContentId.
         if let Some(cid) = base.head_commit_id.clone() {
             commit_record = commit_record.with_previous_ref(CommitRef::new(cid));

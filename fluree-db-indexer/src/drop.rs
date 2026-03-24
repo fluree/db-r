@@ -321,6 +321,7 @@ mod tests {
             commit_signatures: Vec::new(),
             txn_meta: Vec::new(),
             graph_delta: std::collections::HashMap::new(),
+            ns_split_mode: None,
         };
 
         let result = write_commit(&commit, false, None).expect("write_commit");

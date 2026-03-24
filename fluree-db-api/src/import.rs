@@ -1791,7 +1791,7 @@ where
         let forward_handle = std::thread::Builder::new()
             .name("ttl-forwarder".into())
             .spawn(move || {
-                use fluree_db_transact::namespace::NsFallbackMode;
+                use fluree_db_core::NsSplitMode;
                 let mut ns_mode_set = false;
                 loop {
                     let payload = match reader_rx.lock().unwrap().recv() {
@@ -1801,13 +1801,13 @@ where
                     if !ns_mode_set && payload.0 == 0 {
                         if let Some(pre) = ns_preflight_cell.get() {
                             if pre.exceeded_budget {
-                                forward_shared_alloc.set_fallback_mode(NsFallbackMode::CoarseHeuristic);
+                                forward_shared_alloc.set_split_mode(NsSplitMode::HostPlusN(1));
                                 ns_mode_set = true;
                                 tracing::info!(
                                     distinct_prefixes = pre.distinct_prefixes,
                                     http_host_prefixes = pre.http_host_prefixes,
                                     http_host_seg1_prefixes = pre.http_host_seg1_prefixes,
-                                    "namespace preflight exceeded budget; enabling coarse namespace fallback heuristic"
+                                    "namespace preflight exceeded budget; enabling HostPlusN(1) split mode"
                                 );
                             }
                         } else {

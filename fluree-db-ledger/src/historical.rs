@@ -269,6 +269,11 @@ impl HistoricalLedgerView {
             for iri in commit.graph_delta.into_values() {
                 all_graph_iris.insert(iri);
             }
+
+            // Extract ns_split_mode (last seen = genesis = authoritative)
+            if let Some(mode) = commit.ns_split_mode {
+                snapshot.ns_split_mode = mode;
+            }
         }
 
         // Apply accumulated deltas to snapshot (ns codes + graph IRIs)

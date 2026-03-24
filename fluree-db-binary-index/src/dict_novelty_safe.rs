@@ -18,7 +18,14 @@ fn subject_is_persisted(store: &BinaryIndexStore, sid: &Sid) -> io::Result<bool>
     }
     // Fallback: handle non-canonical `(ns_code, suffix)` encodings by reconstructing the full IRI.
     // Under the "ns_code invariant", this should be a fast miss and never taken.
-    Ok(store.sid_to_s_id(sid)?.is_some())
+    //
+    // sid_to_s_id may fail if the namespace code was allocated after the index
+    // was built (post-index allocation). In that case, the subject can't be
+    // persisted in the index, so return false.
+    match store.sid_to_s_id(sid) {
+        Ok(found) => Ok(found.is_some()),
+        Err(_) => Ok(false),
+    }
 }
 
 #[inline]

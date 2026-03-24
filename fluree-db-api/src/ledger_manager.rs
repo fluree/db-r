@@ -407,6 +407,14 @@ impl LedgerHandle {
 
             // Copy store's namespace codes back to snapshot for result formatting
             for (code, prefix) in store.namespace_codes() {
+                if let Some(existing) = state.snapshot.namespace_codes.get(code) {
+                    debug_assert_eq!(
+                        existing, prefix,
+                        "Rule 5 violation: index root ns code {} maps to {:?} \
+                         but commit chain has {:?} — possible indexer/publisher bug",
+                        code, prefix, existing
+                    );
+                }
                 state
                     .snapshot
                     .namespace_codes
@@ -605,6 +613,14 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // formatting can decode all namespace codes (e.g., custom prefixes
     // from the index root that the commit-chain snapshot doesn't have).
     for (code, prefix) in store.namespace_codes() {
+        if let Some(existing) = state.snapshot.namespace_codes.get(code) {
+            debug_assert_eq!(
+                existing, prefix,
+                "Rule 5 violation: index root ns code {} maps to {:?} \
+                 but commit chain has {:?} — possible indexer/publisher bug",
+                code, prefix, existing
+            );
+        }
         state
             .snapshot
             .namespace_codes

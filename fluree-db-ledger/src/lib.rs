@@ -305,6 +305,13 @@ impl LedgerState {
             for iri in commit.graph_delta.into_values() {
                 all_graph_iris.insert(iri);
             }
+
+            // Extract ns_split_mode from the commit chain.
+            // Walking HEAD→oldest, so the last mode seen is from the genesis commit.
+            // Overwrite each time — the final value is authoritative.
+            if let Some(mode) = commit.ns_split_mode {
+                snapshot.ns_split_mode = mode;
+            }
         }
 
         // Apply all accumulated deltas to the snapshot in one shot.
@@ -625,6 +632,11 @@ impl LedgerState {
         // Apply namespace + graph deltas to snapshot
         self.snapshot
             .apply_envelope_deltas(&commit.namespace_delta, &graph_iris);
+
+        // Apply ns_split_mode if present (only in genesis commit).
+        if let Some(mode) = commit.ns_split_mode {
+            self.snapshot.ns_split_mode = mode;
+        }
 
         // Generate commit metadata flakes
         let mut meta_flakes = generate_commit_flakes(&commit, ledger_id, commit_t);

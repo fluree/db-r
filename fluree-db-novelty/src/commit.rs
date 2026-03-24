@@ -237,6 +237,10 @@ pub struct Commit {
     /// - `1`: txn-meta graph (`#txn-meta`)
     /// - `2+`: user-defined named graphs
     pub graph_delta: HashMap<u16, String>,
+
+    /// Ledger-fixed split mode for canonical IRI encoding.
+    /// Set in the genesis commit; absent in subsequent commits.
+    pub ns_split_mode: Option<fluree_db_core::ns_encoding::NsSplitMode>,
 }
 
 impl Commit {
@@ -254,6 +258,7 @@ impl Commit {
             commit_signatures: Vec::new(),
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         }
     }
 
