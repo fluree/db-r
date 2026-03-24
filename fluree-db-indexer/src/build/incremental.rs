@@ -2069,7 +2069,7 @@ where
             }
         }
 
-        // Rule 5 reconciliation at publish time: ensure the root's materialized
+        // Namespace reconciliation at publish time: ensure the root's materialized
         // namespace table matches the commit-derived table (resolver state).
         {
             let expected: std::collections::BTreeMap<u16, String> = novelty
@@ -2080,7 +2080,7 @@ where
                 .collect();
             if final_root.namespace_codes != expected {
                 return Err(IndexerError::Core(CoreError::invalid_index(format!(
-                    "Rule 5 violation at index publish (index_t={}): incremental root namespace_codes \
+                    "namespace reconciliation failure at index publish (index_t={}): incremental root namespace_codes \
                      does not match commit-derived table — indexer/publisher bug",
                     final_root.index_t
                 ))));
@@ -2148,7 +2148,7 @@ where
             }
         }
 
-        // Rule 5 reconciliation at publish time (no-garbage path): same check.
+        // Namespace reconciliation at publish time (no-garbage path): same check.
         {
             let expected: std::collections::BTreeMap<u16, String> = novelty
                 .shared
@@ -2158,7 +2158,7 @@ where
                 .collect();
             if final_root.namespace_codes != expected {
                 return Err(IndexerError::Core(CoreError::invalid_index(format!(
-                    "Rule 5 violation at index publish (index_t={}): incremental root namespace_codes \
+                    "namespace reconciliation failure at index publish (index_t={}): incremental root namespace_codes \
                      does not match commit-derived table — indexer/publisher bug",
                     final_root.index_t
                 ))));

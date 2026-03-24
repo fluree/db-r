@@ -371,7 +371,7 @@ pub enum NsAllocError {
 
     /// Attempted to register a mapping that conflicts with an existing one.
     /// Either the code already maps to a different prefix, or the prefix
-    /// already maps to a different code (Rule 3 violation).
+    /// already maps to a different code (namespace bimap conflict).
     Conflict {
         code: u16,
         new_prefix: String,
@@ -474,7 +474,7 @@ impl NamespaceCodes {
     /// Returns:
     /// - `Ok(code)` — the existing or newly allocated code
     /// - `Err(NsAllocError::Overflow)` — no more allocatable codes
-    /// - `Err(NsAllocError::Conflict)` — Rule 3 violation (should not happen
+    /// - `Err(NsAllocError::Conflict)` — namespace bimap conflict (should not happen
     ///   in well-formed usage since we check prefix first)
     pub fn allocate_prefix(&mut self, prefix: &str) -> Result<u16, NsAllocError> {
         // Fast path: prefix already registered
@@ -610,7 +610,7 @@ impl Default for NamespaceCodes {
 
 /// Validate and apply a namespace delta to a raw `code → prefix` map.
 ///
-/// Checks both directions of the bimap invariant (Rule 3/6):
+/// Checks both directions of the bimap uniqueness invariant:
 /// - A code that already maps to a different prefix is a conflict.
 /// - A prefix that already maps to a different code is a conflict.
 ///

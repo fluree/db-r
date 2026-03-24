@@ -3171,6 +3171,7 @@ where
             prev_index: None,
             garbage: None,
             sketch_ref: None,
+            ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode::default(),
         };
 
         // Encode and upload FIR6 root.

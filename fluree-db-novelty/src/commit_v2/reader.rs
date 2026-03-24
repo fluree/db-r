@@ -251,6 +251,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
         txn: env.txn,
         namespace_delta: env.namespace_delta,
         txn_meta: env.txn_meta,
+        ns_split_mode: env.ns_split_mode,
     })
 }
 

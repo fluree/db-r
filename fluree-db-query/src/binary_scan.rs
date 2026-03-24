@@ -1942,12 +1942,8 @@ fn resolve_subject_v3(
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 ) -> std::io::Result<u64> {
-    // 1. Persisted
+    // 1. Persisted (canonical encoding guarantees exact-parts match)
     if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
-        return Ok(id);
-    }
-    // Fallback: non-canonical Sid parts may still reconstruct to a persisted IRI.
-    if let Some(id) = store.sid_to_s_id(sid)? {
         return Ok(id);
     }
     // 2. DictNovelty

@@ -29,7 +29,7 @@ use crate::error::{LedgerError, Result};
 use crate::LedgerState;
 use fluree_db_core::{
     content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
-    IndexType, LedgerSnapshot, NsSplitMode, OverlayProvider, Sid, Storage, TXN_META_GRAPH_ID,
+    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::NameService;
 
@@ -270,14 +270,12 @@ impl HistoricalLedgerView {
                 all_graph_iris.insert(iri);
             }
 
-            // Extract ns_split_mode (Rule 0 immutability).
+            // Extract ns_split_mode (immutable once user namespaces are allocated).
             if let Some(mode) = commit.ns_split_mode {
-                if snapshot.ns_split_mode != NsSplitMode::default()
-                    && snapshot.ns_split_mode != mode
-                {
+                if snapshot.has_user_namespace_codes() && snapshot.ns_split_mode != mode {
                     return Err(LedgerError::InvalidData(format!(
-                        "ns_split_mode conflict (Rule 0): commit t={} declares {:?} \
-                         but chain already established {:?}",
+                        "ns_split_mode conflict: commit t={} declares {:?} \
+                         but ledger already has user namespaces under {:?}",
                         commit.t, mode, snapshot.ns_split_mode
                     )));
                 }

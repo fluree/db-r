@@ -183,18 +183,12 @@ impl DictOverlay {
     /// prefix_trie decomposition since we already have ns_code + suffix).
     /// Falls back to ephemeral allocation when DictNovelty is uninitialized.
     pub fn assign_subject_id_from_sid(&mut self, sid: &Sid) -> io::Result<u64> {
-        // 1. Persisted tree
+        // 1. Persisted tree (canonical encoding guarantees exact-parts match)
         if let Some(id) = self
             .graph_view
             .store()
             .find_subject_id_by_parts(sid.namespace_code, &sid.name)?
         {
-            return Ok(id);
-        }
-        // Fallback: the Sid parts may be non-canonical for this IRI (e.g., different
-        // namespace-prefix split). Reconstruct IRI and consult the persisted reverse
-        // lookup again so canonical IDs win.
-        if let Some(id) = self.graph_view.store().sid_to_s_id(sid)? {
             return Ok(id);
         }
         // 2. DictNovelty (populated during commit — guaranteed hit for novelty subjects)

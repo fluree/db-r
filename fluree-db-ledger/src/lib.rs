@@ -35,8 +35,7 @@ pub use staged::LedgerView;
 
 use fluree_db_core::{
     content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
-    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, NsSplitMode, Storage,
-    TXN_META_GRAPH_ID,
+    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, Storage, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
@@ -307,16 +306,12 @@ impl LedgerState {
                 all_graph_iris.insert(iri);
             }
 
-            // Extract ns_split_mode from the commit chain (Rule 0 immutability).
-            // Walking HEAD→oldest, so the last value seen is from genesis.
-            // If multiple commits declare a mode, they must all agree.
+            // Extract ns_split_mode (immutable once user namespaces are allocated).
             if let Some(mode) = commit.ns_split_mode {
-                if snapshot.ns_split_mode != NsSplitMode::default()
-                    && snapshot.ns_split_mode != mode
-                {
+                if snapshot.has_user_namespace_codes() && snapshot.ns_split_mode != mode {
                     return Err(LedgerError::InvalidData(format!(
-                        "ns_split_mode conflict (Rule 0): commit t={} declares {:?} \
-                         but chain already established {:?}",
+                        "ns_split_mode conflict: commit t={} declares {:?} \
+                         but ledger already has user namespaces under {:?}",
                         commit.t, mode, snapshot.ns_split_mode
                     )));
                 }
@@ -643,16 +638,14 @@ impl LedgerState {
         self.snapshot
             .apply_envelope_deltas(&commit.namespace_delta, &graph_iris)?;
 
-        // Apply ns_split_mode (Rule 0 immutability): only the genesis commit
+        // Apply ns_split_mode (split mode is immutable after genesis): only the genesis commit
         // may set the mode. If a non-genesis commit carries a different mode,
         // it's an invalid commit chain.
         if let Some(mode) = commit.ns_split_mode {
-            if self.snapshot.ns_split_mode != NsSplitMode::default()
-                && self.snapshot.ns_split_mode != mode
-            {
+            if self.snapshot.has_user_namespace_codes() && self.snapshot.ns_split_mode != mode {
                 return Err(LedgerError::InvalidData(format!(
-                    "ns_split_mode conflict (Rule 0): commit t={} declares {:?} \
-                     but ledger already established {:?}",
+                    "ns_split_mode conflict: commit t={} declares {:?} \
+                     but ledger already has user namespaces under {:?}",
                     commit_t, mode, self.snapshot.ns_split_mode
                 )));
             }

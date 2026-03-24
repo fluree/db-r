@@ -114,7 +114,7 @@ impl NamespaceRegistry {
     ///
     /// # Panics
     ///
-    /// Panics on a namespace conflict (Rule 3 violation). A conflict means
+    /// Panics on a namespace bimap conflict. A conflict means
     /// the namespace table is corrupted or the commit history is invalid —
     /// this is never a recoverable runtime condition.
     pub fn get_or_allocate(&mut self, prefix: &str) -> u16 {
@@ -127,7 +127,7 @@ impl NamespaceRegistry {
                 existing_prefix,
             }) => {
                 panic!(
-                    "namespace conflict (Rule 3 violation): code {} maps to {:?} \
+                    "namespace bimap conflict: code {} maps to {:?} \
                      but {:?} was requested — this indicates corrupted namespace state \
                      or invalid commit history",
                     code, existing_prefix, new_prefix
@@ -209,7 +209,7 @@ impl NamespaceRegistry {
     /// serial registry (e.g., after commit-order publication). If the prefix
     /// is already registered (under any code), this is a no-op. OVERFLOW codes
     /// are ignored since they are pure sentinels and should never be registered.
-    /// Returns `Err` on a namespace conflict (Rule 3 violation).
+    /// Returns `Err` on a namespace bimap conflict.
     pub fn ensure_code(&mut self, code: u16, prefix: &str) -> Result<(), NsAllocError> {
         if code >= OVERFLOW {
             return Ok(()); // OVERFLOW is a sentinel, never register it
@@ -290,7 +290,7 @@ impl SharedNamespaceAllocator {
     ///
     /// # Panics
     ///
-    /// Panics on a namespace conflict (Rule 3 violation).
+    /// Panics on a namespace bimap conflict.
     pub fn get_or_allocate(&self, prefix: &str) -> u16 {
         // Fast path: read lock
         {
@@ -313,7 +313,7 @@ impl SharedNamespaceAllocator {
                 existing_prefix,
             }) => {
                 panic!(
-                    "namespace conflict (Rule 3 violation): code {} maps to {:?} \
+                    "namespace bimap conflict: code {} maps to {:?} \
                      but {:?} was requested",
                     code, existing_prefix, new_prefix
                 );
@@ -368,7 +368,7 @@ impl SharedNamespaceAllocator {
     /// Used after serial import paths where namespace codes were allocated
     /// in the registry but not in the shared allocator. Preserves exact code
     /// assignments from the registry.
-    /// Returns `Err` on a namespace conflict (Rule 3 violation).
+    /// Returns `Err` on a namespace bimap conflict.
     pub fn sync_from_registry(&self, reg: &NamespaceRegistry) -> Result<(), NsAllocError> {
         let delta = reg.codes.code_to_prefix_map().clone();
         let mut inner = self.inner.write();

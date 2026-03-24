@@ -382,6 +382,7 @@ impl LedgerHandle {
             ledger_id: root.ledger_id,
             t: root.index_t,
             namespace_codes: root.namespace_codes.into_iter().collect(),
+            ns_split_mode: root.ns_split_mode,
             stats: root.stats,
             schema: root.schema,
             subject_watermarks: root.subject_watermarks,
@@ -402,29 +403,8 @@ impl LedgerHandle {
                 .apply_loaded_db(db, Some(index_id))
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
 
-            // Augment store's namespace codes with entries from novelty commits
-            store
-                .augment_namespace_codes(&state.snapshot.namespace_codes)
-                .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
-            store.set_ns_split_mode(state.snapshot.ns_split_mode);
-
-            // Copy store's namespace codes back to snapshot for result formatting
-            for (code, prefix) in store.namespace_codes() {
-                if let Some(existing) = state.snapshot.namespace_codes.get(code) {
-                    if existing != prefix {
-                        return Err(ApiError::internal(format!(
-                            "Rule 5 violation: index root ns code {} maps to {:?} \
-                             but commit chain has {:?} — possible indexer/publisher bug",
-                            code, prefix, existing
-                        )));
-                    }
-                }
-                state
-                    .snapshot
-                    .namespace_codes
-                    .entry(*code)
-                    .or_insert_with(|| prefix.clone());
-            }
+            // Sync namespace codes between store and snapshot (Rule 3/5 validation).
+            crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
 
             let arc_store = Arc::new(store);
 
@@ -593,11 +573,8 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
-    // Augment namespace codes with entries from novelty commits (see loading.rs).
-    store
-        .augment_namespace_codes(&state.snapshot.namespace_codes)
-        .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
-    store.set_ns_split_mode(state.snapshot.ns_split_mode);
+    // Sync namespace codes between store and snapshot (Rule 3/5 validation).
+    crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
 
     // Re-populate DictNovelty from already-loaded novelty flakes, but *only* for
     // entries not present in the persisted dictionaries (canonical IDs must win).
@@ -614,26 +591,6 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
                 .map(|id| novelty.get_flake(id)),
         )
         .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
-    }
-
-    // Copy store's namespace codes back to the snapshot so result
-    // formatting can decode all namespace codes (e.g., custom prefixes
-    // from the index root that the commit-chain snapshot doesn't have).
-    for (code, prefix) in store.namespace_codes() {
-        if let Some(existing) = state.snapshot.namespace_codes.get(code) {
-            if existing != prefix {
-                return Err(ApiError::internal(format!(
-                    "Rule 5 violation: index root ns code {} maps to {:?} \
-                     but commit chain has {:?} — possible indexer/publisher bug",
-                    code, prefix, existing
-                )));
-            }
-        }
-        state
-            .snapshot
-            .namespace_codes
-            .entry(*code)
-            .or_insert_with(|| prefix.clone());
     }
 
     let arc_store = Arc::new(store);

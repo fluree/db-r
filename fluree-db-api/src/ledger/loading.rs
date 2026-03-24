@@ -70,36 +70,10 @@ where
                     ))
                 })?;
 
-                binary_index_store
-                    .augment_namespace_codes(&state.snapshot.namespace_codes)
-                    .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
-                binary_index_store.set_ns_split_mode(state.snapshot.ns_split_mode);
-
-                // Augment the snapshot's namespace table with codes from
-                // the root. After a rebuild, the root may have namespace
-                // codes that the snapshot (loaded from the commit chain)
-                // doesn't have. Without this, SPARQL result formatting
-                // fails with UnknownNamespace errors.
-                //
-                // Rule 5 reconciliation: verify that the index root's namespace
-                // table doesn't conflict with the commit-derived table.
-                // Conflicts indicate an indexer/publisher bug or storage corruption.
-                for (code, prefix) in binary_index_store.namespace_codes() {
-                    if let Some(existing) = state.snapshot.namespace_codes.get(code) {
-                        if existing != prefix {
-                            return Err(ApiError::internal(format!(
-                                "Rule 5 violation: index root ns code {} maps to {:?} \
-                                 but commit chain has {:?} — possible indexer/publisher bug",
-                                code, prefix, existing
-                            )));
-                        }
-                    }
-                    state
-                        .snapshot
-                        .namespace_codes
-                        .entry(*code)
-                        .or_insert_with(|| prefix.clone());
-                }
+                crate::ns_helpers::sync_store_and_snapshot_ns(
+                    &mut binary_index_store,
+                    &mut state.snapshot,
+                )?;
 
                 // Extract stats from the FIR6 root if present.
                 // Decode FIR6 root metadata once and apply:

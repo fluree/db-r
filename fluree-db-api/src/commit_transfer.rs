@@ -178,35 +178,35 @@ where
             reverse_graph.entry(g_sid).or_insert(TXN_META_GRAPH_ID);
         }
 
-        // Accumulate namespace table for Rule 6 cross-commit validation.
+        // Accumulate namespace table for cross-commit namespace conflict validation.
         let mut accumulated_ns: HashMap<u16, String> = base_state.snapshot.namespace_codes.clone();
 
         for c in &decoded {
             // Current state is base db + evolving novelty.
             let current_t = base_state.snapshot.t.max(evolving_novelty.t);
 
-            // 4.0.1 Rule 6: namespace delta must be conflict-free against
-            // the accumulated namespace table from parent + prior commits.
+            // 4.0.1 Cross-commit namespace validation: namespace delta must be
+            // conflict-free against the accumulated namespace table from parent + prior commits.
             fluree_db_core::ns_encoding::validate_and_merge_ns_delta(
                 &mut accumulated_ns,
                 &c.commit.namespace_delta,
             )
             .map_err(|e| {
                 PushError::Invalid(format!(
-                    "commit t={}: namespace delta conflict (Rule 6): {}",
+                    "commit t={}: namespace delta conflict: {}",
                     c.commit.t, e
                 ))
                 .into_api_error()
             })?;
 
-            // 4.0.2 Rule 0: ns_split_mode is immutable after genesis.
+            // ns_split_mode immutability: locked once user namespaces are allocated.
             if let Some(mode) = c.commit.ns_split_mode {
-                if base_state.snapshot.ns_split_mode != fluree_db_core::NsSplitMode::default()
+                if base_state.snapshot.has_user_namespace_codes()
                     && base_state.snapshot.ns_split_mode != mode
                 {
                     return Err(PushError::Invalid(format!(
-                        "commit t={}: ns_split_mode conflict (Rule 0): declares {:?} \
-                         but ledger established {:?}",
+                        "commit t={}: ns_split_mode conflict: declares {:?} \
+                         but ledger already has user namespaces under {:?}",
                         c.commit.t, mode, base_state.snapshot.ns_split_mode
                     ))
                     .into_api_error());
@@ -836,7 +836,7 @@ fn apply_pushed_commits_to_state(
             for iri in c.commit.graph_delta.values() {
                 all_graph_iris.insert(iri.clone());
             }
-            // Apply ns_split_mode (Rule 0: already validated in push acceptance loop).
+            // Apply ns_split_mode (already validated for immutability in push acceptance loop).
             if let Some(mode) = c.commit.ns_split_mode {
                 base.snapshot.ns_split_mode = mode;
             }

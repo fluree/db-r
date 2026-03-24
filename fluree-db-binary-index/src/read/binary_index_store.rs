@@ -857,11 +857,11 @@ impl BinaryIndexStore {
         self.dicts.predicate_reverse.get(iri).copied()
     }
 
-    /// Encode an IRI to a namespaced `Sid` using canonical splitting (Rule 2).
+    /// Encode an IRI to a namespaced `Sid` using canonical splitting and exact-prefix lookup.
     ///
     /// Uses `canonical_split` + exact-prefix lookup via reverse map. If the
     /// canonical prefix is not registered, returns `Sid(EMPTY, iri)`.
-    /// No longest-prefix-match — Rule 2 prohibits `starts_with` matching.
+    /// No longest-prefix-match — canonical encoding prohibits `starts_with` matching.
     pub fn encode_iri(&self, iri: &str) -> Sid {
         let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
         if let Some(&code) = self.dicts.namespace_reverse.get(canonical_prefix) {
@@ -903,7 +903,7 @@ impl BinaryIndexStore {
             .map(|&idx| &self.o_type_table[idx])
     }
 
-    /// Reconstruct the full IRI string from a `Sid` (strict decode, Rule 5).
+    /// Reconstruct the full IRI string from a `Sid` (strict decode).
     ///
     /// - `EMPTY (0)` / `OVERFLOW (0xFFFE)`: returns `Some(sid.name)`.
     /// - Registered code: returns `Some(prefix + name)`.
@@ -921,7 +921,7 @@ impl BinaryIndexStore {
 
     /// Reverse subject lookup: find the u64 s_id for a given IRI.
     ///
-    /// Uses canonical encoding (Rule 2) to build the reverse-tree key,
+    /// Uses canonical encoding to build the reverse-tree key,
     /// matching the encoding used when the reverse dictionary was built.
     pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
@@ -1069,13 +1069,13 @@ impl BinaryIndexStore {
 
     /// Augment namespace codes with entries from novelty commits.
     ///
-    /// Validates uniqueness/immutability (Rule 3): a delta entry is rejected
+    /// Validates namespace bimap uniqueness: a delta entry is rejected
     /// if the code already maps to a different prefix or the prefix already
     /// maps to a different code.
     ///
     /// # Panics
     ///
-    /// Returns `Err` on a namespace conflict (Rule 3 violation) so the caller
+    /// Returns `Err` on a namespace bimap conflict so the caller
     /// can reject the invalid state rather than crashing the process.
     pub fn augment_namespace_codes(
         &mut self,
@@ -1094,7 +1094,7 @@ impl BinaryIndexStore {
         validate_and_merge_ns_delta(&mut self.dicts.namespace_codes, codes).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("namespace conflict (Rule 3): {}", e),
+                format!("namespace conflict: {}", e),
             )
         })?;
 

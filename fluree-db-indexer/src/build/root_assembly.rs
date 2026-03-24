@@ -153,11 +153,12 @@ pub(crate) struct Fir6Inputs {
     pub ledger_id: String,
     pub index_t: i64,
     pub namespace_codes: BTreeMap<u16, String>,
-    /// Commit-derived namespace table for Rule 5 reconciliation.
-    /// If provided, `encode_and_write_root_v6` validates that the index root's
-    /// `namespace_codes` matches the commit-derived table entry-by-entry.
-    /// A mismatch indicates an indexer/publisher bug.
-    pub commit_derived_ns: Option<std::collections::HashMap<u16, String>>,
+    /// Commit-derived namespace table for index-root/commit-chain namespace reconciliation.
+    /// `encode_and_write_root_v6` validates that the index root's `namespace_codes`
+    /// matches this table entry-by-entry. A mismatch indicates an indexer/publisher bug.
+    pub commit_derived_ns: std::collections::HashMap<u16, String>,
+    /// Ledger-fixed split mode — persisted in the index root.
+    pub ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode,
     pub predicate_sids: Vec<(u16, String)>,
     pub uploaded_dicts: UploadedDicts,
     pub v3_uploaded: UploadedIndexes,
@@ -189,12 +190,14 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
-    // Rule 5 reconciliation at publish time:
-    // If a commit-derived namespace table is provided for this `index_t`,
-    // it must match the index root's materialized table exactly.
-    if let Some(ref commit_ns) = inputs.commit_derived_ns {
-        let commit_bt: BTreeMap<u16, String> =
-            commit_ns.iter().map(|(&k, v)| (k, v.clone())).collect();
+    // Namespace reconciliation at publish time: the commit-derived namespace
+    // table must match the index root's materialized table exactly.
+    {
+        let commit_bt: BTreeMap<u16, String> = inputs
+            .commit_derived_ns
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
         if commit_bt != inputs.namespace_codes {
             // Find a representative mismatch for a targeted error message.
             let mut mismatch: Option<(u16, Option<&String>, Option<&String>)> = None;
@@ -227,7 +230,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
 
             return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
                 format!(
-                    "Rule 5 violation at index publish (index_t={}): index root namespace_codes does not match \
+                    "namespace reconciliation failure at index publish (index_t={}): index root namespace_codes does not match \
                      commit-derived table — indexer/publisher bug ({detail})",
                     inputs.index_t
                 ),
@@ -266,6 +269,7 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         subject_id_encoding: inputs.uploaded_dicts.subject_id_encoding,
         namespace_codes: inputs.namespace_codes,
         predicate_sids: inputs.predicate_sids,
+        ns_split_mode: inputs.ns_split_mode,
         graph_iris: inputs.uploaded_dicts.graph_iris,
         datatype_iris: inputs.datatype_iris,
         language_tags: inputs.language_tags.clone(),

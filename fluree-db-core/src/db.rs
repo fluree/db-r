@@ -32,6 +32,8 @@ pub struct LedgerSnapshotMetadata {
     pub t: i64,
     /// Namespace code -> IRI prefix mapping
     pub namespace_codes: HashMap<u16, String>,
+    /// Ledger-fixed split mode from the index root.
+    pub ns_split_mode: NsSplitMode,
     /// Index statistics (flakes count, total size)
     pub stats: Option<IndexStats>,
     /// Schema (class/property hierarchy)
@@ -61,6 +63,10 @@ pub struct LedgerSnapshot {
 
     /// Namespace code -> IRI prefix mapping
     pub namespace_codes: HashMap<u16, String>,
+
+    /// Reverse: IRI prefix -> namespace code (for O(1) canonical encode lookup).
+    /// Kept in sync with `namespace_codes` by all mutation paths.
+    namespace_reverse: HashMap<String, u16>,
 
     /// Ledger-fixed split mode for canonical IRI encoding.
     ///
@@ -110,6 +116,7 @@ impl Clone for LedgerSnapshot {
             t: self.t,
             version: self.version,
             namespace_codes: self.namespace_codes.clone(),
+            namespace_reverse: self.namespace_reverse.clone(),
             ns_split_mode: self.ns_split_mode,
             stats: self.stats.clone(),
             schema: self.schema.clone(),
@@ -136,6 +143,14 @@ impl std::fmt::Debug for LedgerSnapshot {
     }
 }
 
+/// Build reverse map from code→prefix forward map.
+fn build_namespace_reverse(codes: &HashMap<u16, String>) -> HashMap<String, u16> {
+    codes
+        .iter()
+        .map(|(&code, prefix)| (prefix.clone(), code))
+        .collect()
+}
+
 impl LedgerSnapshot {
     /// Create a genesis (empty) database for a new ledger.
     ///
@@ -143,12 +158,14 @@ impl LedgerSnapshot {
     /// The database starts at t=0 with no base data.  Queries against
     /// a genesis LedgerSnapshot return overlay (novelty) flakes only.
     pub fn genesis(ledger_id: &str) -> Self {
+        let namespace_codes = default_namespace_codes();
+        let namespace_reverse = build_namespace_reverse(&namespace_codes);
         Self {
             ledger_id: ledger_id.to_string(),
             t: 0,
             version: 3,
-            // Seed with baseline Fluree namespace codes.
-            namespace_codes: default_namespace_codes(),
+            namespace_codes,
+            namespace_reverse,
             ns_split_mode: NsSplitMode::default(),
             stats: None,
             schema: None,
@@ -176,12 +193,14 @@ impl LedgerSnapshot {
                 .map_err(|e| Error::invalid_index(format!("graph registry seed from root: {e}")))?
         };
 
+        let namespace_reverse = build_namespace_reverse(&meta.namespace_codes);
         Ok(Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
             version: 3,
             namespace_codes: meta.namespace_codes,
-            ns_split_mode: NsSplitMode::default(),
+            namespace_reverse,
+            ns_split_mode: meta.ns_split_mode,
             stats: meta.stats,
             schema: meta.schema,
             schema_hierarchy_cache: OnceCell::new(),
@@ -244,17 +263,15 @@ impl LedgerSnapshot {
         }
     }
 
-    /// Shared IRI → SID encoding using canonical splitting (Rule 2).
+    /// Shared IRI → SID encoding using canonical splitting and exact-prefix lookup.
     ///
     /// Uses `canonical_split(iri, mode)` + exact-prefix lookup. If the
     /// canonical prefix is not registered, falls back to `Sid(EMPTY, iri)`.
-    /// No longest-prefix-match — Rule 2 prohibits `starts_with` matching.
+    /// No longest-prefix-match — canonical encoding prohibits `starts_with` matching.
     fn encode_iri_inner(&self, iri: &str) -> Sid {
         let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
-        for (&code, ns_prefix) in &self.namespace_codes {
-            if ns_prefix == canonical_prefix {
-                return Sid::new(code, canonical_suffix);
-            }
+        if let Some(&code) = self.namespace_reverse.get(canonical_prefix) {
+            return Sid::new(code, canonical_suffix);
         }
         Sid::new(EMPTY, iri)
     }
@@ -309,6 +326,18 @@ impl LedgerSnapshot {
         &self.namespace_codes
     }
 
+    /// Insert a namespace code if not already present.
+    ///
+    /// Keeps the reverse map in sync. Returns `true` if the entry was new.
+    pub fn insert_namespace_code(&mut self, code: u16, prefix: String) -> bool {
+        if self.namespace_codes.contains_key(&code) {
+            return false;
+        }
+        self.namespace_reverse.entry(prefix.clone()).or_insert(code);
+        self.namespace_codes.insert(code, prefix);
+        true
+    }
+
     /// Apply commit envelope deltas (namespace + graph) to this snapshot.
     ///
     /// Called at commit-apply time only. Centralizes all snapshot mutations
@@ -317,7 +346,7 @@ impl LedgerSnapshot {
     /// **Call order invariant**: namespace deltas are applied first so that
     /// `encode_iri()` can decompose graph IRIs when building reverse maps.
     ///
-    /// **Rule 6 enforcement**: each namespace delta entry is validated against
+    /// **Cross-commit namespace conflict check**: each namespace delta entry is validated against
     /// the current table. A code that already maps to a different prefix, or
     /// a prefix that already maps to a different code, is a conflict that
     /// indicates an invalid commit chain. Returns `Err` so the caller can
@@ -328,9 +357,23 @@ impl LedgerSnapshot {
         graph_iris: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<()> {
         validate_and_merge_ns_delta(&mut self.namespace_codes, ns_delta)
-            .map_err(|e| Error::invalid_index(format!("namespace conflict (Rule 6): {}", e)))?;
+            .map_err(|e| Error::invalid_index(format!("namespace conflict: {}", e)))?;
+        // Keep reverse map in sync (only new entries need inserting).
+        for (&code, prefix) in ns_delta {
+            self.namespace_reverse.entry(prefix.clone()).or_insert(code);
+        }
         self.graph_registry.apply_delta(graph_iris);
         Ok(())
+    }
+
+    /// Whether user namespace codes have been allocated (any code >= USER_START).
+    ///
+    /// Once user codes exist, the `ns_split_mode` is locked — changing it would
+    /// re-split existing IRIs differently, breaking decode consistency.
+    pub fn has_user_namespace_codes(&self) -> bool {
+        self.namespace_codes
+            .keys()
+            .any(|&code| (fluree_vocab::namespaces::USER_START..OVERFLOW).contains(&code))
     }
 
     /// Get the schema hierarchy for RDFS reasoning.
@@ -550,6 +593,10 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
     // Subject ID encoding (skip; stored on FIR6 root only)
     let _subject_id_encoding = read_u8(bytes, &mut pos)?;
 
+    // ns_split_mode
+    let ns_split_mode_byte = read_u8(bytes, &mut pos)?;
+    let ns_split_mode = crate::ns_encoding::NsSplitMode::from_byte(ns_split_mode_byte);
+
     // Namespace codes
     let ns_count = read_u16(bytes, &mut pos)? as usize;
     let mut namespace_codes: HashMap<u16, String> = HashMap::with_capacity(ns_count);
@@ -677,6 +724,7 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
         ledger_id,
         t: index_t,
         namespace_codes,
+        ns_split_mode,
         stats,
         schema,
         subject_watermarks,
@@ -734,6 +782,7 @@ mod tests {
             ledger_id: "test:main".into(),
             t: 1,
             namespace_codes: ns,
+            ns_split_mode: NsSplitMode::default(),
             stats: None,
             schema: None,
             subject_watermarks: vec![],
@@ -766,7 +815,7 @@ mod tests {
 
         // Canonical split (MostGranular) for this opaque IRI: prefix = "urn:fluree:mydb:main#"
         // Genesis db only has "urn:fluree:" (FLUREE_URN) — canonical prefix not registered.
-        // Rule 2: no starts_with fallback → EMPTY.
+        // Canonical encoding: no starts_with fallback → EMPTY.
         let sid = db
             .encode_iri(&txn_meta_iri)
             .expect("encode_iri always returns Some via EMPTY fallback");
