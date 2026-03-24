@@ -199,6 +199,20 @@ where
                 .into_api_error()
             })?;
 
+            // 4.0.2 Rule 0: ns_split_mode is immutable after genesis.
+            if let Some(mode) = c.commit.ns_split_mode {
+                if base_state.snapshot.ns_split_mode != fluree_db_core::NsSplitMode::default()
+                    && base_state.snapshot.ns_split_mode != mode
+                {
+                    return Err(PushError::Invalid(format!(
+                        "commit t={}: ns_split_mode conflict (Rule 0): declares {:?} \
+                         but ledger established {:?}",
+                        c.commit.t, mode, base_state.snapshot.ns_split_mode
+                    ))
+                    .into_api_error());
+                }
+            }
+
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
                 &base_state.snapshot,
@@ -822,7 +836,7 @@ fn apply_pushed_commits_to_state(
             for iri in c.commit.graph_delta.values() {
                 all_graph_iris.insert(iri.clone());
             }
-            // Extract ns_split_mode (last seen = genesis = authoritative)
+            // Apply ns_split_mode (Rule 0: already validated in push acceptance loop).
             if let Some(mode) = c.commit.ns_split_mode {
                 base.snapshot.ns_split_mode = mode;
             }

@@ -193,10 +193,8 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     // If a commit-derived namespace table is provided for this `index_t`,
     // it must match the index root's materialized table exactly.
     if let Some(ref commit_ns) = inputs.commit_derived_ns {
-        let commit_bt: BTreeMap<u16, String> = commit_ns
-            .iter()
-            .map(|(&k, v)| (k, v.clone()))
-            .collect();
+        let commit_bt: BTreeMap<u16, String> =
+            commit_ns.iter().map(|(&k, v)| (k, v.clone())).collect();
         if commit_bt != inputs.namespace_codes {
             // Find a representative mismatch for a targeted error message.
             let mut mismatch: Option<(u16, Option<&String>, Option<&String>)> = None;

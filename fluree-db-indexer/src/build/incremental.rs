@@ -22,8 +22,8 @@ use std::time::Instant;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
-use fluree_db_core::{ContentId, ContentKind, Storage};
 use fluree_db_core::Error as CoreError;
+use fluree_db_core::{ContentId, ContentKind, Storage};
 
 use crate::error::{IndexerError, Result};
 use crate::gc;
