@@ -529,16 +529,6 @@ fn expand_node_internal(
     }
 }
 
-/// Check if this is a default graph (only @context and @graph)
-fn is_default_graph(map: &Map<String, JsonValue>, graph_key: &str) -> bool {
-    map.contains_key(graph_key)
-        && map
-            .keys()
-            .filter(|k| *k != "@context" && *k != "context" && *k != "@graph" && *k != "graph")
-            .count()
-            == 0
-}
-
 /// Expand a JSON-LD node (document)
 pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> {
     let idx = vec![];
@@ -566,9 +556,19 @@ pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> 
                 None
             };
 
-            // Handle default graph (only @context and @graph)
+            // Handle envelope form: when @graph is present at top level WITHOUT
+            // an @id, this is an envelope/default-graph wrapper. Expand only the
+            // @graph contents. Extra top-level keys (txn-meta properties) are
+            // handled separately by the transact parser's extract_txn_meta(),
+            // so we must not feed the whole envelope into expand_node_internal —
+            // that would treat the envelope as a single node and silently drop @graph.
+            //
+            // When @id IS present alongside @graph, this is a JSON-LD named graph
+            // (the @id names the graph) — fall through to normal expansion which
+            // preserves the @id, properties, and nested @graph.
             if let Some(gk) = graph_key {
-                if is_default_graph(map, gk) {
+                let has_id = map.contains_key("@id") || map.contains_key("id");
+                if !has_id {
                     let local_context = get_context(map);
                     let merged_context = if let Some(lc) = local_context {
                         ParsedContext::parse(Some(context), lc)?
