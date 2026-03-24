@@ -632,16 +632,14 @@ impl DatasetSpec {
             ));
         }
 
-        // Parse "fromNamed" (new object format) or "from-named" (legacy array format).
+        // Parse "fromNamed" (preferred) or "from-named" (legacy key).
         // "fromNamed" takes precedence if both are present.
+        // Both keys accept: object (keys = aliases), string, array, or null.
         if let Some(from_named_val) = obj.get("fromNamed") {
             if let Some(named_obj) = from_named_val.as_object() {
                 spec.named_graphs = parse_named_graph_object(named_obj)?;
             } else {
-                return Err(DatasetParseError::InvalidFromNamed(
-                    "'fromNamed' must be an object whose keys are dataset-local aliases"
-                        .to_string(),
-                ));
+                spec.named_graphs = parse_graph_sources(from_named_val, "fromNamed")?;
             }
         } else if let Some(from_named_val) = obj.get("from-named") {
             spec.named_graphs = parse_graph_sources(from_named_val, "from-named")?;
@@ -1638,14 +1636,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_from_named_object_rejects_non_object_value() {
+    fn test_parse_from_named_accepts_string_array() {
+        // "fromNamed" accepts both object (keys = aliases) and array (simple identifiers)
         let query = json!({
-            "fromNamed": ["should", "be", "object"],
+            "fromNamed": ["graph1", "graph2"],
             "select": ["?s"]
         });
 
-        let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err());
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.named_graphs.len(), 2);
+        assert_eq!(spec.named_graphs[0].identifier, "graph1");
+        assert_eq!(spec.named_graphs[1].identifier, "graph2");
     }
 
     #[test]

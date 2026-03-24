@@ -1194,3 +1194,324 @@ async fn test_commit_stats_survive_indexing() {
         })
         .await;
 }
+
+// =============================================================================
+// Regression: envelope-form with txn-meta must not drop @graph data
+// =============================================================================
+
+#[tokio::test]
+async fn test_insert_with_txn_meta_preserves_graph_data() {
+    // When a JSON-LD envelope has both @graph and extra top-level properties
+    // (txn-meta), the @graph data must still be inserted — not silently dropped.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-preserves-graph:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Envelope-form: @graph items + top-level txn metadata
+            let tx = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "@graph": [
+                    {"@id": "ex:alice", "schema:name": "Alice"},
+                    {"@id": "ex:bob", "schema:name": "Bob"}
+                ],
+                "ex:correlationId": "corr-1234"
+            });
+
+            let result = fluree.insert(ledger, &tx).await.expect("insert");
+            assert_eq!(result.receipt.t, 1);
+
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Query default graph — @graph data must be present
+            let query = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "from": ledger_id,
+                "select": ["?name"],
+                "where": {
+                    "@id": "?s",
+                    "schema:name": "?name"
+                }
+            });
+
+            let results = fluree.query_connection(&query).await.expect("query");
+            let ledger_snap = fluree.ledger(ledger_id).await.expect("load");
+            let results = results.to_jsonld(&ledger_snap.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            let has_alice = arr.iter().any(|v| {
+                v.as_str() == Some("Alice")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("Alice")))
+                        .unwrap_or(false)
+            });
+            let has_bob = arr.iter().any(|v| {
+                v.as_str() == Some("Bob")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("Bob")))
+                        .unwrap_or(false)
+            });
+
+            assert!(
+                has_alice,
+                "Alice should be in default graph, got: {:?}",
+                arr
+            );
+            assert!(has_bob, "Bob should be in default graph, got: {:?}", arr);
+
+            // Also verify txn-meta was stored
+            let meta_query = json!({
+                "from": format!("{}#txn-meta", ledger_id),
+                "select": ["?o"],
+                "where": {
+                    "@id": "?s",
+                    "http://example.org/correlationId": "?o"
+                }
+            });
+
+            let meta_results = fluree
+                .query_connection(&meta_query)
+                .await
+                .expect("meta query");
+            let meta_results = meta_results
+                .to_jsonld(&ledger_snap.snapshot)
+                .expect("to_jsonld");
+            let meta_arr = meta_results.as_array().expect("array");
+            let has_corr = meta_arr.iter().any(|v| {
+                v.as_str() == Some("corr-1234")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("corr-1234")))
+                        .unwrap_or(false)
+            });
+            assert!(
+                has_corr,
+                "txn-meta should contain correlationId, got: {:?}",
+                meta_arr
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn test_upsert_with_txn_meta_preserves_graph_data() {
+    // Same bug but via the upsert path.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-upsert-graph:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // First insert some data
+            let tx1 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "@graph": [{"@id": "ex:alice", "ex:score": 10}]
+            });
+            let ledger = fluree.insert(ledger, &tx1).await.expect("insert").ledger;
+
+            // Upsert with txn-meta — should update score AND record metadata
+            let tx2 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "@graph": [{"@id": "ex:alice", "ex:score": 99}],
+                "ex:correlationId": "upsert-5678"
+            });
+            let result = fluree.upsert(ledger, &tx2).await.expect("upsert");
+
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Query — score should be 99 (upserted)
+            let query = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": ledger_id,
+                "select": ["?score"],
+                "where": {"@id": "ex:alice", "ex:score": "?score"}
+            });
+
+            let results = fluree.query_connection(&query).await.expect("query");
+            let ledger_snap = fluree.ledger(ledger_id).await.expect("load");
+            let results = results.to_jsonld(&ledger_snap.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            let has_99 = arr.iter().any(|v| {
+                json_as_i64(v) == Some(99)
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| json_as_i64(x) == Some(99)))
+                        .unwrap_or(false)
+            });
+
+            assert!(has_99, "upsert should have set score to 99, got: {:?}", arr);
+        })
+        .await;
+}
+
+// =============================================================================
+// Regression: @id + @graph + txn-meta (named graph path under new heuristic)
+// =============================================================================
+
+#[tokio::test]
+async fn test_insert_with_id_and_graph_and_txn_meta() {
+    // When a JSON-LD document has @id + @graph + extra top-level properties,
+    // the new heuristic (presence of @id) avoids the envelope path and treats
+    // it as a regular node. In JSON-LD, @id + @graph is a named graph
+    // construct — the triples inside @graph belong to a graph named by @id,
+    // which Fluree's insert parser doesn't flatten into default-graph triples.
+    //
+    // This test verifies the behavior under the new heuristic:
+    //   1. The insert succeeds (no panic, no silent corruption)
+    //   2. txn-meta properties are still extracted from the envelope
+    //   3. Contrast with the envelope path (no @id): @graph data IS inserted
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-id-graph:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            // ── Part 1: @id + @graph + txn-meta (named graph form) ──────────
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            let tx_with_id = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "@id": "ex:batch-1",
+                "@graph": [
+                    {"@id": "ex:alice", "schema:name": "Alice"}
+                ],
+                "ex:machine": "server-01"
+            });
+
+            let result = fluree
+                .insert(ledger, &tx_with_id)
+                .await
+                .expect("insert with @id");
+            assert_eq!(result.receipt.t, 1);
+
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // txn-meta should still be extracted (extract_txn_meta checks for
+            // @graph presence, and @id is in the RESERVED_KEYS skip list).
+            let meta_query = json!({
+                "from": format!("{}#txn-meta", ledger_id),
+                "select": ["?o"],
+                "where": {
+                    "@id": "?s",
+                    "http://example.org/machine": "?o"
+                }
+            });
+
+            let ledger_snap = fluree.ledger(ledger_id).await.expect("load");
+            let meta_results = fluree
+                .query_connection(&meta_query)
+                .await
+                .expect("meta query");
+            let meta_results = meta_results
+                .to_jsonld(&ledger_snap.snapshot)
+                .expect("to_jsonld");
+            let meta_arr = meta_results.as_array().expect("array");
+            let has_machine = meta_arr.iter().any(|v| {
+                v.as_str() == Some("server-01")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("server-01")))
+                        .unwrap_or(false)
+            });
+            assert!(
+                has_machine,
+                "txn-meta should contain machine=server-01, got: {:?}",
+                meta_arr
+            );
+
+            // ── Part 2: contrast — envelope without @id ─────────────────────
+            // Same data but without @id: the envelope heuristic kicks in and
+            // @graph data IS inserted into the default graph.
+            let ledger2_id = "it/txn-meta-no-id-graph:main";
+            let ledger2 = genesis_ledger(&fluree, ledger2_id);
+
+            let tx_no_id = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "@graph": [
+                    {"@id": "ex:alice", "schema:name": "Alice"}
+                ],
+                "ex:machine": "server-02"
+            });
+
+            let result2 = fluree
+                .insert(ledger2, &tx_no_id)
+                .await
+                .expect("insert without @id");
+            assert_eq!(result2.receipt.t, 1);
+
+            trigger_index_and_wait(&handle, ledger2_id, result2.receipt.t).await;
+
+            // Without @id, @graph data should be in the default graph.
+            let data_query = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "from": ledger2_id,
+                "select": ["?name"],
+                "where": {
+                    "@id": "?s",
+                    "schema:name": "?name"
+                }
+            });
+
+            let data_results = fluree
+                .query_connection(&data_query)
+                .await
+                .expect("data query");
+            let ledger2_snap = fluree.ledger(ledger2_id).await.expect("load");
+            let data_results = data_results
+                .to_jsonld(&ledger2_snap.snapshot)
+                .expect("to_jsonld");
+            let data_arr = data_results.as_array().expect("array");
+
+            let has_alice = data_arr.iter().any(|v| {
+                v.as_str() == Some("Alice")
+                    || v.as_array()
+                        .map(|r| r.iter().any(|x| x.as_str() == Some("Alice")))
+                        .unwrap_or(false)
+            });
+            assert!(
+                has_alice,
+                "Without @id, Alice should be in default graph, got: {:?}",
+                data_arr
+            );
+        })
+        .await;
+}
