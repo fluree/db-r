@@ -915,4 +915,75 @@ mod tests {
         assert_eq!(sid2.name.as_ref(), "txn-meta");
         assert_eq!(db2.decode_sid(&sid2).unwrap(), txn_meta_iri);
     }
+
+    // =========================================================================
+    // apply_envelope_deltas — conflict rejection
+    // =========================================================================
+
+    /// Helper: build a genesis snapshot with one user namespace pre-registered.
+    fn snapshot_with_ns(code: u16, prefix: &str) -> LedgerSnapshot {
+        let mut db = LedgerSnapshot::genesis("test:main");
+        db.insert_namespace_code(code, prefix.to_string()).unwrap();
+        db
+    }
+
+    #[test]
+    fn apply_envelope_deltas_accepts_identical_mapping() {
+        let mut db = snapshot_with_ns(100, "http://example.org/");
+        let mut delta = HashMap::new();
+        delta.insert(100u16, "http://example.org/".to_string());
+        // Same code, same prefix → no-op, no error.
+        db.apply_envelope_deltas(&delta, std::iter::empty::<&str>())
+            .expect("identical mapping should succeed");
+    }
+
+    #[test]
+    fn apply_envelope_deltas_rejects_code_to_different_prefix() {
+        let mut db = snapshot_with_ns(100, "http://example.org/");
+        let mut delta = HashMap::new();
+        // Same code 100, but different prefix.
+        delta.insert(100u16, "http://other.org/".to_string());
+        let err = db
+            .apply_envelope_deltas(&delta, std::iter::empty::<&str>())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("namespace conflict"),
+            "expected code→prefix conflict, got: {err}"
+        );
+        assert!(err.to_string().contains("100"));
+    }
+
+    #[test]
+    fn apply_envelope_deltas_rejects_prefix_to_different_code() {
+        let mut db = snapshot_with_ns(100, "http://example.org/");
+        let mut delta = HashMap::new();
+        // Different code 200, but same prefix.
+        delta.insert(200u16, "http://example.org/".to_string());
+        let err = db
+            .apply_envelope_deltas(&delta, std::iter::empty::<&str>())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("namespace conflict"),
+            "expected prefix→code conflict, got: {err}"
+        );
+        assert!(err.to_string().contains("200"));
+    }
+
+    #[test]
+    fn apply_envelope_deltas_accepts_new_mapping() {
+        let mut db = snapshot_with_ns(100, "http://example.org/");
+        let mut delta = HashMap::new();
+        delta.insert(200u16, "http://other.org/".to_string());
+        db.apply_envelope_deltas(&delta, std::iter::empty::<&str>())
+            .expect("new non-conflicting mapping should succeed");
+        // Verify both directions.
+        assert_eq!(
+            db.namespaces().get(&200),
+            Some(&"http://other.org/".to_string())
+        );
+        assert_eq!(
+            db.namespace_reverse().get("http://other.org/"),
+            Some(&200u16)
+        );
+    }
 }
