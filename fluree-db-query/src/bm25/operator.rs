@@ -279,13 +279,10 @@ impl Bm25SearchOperator {
                 Some(Binding::Grouped(_)) => Ok(None),
                 // EncodedSid/EncodedPid: decode to IRI string if store available
                 Some(Binding::EncodedSid { s_id }) => {
-                    if let Some(store) = ctx.binary_store.as_deref() {
-                        match store.resolve_subject_iri(*s_id) {
-                            Ok(iri) => Ok(Some(iri)),
-                            Err(_) => Ok(None),
-                        }
-                    } else {
-                        Ok(None)
+                    // Novelty-aware: use graph_view() for subject resolution.
+                    match ctx.resolve_subject_iri(*s_id) {
+                        Some(Ok(iri)) => Ok(Some(iri)),
+                        Some(Err(_)) | None => Ok(None),
                     }
                 }
                 Some(Binding::EncodedPid { p_id }) => {

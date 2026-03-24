@@ -41,21 +41,18 @@ This endpoint is intended for debugging and operator support. See also [Admin, h
 
 ## Transaction Endpoints
 
-### POST /transact
+### POST /update
 
-Submit a transaction to write data to a ledger. Supports both JSON-LD and SPARQL UPDATE formats.
+Submit an **update** transaction (WHERE/DELETE/INSERT JSON-LD or SPARQL UPDATE) to write data to a ledger.
 
 **URL:**
 ```
-POST /transact?ledger={ledger-id}&mode={mode}
-POST /:ledger/transact
+POST /update?ledger={ledger-id}
+POST /:ledger/update
 ```
 
 **Query Parameters:**
-- `ledger` (required for /transact): Target ledger (format: `name:branch`)
-- `mode` (optional): Transaction mode (JSON-LD only)
-  - `default` - Normal insert/update (default)
-  - `replace` - Upsert mode (replaces all entity properties)
+- `ledger` (required for /update): Target ledger (format: `name:branch`)
 - `context` (optional): URL to default JSON-LD context
 
 **Request Headers:**
@@ -72,17 +69,7 @@ Content-Type: application/sparql-update
 Accept: application/json
 ```
 
-For Turtle (RDF triples):
-```http
-Content-Type: text/turtle
-Accept: application/json
-```
-
-For TriG (named graphs):
-```http
-Content-Type: application/trig
-Accept: application/json
-```
+Note: Turtle/TriG are not accepted on `/update`. Use `/insert` (Turtle) or `/upsert` (Turtle/TriG).
 
 **Request Body (JSON-LD):**
 
@@ -170,7 +157,7 @@ WHERE {
 
 JSON-LD transaction:
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -180,7 +167,7 @@ curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
 
 SPARQL UPDATE (ledger-scoped endpoint):
 ```bash
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
@@ -188,7 +175,7 @@ curl -X POST http://localhost:8090/ledger/mydb:main/transact \
 
 SPARQL UPDATE (connection-scoped with header):
 ```bash
-curl -X POST http://localhost:8090/fluree/transact \
+curl -X POST http://localhost:8090/v1/fluree/update \
   -H "Content-Type: application/sparql-update" \
   -H "Fluree-Ledger: mydb:main" \
   -d 'PREFIX ex: <http://example.org/ns/>
@@ -196,29 +183,7 @@ curl -X POST http://localhost:8090/fluree/transact \
       WHERE { ?s ex:name "Alice" . ?s ex:age ?old }'
 ```
 
-Turtle transaction:
-```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
-  -H "Content-Type: text/turtle" \
-  -d '@prefix ex: <http://example.org/ns/> .
-      ex:alice ex:name "Alice" ; ex:age 30 .'
-```
-
-TriG transaction with named graphs:
-```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
-  -H "Content-Type: application/trig" \
-  -d '@prefix ex: <http://example.org/ns/> .
-
-      # Default graph
-      ex:company ex:name "Acme Corp" .
-
-      # Named graph for products
-      GRAPH <http://example.org/graphs/products> {
-          ex:widget ex:name "Widget" ;
-                    ex:price "29.99"^^xsd:decimal .
-      }'
-```
+Note: Turtle and TriG are not accepted on `/update`. Use `/insert` (Turtle) or `/upsert` (Turtle/TriG).
 
 ### POST /insert
 

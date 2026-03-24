@@ -155,6 +155,7 @@ pub async fn run(
                 "Committed t={}, {} flakes",
                 result.receipt.t, result.receipt.flake_count
             );
+            warn_novelty_if_needed(&result.indexing);
         }
     }
 
@@ -168,4 +169,34 @@ pub fn print_txn_result(result: &serde_json::Value) {
         "{}",
         serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
     );
+}
+
+/// Print a novelty warning to stderr if indexing is recommended.
+///
+/// Called after local commits to let users know when they should run
+/// `fluree index` to clear novelty and maintain query performance.
+pub fn warn_novelty_if_needed(indexing: &fluree_db_api::IndexingStatus) {
+    if !indexing.needed {
+        return;
+    }
+
+    let size_kb = indexing.novelty_size / 1024;
+    let gap = indexing.commit_t - indexing.index_t;
+
+    if indexing.enabled {
+        // Background indexing is enabled but hasn't caught up yet
+        eprintln!(
+            "  {} novelty is {}KB ({} commits ahead of index); background indexing will catch up",
+            colored::Colorize::bold(colored::Colorize::yellow("notice:")),
+            size_kb,
+            gap,
+        );
+    } else {
+        eprintln!(
+            "  {} novelty is {}KB ({} commits ahead of index); run `fluree index` to rebuild",
+            colored::Colorize::bold(colored::Colorize::yellow("warning:")),
+            size_kb,
+            gap,
+        );
+    }
 }

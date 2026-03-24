@@ -56,7 +56,7 @@ Configuration is resolved in this precedence order (highest wins):
 ### Server Roles
 
 **Transaction Server** (default, `--server-role=transaction`):
-- Handles reads and writes
+- Handles reads and transactions
 - Produces an event stream for replication
 - Manages the nameservice (ledger metadata)
 
@@ -90,7 +90,7 @@ fluree-server \
 
 **Data Operations:**
 - `POST /query` — JSON-LD and SPARQL queries
-- `POST /transact` — Writes (INSERT / UPSERT / UPDATE / DELETE)
+- `POST /update` — Update transactions (WHERE/DELETE/INSERT JSON-LD or SPARQL UPDATE)
 - `POST /insert` / `POST /upsert` — Direct insert or upsert
 
 **Ledger Management:**
@@ -118,7 +118,7 @@ Three scopes can each be set to `none`, `optional`, or `required`:
 
 | Scope | Endpoints | Flag |
 |-------|-----------|------|
-| Data API | `/query`, `/transact`, etc. | `--data-auth-mode` |
+| Data API | `/query`, `/update`, etc. | `--data-auth-mode` |
 | Events | SSE stream | `--events-auth-mode` |
 | Admin | `/fluree/create`, `/fluree/drop` | `--admin-auth-mode` |
 

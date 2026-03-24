@@ -1265,6 +1265,28 @@ pub enum NotifyResult {
     Reloaded,
 }
 
+/// Options for `Fluree::refresh()`.
+///
+/// Controls minimum-`t` enforcement: if `min_t` is set and the ledger's `t`
+/// is still below that value after pulling the latest state from the
+/// nameservice, the call returns [`ApiError::AwaitTNotReached`] so the
+/// caller can decide whether to retry, back off, or time out.
+#[derive(Debug, Clone, Default)]
+pub struct RefreshOpts {
+    /// If set, refresh will return an error when the ledger's `t` is still
+    /// below this value after the nameservice pull + apply cycle.
+    pub min_t: Option<i64>,
+}
+
+/// Result of a successful `Fluree::refresh()` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshResult {
+    /// The ledger's `t` value after the refresh completed.
+    pub t: i64,
+    /// What action was taken (no-op, incremental, reload, etc.).
+    pub action: NotifyResult,
+}
+
 impl<S, N> LedgerManager<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -1406,6 +1428,19 @@ where
                             .apply_single_commit(commit, &ledger_id_canonical)
                             .map_err(|e| ApiError::internal(format!("apply commit: {e}")))?;
                     }
+
+                    // If a binary range provider is attached, refresh it to point at the
+                    // updated DictNovelty. `apply_single_commit` replaces `state.dict_novelty`
+                    // with a new Arc; without re-attaching here, the provider holds a stale
+                    // Arc and overlay translation will fail for novelty-only strings/subjects.
+                    if let Some(rp) = write_guard.state().snapshot.range_provider.as_ref() {
+                        if let Some(brp) = rp.as_any().downcast_ref::<BinaryRangeProvider>() {
+                            let store = Arc::clone(brp.store());
+                            let dn = Arc::clone(&write_guard.state().dict_novelty);
+                            write_guard.state_mut().snapshot.range_provider =
+                                Some(Arc::new(BinaryRangeProvider::new(store, dn)));
+                        }
+                    }
                 }
 
                 // Apply index update if present (after commits so novelty has latest flakes)
@@ -1427,6 +1462,22 @@ where
                 self.reload(&input.ledger_id).await?;
                 Ok(NotifyResult::Reloaded)
             }
+        }
+    }
+
+    /// Returns the cached ledger's current `t`, or `None` if not cached.
+    pub async fn current_t(&self, ledger_id: &str) -> Option<i64> {
+        let entries = self.entries.read().await;
+        match entries.get(ledger_id) {
+            Some(LoadState::Ready(handle)) => {
+                let (t, _, _) = handle.state_metrics().await;
+                Some(t)
+            }
+            Some(LoadState::Reloading { handle, .. }) => {
+                let (t, _, _) = handle.state_metrics().await;
+                Some(t)
+            }
+            _ => None,
         }
     }
 }

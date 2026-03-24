@@ -45,6 +45,7 @@ mod error;
 pub mod explain;
 pub mod format;
 pub mod graph;
+pub mod graph_commit_builder;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
 pub mod graph_source;
@@ -101,6 +102,7 @@ pub use dataset::{
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
 pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
 pub use graph::Graph;
+pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
 pub use graph_source::{
@@ -115,7 +117,8 @@ pub use import::{
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     CachedLedgerState, FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager,
-    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
+    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RefreshOpts, RefreshResult,
+    RemoteWatermark, UpdatePlan,
 };
 pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
@@ -1180,6 +1183,13 @@ pub struct FlureeBuilder {
     /// Optional background indexing configuration.
     /// When set, `build()` will spawn a `BackgroundIndexerWorker`.
     indexing_config: Option<IndexingBuilderConfig>,
+    /// Optional novelty backpressure thresholds (independent of background indexing).
+    ///
+    /// When set, these override the thresholds from `indexing_config` for
+    /// `derive_indexing()`. Use `with_novelty_thresholds()` to set this without
+    /// enabling background indexing — useful for CLI or embedded scenarios where
+    /// the process is too short-lived for a background indexer.
+    novelty_thresholds: Option<IndexConfig>,
 }
 
 /// Configuration for background indexing in `FlureeBuilder`.
@@ -1220,6 +1230,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1232,6 +1243,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1295,6 +1307,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1472,6 +1485,7 @@ impl FlureeBuilder {
             encryption_key,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config,
+            novelty_thresholds: None,
         })
     }
 
@@ -1561,6 +1575,20 @@ impl FlureeBuilder {
                 .map(|c| c.indexer_config)
                 .unwrap_or_default(),
             index_config,
+        });
+        self
+    }
+
+    /// Set novelty backpressure thresholds without enabling background indexing.
+    ///
+    /// Use this for short-lived processes (CLI, one-shot scripts) that need
+    /// the correct commit-blocking limits but exit before a background indexer
+    /// could finish. The thresholds take priority over any values set via
+    /// `with_indexing()` or `with_indexing_thresholds()`.
+    pub fn with_novelty_thresholds(mut self, min_bytes: usize, max_bytes: usize) -> Self {
+        self.novelty_thresholds = Some(IndexConfig {
+            reindex_min_bytes: min_bytes,
+            reindex_max_bytes: max_bytes,
         });
         self
     }
@@ -1921,7 +1949,12 @@ impl FlureeBuilder {
     // ========================================================================
 
     /// Extract the `IndexConfig` from builder settings (no runtime required).
+    ///
+    /// Priority: `novelty_thresholds` > `indexing_config` thresholds > defaults.
     fn derive_indexing(&self) -> IndexConfig {
+        if let Some(ref thresholds) = self.novelty_thresholds {
+            return thresholds.clone();
+        }
         self.indexing_config
             .as_ref()
             .map(|c| c.index_config.clone())
@@ -2635,6 +2668,14 @@ where
     /// - **Long-running processes**: Periodic freshness check without SSE subscriptions
     /// - **External updates**: Check if another process has committed new data
     ///
+    /// # `min_t` enforcement
+    ///
+    /// Pass [`RefreshOpts`] with `min_t` to assert the ledger has reached at
+    /// least that transaction time.  If, after pulling and applying the latest
+    /// nameservice state, `t` is still below `min_t`, the call returns
+    /// [`ApiError::AwaitTNotReached`].  The caller owns retry / back-off /
+    /// timeout policy.
+    ///
     /// # Important
     ///
     /// `refresh` is only meaningful when ledger caching is enabled (the server always
@@ -2647,27 +2688,50 @@ where
     /// let _ledger = fluree.ledger_cached("mydb:main").await?;
     ///
     /// // Later (warm invocation): poll for updates
-    /// match fluree.refresh("mydb:main").await? {
-    ///     Some(NotifyResult::Current) => println!("Already up to date"),
-    ///     Some(NotifyResult::Reloaded) => println!("Refreshed from remote"),
-    ///     Some(NotifyResult::NotLoaded) => println!("Not cached, load first"),
+    /// let result = fluree.refresh("mydb:main", Default::default()).await?;
+    /// match result {
+    ///     Some(r) => println!("refreshed to t={}, action={:?}", r.t, r.action),
     ///     None => println!("Ledger not found in nameservice"),
-    ///     _ => {}
     /// }
     ///
-    /// // Query with fresh data
-    /// let handle = fluree.ledger_cached("mydb:main").await?;
-    /// let snapshot = handle.snapshot().await;
+    /// // With min_t enforcement (e.g. after a transaction returned t=42):
+    /// let opts = RefreshOpts { min_t: Some(42) };
+    /// match fluree.refresh("mydb:main", opts).await {
+    ///     Ok(Some(r)) => println!("ready at t={}", r.t),
+    ///     Err(ApiError::AwaitTNotReached { current, requested }) => {
+    ///         println!("not yet: t={current}, need t={requested} — retry later");
+    ///     }
+    ///     _ => {}
+    /// }
     /// ```
-    pub async fn refresh(&self, ledger_id: &str) -> Result<Option<NotifyResult>> {
+    pub async fn refresh(
+        &self,
+        ledger_id: &str,
+        opts: RefreshOpts,
+    ) -> Result<Option<RefreshResult>> {
         // Step A: Check if caching is enabled
         let mgr = match &self.ledger_manager {
             Some(mgr) => mgr,
             None => {
                 // Caching disabled - refresh is a no-op
-                return Ok(Some(NotifyResult::NotLoaded));
+                return Ok(Some(RefreshResult {
+                    t: 0,
+                    action: NotifyResult::NotLoaded,
+                }));
             }
         };
+
+        // Fast path: if min_t is set, check current cached t before hitting NS
+        if let Some(min_t) = opts.min_t {
+            if let Some(current_t) = mgr.current_t(ledger_id).await {
+                if current_t >= min_t {
+                    return Ok(Some(RefreshResult {
+                        t: current_t,
+                        action: NotifyResult::Current,
+                    }));
+                }
+            }
+        }
 
         // Step B: Lookup nameservice record
         // The nameservice handles address resolution (mydb -> mydb:main, etc.)
@@ -2679,17 +2743,30 @@ where
         // Step C: Use NsRecord.ledger_id as the cache key
         // The ledger_id field contains the canonical form (e.g., "testdb:main")
         // Note: NsRecord.name field only contains the name without branch, despite docs
-        let canonical_alias = &ns_record.ledger_id;
+        let canonical_alias = ns_record.ledger_id.clone();
 
         // Step D: Delegate to notify with the fresh record
-        let result = mgr
+        let action = mgr
             .notify(NsNotify {
                 ledger_id: canonical_alias.clone(),
                 record: Some(ns_record),
             })
             .await?;
 
-        Ok(Some(result))
+        // Step E: Read resulting t from the cached state
+        let t = mgr.current_t(&canonical_alias).await.unwrap_or(0);
+
+        // Step F: Enforce min_t if requested
+        if let Some(min_t) = opts.min_t {
+            if t < min_t {
+                return Err(ApiError::AwaitTNotReached {
+                    requested: min_t,
+                    current: t,
+                });
+            }
+        }
+
+        Ok(Some(RefreshResult { t, action }))
     }
 
     /// Spawn the ledger manager maintenance task (idle eviction)
@@ -2836,7 +2913,10 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Refresh unknown ledger should return None (not in nameservice)
-        let result = fluree.refresh("nonexistent:main").await.unwrap();
+        let result = fluree
+            .refresh("nonexistent:main", Default::default())
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -2856,8 +2936,11 @@ mod tests {
             .unwrap();
 
         // Refresh should return NotLoaded (record exists but not cached)
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -2868,8 +2951,11 @@ mod tests {
             .build_memory();
 
         // Refresh should return NotLoaded (caching disabled = no-op)
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -2888,13 +2974,16 @@ mod tests {
             .unwrap();
 
         // Refresh with short alias should resolve to canonical
-        let result = fluree.refresh("mydb").await.unwrap();
+        let result = fluree.refresh("mydb", Default::default()).await.unwrap();
         // Should return NotLoaded since we haven't cached it
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
 
         // Refresh with full alias should also work
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -2911,8 +3000,11 @@ mod tests {
         assert_eq!(snapshot.t, initial_t);
 
         // Refresh should return Current (cache matches NS)
-        let result = fluree.refresh("testdb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::Current));
+        let result = fluree
+            .refresh("testdb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
 
         // Verify cached state is unchanged
         let snapshot_after = handle.snapshot().await;
@@ -2947,8 +3039,11 @@ mod tests {
         );
 
         // Refresh should return Current (cache is up to date with NS)
-        let result = fluree.refresh("txdb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::Current));
+        let result = fluree
+            .refresh("txdb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
     }
 
     #[tokio::test]
@@ -2969,17 +3064,20 @@ mod tests {
 
         // Refresh via SHORT alias - should find the cached entry
         // If this returns NotLoaded, there's a cache key mismatch bug
-        let result = fluree.refresh("shortdb").await.unwrap();
+        let result = fluree.refresh("shortdb", Default::default()).await.unwrap();
         assert_eq!(
-            result,
+            result.map(|r| r.action),
             Some(NotifyResult::Current),
             "Short alias refresh should find cached entry (not NotLoaded)"
         );
 
         // Also verify full alias refresh works
-        let result_full = fluree.refresh("shortdb:main").await.unwrap();
+        let result_full = fluree
+            .refresh("shortdb:main", Default::default())
+            .await
+            .unwrap();
         assert_eq!(
-            result_full,
+            result_full.map(|r| r.action),
             Some(NotifyResult::Current),
             "Full alias refresh should also find cached entry"
         );

@@ -38,7 +38,7 @@ This:
 Update a single property value:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -552,6 +552,7 @@ for (const update of updates) {
 
 ## Related Documentation
 
+- [Conditional updates (atomic / CAS patterns)](conditional-updates.md) - Increment, compare-and-swap, state machines, transfers
 - [Insert](insert.md) - Adding new data
 - [Upsert](upsert.md) - Replace mode
 - [Retractions](retractions.md) - Removing data

@@ -1306,20 +1306,45 @@ impl RefPublisher for FileNameService {
             RefKind::IndexHead => {
                 let address = Self::index_address(&ledger_name, &branch);
 
+                // Pre-read the main file's inline index ref so we can fall
+                // back to it when the separate index file doesn't exist yet.
+                // This matches the fallback logic in `get_ref(IndexHead)`.
+                let main_address = Self::ns_address(&ledger_name, &branch);
+                let main_file_inline_ref: Option<RefValue> = {
+                    let main_file: Option<NsFileV2> =
+                        self.read_json_from_address(&main_address).await?;
+                    main_file.map(|f| RefValue {
+                        id: f
+                            .index
+                            .as_ref()
+                            .and_then(|i| i.cid.as_deref())
+                            .and_then(|s| s.parse::<ContentId>().ok()),
+                        t: f.index.as_ref().map(|i| i.t).unwrap_or(0),
+                    })
+                };
+
                 let outcome = self
                     .storage
                     .compare_and_swap(&address, |bytes| {
                         let existing: Option<NsIndexFileV2> =
                             bytes.map(deserialize_json).transpose()?;
 
-                        let current_ref = existing.as_ref().map(|f| RefValue {
-                            id: f
-                                .index
-                                .cid
-                                .as_deref()
-                                .and_then(|s| s.parse::<ContentId>().ok()),
-                            t: f.index.t,
-                        });
+                        // When the separate index file doesn't exist yet,
+                        // use the main file's inline index ref (matches get_ref
+                        // fallback). This handles freshly created ledgers where
+                        // the main file has index: None but no separate index
+                        // file has been written.
+                        let current_ref = match existing.as_ref() {
+                            Some(f) => Some(RefValue {
+                                id: f
+                                    .index
+                                    .cid
+                                    .as_deref()
+                                    .and_then(|s| s.parse::<ContentId>().ok()),
+                                t: f.index.t,
+                            }),
+                            None => main_file_inline_ref.clone(),
+                        };
 
                         if let Some(conflict) = check_cas_expectation(
                             &expected_clone,

@@ -77,10 +77,13 @@ Response format determined by `Accept` header:
 
 ### Transaction Endpoints
 
-**POST /transact**
-- Submit transactions (insert/upsert/update)
-- Parameters: `ledger`, `mode`, `context`
+**POST /update**
+- Submit update transactions (WHERE/DELETE/INSERT JSON-LD or SPARQL UPDATE)
+- Parameters: `ledger`, `context`
 - Returns: Transaction receipt with commit info
+
+**POST /insert** / **POST /upsert**
+- Insert or upsert data (JSON-LD and Turtle; TriG on upsert)
 
 ### Query Endpoints
 
@@ -140,14 +143,13 @@ https://[host]:[port]/[endpoint]?[parameters]
 
 Example:
 ```text
-http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace
+http://localhost:8090/v1/fluree/update?ledger=mydb:main
 ```
 
 ### Query Parameters
 
 Common parameters:
 - `ledger` - Target ledger (format: `name:branch`)
-- `mode` - Transaction mode (`default`, `replace`)
 - `context` - Default context URL
 - `format` - Response format override
 
@@ -339,12 +341,12 @@ https://api.example.com/v2/query
 
 ## Common Patterns
 
-### Idempotent Writes
+### Idempotent Transactions
 
-Use upsert mode for idempotent transactions:
+Use the upsert endpoint for idempotent transactions:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{...}'
 ```

@@ -19,7 +19,7 @@ Client submits transaction to Fluree using either JSON-LD or SPARQL UPDATE:
 
 **JSON-LD Transaction:**
 ```bash
-POST /transact?ledger=mydb:main
+POST /update?ledger=mydb:main
 Content-Type: application/json
 
 {
@@ -30,7 +30,7 @@ Content-Type: application/json
 
 **SPARQL UPDATE:**
 ```bash
-POST /ledger/mydb:main/transact
+POST /update/mydb:main
 Content-Type: application/sparql-update
 
 PREFIX ex: <http://example.org/ns/>
@@ -201,29 +201,15 @@ SPARQL UPDATE supports:
 
 See [SPARQL UPDATE](../query/sparql.md#sparql-update) for complete documentation.
 
-## Transaction Modes
+## Transaction Endpoints
 
-### Default Mode
+Fluree exposes three transaction endpoints (all under `/v1/fluree/`):
 
-```bash
-POST /transact?ledger=mydb:main
-```
+- `POST /insert` — add triples (JSON-LD or Turtle)
+- `POST /update` — WHERE/DELETE/INSERT (JSON-LD) and SPARQL UPDATE
+- `POST /upsert` — replace values for the predicates you supply (JSON-LD, Turtle, TriG)
 
-- Additive by default
-- Explicit deletes required for updates
-- Flexible for partial updates
-
-### Replace Mode
-
-```bash
-POST /transact?ledger=mydb:main&mode=replace
-```
-
-- Replaces all properties of entities
-- Idempotent
-- Good for synchronization
-
-See [Upsert](upsert.md) for details.
+See [Insert](insert.md), [Update](update-where-delete-insert.md), and [Upsert](upsert.md) for details.
 
 ## Transaction Semantics
 

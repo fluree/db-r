@@ -3,7 +3,7 @@ use crate::error::{CliError, CliResult};
 use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
+use fluree_db_api::{FileStorage, Fluree, FlureeBuilder, IndexConfig};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
@@ -287,13 +287,30 @@ pub fn resolve_ledger(explicit: Option<&str>, dirs: &FlureeDir) -> CliResult<Str
 
 /// Build a Fluree instance using the resolved storage path.
 ///
-/// Honors `[server].storage_path` from the config file if set,
-/// otherwise falls back to `dirs.data_dir()/storage`.
+/// Honors `[server].storage_path` and `[server.indexing]` thresholds
+/// from the config file if set, otherwise falls back to defaults.
 pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileStorage, FileNameService>> {
     let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
-    FlureeBuilder::file(storage_str)
-        .without_ledger_caching()
+    let mut builder = FlureeBuilder::file(storage_str).without_ledger_caching();
+
+    // Apply novelty backpressure thresholds from config file so that
+    // limits set via `fluree config set` are respected when executing
+    // transactions directly (without a running server).
+    // Uses with_novelty_thresholds (not with_indexing_thresholds) because
+    // the CLI is a short-lived process — a background indexer would be
+    // killed before it could finish.
+    let thresholds = config::read_indexing_thresholds(dirs.config_dir());
+    let default_config = IndexConfig::default();
+    let min_bytes = thresholds
+        .reindex_min_bytes
+        .unwrap_or(default_config.reindex_min_bytes);
+    let max_bytes = thresholds
+        .reindex_max_bytes
+        .unwrap_or(default_config.reindex_max_bytes);
+    builder = builder.with_novelty_thresholds(min_bytes, max_bytes);
+
+    builder
         .build()
         .map_err(|e| CliError::Config(format!("failed to initialize Fluree: {e}")))
 }

@@ -219,8 +219,11 @@ impl Operator for PredicateGroupCountFirstsOperator {
         })?;
         let g_id = ctx.binary_g_id;
         let p_id = resolve_predicate_id_v6(&self.predicate, binary_index_store)?;
-        let view =
-            fluree_db_binary_index::BinaryGraphView::new(Arc::clone(binary_index_store), g_id);
+        let view = fluree_db_binary_index::BinaryGraphView::with_novelty(
+            Arc::clone(binary_index_store),
+            g_id,
+            ctx.dict_novelty.clone(),
+        );
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -888,7 +891,7 @@ impl Operator for GroupByObjectStarTopKOperator {
         let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
         if allow_fast {
             if let Some(store) = ctx.binary_store.as_ref() {
-                let batch = compute_group_by_object_star_topk(
+                let Some(batch) = compute_group_by_object_star_topk(
                     store,
                     ctx,
                     ctx.binary_g_id,
@@ -901,7 +904,19 @@ impl Operator for GroupByObjectStarTopKOperator {
                     self.max_var,
                     self.sample_var,
                     self.limit,
-                )?;
+                )?
+                else {
+                    // Fast-path unavailable under this execution context (e.g., overlay requires fallback).
+                    // Fall through to the provided fallback operator.
+                    let Some(fallback) = &mut self.fallback else {
+                        return Err(QueryError::Internal(
+                            "group-by-object star topk fast-path unavailable and no fallback provided".into(),
+                        ));
+                    };
+                    fallback.open(ctx).await?;
+                    self.state = OperatorState::Open;
+                    return Ok(());
+                };
                 self.result = Some(batch);
                 self.emitted = false;
                 self.fallback = None;
@@ -1017,9 +1032,11 @@ fn build_psot_cursor_for_predicate_group(
         let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
             Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
         });
-        let mut ephemeral_preds: StdHashMap<String, u32> = StdHashMap::new();
+        let mut ephemeral_preds: StdHashMap<fluree_db_core::Sid, u32> = StdHashMap::new();
         let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
+        let mut translate_failed = false;
+        let mut translate_fail_count: u32 = 0;
 
         ctx.overlay().for_each_overlay_flake(
             g_id,
@@ -1041,14 +1058,33 @@ fn build_psot_cursor_for_predicate_group(
                 ) {
                     Ok(op) => ops.push(op),
                     Err(e) => {
-                        tracing::warn!(error = %e, "group-by-object star: failed to translate overlay flake");
+                        translate_failed = true;
+                        translate_fail_count = translate_fail_count.saturating_add(1);
+                        if translate_fail_count == 1 {
+                            tracing::warn!(
+                                error = %e,
+                                s = %flake.s,
+                                p = %flake.p,
+                                t = flake.t,
+                                op = flake.op,
+                                "group-by-object star: overlay flake translation failed; disabling fast path for correctness"
+                            );
+                        }
                     }
                 }
             },
         );
+        if translate_failed {
+            tracing::debug!(
+                failures = translate_fail_count,
+                "group-by-object star: falling back due to overlay translation failures"
+            );
+            return Ok(None);
+        }
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             cursor.set_overlay_ops(ops);
         }
         cursor.set_epoch(ctx.overlay().epoch());
@@ -1063,10 +1099,14 @@ fn collect_subject_set_for_predicate_group(
     g_id: GraphId,
     pred: &crate::triple::Ref,
     restrict_to: Option<&FxHashSet<u64>>,
-) -> Result<FxHashSet<u64>> {
+) -> Result<Option<FxHashSet<u64>>> {
     let sid = ref_to_sid_group(store, pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
-        return Ok(FxHashSet::default());
+        return if ctx.overlay.is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(FxHashSet::default()))
+        };
     };
     let mut out = ColumnSet::EMPTY;
     out.insert(ColumnId::SId);
@@ -1074,11 +1114,11 @@ fn collect_subject_set_for_predicate_group(
         output: out,
         internal: ColumnSet::EMPTY,
     };
-    let mut cursor =
+    let Some(mut cursor) =
         build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
-            .ok_or_else(|| {
-                QueryError::Internal("group-by-object star: missing PSOT branch".into())
-            })?;
+    else {
+        return Ok(None);
+    };
 
     let mut set: FxHashSet<u64> = FxHashSet::default();
     let mut last_s: Option<u64> = None;
@@ -1100,7 +1140,7 @@ fn collect_subject_set_for_predicate_group(
             set.insert(s);
         }
     }
-    Ok(set)
+    Ok(Some(set))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1117,11 +1157,15 @@ fn compute_group_by_object_star_topk(
     max_var: Option<VarId>,
     sample_var: Option<VarId>,
     limit: usize,
-) -> Result<crate::binding::Batch> {
+) -> Result<Option<crate::binding::Batch>> {
     // Scan group predicate PSOT for (s_id, o_type, o_key).
     let sid = ref_to_sid_group(store, group_pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
-        return Ok(crate::binding::Batch::empty(schema)?);
+        return if ctx.overlay.is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(crate::binding::Batch::empty(schema)?))
+        };
     };
     let mut out = ColumnSet::EMPTY;
     out.insert(ColumnId::SId);
@@ -1131,11 +1175,11 @@ fn compute_group_by_object_star_topk(
         output: out,
         internal: ColumnSet::EMPTY,
     };
-    let mut cursor =
+    let Some(mut cursor) =
         build_psot_cursor_for_predicate_group(ctx, store, g_id, sid, p_id, projection)?
-            .ok_or_else(|| {
-                QueryError::Internal("group-by-object star: missing PSOT branch".into())
-            })?;
+    else {
+        return Ok(None);
+    };
 
     let want_min = min_var.is_some();
     let want_max = max_var.is_some();
@@ -1148,7 +1192,11 @@ fn compute_group_by_object_star_topk(
         let fp = &filter_preds[0];
         let fp_sid = ref_to_sid_group(store, fp)?;
         let Some(fp_id) = store.sid_to_p_id(&fp_sid) else {
-            return Ok(crate::binding::Batch::empty(schema)?);
+            return if ctx.overlay.is_some() {
+                Ok(None)
+            } else {
+                Ok(Some(crate::binding::Batch::empty(schema)?))
+            };
         };
         let mut fp_out = ColumnSet::EMPTY;
         fp_out.insert(ColumnId::SId);
@@ -1156,11 +1204,11 @@ fn compute_group_by_object_star_topk(
             output: fp_out,
             internal: ColumnSet::EMPTY,
         };
-        let mut fcur =
+        let Some(mut fcur) =
             build_psot_cursor_for_predicate_group(ctx, store, g_id, fp_sid, fp_id, fp_proj)?
-                .ok_or_else(|| {
-                    QueryError::Internal("group-by-object star: missing PSOT branch".into())
-                })?;
+        else {
+            return Ok(None);
+        };
 
         let mut g_batch: Option<ColumnBatch> = None;
         let mut g_i: usize = 0;
@@ -1264,13 +1312,16 @@ fn compute_group_by_object_star_topk(
         // General path: build subject set S by intersecting filter predicates.
         let mut s_set: Option<FxHashSet<u64>> = None;
         for p in filter_preds.iter() {
-            let next = collect_subject_set_for_predicate_group(
+            let Some(next) = collect_subject_set_for_predicate_group(
                 store,
                 ctx,
                 g_id,
                 p,
                 s_set.as_ref().map(|s| s as &FxHashSet<u64>),
-            )?;
+            )?
+            else {
+                return Ok(None);
+            };
             s_set = Some(next);
             if s_set.as_ref().is_some_and(|s| s.is_empty()) {
                 break;
@@ -1278,7 +1329,7 @@ fn compute_group_by_object_star_topk(
         }
         let s_set = s_set.unwrap_or_default();
         if s_set.is_empty() {
-            return Ok(crate::binding::Batch::empty(schema)?);
+            return Ok(Some(crate::binding::Batch::empty(schema)?));
         }
 
         while let Some(batch) = cursor
@@ -1305,7 +1356,7 @@ fn compute_group_by_object_star_topk(
     }
 
     if aggs.is_empty() {
-        return Ok(crate::binding::Batch::empty(schema)?);
+        return Ok(Some(crate::binding::Batch::empty(schema)?));
     }
 
     // Select top-k by count desc.
@@ -1322,7 +1373,7 @@ fn compute_group_by_object_star_topk(
     }
 
     // Build output columns.
-    let view = BinaryGraphView::new(Arc::clone(store), g_id);
+    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone());
     let dt_count = WellKnownDatatypes::new().xsd_long;
 
     let mut col_o1: Vec<Binding> = Vec::with_capacity(rows.len());
@@ -1405,6 +1456,7 @@ fn compute_group_by_object_star_topk(
             )));
         }
     }
-    crate::binding::Batch::new(schema, cols)
-        .map_err(|e| QueryError::execution(format!("batch build: {e}")))
+    Ok(Some(crate::binding::Batch::new(schema, cols).map_err(
+        |e| QueryError::execution(format!("batch build: {e}")),
+    )?))
 }

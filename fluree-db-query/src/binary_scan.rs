@@ -14,16 +14,17 @@ use async_trait::async_trait;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::read::column_types::ColumnSet;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch,
-    ColumnProjection, OverlayOp,
+    resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
+    BinaryIndexStore, ColumnBatch, ColumnProjection, OverlayOp,
 };
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
-    NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    dt_compatible, range_with_overlay, Flake, FlakeMeta, FlakeValue, GraphId, IndexType,
+    LedgerSnapshot, NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest,
+    Sid,
 };
 
 use crate::binding::{Batch, Binding};
@@ -32,6 +33,7 @@ use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
+use crate::sid_iri;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 
@@ -675,54 +677,68 @@ impl BinaryScanOperator {
             .map_err(|e| QueryError::Policy(e.to_string()))
     }
 
-    /// Extract bound Sids from the pattern, normalizing to the V6 store's
-    /// namespace encoding.
+    /// Extract bound terms from the pattern in the *snapshot* namespace space.
     ///
-    /// SPARQL lowers IRIs to `Ref::Sid` / `Term::Sid` using the snapshot's
-    /// namespace codes, which may differ from the V6 store's codes after a
-    /// rebuild. Re-encoding through the store ensures the Sid matches decoded
-    /// values from the index.
-    fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
-        let s_sid = match &self.pattern.s {
-            Ref::Sid(s) => Some(self.re_encode_sid(s)),
-            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+    /// Important invariants:
+    /// - Novelty / overlay flakes carry `Sid`s in the snapshot's namespace-code space.
+    /// - The binary index store carries its own namespace table and prefix trie (from the index root).
+    ///
+    /// Therefore, we keep the bound SIDs in snapshot space for overlay matching, and only
+    /// translate into store space (via full IRI strings) when constructing persisted ID filters.
+    fn extract_bound_terms_snapshot(
+        snapshot: &LedgerSnapshot,
+        pattern: &TriplePattern,
+    ) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
+        // Re-encode Sids through the snapshot so that uncompressed Sids
+        // (e.g., Sid(0, "http://example.org/s")) are normalized to the
+        // compressed form (Sid(ex_code, "s")) matching novelty flakes.
+        let normalize = |sid: &Sid| -> Sid {
+            // Fast path: already compressed in snapshot namespace space.
+            // Avoid allocating a full IRI string just to feed it back into encode_iri().
+            if sid.namespace_code != fluree_vocab::namespaces::EMPTY {
+                return sid.clone();
+            }
+
+            // EMPTY namespace: treat name as a full IRI and try to compress.
+            // If it doesn't match any known prefix, encode_iri will keep it in EMPTY.
+            snapshot
+                .encode_iri(sid.name.as_ref())
+                .unwrap_or_else(|| sid.clone())
+        };
+        let s_sid = match &pattern.s {
+            Ref::Sid(s) => Some(normalize(s)),
+            Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
-        let p_sid = match &self.pattern.p {
-            Ref::Sid(s) => Some(self.re_encode_sid(s)),
-            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+        let p_sid = match &pattern.p {
+            Ref::Sid(p) => Some(normalize(p)),
+            Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
-        let o_val = match &self.pattern.o {
-            Term::Sid(sid) => Some(FlakeValue::Ref(self.re_encode_sid(sid))),
-            Term::Iri(iri) => Some(FlakeValue::Ref(self.store().encode_iri(iri))),
+        let o_val = match &pattern.o {
+            Term::Sid(sid) => Some(FlakeValue::Ref(normalize(sid))),
+            Term::Iri(iri) => snapshot.encode_iri(iri).map(FlakeValue::Ref),
             Term::Value(v) => Some(v.clone()),
             Term::Var(_) => None,
         };
         (s_sid, p_sid, o_val)
     }
 
-    /// Re-encode a Sid from the pattern's namespace space into the V6 store's
-    /// namespace space. Reconstructs the full IRI and re-encodes via the store's
-    /// prefix trie, ensuring namespace codes match decoded index values.
-    #[inline]
-    fn re_encode_sid(&self, sid: &Sid) -> Sid {
-        let iri = self.store().sid_to_iri(sid);
-        self.store().encode_iri(&iri)
-    }
-
     /// Build a `BinaryFilter` from bound pattern terms.
-    fn build_filter(
-        &self,
+    fn build_filter_from_snapshot_sids(
+        snapshot: &LedgerSnapshot,
+        store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
-        let s_id = if let Some(sid) = s_sid {
-            self.store().sid_to_s_id(sid)?
-        } else {
-            None
+        let s_id = match s_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_s_id(snapshot, store, sid)?,
+            None => None,
         };
-        let p_id = p_sid.as_ref().and_then(|sid| self.store().sid_to_p_id(sid));
+        let p_id = match p_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_p_id(snapshot, store, sid),
+            None => None,
+        };
 
         Ok(BinaryFilter {
             s_id,
@@ -862,13 +878,15 @@ impl BinaryScanOperator {
         let base_len = self.base_schema_len();
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
         let store_arc: Arc<BinaryIndexStore> = Arc::clone(self.store());
-        let view = BinaryGraphView::new(Arc::clone(&store_arc), self.g_id);
-        let dict_overlay = ctx.and_then(|c| c.dict_novelty.clone()).map(|dn| {
-            crate::dict_overlay::DictOverlay::new(
-                BinaryGraphView::new(Arc::clone(&store_arc), self.g_id),
-                dn,
-            )
-        });
+        let dict_novelty_arc = ctx.and_then(|c| c.dict_novelty.clone());
+        let view = BinaryGraphView::with_novelty(
+            Arc::clone(&store_arc),
+            self.g_id,
+            dict_novelty_arc.clone(),
+        );
+        // DictOverlay is no longer needed here for decoding — BinaryGraphView
+        // handles watermark routing internally. DictOverlay is still used for
+        // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.
 
         // Late materialization is safe only when the BinaryIndexStore is authoritative
         // for decoding (no novelty overlay with ephemeral IDs).
@@ -1003,26 +1021,12 @@ impl BinaryScanOperator {
             let needs_o_decode = self.bound_o.is_some()
                 || self.object_bounds.is_some()
                 || (!late_materialize && self.o_var_pos.is_some());
+            // BinaryGraphView::decode_value is novelty-aware: dict-backed types
+            // (IriRef, StringDict, JsonArena) automatically route through
+            // watermark checks when dict_novelty is present.
             let decode_value = |o_type: u16, o_key: u64, p_id: u32| -> Result<FlakeValue> {
-                use fluree_db_core::o_type::{DecodeKind, OType};
-                let ot = OType::from_u16(o_type);
-                match (ot.decode_kind(), dict_overlay.as_ref()) {
-                    (DecodeKind::IriRef, Some(ov)) => {
-                        let iri = ov.resolve_subject_iri(o_key).map_err(|e| {
-                            QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                        })?;
-                        Ok(FlakeValue::Ref(store_arc.encode_iri(&iri)))
-                    }
-                    (DecodeKind::StringDict, Some(ov)) => {
-                        let s = ov.resolve_string_value(o_key as u32).map_err(|e| {
-                            QueryError::Internal(format!("resolve_string_value: {e}"))
-                        })?;
-                        Ok(FlakeValue::String(s))
-                    }
-                    _ => Ok(view
-                        .decode_value(o_type, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?),
-                }
+                view.decode_value(o_type, o_key, p_id)
+                    .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))
             };
 
             let decoded_o = if needs_o_decode {
@@ -1061,15 +1065,12 @@ impl BinaryScanOperator {
                 let binding = if late_materialize {
                     Binding::EncodedSid { s_id }
                 } else {
-                    match dict_overlay.as_ref() {
-                        Some(ov) => {
-                            let iri = ov.resolve_subject_iri(s_id).map_err(|e| {
-                                QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                            })?;
-                            Binding::Sid(store_arc.encode_iri(&iri))
-                        }
-                        None => Binding::Sid(self.resolve_s_id(s_id)?),
-                    }
+                    // BinaryGraphView::resolve_subject_sid is novelty-aware:
+                    // novel subjects return Sid directly without IRI round-trip.
+                    let sid = view
+                        .resolve_subject_sid(s_id)
+                        .map_err(|e| QueryError::Internal(format!("resolve_subject_sid: {e}")))?;
+                    Binding::Sid(sid)
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
@@ -1189,7 +1190,7 @@ impl BinaryScanOperator {
         });
 
         flakes.sort_by(cmp);
-        flakes = remove_stale_overlay_flakes(flakes);
+        flakes = resolve_overlay_retractions(flakes);
 
         // Apply equality match (subject/predicate/object).
         if s_sid.is_some() || p_sid.is_some() || self.bound_o.is_some() {
@@ -1234,26 +1235,41 @@ impl BinaryScanOperator {
     }
 }
 
-fn remove_stale_overlay_flakes(flakes: Vec<Flake>) -> Vec<Flake> {
+/// Resolve assert/retract pairs in overlay flakes.
+///
+/// For each distinct fact `(s, p, o, dt, m)`, the latest entry (highest `t`)
+/// determines the current state: if it's an assertion, the fact is kept;
+/// if it's a retraction, the fact is excluded from query results.
+///
+/// Novelty enforces RDF set semantics at write time (`apply_commit`), so
+/// duplicate assertions for the same fact cannot exist. This function only
+/// needs to resolve assert/retract lifecycles, not deduplicate.
+fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
     use std::collections::HashSet;
 
+    // Full fact identity includes metadata (lang tags, list indices).
+    // Two flakes with same (s, p, o, dt) but different `m` are distinct facts.
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct FactKeyRef<'a> {
         s: &'a Sid,
         p: &'a Sid,
         o: &'a FlakeValue,
         dt: &'a Sid,
+        m: &'a Option<FlakeMeta>,
     }
 
     let mut seen: HashSet<FactKeyRef<'_>> = HashSet::new();
     let mut keep = vec![false; flakes.len()];
 
+    // Walk in reverse (highest t first). First occurrence per fact key is
+    // the latest state. Keep it only if it's an assertion.
     for (idx, f) in flakes.iter().enumerate().rev() {
         let key = FactKeyRef {
             s: &f.s,
             p: &f.p,
             o: &f.o,
             dt: &f.dt,
+            m: &f.m,
         };
         if !seen.insert(key) {
             continue;
@@ -1296,8 +1312,8 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
-            snapshot.encode_iri(&iri)
+        if let Some(iri) = sid_iri::sid_to_full_iri(ctx.snapshot, sid) {
+            snapshot.encode_iri(iri.as_ref())
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
             // raw SID. This is important when the namespace table has been
@@ -1388,20 +1404,22 @@ impl Operator for BinaryScanOperator {
                 "BinaryScanOperator::open: no binary_store on ExecutionContext".into(),
             )
         })?;
+        let store_ref = store.as_ref();
         for p_id in 0u32.. {
-            match store.resolve_predicate_iri(p_id) {
-                Some(iri) => p_sids.push(store.encode_iri(iri)),
+            match store_ref.resolve_predicate_iri(p_id) {
+                Some(iri) => p_sids.push(store_ref.encode_iri(iri)),
                 None => break,
             }
         }
         self.p_sids = p_sids;
 
-        // Extract bound terms and build filter.
-        let (s_sid, p_sid, o_val) = self.extract_bound_terms();
+        // Extract bound terms in snapshot namespace space and build the persisted-ID filter
+        // by translating through full IRIs into store namespace space.
+        let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter = self
-            .build_filter(&s_sid, &p_sid)
-            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        let mut filter =
+            Self::build_filter_from_snapshot_sids(ctx.snapshot, store_ref, &s_sid, &p_sid)
+                .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
             s_bound = s_sid.is_some(),
@@ -1424,7 +1442,6 @@ impl Operator for BinaryScanOperator {
             let lang = dtc.and_then(|d| d.lang_tag());
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
-            let store_ref = store.as_ref();
 
             let encoded = match (dt_sid, lang) {
                 (Some(dt_sid), lang) => {
@@ -1617,16 +1634,17 @@ impl Operator for BinaryScanOperator {
 
             // Extend p_sids table with novelty-only predicates so that ephemeral
             // p_ids from overlay ops can be decoded back to Sids during row binding.
-            for (iri, ep_id) in &ephemeral_preds {
+            for (sid, ep_id) in &ephemeral_preds {
                 let idx = *ep_id as usize;
                 if idx >= self.p_sids.len() {
                     self.p_sids.resize(idx + 1, Sid::new(0, ""));
                 }
-                self.p_sids[idx] = store_ref.encode_iri(iri);
+                self.p_sids[idx] = sid.clone();
             }
 
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, order);
+                resolve_overlay_ops(&mut ops);
                 let epoch = ctx.overlay().epoch();
                 cursor.set_overlay_ops(ops);
                 cursor.set_epoch(epoch);
@@ -1637,7 +1655,7 @@ impl Operator for BinaryScanOperator {
             if !untranslated.is_empty() {
                 let cmp = self.index.comparator();
                 untranslated.sort_by(cmp);
-                untranslated = remove_stale_overlay_flakes(untranslated);
+                untranslated = resolve_overlay_retractions(untranslated);
 
                 // Apply equality match (subject/predicate/object) against pattern constants.
                 let s_sid = match &self.pattern.s {
@@ -1791,7 +1809,7 @@ pub fn translate_overlay_flakes(
     g_id: GraphId,
 ) -> Vec<OverlayOp> {
     let mut ops = Vec::new();
-    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
     let mut next_ephemeral_p_id = store.predicate_count();
 
     overlay.for_each_overlay_flake(
@@ -1834,10 +1852,10 @@ fn translate_overlay_flakes_with_untranslated(
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     to_t: i64,
     g_id: GraphId,
-) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<String, u32>) {
+) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<Sid, u32>) {
     let mut ops = Vec::new();
     let mut untranslated = Vec::new();
-    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
     let mut next_ephemeral_p_id = store.predicate_count();
 
     overlay.for_each_overlay_flake(
@@ -1875,15 +1893,25 @@ pub(crate) fn translate_one_flake_v3_pub(
     flake: &fluree_db_core::Flake,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
-    ephemeral_preds: &mut HashMap<String, u32>,
+    ephemeral_preds: &mut HashMap<Sid, u32>,
     next_ephemeral_p_id: &mut u32,
 ) -> std::io::Result<OverlayOp> {
     // Subject: persisted → DictNovelty → error
     let s_id = resolve_subject_v3(&flake.s, store, dict_novelty)?;
 
-    // Predicate: persisted → ephemeral
-    let p_iri = store.sid_to_iri(&flake.p);
-    let p_id = resolve_predicate_v3(&p_iri, store, ephemeral_preds, next_ephemeral_p_id);
+    // Predicate: persisted → ephemeral (keyed by Sid to avoid namespace decode issues).
+    //
+    // For novelty-only predicates (not present in the persisted predicate dictionary),
+    // we allocate ephemeral p_ids and later extend `p_sids` so decode produces the
+    // original Sid (in snapshot namespace space).
+    let p_id = match store.sid_to_p_id(&flake.p) {
+        Some(id) => id,
+        None => *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
+            let id = *next_ephemeral_p_id;
+            *next_ephemeral_p_id += 1;
+            id
+        }),
+    };
 
     // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
     let lang = flake.m.as_ref().and_then(|m| m.lang.as_deref());
@@ -1905,29 +1933,6 @@ pub(crate) fn translate_one_flake_v3_pub(
         o_i,
         t: flake.t,
         op: flake.op,
-    })
-}
-
-/// Resolve a predicate IRI to p_id.
-///
-/// Predicates are not tracked in DictNovelty (they're per-query ephemeral in V5).
-/// For V3 overlay, novel predicates get an ephemeral p_id above the persisted count.
-/// These ephemeral IDs won't match any persisted data (correct: the predicate
-/// is novelty-only), but will match overlay ops that use the same ID.
-fn resolve_predicate_v3(
-    iri: &str,
-    store: &BinaryIndexStore,
-    ephemeral_preds: &mut HashMap<String, u32>,
-    next_ephemeral_p_id: &mut u32,
-) -> u32 {
-    if let Some(id) = store.find_predicate_id(iri) {
-        return id;
-    }
-    // Ephemeral allocation for novel predicates.
-    *ephemeral_preds.entry(iri.to_string()).or_insert_with(|| {
-        let id = *next_ephemeral_p_id;
-        *next_ephemeral_p_id += 1;
-        id
     })
 }
 

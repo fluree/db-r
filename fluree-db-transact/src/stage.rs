@@ -193,6 +193,11 @@ pub async fn stage(
         let new_t = ledger.t() + 1;
         tracing::debug!(new_t = new_t, "computed new transaction t");
 
+        // Track whether this transaction has an explicit WHERE clause, before
+        // execute_where consumes the patterns. Needed to distinguish "WHERE that
+        // matched nothing" (→ no-op) from "no WHERE at all" (→ fire templates once).
+        let has_where_clause = !txn.where_patterns.is_empty() || txn.values.is_some();
+
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
         let where_span = tracing::debug_span!(
@@ -222,6 +227,21 @@ pub async fn stage(
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
 
+        // Per SPARQL 1.1 Update spec (§3.1.3): INSERT/DELETE templates are
+        // instantiated once per solution row from WHERE. Zero solutions = zero
+        // instantiations, regardless of whether templates contain variables or
+        // only literals. This ensures conditional update patterns (CAS, state
+        // machines, guards) correctly produce no-ops when WHERE doesn't match.
+        //
+        // We check this at the stage level rather than in generate_flakes because
+        // a WHERE clause with zero variables produces a Batch with empty schema,
+        // which is indistinguishable from "no WHERE clause" inside generate_flakes.
+        //
+        // Only applies when the transaction has an explicit WHERE clause. Update
+        // transactions with no WHERE (insert-only through the update path) should
+        // still fire templates once.
+        let where_returned_no_rows = has_where_clause && bindings.is_empty();
+
         // Generate retractions from DELETE templates
         let delete_span = tracing::debug_span!(
             "delete_gen",
@@ -229,8 +249,11 @@ pub async fn stage(
             retraction_count = tracing::field::Empty,
         );
         let retractions = async {
-            let mut retractions =
-                generator.generate_retractions(&txn.delete_templates, &bindings)?;
+            let mut retractions = if where_returned_no_rows {
+                vec![]
+            } else {
+                generator.generate_retractions(&txn.delete_templates, &bindings)?
+            };
 
             // DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
@@ -256,7 +279,14 @@ pub async fn stage(
         .instrument(delete_span)
         .await?;
 
-        // Generate assertions from INSERT templates
+        // Generate assertions from INSERT templates.
+        //
+        // Unlike DELETE (which is skipped on empty WHERE), INSERT templates
+        // are always evaluated. When WHERE returns no solutions, templates
+        // with variables produce 0 flakes (variables are unbound), but
+        // all-literal templates still fire once. This supports the common
+        // "delete-if-exists, always insert" pattern:
+        //   WHERE { ?s :prop ?old } DELETE { ?s :prop ?old } INSERT { :s :prop "new" }
         let insert_span = tracing::debug_span!(
             "insert_gen",
             template_count = txn.insert_templates.len(),
@@ -264,15 +294,10 @@ pub async fn stage(
         );
         let assertions = {
             let _guard = insert_span.enter();
-            // For UPDATE transactions, it's common to write:
-            //   WHERE { ... maybe matches ... }
-            //   DELETE { ... bound vars ... }
-            //   INSERT { ... constant assertions ... }
-            //
-            // When WHERE has **no solutions**, DELETE should be a no-op
-            // (handled by bindings.is_empty()), but constant INSERT templates
-            // should still be applied once.
-            let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
+            let assertions = if where_returned_no_rows {
+                // WHERE returned 0 rows. Use a single empty solution so that
+                // all-literal INSERT templates fire once (templates with variables
+                // will naturally produce 0 flakes since the variables are unbound).
                 let empty_solution = Batch::single_empty();
                 generator.generate_assertions(&txn.insert_templates, &empty_solution)?
             } else {
@@ -920,16 +945,15 @@ async fn generate_upsert_deletions(
         return Ok(Vec::new());
     }
 
-    // Extract the binary index store (if present) so we can materialize
-    // EncodedLit/EncodedSid bindings returned by the binary scan path.
-    // Without this, upsert silently skips retractions for @json, vector,
-    // and other string-dictionary-backed values (issue #88).
-    let binary_store = ledger
+    // Extract the binary index store and DictNovelty (if present) so we can
+    // materialize EncodedLit/EncodedSid bindings returned by the binary scan path.
+    let brp_ref = ledger
         .snapshot
         .range_provider
         .as_ref()
-        .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
-        .map(|brp| Arc::clone(brp.store()));
+        .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>());
+    let binary_store = brp_ref.map(|brp| Arc::clone(brp.store()));
+    let dict_novelty = brp_ref.map(|brp| Arc::clone(brp.dict_novelty()));
 
     let mut retractions = Vec::new();
 
@@ -1006,10 +1030,15 @@ async fn generate_upsert_deletions(
         };
 
         // Create a materializer for this graph context if a binary store exists.
-        // The graph_id determines which graph partition to decode from.
+        // BinaryGraphView::with_novelty handles watermark routing internally,
+        // so novelty-only string/subject IDs resolve correctly.
         let effective_g_id = ledger_g_id.unwrap_or(0);
         let mut materializer = binary_store.as_ref().map(|store| {
-            let view = BinaryGraphView::new(Arc::clone(store), effective_g_id);
+            let view = BinaryGraphView::with_novelty(
+                Arc::clone(store),
+                effective_g_id,
+                dict_novelty.clone(),
+            );
             Materializer::new(view, JoinKeyMode::SingleLedger)
         });
 

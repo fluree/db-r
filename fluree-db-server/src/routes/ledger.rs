@@ -1053,7 +1053,7 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     .await
 }
 
-/// Forward a write request to the transaction server (peer mode)
+/// Forward a transaction request to the transaction server (peer mode)
 async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {
         Some(c) => c,
@@ -1062,7 +1062,7 @@ async fn forward_write_request(state: &AppState, request: Request) -> Response {
         }
     };
 
-    tracing::debug!("Forwarding write request to transaction server");
+    tracing::debug!("Forwarding transaction request to transaction server");
 
     // Forward the request and return the response directly
     // This preserves the upstream status codes (including 502/504 for errors)

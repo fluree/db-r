@@ -97,14 +97,27 @@ impl Operator for UnionStarCountAllOperator {
         let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
         if allow_fast {
             if let Some(store) = ctx.binary_store.as_ref() {
-                let n = count_union_star(
+                let Some(n) = count_union_star(
                     store,
                     ctx,
                     ctx.binary_g_id,
                     &self.union_preds,
                     &self.extra_preds,
                     self.mode,
-                )?;
+                )?
+                else {
+                    // Fast-path unavailable under this execution context (e.g., overlay requires fallback).
+                    // Fall through to the provided fallback operator.
+                    let Some(fallback) = &mut self.fallback else {
+                        return Err(QueryError::Internal(
+                            "UNION-star COUNT(*) fast-path unavailable and no fallback provided"
+                                .into(),
+                        ));
+                    };
+                    fallback.open(ctx).await?;
+                    self.state = OperatorState::Open;
+                    return Ok(());
+                };
                 self.result = Some(i64::try_from(n).unwrap_or(i64::MAX));
                 self.emitted = false;
                 self.state = OperatorState::Open;
@@ -290,9 +303,9 @@ fn count_union_star(
     union_preds: &[Ref],
     extra_preds: &[Ref],
     mode: UnionCountMode,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     if union_preds.is_empty() {
-        return Ok(0);
+        return Ok(Some(0));
     }
 
     // Build union streams.
@@ -302,6 +315,9 @@ fn count_union_star(
     for p in union_preds {
         let sid = normalize_pred_sid(store, p)?;
         let Some(p_id) = store.sid_to_p_id(&sid) else {
+            if ctx.overlay.is_some() {
+                return Ok(None);
+            }
             continue;
         };
 
@@ -310,8 +326,11 @@ fn count_union_star(
             UnionCountMode::SubjectEqObject => cursor_projection_sid_otype_okey(),
         };
 
-        let cursor = build_psot_cursor_for_predicate(ctx, store, g_id, sid, p_id, projection)?
-            .ok_or_else(|| QueryError::Internal("UNION-star: missing PSOT branch".into()))?;
+        let Some(cursor) =
+            build_psot_cursor_for_predicate(ctx, store, g_id, sid, p_id, projection)?
+        else {
+            return Ok(None);
+        };
         match mode {
             UnionCountMode::AllRows => union_streams_all.push(SubjectCountStreamV6::new(cursor)),
             UnionCountMode::SubjectEqObject => {
@@ -322,10 +341,10 @@ fn count_union_star(
 
     // If no union predicates exist in the index, result is empty.
     if matches!(mode, UnionCountMode::AllRows) && union_streams_all.is_empty() {
-        return Ok(0);
+        return Ok(Some(0));
     }
     if matches!(mode, UnionCountMode::SubjectEqObject) && union_streams_eq.is_empty() {
-        return Ok(0);
+        return Ok(Some(0));
     }
 
     // Helper: yield next `(s, sum)` for the UNION block.
@@ -395,7 +414,7 @@ fn count_union_star(
         while let Some((_s, u)) = next_union()? {
             total = total.saturating_add(u);
         }
-        return Ok(total);
+        return Ok(Some(total));
     }
 
     // Build extra streams (per-subject counts).
@@ -404,9 +423,13 @@ fn count_union_star(
         let sid = normalize_pred_sid(store, p)?;
         let Some(p_id) = store.sid_to_p_id(&sid) else {
             // Required predicate absent => empty join.
-            return Ok(0);
+            return if ctx.overlay.is_some() {
+                Ok(None)
+            } else {
+                Ok(Some(0))
+            };
         };
-        let cursor = build_psot_cursor_for_predicate(
+        let Some(cursor) = build_psot_cursor_for_predicate(
             ctx,
             store,
             g_id,
@@ -414,7 +437,9 @@ fn count_union_star(
             p_id,
             cursor_projection_sid_only(),
         )?
-        .ok_or_else(|| QueryError::Internal("UNION-star: missing PSOT branch".into()))?;
+        else {
+            return Ok(None);
+        };
         extra_streams.push(SubjectCountStreamV6::new(cursor));
     }
     let mut extra_curr: Vec<Option<(u64, u64)>> = Vec::with_capacity(extra_streams.len());
@@ -476,5 +501,5 @@ fn count_union_star(
         u_cur = next_union()?;
         e_cur = next_extra_product()?;
     }
-    Ok(total.min(u64::MAX as u128) as u64)
+    Ok(Some(total.min(u64::MAX as u128) as u64))
 }

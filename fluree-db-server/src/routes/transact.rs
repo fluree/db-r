@@ -1,15 +1,15 @@
-//! Transaction endpoints: /fluree/transact, /fluree/update, /fluree/insert, /fluree/upsert
+//! Transaction endpoints: /fluree/update, /fluree/insert, /fluree/upsert
 //!
 //! Supports multiple content types:
-//! - `application/json`: JSON-LD transaction format
-//! - `application/sparql-update`: SPARQL UPDATE syntax
-//! - `text/turtle`: Turtle RDF format (for all transaction endpoints)
-//! - `application/trig`: TriG format with named graphs (transact/upsert only)
+//! - `application/json`: JSON-LD transaction format (update/insert/upsert)
+//! - `application/sparql-update`: SPARQL UPDATE syntax (update only)
+//! - `text/turtle`: Turtle RDF format (insert/upsert only)
+//! - `application/trig`: TriG format with named graphs (upsert only)
 //!
 //! # Ledger Selection Priority
 //!
-//! For non-path endpoints (/fluree/transact, etc.), ledger is resolved in this order:
-//! 1. Path parameter (/:ledger/transact, etc.)
+//! For non-path endpoints (/fluree/update, etc.), ledger is resolved in this order:
+//! 1. Path parameter (/:ledger/update, etc.)
 //! 2. Query parameter (?ledger=mydb:main)
 //! 3. Header (Fluree-Ledger: mydb:main)
 //! 4. Body field ("ledger" or "from")
@@ -18,7 +18,7 @@
 //!
 //! - **Turtle on `/insert`**: Uses fast direct flake path. Pure insert semantics.
 //! - **TriG on `/insert`**: Returns 400 error. Named graphs require upsert path.
-//! - **Turtle/TriG on `/transact` or `/upsert`**: Uses upsert path with GRAPH block extraction for named graphs.
+//! - **Turtle/TriG on `/upsert`**: Uses upsert path with GRAPH block extraction for named graphs.
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -304,14 +304,14 @@ fn enforce_write_access(
     Ok(())
 }
 
-/// Execute a transaction
+/// Execute an update transaction (WHERE/DELETE/INSERT)
 ///
-/// POST /fluree/transact
+/// POST /fluree/update
 ///
 /// Executes a full transaction with insert, delete, and where clauses.
 /// Supports signed requests (JWS/VC format).
 /// In peer mode, forwards the request to the transaction server.
-pub async fn transact(
+pub async fn update(
     State(state): State<Arc<AppState>>,
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
@@ -322,11 +322,11 @@ pub async fn transact(
     }
 
     // Transaction mode: process locally
-    transact_local(state, bearer, request).await.into_response()
+    update_local(state, bearer, request).await.into_response()
 }
 
-/// Local implementation of transact (transaction mode only)
-async fn transact_local(
+/// Local implementation of update (transaction mode only)
+async fn update_local(
     state: Arc<AppState>,
     bearer: Option<crate::extract::DataPrincipal>,
     request: Request,
@@ -362,7 +362,7 @@ async fn transact_local(
     };
 
     let span = create_request_span(
-        "transact",
+        "update",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger ID determined later
@@ -391,55 +391,14 @@ async fn transact_local(
             .await;
         }
 
-        // Check if this is a Turtle or TriG request
+        // Update does not accept Turtle/TriG. Use /insert or /upsert.
         if credential.is_turtle_or_trig() {
-            let format = if credential.is_trig() {
-                "trig"
-            } else {
-                "turtle"
-            };
-            tracing::info!(
-                status = "start",
-                format = format,
-                "Turtle/TriG transaction received"
-            );
-
-            let turtle = match credential.body_string() {
-                Ok(s) => s,
-                Err(e) => {
-                    set_span_error_code(&span, "error:BadRequest");
-                    tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
-                    return Err(e);
-                }
-            };
-
-            // For Turtle/TriG, ledger must come from query param or header
-            let ledger_id = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
-                Some(ledger) => {
-                    span.record("ledger_id", ledger.as_str());
-                    ledger.clone()
-                }
-                None => {
-                    set_span_error_code(&span, "error:BadRequest");
-                    tracing::warn!("missing ledger ID for Turtle/TriG transact");
-                    return Err(ServerError::MissingLedger);
-                }
-            };
-
-            // /transact uses Update (upsert) semantics for Turtle/TriG
-            // Enforce write access for unsigned requests when bearer is present/required
-            enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
-
-            let author = effective_author(&credential, bearer.as_ref());
-            return execute_turtle_transaction(
-                &state,
-                &ledger_id,
-                TxnType::Upsert,
-                &turtle,
-                &credential,
-                author.as_deref(),
-            )
-            .await;
+            set_span_error_code(&span, "error:BadRequest");
+            return Err(ServerError::bad_request(
+                "Turtle/TriG is not supported on the update endpoint. \
+                 Use /v1/fluree/insert for Turtle inserts, /v1/fluree/upsert for Turtle/TriG upserts, \
+                 or send JSON-LD/SPARQL UPDATE to /v1/fluree/update.",
+            ));
         }
 
         tracing::info!(status = "start", "transaction request received");
@@ -482,12 +441,12 @@ async fn transact_local(
     .await
 }
 
-/// Execute a transaction with ledger in path
+/// Execute an update transaction with ledger in path
 ///
-/// POST /:ledger/transact
+/// POST /:ledger/update
 /// Supports signed requests (JWS/VC format).
 /// In peer mode, forwards the request to the transaction server.
-pub async fn transact_ledger(
+pub async fn update_ledger(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
     MaybeDataBearer(bearer): MaybeDataBearer,
@@ -499,7 +458,7 @@ pub async fn transact_ledger(
     }
 
     // Transaction mode: process locally
-    transact_ledger_local(state, ledger, bearer, request)
+    update_ledger_local(state, ledger, bearer, request)
         .await
         .into_response()
 }
@@ -507,18 +466,17 @@ pub async fn transact_ledger(
 /// Execute a transaction with ledger as greedy tail segment.
 ///
 /// POST /fluree/update/<ledger...>
-/// POST /fluree/transact/<ledger...>
-pub async fn transact_ledger_tail(
+pub async fn update_ledger_tail(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
-    transact_ledger(State(state), Path(ledger), MaybeDataBearer(bearer), request).await
+    update_ledger(State(state), Path(ledger), MaybeDataBearer(bearer), request).await
 }
 
-/// Local implementation of transact_ledger
-async fn transact_ledger_local(
+/// Local implementation of update_ledger
+async fn update_ledger_local(
     state: Arc<AppState>,
     ledger: String,
     bearer: Option<crate::extract::DataPrincipal>,
@@ -551,7 +509,7 @@ async fn transact_ledger_local(
     };
 
     let span = create_request_span(
-        "transact",
+        "update",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
@@ -580,40 +538,14 @@ async fn transact_ledger_local(
             .await;
         }
 
-        // Check if this is a Turtle or TriG request
+        // Update does not accept Turtle/TriG. Use /insert or /upsert.
         if credential.is_turtle_or_trig() {
-            let format = if credential.is_trig() {
-                "trig"
-            } else {
-                "turtle"
-            };
-            tracing::info!(
-                status = "start",
-                format = format,
-                "Turtle/TriG ledger transaction received"
-            );
-
-            let turtle = match credential.body_string() {
-                Ok(s) => s,
-                Err(e) => {
-                    set_span_error_code(&span, "error:BadRequest");
-                    tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
-                    return Err(e);
-                }
-            };
-
-            // /transact uses Update (upsert) semantics for Turtle/TriG
-            enforce_write_access(&state, &ledger, bearer.as_ref(), &credential)?;
-            let author = effective_author(&credential, bearer.as_ref());
-            return execute_turtle_transaction(
-                &state,
-                &ledger,
-                TxnType::Upsert,
-                &turtle,
-                &credential,
-                author.as_deref(),
-            )
-            .await;
+            set_span_error_code(&span, "error:BadRequest");
+            return Err(ServerError::bad_request(
+                "Turtle/TriG is not supported on the update endpoint. \
+                 Use /v1/fluree/insert for Turtle inserts, /v1/fluree/upsert for Turtle/TriG upserts, \
+                 or send JSON-LD/SPARQL UPDATE to /v1/fluree/update.",
+            ));
         }
 
         tracing::info!(status = "start", "ledger transaction request received");
@@ -1682,7 +1614,7 @@ async fn execute_sparql_update_request(
 
 // ===== Peer mode forwarding =====
 
-/// Forward a write request to the transaction server (peer mode)
+/// Forward a transaction request to the transaction server (peer mode)
 async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {
         Some(c) => c,
@@ -1691,7 +1623,7 @@ async fn forward_write_request(state: &AppState, request: Request) -> Response {
         }
     };
 
-    tracing::debug!("Forwarding write request to transaction server");
+    tracing::debug!("Forwarding transaction request to transaction server");
 
     // Forward the request and return the response directly
     // This preserves the upstream status codes (including 502/504 for errors)

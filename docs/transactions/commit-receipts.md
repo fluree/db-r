@@ -43,6 +43,10 @@ curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main@t:42", ...}'
 ```
 
+**Read-after-write consistency:** The `t` value is the key to ensuring queries
+see freshly committed data. Pass it as `min_t` to `refresh()` to gate queries
+on a minimum transaction time. See [Time Travel — Consistency and Read-After-Write](../concepts/time-travel.md#consistency-and-read-after-write) for details.
+
 ### Timestamp
 
 ISO 8601 formatted timestamp of when the transaction was committed:

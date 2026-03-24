@@ -254,7 +254,11 @@ pub enum JoinKeyMode {
 /// Create one instance per query execution and pass it to operators that need
 /// to materialize bindings for comparison/hashing/output.
 pub struct Materializer {
-    /// Graph-scoped view (store + graph ID) for decoding
+    /// Graph-scoped view (store + graph ID) for decoding.
+    ///
+    /// When constructed with a novelty-aware `BinaryGraphView` (via
+    /// `ExecutionContext::graph_view()`), all decode methods automatically
+    /// handle watermark routing for novelty-only subject/string IDs.
     graph_view: BinaryGraphView,
     /// Cache: s_id -> Sid (for terminal output)
     sid_cache: HashMap<u64, Sid>,
@@ -570,12 +574,14 @@ impl Materializer {
     // -------------------------------------------------------------------------
 
     /// Resolve s_id to canonical IRI string (cached).
+    ///
+    /// Novelty-aware: `BinaryGraphView` handles watermark routing internally.
     fn resolve_iri(&mut self, s_id: u64) -> Arc<str> {
         if let Some(cached) = self.iri_cache.get(&s_id) {
             return Arc::clone(cached);
         }
 
-        let iri = match self.graph_view.store().resolve_subject_iri(s_id) {
+        let iri = match self.graph_view.resolve_subject_iri(s_id) {
             Ok(iri) => Arc::from(iri),
             Err(_) => Arc::from(format!("_:unknown_{}", s_id)),
         };
@@ -585,13 +591,16 @@ impl Materializer {
     }
 
     /// Resolve s_id to Sid (cached).
+    ///
+    /// Novelty-aware: uses `resolve_subject_sid` which returns `Sid` directly
+    /// for novel subjects (no IRI string allocation or trie lookup).
     fn resolve_sid(&mut self, s_id: u64) -> Sid {
         if let Some(cached) = self.sid_cache.get(&s_id) {
             return cached.clone();
         }
 
-        let sid = match self.graph_view.store().resolve_subject_iri(s_id) {
-            Ok(iri) => self.graph_view.store().encode_iri(&iri),
+        let sid = match self.graph_view.resolve_subject_sid(s_id) {
+            Ok(sid) => sid,
             Err(_) => Sid::new(0, format!("_:unknown_{}", s_id)),
         };
 

@@ -1,21 +1,21 @@
-# Upsert (Replace Mode)
+# Upsert
 
-Upsert operations provide idempotent writes by replacing all properties of an entity. This is enabled by **replace mode**, specified with the `mode=replace` query parameter.
+Upsert operations provide idempotent transactions by **replacing the values of the predicates you supply** for an entity (matched by `@id`).
 
 ## What is Upsert?
 
 **Upsert** = Update or Insert:
-- If entity exists: Replace all properties
-- If entity doesn't exist: Create with specified properties
+- If the entity exists: for each predicate present in your payload, retract existing values for that predicate and assert the new value(s)
+- If the entity doesn’t exist: create it with the supplied triples
 
-Replace mode makes writes **idempotent**—submitting the same transaction multiple times produces the same result.
+This makes upserts safe to retry: sending the same upsert repeatedly produces the same current-state values for those predicates.
 
-## Enabling Replace Mode
+## HTTP Endpoint
 
-Add `mode=replace` query parameter:
+Use the dedicated upsert endpoint:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=replace" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -33,7 +33,7 @@ curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&mode=rep
   }'
 ```
 
-## Replace Mode Behavior
+## Upsert Behavior
 
 ### First Transaction (Entity Doesn't Exist)
 
@@ -126,18 +126,17 @@ Result: No actual changes.
 
 This makes upserts safe to retry.
 
-## Comparison: Default vs Replace Mode
+## Comparison: Insert vs Update vs Upsert
 
-### Default Mode
+### Insert
 
 ```bash
-POST /transact?ledger=mydb:main
+POST /insert?ledger=mydb:main
 ```
 
 **Behavior:**
-- Additive: New properties added
-- Existing properties unchanged unless explicitly deleted
-- Requires WHERE/DELETE/INSERT for updates
+- Additive: asserts the triples you submit
+- Does not retract existing values automatically
 
 **Example:**
 ```text
@@ -147,25 +146,34 @@ t=2: INSERT { ex:alice schema:email "alice@example.org" }
 Result: ex:alice has name, age, AND email (all three)
 ```
 
-### Replace Mode
+### Update (WHERE/DELETE/INSERT)
 
 ```bash
-POST /transact?ledger=mydb:main&mode=replace
+POST /update?ledger=mydb:main
 ```
 
 **Behavior:**
-- Replaces all properties
-- Old properties removed
-- New properties added
-- Idempotent
+- Explicit: you retract exactly what you match in `where`/`delete`, then assert `insert`
+- Most flexible (conditional updates, partial updates, computed values)
 
 **Example:**
 ```text
-t=1: REPLACE { ex:alice schema:name "Alice", schema:age 30 }
-t=2: REPLACE { ex:alice schema:email "alice@example.org" }
+t=1: INSERT { ex:alice schema:name "Alice", schema:age 30 }
+t=2: UPDATE { DELETE { ex:alice schema:age 30 } INSERT { ex:alice schema:age 31 } WHERE { ex:alice schema:age 30 } }
 
-Result: ex:alice has ONLY email (name and age removed)
+Result: ex:alice has name "Alice", age 31
 ```
+
+### Upsert
+
+```bash
+POST /upsert?ledger=mydb:main
+```
+
+**Behavior:**
+- Replaces values **for the predicates you supply** (per subject)
+- Leaves other predicates unchanged
+- Retry-safe/idempotent for the supplied predicates
 
 ## Use Cases
 
@@ -175,9 +183,10 @@ Sync data from external database:
 
 ```javascript
 async function syncUser(externalUser) {
-  await transact({
-    mode: 'replace',
-    body: {
+  await fetch('http://localhost:8090/v1/fluree/upsert?ledger=mydb:main', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
       "@graph": [{
         "@id": `ex:user-${externalUser.id}`,
         "@type": "schema:Person",
@@ -185,8 +194,8 @@ async function syncUser(externalUser) {
         "schema:email": externalUser.email,
         "schema:telephone": externalUser.phone
       }]
-    }
-  });
+    })
+  })
 }
 
 // Safe to call repeatedly—always matches external state
@@ -200,15 +209,16 @@ Make API operations retry-safe:
 ```javascript
 // Safe to retry on failure
 async function updateProduct(productId, productData) {
-  return await transact({
-    mode: 'replace',
-    body: {
+  return await fetch('http://localhost:8090/v1/fluree/upsert?ledger=mydb:main', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
       "@graph": [{
         "@id": `ex:product-${productId}`,
         ...productData
       }]
-    }
-  });
+    })
+  })
 }
 ```
 
@@ -257,7 +267,7 @@ Model state machines where entity has well-defined state:
 Upsert multiple entities:
 
 ```bash
-POST /transact?ledger=mydb:main&mode=replace
+POST /upsert?ledger=mydb:main
 ```
 
 ```json
@@ -292,7 +302,7 @@ Each entity is replaced independently.
 
 ### Types are Preserved
 
-When using replace mode, `@type` is always included in the replacement:
+Upsert preserves existing `@type` values unless you explicitly include `@type` in the upsert payload (in which case `rdf:type` is treated like any other predicate and its values are replaced for that subject).
 
 ```json
 {
@@ -460,16 +470,16 @@ function createUserTransaction(user) {
 }
 ```
 
-### 4. Document Replace Mode Usage
+### 4. Document Upsert Usage
 
-Comment when using replace mode:
+Comment when using upsert for idempotent sync:
 
 ```javascript
-// Using replace mode for idempotent sync with external API
-await transact({
-  mode: 'replace',
-  ledger: 'users:main',
-  body: userPayload
+// Upsert for idempotent sync with external API
+await fetch('http://localhost:8090/v1/fluree/upsert?ledger=users:main', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(userPayload),
 });
 ```
 

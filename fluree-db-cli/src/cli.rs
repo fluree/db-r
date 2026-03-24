@@ -360,6 +360,16 @@ pub enum Commands {
         count: Option<usize>,
     },
 
+    /// Show the contents of a commit (decoded flakes with resolved IRIs)
+    Show {
+        /// Commit identifier: t:<N>, hex-digest prefix (min 6 chars), or full CID
+        commit: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -458,6 +468,26 @@ pub enum Commands {
     Track {
         #[command(subcommand)]
         action: TrackAction,
+    },
+
+    /// Build or update the binary index for a ledger
+    ///
+    /// Performs incremental indexing when possible (merges only new commits
+    /// into the existing index). Falls back to a full rebuild otherwise.
+    /// Run this after transactions to clear novelty and speed up queries.
+    Index {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
+    /// Full reindex from commit history
+    ///
+    /// Rebuilds the binary index from scratch by replaying all commits.
+    /// Use this when the index is corrupted or you want a clean rebuild.
+    /// For routine indexing after transactions, prefer `fluree index`.
+    Reindex {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
     },
 
     /// Manage the Fluree HTTP server

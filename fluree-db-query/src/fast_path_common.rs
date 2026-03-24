@@ -1351,6 +1351,8 @@ pub fn build_psot_cursor_for_predicate(
         let mut ephemeral_preds = HashMap::new();
         let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
+        let mut translate_failed = false;
+        let mut translate_fail_count: u32 = 0;
 
         ctx.overlay().for_each_overlay_flake(
             g_id,
@@ -1372,14 +1374,33 @@ pub fn build_psot_cursor_for_predicate(
                 ) {
                     Ok(op) => ops.push(op),
                     Err(e) => {
-                        tracing::warn!(error = %e, "fast-path cursor: failed to translate overlay flake");
+                        translate_failed = true;
+                        translate_fail_count = translate_fail_count.saturating_add(1);
+                        if translate_fail_count == 1 {
+                            tracing::warn!(
+                                error = %e,
+                                s = %flake.s,
+                                p = %flake.p,
+                                t = flake.t,
+                                op = flake.op,
+                                "fast-path cursor: overlay flake translation failed; disabling fast path for correctness"
+                            );
+                        }
                     }
                 }
             },
         );
+        if translate_failed {
+            tracing::debug!(
+                failures = translate_fail_count,
+                "fast-path cursor: falling back due to overlay translation failures"
+            );
+            return Ok(None);
+        }
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             cursor.set_overlay_ops(ops);
         }
         cursor.set_epoch(ctx.overlay().epoch());

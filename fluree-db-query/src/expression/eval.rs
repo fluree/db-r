@@ -77,11 +77,12 @@ impl Expression {
                     lang_id,
                     ..
                 }) => {
-                    let Some(gv) = ctx.and_then(|c| c.graph_view()) else {
+                    let Some(decoded) = ctx.and_then(|c| {
+                        c.decode_encoded_value(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                    }) else {
                         return Ok(None);
                     };
-                    let val = gv
-                        .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                    let val = decoded
                         .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
                     Ok(ComparableValue::try_from(&val).ok())
                 }
@@ -91,10 +92,10 @@ impl Expression {
                 }
                 Some(Binding::Iri(iri)) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
                 Some(Binding::EncodedSid { s_id }) => {
-                    let Some(gv) = ctx.and_then(|c| c.graph_view()) else {
+                    let Some(resolved) = ctx.and_then(|c| c.resolve_subject_iri(*s_id)) else {
                         return Ok(None);
                     };
-                    match gv.store().resolve_subject_iri(*s_id) {
+                    match resolved {
                         Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
                         Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
                     }

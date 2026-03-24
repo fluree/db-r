@@ -354,7 +354,7 @@ Graph sources have their own nameservice records (`GraphSourceRecord`) with simi
 Ledgers are created automatically on the first transaction. Specify the ledger ID in your transaction:
 
 ```json
-POST /transact?ledger=mydb:main
+POST /insert?ledger=mydb:main
 Content-Type: application/json
 
 {

@@ -1,6 +1,6 @@
 # Query peers and replication
 
-This document describes how to run `fluree-server` in **transaction** mode (event source + writes) and **peer** mode (read replica). It also documents the **events stream** (`/fluree/events`) and **storage proxy** endpoints (`/fluree/storage/*`) used to keep peers up to date and/or to proxy storage reads.
+This document describes how to run `fluree-server` in **transaction** mode (event source + transactions) and **peer** mode (read replica). It also documents the **events stream** (`/fluree/events`) and **storage proxy** endpoints (`/fluree/storage/*`) used to keep peers up to date and/or to proxy storage reads.
 
 This guide is written from an **operator / end-user** standpoint: what to deploy, how to configure it, and what to expect from each mode.
 

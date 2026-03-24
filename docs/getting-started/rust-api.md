@@ -742,10 +742,12 @@ if !report.warnings.is_empty() {
 
 #### Refreshing Cached Ledgers
 
-Use `refresh` to poll-check whether a cached ledger is stale and update it if needed:
+Use `refresh` to poll-check whether a cached ledger is stale and update it if needed.
+`refresh` returns a `RefreshResult` containing the ledger's `t` after the operation
+and what action was taken:
 
 ```rust
-use fluree_db_api::{FlureeBuilder, NotifyResult, Result};
+use fluree_db_api::{FlureeBuilder, NotifyResult, RefreshOpts, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -755,27 +757,20 @@ async fn main() -> Result<()> {
     let _ledger = fluree.ledger_cached("mydb:main").await?;
 
     // Later, check if the cached state is still fresh
-    match fluree.refresh("mydb:main").await? {
-        Some(NotifyResult::Current) => {
-            println!("Cache is up to date");
+    match fluree.refresh("mydb:main", Default::default()).await? {
+        Some(r) => {
+            println!("Ledger at t={}, action: {:?}", r.t, r.action);
+            match r.action {
+                NotifyResult::Current => println!("Already up to date"),
+                NotifyResult::Reloaded => println!("Reloaded from storage"),
+                NotifyResult::IndexUpdated => println!("Index was updated"),
+                NotifyResult::CommitsApplied { count } => {
+                    println!("{count} commits applied incrementally");
+                }
+                NotifyResult::NotLoaded => println!("Not in cache"),
+            }
         }
-        Some(NotifyResult::Reloaded) => {
-            println!("Cache was stale - reloaded from storage");
-        }
-        Some(NotifyResult::IndexUpdated) => {
-            // Index advanced (v1: refreshed via full reload)
-            println!("Index was updated");
-        }
-        Some(NotifyResult::CommitApplied) => {
-            // Next commit available (v1: refreshed via full reload)
-            println!("Commit was applied");
-        }
-        Some(NotifyResult::NotLoaded) => {
-            println!("Ledger not in cache - no action taken");
-        }
-        None => {
-            println!("Ledger not found in nameservice");
-        }
+        None => println!("Ledger not found in nameservice"),
     }
 
     Ok(())
@@ -788,6 +783,7 @@ async fn main() -> Result<()> {
 - **Returns `None`**: If the ledger doesn't exist in the nameservice
 - **Alias resolution**: Supports short aliases (`mydb` resolves to `mydb:main`)
 - **No-op without caching**: If caching is disabled, returns `NotLoaded`
+- **Returns `t`**: The `RefreshResult.t` field always tells you the ledger's current transaction time
 
 **When to use `refresh`:**
 
@@ -803,6 +799,100 @@ async fn main() -> Result<()> {
 | Updates in place | Yes | No (forces full reload on next access) |
 | Handles not-cached | Returns `NotLoaded` | No-op |
 | Use case | Poll-based updates | Force full reload |
+
+#### Read-After-Write Consistency
+
+Fluree's query engine is **eventually consistent**: when one process writes data and
+another (or the same process on a warm cache) queries it, the query may not yet see
+the latest commit. The `t` value returned from a transaction is the key to bridging
+this gap.
+
+Pass `RefreshOpts { min_t: Some(t) }` to `refresh()` to assert that the cached
+ledger has reached at least that transaction time. If it hasn't after pulling the
+latest state from the nameservice, `refresh` returns `ApiError::AwaitTNotReached`
+with both the `requested` and `current` `t` values. Your code owns retry timing
+and timeout policy.
+
+**Basic usage:**
+
+```rust
+use fluree_db_api::{FlureeBuilder, RefreshOpts, ApiError, Result};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data").build()?;
+    let handle = fluree.ledger_cached("mydb:main").await?;
+
+    // Transaction returns the commit's t value
+    let receipt = fluree.stage(&handle)
+        .insert(&json!({"@id": "ex:item", "ex:count": 42}))
+        .commit()
+        .await?;
+    let committed_t = receipt.t;
+
+    // Ensure the cache reflects at least this t before querying
+    let opts = RefreshOpts { min_t: Some(committed_t) };
+    let result = fluree.refresh("mydb:main", opts).await?;
+    // result.unwrap().t >= committed_t is guaranteed here
+
+    Ok(())
+}
+```
+
+**Serverless / Lambda pattern (retry with backoff):**
+
+In a serverless environment, the transacting process and the querying process may be
+different Lambda invocations. The querying invocation receives `t` (e.g., via an
+event payload or API parameter) and must wait for that commit to be visible:
+
+```rust
+use fluree_db_api::{RefreshOpts, ApiError};
+use std::time::{Duration, Instant};
+
+async fn wait_for_t(
+    fluree: &Fluree<impl Storage, impl NameService>,
+    ledger_id: &str,
+    min_t: i64,
+    timeout: Duration,
+) -> Result<i64, ApiError> {
+    let deadline = Instant::now() + timeout;
+    let opts = RefreshOpts { min_t: Some(min_t) };
+
+    loop {
+        match fluree.refresh(ledger_id, opts.clone()).await {
+            Ok(Some(r)) => return Ok(r.t),   // reached min_t
+            Ok(None) => return Err(ApiError::NotFound(
+                format!("ledger {ledger_id} not in nameservice"),
+            )),
+            Err(ApiError::AwaitTNotReached { current, .. }) => {
+                if Instant::now() >= deadline {
+                    return Err(ApiError::AwaitTNotReached {
+                        requested: min_t,
+                        current,
+                    });
+                }
+                // Back off before retrying
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+**How it works internally:**
+
+1. **Fast path**: If the cached `t` already satisfies `min_t`, returns immediately
+   without hitting the nameservice at all.
+2. **Pull**: Queries the nameservice for the latest commit/index pointers and applies
+   any new commits incrementally (or reloads if the gap is large).
+3. **Check**: If `t` is still below `min_t` after the pull, returns
+   `ApiError::AwaitTNotReached` so you can retry.
+
+This design keeps retry/timeout policy out of the database layer. Different
+deployment contexts (Lambda with 100ms backoff, HTTP handler with 5s deadline,
+integration test with immediate assertion) each wrap the same primitive differently.
 
 ### Time Travel Queries
 
@@ -1344,6 +1434,47 @@ let preview = staged.query()
     .jsonld(&validation_query)
     .execute().await?;
 ```
+
+### Commit Inspection
+
+Decode and display the contents of a commit — assertions and retractions with IRIs resolved to compact form. Similar to `git show` for individual commits.
+
+```rust
+// By exact CID
+let detail = fluree.graph("mydb:main")
+    .commit(&commit_id)
+    .execute().await?;
+
+// By transaction number
+let detail = fluree.graph("mydb:main")
+    .commit_t(5)
+    .execute().await?;
+
+// By hex-digest prefix (min 6 chars, like abbreviated git hashes)
+let detail = fluree.graph("mydb:main")
+    .commit_prefix("3dd028")
+    .execute().await?;
+
+// With a custom @context for IRI compaction
+let detail = fluree.graph("mydb:main")
+    .commit_prefix("3dd028")
+    .context(my_parsed_context)
+    .execute().await?;
+
+// Access the result
+println!("t={}, +{} -{}", detail.t, detail.asserts, detail.retracts);
+for flake in &detail.flakes {
+    let op = if flake.op { "+" } else { "-" };
+    println!("{} {} {} {} [{}]", op, flake.s, flake.p, flake.o, flake.dt);
+}
+```
+
+The returned `CommitDetail` contains:
+- **Metadata**: `id`, `t`, `time`, `size`, `previous`, `signer`, `asserts`, `retracts`
+- **`context`**: prefix → IRI map derived from the ledger's namespace codes
+- **`flakes`**: flat list in SPOT order, each with resolved compact IRIs
+
+`CommitDetail` implements `Serialize` — flakes serialize as `[s, p, o, dt, op]` tuples (with an optional 6th metadata element for language tags, list indices, or named graphs).
 
 ### Terminal Operations
 

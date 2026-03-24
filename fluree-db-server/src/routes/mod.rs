@@ -64,8 +64,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(query::explain_ledger_tail).post(query::explain_ledger_tail),
         )
         // Transaction endpoints
-        .route("/transact", post(transact::transact))
-        .route("/transact/*ledger", post(transact::transact_ledger_tail))
+        .route("/update", post(transact::update))
+        .route("/update/*ledger", post(transact::update_ledger_tail))
         .route("/insert", post(transact::insert))
         .route("/insert/*ledger", post(transact::insert_ledger_tail))
         .route("/upsert", post(transact::upsert))

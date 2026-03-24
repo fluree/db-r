@@ -122,8 +122,17 @@ impl BinaryCursor {
         }
     }
 
-    /// Set overlay ops (must be pre-sorted by this cursor's sort order).
+    /// Set overlay ops.
+    ///
+    /// **Contract:** ops must be pre-sorted by this cursor's sort order AND
+    /// assert/retract lifecycles must be resolved (at most one op per fact key).
+    /// Use [`sort_overlay_ops`] then [`resolve_overlay_ops`] before calling.
     pub fn set_overlay_ops(&mut self, ops: Vec<OverlayOp>) {
+        debug_assert!(
+            ops.windows(2).all(|w| w[0].fact_key() != w[1].fact_key()),
+            "overlay ops contain duplicate fact keys — caller must resolve \
+             assert/retract lifecycles via resolve_overlay_ops() before set_overlay_ops()"
+        );
         let len = ops.len();
         self.overlay_ops = ops;
         self.overlay_pos = 0;

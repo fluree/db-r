@@ -1,4 +1,4 @@
-//! HTTP client for remote ledger query/transact operations
+//! HTTP client for remote ledger query/update operations
 //!
 //! Used by the CLI's "track" mode to forward data operations to a remote
 //! Fluree server instead of executing them locally. This is distinct from
@@ -680,13 +680,13 @@ impl RemoteLedgerClient {
     // Update (WHERE/DELETE/INSERT)
     // =========================================================================
 
-    /// Execute a JSON-LD update (WHERE/DELETE/INSERT) via the transact endpoint.
+    /// Execute a JSON-LD update (WHERE/DELETE/INSERT) via the update endpoint.
     pub async fn update_jsonld(
         &self,
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.op_url("transact", ledger);
+        let url = self.op_url("update", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -696,13 +696,13 @@ impl RemoteLedgerClient {
         .await
     }
 
-    /// Execute a SPARQL UPDATE via the transact endpoint.
+    /// Execute a SPARQL UPDATE via the update endpoint.
     pub async fn update_sparql(
         &self,
         ledger: &str,
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.op_url("transact", ledger);
+        let url = self.op_url("update", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
