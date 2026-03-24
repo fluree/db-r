@@ -11,7 +11,7 @@ use crate::ids::GraphId;
 use crate::index_schema::IndexSchema;
 use crate::index_stats::IndexStats;
 use crate::namespaces::default_namespace_codes;
-use crate::ns_encoding::{canonical_split, validate_and_merge_ns_delta, NsSplitMode};
+use crate::ns_encoding::{canonical_split, NsSplitMode};
 use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
 use crate::sid::Sid;
@@ -362,27 +362,26 @@ impl LedgerSnapshot {
 
     /// Insert a namespace code if not already present.
     ///
-    /// Keeps the reverse map in sync. Returns `true` if the entry was new.
-    ///
-    /// # Panics (debug builds)
-    ///
-    /// Debug-asserts that the prefix is not already mapped to a different code
-    /// (bimap invariant — Rule 3).
-    pub fn insert_namespace_code(&mut self, code: u16, prefix: String) -> bool {
+    /// Keeps the reverse map in sync. Returns `Ok(true)` if the entry was new,
+    /// `Ok(false)` if the code was already registered (no-op), or `Err` if the
+    /// prefix is already mapped to a different code (bimap conflict).
+    pub fn insert_namespace_code(&mut self, code: u16, prefix: String) -> Result<bool> {
         if self.namespace_codes.contains_key(&code) {
-            return false;
+            return Ok(false);
         }
         if let Some(&existing_code) = self.namespace_reverse.get(&prefix) {
-            debug_assert_eq!(
-                existing_code, code,
-                "namespace bimap conflict: prefix {:?} already maps to code {} but code {} was requested",
-                prefix, existing_code, code
-            );
-            return false;
+            if existing_code != code {
+                return Err(Error::invalid_index(format!(
+                    "namespace bimap conflict: prefix {:?} already maps to code {} \
+                     but code {} was requested",
+                    prefix, existing_code, code
+                )));
+            }
+            return Ok(false);
         }
         self.namespace_reverse.insert(prefix.clone(), code);
         self.namespace_codes.insert(code, prefix);
-        true
+        Ok(true)
     }
 
     /// Apply commit envelope deltas (namespace + graph) to this snapshot.
@@ -403,11 +402,32 @@ impl LedgerSnapshot {
         ns_delta: &HashMap<u16, String>,
         graph_iris: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<()> {
-        validate_and_merge_ns_delta(&mut self.namespace_codes, ns_delta)
-            .map_err(|e| Error::invalid_index(format!("namespace conflict: {}", e)))?;
-        // Keep reverse map in sync (only new entries need inserting).
+        // Validate delta against both directions of the bimap inline,
+        // using the already-maintained namespace_reverse map.
         for (&code, prefix) in ns_delta {
-            self.namespace_reverse.entry(prefix.clone()).or_insert(code);
+            // code → prefix direction
+            if let Some(existing) = self.namespace_codes.get(&code) {
+                if existing != prefix {
+                    return Err(Error::invalid_index(format!(
+                        "namespace conflict: code {} maps to {:?} but delta has {:?}",
+                        code, existing, prefix
+                    )));
+                }
+                continue;
+            }
+            // prefix → code direction
+            if let Some(&existing_code) = self.namespace_reverse.get(prefix.as_str()) {
+                if existing_code != code {
+                    return Err(Error::invalid_index(format!(
+                        "namespace conflict: prefix {:?} has code {} but delta has code {}",
+                        prefix, existing_code, code
+                    )));
+                }
+                continue;
+            }
+            // New mapping — insert into both maps.
+            self.namespace_codes.insert(code, prefix.clone());
+            self.namespace_reverse.insert(prefix.clone(), code);
         }
         self.graph_registry.apply_delta(graph_iris);
         Ok(())
@@ -876,7 +896,8 @@ mod tests {
         // Once the canonical prefix is registered (by the transact layer),
         // encode uses the exact prefix.
         let mut db2 = db.clone();
-        db2.insert_namespace_code(100, "urn:fluree:mydb:main#".to_string());
+        db2.insert_namespace_code(100, "urn:fluree:mydb:main#".to_string())
+            .unwrap();
         let sid2 = db2.encode_iri(&txn_meta_iri).unwrap();
         assert_eq!(sid2.namespace_code, 100);
         assert_eq!(sid2.name.as_ref(), "txn-meta");

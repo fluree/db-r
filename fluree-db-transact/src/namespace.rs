@@ -109,7 +109,10 @@ impl NamespaceRegistry {
                 }
             }
             return Self {
-                codes: NamespaceCodes::from_code_to_prefix(names),
+                codes: NamespaceCodes::from_code_to_prefix(names).unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "fallback namespace map also has bimap conflict — using defaults only");
+                    NamespaceCodes::new()
+                }),
                 split_mode: snapshot.ns_split_mode(),
             };
         }
@@ -377,7 +380,11 @@ impl SharedNamespaceAllocator {
             if let Some(prefix) = inner.get_prefix(code) {
                 result.insert(code, prefix.to_string());
             } else {
-                debug_assert!(false, "code {} not found in shared allocator", code);
+                // Should never happen — every code in the set was allocated
+                // through this allocator. Log and skip in release; panic in debug.
+                if cfg!(debug_assertions) {
+                    panic!("code {code} not found in shared allocator");
+                }
                 tracing::warn!(code, "namespace code not found in shared allocator");
             }
         }

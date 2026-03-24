@@ -22,7 +22,6 @@ use std::time::Instant;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
-use fluree_db_core::Error as CoreError;
 use fluree_db_core::{ContentId, ContentKind, Storage};
 
 use crate::error::{IndexerError, Result};
@@ -2079,7 +2078,11 @@ where
             }
         }
 
-        reconcile_ns_at_publish(&final_root, &novelty.shared.ns_prefixes)?;
+        super::root_assembly::reconcile_ns_at_publish(
+            &final_root.namespace_codes,
+            &novelty.shared.ns_prefixes,
+            final_root.index_t,
+        )?;
 
         let root_bytes = final_root.encode();
         let write_result = storage
@@ -2142,7 +2145,11 @@ where
             }
         }
 
-        reconcile_ns_at_publish(&final_root, &novelty.shared.ns_prefixes)?;
+        super::root_assembly::reconcile_ns_at_publish(
+            &final_root.namespace_codes,
+            &novelty.shared.ns_prefixes,
+            final_root.index_t,
+        )?;
         let root_bytes = final_root.encode();
         let write_result = storage
             .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
@@ -2208,27 +2215,6 @@ where
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         }
-    }
-    Ok(())
-}
-
-/// Validate that the index root's materialized namespace table matches the
-/// commit-derived table (resolver state). A mismatch indicates an indexer or
-/// publisher bug — fail fast rather than silently diverging.
-fn reconcile_ns_at_publish(
-    root: &fluree_db_binary_index::format::index_root::IndexRoot,
-    commit_derived_ns: &std::collections::HashMap<u16, String>,
-) -> Result<()> {
-    let expected: std::collections::BTreeMap<u16, String> = commit_derived_ns
-        .iter()
-        .map(|(&code, prefix)| (code, prefix.clone()))
-        .collect();
-    if root.namespace_codes != expected {
-        return Err(IndexerError::Core(CoreError::invalid_index(format!(
-            "namespace reconciliation failure at index publish (index_t={}): incremental root \
-             namespace_codes does not match commit-derived table — indexer/publisher bug",
-            root.index_t
-        ))));
     }
     Ok(())
 }

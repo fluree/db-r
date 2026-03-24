@@ -306,7 +306,7 @@ impl LedgerState {
                 all_graph_iris.insert(iri);
             }
 
-            // Extract ns_split_mode (Rule 0: immutable after user namespace allocation).
+            // Extract ns_split_mode (immutable after user namespace allocation).
             if let Some(mode) = commit.ns_split_mode {
                 snapshot.set_ns_split_mode(mode, commit.t)?;
             }
@@ -571,7 +571,7 @@ impl LedgerState {
 
             // Merge namespace codes: old entries not in new → carried forward
             for (code, prefix) in self.snapshot.namespaces() {
-                merged_snapshot.insert_namespace_code(*code, prefix.clone());
+                merged_snapshot.insert_namespace_code(*code, prefix.clone())?;
             }
 
             // Merge graph IRIs via apply_delta (idempotent — skips already-registered)
@@ -624,14 +624,17 @@ impl LedgerState {
         let graph_iris: std::collections::HashSet<String> =
             commit.graph_delta.values().cloned().collect();
 
-        // Apply namespace + graph deltas to snapshot
-        self.snapshot
-            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris)?;
-
-        // Apply ns_split_mode (immutable after user namespace allocation).
+        // Apply ns_split_mode first (immutable after user namespace allocation).
+        // Must happen before apply_envelope_deltas so that a genesis commit
+        // declaring a non-default mode doesn't fail the immutability check
+        // when its namespace codes are inserted under the wrong mode.
         if let Some(mode) = commit.ns_split_mode {
             self.snapshot.set_ns_split_mode(mode, commit_t)?;
         }
+
+        // Apply namespace + graph deltas to snapshot
+        self.snapshot
+            .apply_envelope_deltas(&commit.namespace_delta, &graph_iris)?;
 
         // Generate commit metadata flakes
         let mut meta_flakes = generate_commit_flakes(&commit, ledger_id, commit_t);
@@ -1393,7 +1396,8 @@ mod tests {
         // Simulate commit t=1: add namespace code + flake
         state
             .snapshot
-            .insert_namespace_code(100, "http://example.org/ns/".to_string());
+            .insert_namespace_code(100, "http://example.org/ns/".to_string())
+            .unwrap();
         let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();
         let flakes_t1 = vec![make_flake(10, 1, 100, 1)];
         Arc::make_mut(&mut state.dict_novelty).populate_from_flakes(&flakes_t1);
@@ -1501,7 +1505,8 @@ mod tests {
         // Add custom namespace to old snapshot
         state
             .snapshot
-            .insert_namespace_code(200, "http://old.example.org/".to_string());
+            .insert_namespace_code(200, "http://old.example.org/".to_string())
+            .unwrap();
 
         // Add novelty at t=1 only
         let reverse_graph = state.snapshot.build_reverse_graph().unwrap_or_default();

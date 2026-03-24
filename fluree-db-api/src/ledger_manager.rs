@@ -403,7 +403,7 @@ impl LedgerHandle {
                 .apply_loaded_db(db, Some(index_id))
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
 
-            // Sync namespace codes between store and snapshot (Rule 3/5 validation).
+            // Sync namespace codes between store and snapshot (bimap validation).
             crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
 
             let arc_store = Arc::new(store);
@@ -573,7 +573,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
-    // Sync namespace codes between store and snapshot (Rule 3/5 validation).
+    // Sync namespace codes between store and snapshot (bimap validation).
     crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
 
     // Re-populate DictNovelty from already-loaded novelty flakes, but *only* for

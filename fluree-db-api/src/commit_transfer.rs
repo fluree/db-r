@@ -179,7 +179,15 @@ where
         }
 
         // Accumulate namespace table for cross-commit namespace conflict validation.
-        let mut accumulated_ns: HashMap<u16, String> = base_state.snapshot.namespaces().clone();
+        // Uses NamespaceCodes (validated bimap) rather than raw HashMap to enforce
+        // bimap uniqueness/immutability through the canonical type.
+        let mut accumulated_ns = fluree_db_core::ns_encoding::NamespaceCodes::from_code_to_prefix(
+            base_state.snapshot.namespaces().clone(),
+        )
+        .map_err(|e| {
+            PushError::Invalid(format!("base snapshot namespace corruption: {}", e))
+                .into_api_error()
+        })?;
 
         for c in &decoded {
             // Current state is base db + evolving novelty.
@@ -187,17 +195,15 @@ where
 
             // 4.0.1 Cross-commit namespace validation: namespace delta must be
             // conflict-free against the accumulated namespace table from parent + prior commits.
-            fluree_db_core::ns_encoding::validate_and_merge_ns_delta(
-                &mut accumulated_ns,
-                &c.commit.namespace_delta,
-            )
-            .map_err(|e| {
-                PushError::Invalid(format!(
-                    "commit t={}: namespace delta conflict: {}",
-                    c.commit.t, e
-                ))
-                .into_api_error()
-            })?;
+            accumulated_ns
+                .merge_delta(&c.commit.namespace_delta)
+                .map_err(|e| {
+                    PushError::Invalid(format!(
+                        "commit t={}: namespace delta conflict: {}",
+                        c.commit.t, e
+                    ))
+                    .into_api_error()
+                })?;
 
             // ns_split_mode immutability: locked once user namespaces are allocated.
             if let Some(mode) = c.commit.ns_split_mode {
@@ -832,7 +838,8 @@ fn apply_pushed_commits_to_state(
             }
             // Apply ns_split_mode (immutable after user namespace allocation).
             if let Some(mode) = c.commit.ns_split_mode {
-                base.snapshot.set_ns_split_mode(mode, c.commit.t)
+                base.snapshot
+                    .set_ns_split_mode(mode, c.commit.t)
                     .map_err(|e| PushError::Internal(e.to_string()))?;
             }
         }

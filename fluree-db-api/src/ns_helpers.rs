@@ -2,8 +2,8 @@
 //!
 //! These helpers deduplicate the pattern of syncing namespace codes between
 //! a `BinaryIndexStore` (index root) and a `LedgerSnapshot` (commit chain),
-//! enforcing Rule 5 (commit chain is the namespace source of truth) and
-//! Rule 3 (bimap uniqueness / immutability).
+//! enforcing that the commit chain is the namespace source of truth and that
+//! the bimap uniqueness / immutability invariant holds.
 
 use crate::error::{ApiError, Result};
 use fluree_db_binary_index::BinaryIndexStore;
@@ -58,7 +58,9 @@ pub fn sync_store_and_snapshot_ns(
                 )));
             }
         }
-        snapshot.insert_namespace_code(*code, prefix.clone());
+        snapshot
+            .insert_namespace_code(*code, prefix.clone())
+            .map_err(|e| ApiError::internal(format!("namespace reconciliation: {}", e)))?;
     }
 
     Ok(())

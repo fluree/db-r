@@ -12,9 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
-use fluree_db_core::ns_encoding::{
-    canonical_split, validate_and_merge_ns_delta, NsLookup, NsSplitMode,
-};
+use fluree_db_core::ns_encoding::{canonical_split, NsLookup, NsSplitMode};
 use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -1078,25 +1076,42 @@ impl BinaryIndexStore {
         &mut self,
         codes: &std::collections::HashMap<u16, String>,
     ) -> io::Result<()> {
-        // Only insert genuinely new entries into the forward map, reverse map, and trie.
-        // validate_and_merge_ns_delta handles the forward map; we track new entries
-        // to incrementally update reverse + trie without a full rebuild.
+        // Validate and collect genuinely new entries using bidirectional checks
+        // against both forward (namespace_codes) and reverse (namespace_reverse) maps.
         let mut new_entries: Vec<(u16, String)> = Vec::new();
         for (&code, prefix) in codes {
-            if !self.dicts.namespace_codes.contains_key(&code) {
-                new_entries.push((code, prefix.clone()));
+            // code → prefix direction
+            if let Some(existing) = self.dicts.namespace_codes.get(&code) {
+                if existing != prefix {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "namespace conflict: code {} maps to {:?} but augment has {:?}",
+                            code, existing, prefix
+                        ),
+                    ));
+                }
+                continue; // already present and matching
             }
+            // prefix → code direction
+            if let Some(&existing_code) = self.dicts.namespace_reverse.get(prefix.as_str()) {
+                if existing_code != code {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "namespace conflict: prefix {:?} has code {} but augment has code {}",
+                            prefix, existing_code, code
+                        ),
+                    ));
+                }
+                continue; // already present and matching
+            }
+            new_entries.push((code, prefix.clone()));
         }
 
-        validate_and_merge_ns_delta(&mut self.dicts.namespace_codes, codes).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("namespace conflict: {}", e),
-            )
-        })?;
-
-        // Incrementally update reverse map and trie with only new entries.
+        // Apply validated new entries to all three structures.
         for (code, prefix) in new_entries {
+            self.dicts.namespace_codes.insert(code, prefix.clone());
             if !prefix.is_empty() {
                 self.dicts.prefix_trie.insert(&prefix, code);
             }

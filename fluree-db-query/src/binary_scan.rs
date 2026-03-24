@@ -1416,9 +1416,8 @@ impl Operator for BinaryScanOperator {
         // by translating through full IRIs into store namespace space.
         let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter =
-            Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
-                .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        let mut filter = Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
+            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
             s_bound = s_sid.is_some(),

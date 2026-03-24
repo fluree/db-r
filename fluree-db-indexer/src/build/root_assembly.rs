@@ -16,6 +16,57 @@ use crate::error::{IndexerError, Result};
 use crate::gc;
 use crate::{IndexResult, IndexStats};
 
+/// Validate that an index root's materialized namespace table matches the
+/// commit-derived table exactly. A mismatch indicates an indexer or publisher
+/// bug — fail fast rather than silently diverging.
+pub(crate) fn reconcile_ns_at_publish(
+    root_ns: &BTreeMap<u16, String>,
+    commit_derived_ns: &std::collections::HashMap<u16, String>,
+    index_t: i64,
+) -> Result<()> {
+    let expected: BTreeMap<u16, String> = commit_derived_ns
+        .iter()
+        .map(|(&code, prefix)| (code, prefix.clone()))
+        .collect();
+    if *root_ns != expected {
+        // Find a representative mismatch for a targeted error message.
+        let detail = find_ns_mismatch(root_ns, &expected);
+        return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
+            format!(
+                "namespace reconciliation failure at index publish (index_t={index_t}): \
+                 root namespace_codes does not match commit-derived table \
+                 — indexer/publisher bug ({detail})"
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Find a representative mismatch between two namespace tables for diagnostics.
+fn find_ns_mismatch(root_ns: &BTreeMap<u16, String>, commit_ns: &BTreeMap<u16, String>) -> String {
+    for (code, commit_prefix) in commit_ns {
+        match root_ns.get(code) {
+            Some(root_prefix) if root_prefix == commit_prefix => {}
+            other => {
+                return format!(
+                    "example mismatch: code {code} commit={:?} root={:?}",
+                    Some(commit_prefix),
+                    other
+                );
+            }
+        }
+    }
+    for (code, root_prefix) in root_ns {
+        if !commit_ns.contains_key(code) {
+            return format!(
+                "example mismatch: code {code} commit=None root={:?}",
+                Some(root_prefix)
+            );
+        }
+    }
+    "tables differ (no specific mismatch found)".to_string()
+}
+
 /// Context for linking the GC chain to a previous index root.
 ///
 /// Used by both pipelines, but computed differently:
@@ -190,53 +241,11 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
 ) -> Result<IndexResult> {
-    // Namespace reconciliation at publish time: the commit-derived namespace
-    // table must match the index root's materialized table exactly.
-    {
-        let commit_bt: BTreeMap<u16, String> = inputs
-            .commit_derived_ns
-            .iter()
-            .map(|(&k, v)| (k, v.clone()))
-            .collect();
-        if commit_bt != inputs.namespace_codes {
-            // Find a representative mismatch for a targeted error message.
-            let mut mismatch: Option<(u16, Option<&String>, Option<&String>)> = None;
-            for (code, commit_prefix) in &commit_bt {
-                match inputs.namespace_codes.get(code) {
-                    Some(root_prefix) if root_prefix == commit_prefix => {}
-                    other => {
-                        mismatch = Some((*code, Some(commit_prefix), other));
-                        break;
-                    }
-                }
-            }
-            if mismatch.is_none() {
-                for (code, root_prefix) in &inputs.namespace_codes {
-                    if !commit_bt.contains_key(code) {
-                        mismatch = Some((*code, None, Some(root_prefix)));
-                        break;
-                    }
-                }
-            }
-
-            let detail = if let Some((code, commit_p, root_p)) = mismatch {
-                format!(
-                    "example mismatch: code {code} commit={:?} root={:?}",
-                    commit_p, root_p
-                )
-            } else {
-                "mismatch: tables differ".to_string()
-            };
-
-            return Err(IndexerError::Core(fluree_db_core::Error::invalid_index(
-                format!(
-                    "namespace reconciliation failure at index publish (index_t={}): index root namespace_codes does not match \
-                     commit-derived table — indexer/publisher bug ({detail})",
-                    inputs.index_t
-                ),
-            )));
-        }
-    }
+    reconcile_ns_at_publish(
+        &inputs.namespace_codes,
+        &inputs.commit_derived_ns,
+        inputs.index_t,
+    )?;
 
     // Convert DictRefs for root assembly.
     let dr = inputs.uploaded_dicts.dict_refs;

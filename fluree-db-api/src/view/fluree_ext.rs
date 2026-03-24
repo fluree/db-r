@@ -184,7 +184,7 @@ where
                 .await
                 .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
-                // Sync namespace codes between store and snapshot (Rule 3/5 validation).
+                // Sync namespace codes between store and snapshot (bimap validation).
                 crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut snapshot.snapshot)?;
 
                 let arc_store = Arc::new(store);

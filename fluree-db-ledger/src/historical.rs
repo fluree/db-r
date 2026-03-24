@@ -270,7 +270,7 @@ impl HistoricalLedgerView {
                 all_graph_iris.insert(iri);
             }
 
-            // Extract ns_split_mode (Rule 0: immutable after user namespace allocation).
+            // Extract ns_split_mode (immutable after user namespace allocation).
             if let Some(mode) = commit.ns_split_mode {
                 snapshot.set_ns_split_mode(mode, commit.t)?;
             }

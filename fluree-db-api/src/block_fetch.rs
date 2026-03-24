@@ -299,22 +299,23 @@ pub fn decode_leaf_block(
                 );
             }
 
-            let dt = store.resolve_datatype_sid(o_type).map_or_else(
-                || fluree_db_core::Sid::new(0, ""),
-                |sid| {
-                    let iri = store.sid_to_iri(&sid).unwrap_or_else(|| {
-                        tracing::warn!(
-                            ns_code = sid.namespace_code,
-                            suffix = %sid.name,
-                            "sid_to_iri: unknown namespace code in block_fetch datatype"
-                        );
-                        sid.name.to_string()
-                    });
+            let dt = match store.resolve_datatype_sid(o_type) {
+                None => fluree_db_core::Sid::new(0, ""),
+                Some(sid) => {
+                    let iri = store.sid_to_iri(&sid).ok_or_else(|| {
+                        BlockFetchError::LeafDecode(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "sid_to_iri failed: unknown namespace code {} for datatype {:?}",
+                                sid.namespace_code, sid.name
+                            ),
+                        ))
+                    })?;
                     snapshot
                         .encode_iri(&iri)
                         .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri))
-                },
-            );
+                }
+            };
 
             let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
             let meta = if lang.is_some() || o_i != u32::MAX {

@@ -353,7 +353,7 @@ fn split_opaque(iri: &str, mode: NsSplitMode) -> (&str, &str) {
 // ============================================================================
 
 /// Error returned by namespace code allocation or merge operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NsAllocError {
     /// No more allocatable namespace codes (all codes in `USER_START..OVERFLOW`
     /// are exhausted).
@@ -430,15 +430,20 @@ pub struct NamespaceCodes {
 impl NamespaceCodes {
     /// Create a new instance seeded with the default (built-in) namespace codes.
     pub fn new() -> Self {
+        // Built-in defaults are hardcoded and known to be valid.
         Self::from_code_to_prefix(default_namespace_codes())
+            .expect("built-in namespace codes must be a valid bimap")
     }
 
     /// Create from an existing `code → prefix` map (e.g., from an index root
     /// or commit chain reconstruction).
     ///
+    /// Returns `Err` if two different codes map to the same prefix (bimap
+    /// violation). This indicates corrupted persisted data.
+    ///
     /// The built-in defaults are NOT automatically included — the caller is
     /// expected to have merged them already if desired.
-    pub fn from_code_to_prefix(code_to_prefix: HashMap<u16, String>) -> Self {
+    pub fn from_code_to_prefix(code_to_prefix: HashMap<u16, String>) -> Result<Self, NsAllocError> {
         let prefix_to_code: HashMap<String, u16> = code_to_prefix
             .iter()
             .map(|(&code, prefix)| (prefix.clone(), code))
@@ -446,14 +451,20 @@ impl NamespaceCodes {
 
         // Bimap uniqueness: if two codes mapped to the same prefix, the reverse
         // map will be shorter. This indicates corrupted input data.
-        debug_assert_eq!(
-            prefix_to_code.len(),
-            code_to_prefix.len(),
-            "namespace bimap violated: {} codes but only {} unique prefixes — \
-             two codes map to the same prefix string",
-            code_to_prefix.len(),
-            prefix_to_code.len()
-        );
+        if prefix_to_code.len() != code_to_prefix.len() {
+            // Find a representative conflict for the error message.
+            let mut seen: HashMap<&str, u16> = HashMap::new();
+            for (&code, prefix) in &code_to_prefix {
+                if let Some(&prev_code) = seen.get(prefix.as_str()) {
+                    return Err(NsAllocError::PrefixConflict {
+                        prefix: prefix.clone(),
+                        new_code: code,
+                        existing_code: prev_code,
+                    });
+                }
+                seen.insert(prefix.as_str(), code);
+            }
+        }
 
         let max_code = code_to_prefix
             .keys()
@@ -463,12 +474,12 @@ impl NamespaceCodes {
             .unwrap_or(0);
         let next_code = (max_code + 1).max(USER_START);
 
-        Self {
+        Ok(Self {
             prefix_to_code,
             code_to_prefix,
             next_code,
             delta: HashMap::new(),
-        }
+        })
     }
 
     /// Look up the code for a prefix.
@@ -510,6 +521,27 @@ impl NamespaceCodes {
         self.delta.insert(code, prefix.to_string());
 
         Ok(code)
+    }
+
+    /// Encode an IRI to a SID, allocating a new namespace code if needed.
+    ///
+    /// Uses `canonical_split` to determine the prefix, then looks up or allocates
+    /// the code. On overflow (all codes exhausted), returns `Sid(OVERFLOW, iri)`
+    /// per the overflow rule.
+    ///
+    /// Returns `Err` only on a bimap conflict (corrupted state). Normal operation
+    /// always returns `Ok`.
+    pub fn encode_iri_or_allocate(
+        &mut self,
+        iri: &str,
+        mode: NsSplitMode,
+    ) -> Result<Sid, NsAllocError> {
+        let (prefix, suffix) = canonical_split(iri, mode);
+        match self.allocate_prefix(prefix) {
+            Ok(code) => Ok(Sid::new(code, suffix)),
+            Err(NsAllocError::Overflow) => Ok(Sid::new(OVERFLOW, iri)),
+            Err(e) => Err(e),
+        }
     }
 
     /// Merge a namespace delta (code → prefix entries) with conflict checking.
@@ -614,71 +646,6 @@ impl Default for NamespaceCodes {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ============================================================================
-// Standalone validation for raw namespace tables
-// ============================================================================
-
-/// Validate and apply a namespace delta to a raw `code → prefix` map.
-///
-/// Checks both directions of the bimap uniqueness invariant:
-/// - A code that already maps to a different prefix is a conflict.
-/// - A prefix that already maps to a different code is a conflict.
-///
-/// New mappings are inserted; matching duplicates are skipped.
-///
-/// Returns `Err(NsAllocError)` on the first violation.
-pub fn validate_and_merge_ns_delta(
-    existing: &mut HashMap<u16, String>,
-    delta: &HashMap<u16, String>,
-) -> Result<(), NsAllocError> {
-    if delta.is_empty() {
-        return Ok(());
-    }
-
-    // Build a temporary reverse index from the existing table for O(1)
-    // prefix→code lookups. This borrows `existing` immutably, so we
-    // collect validated new entries and apply them after the loop.
-    let reverse: HashMap<&str, u16> = existing
-        .iter()
-        .map(|(&code, prefix)| (prefix.as_str(), code))
-        .collect();
-
-    // Validated new entries to insert after the loop (avoids mutating
-    // `existing` while the reverse map borrows it).
-    let mut new_entries: Vec<(u16, String)> = Vec::new();
-
-    for (&code, prefix) in delta {
-        // Check code → prefix direction
-        if let Some(existing_prefix) = existing.get(&code) {
-            if existing_prefix != prefix {
-                return Err(NsAllocError::CodeConflict {
-                    code,
-                    new_prefix: prefix.clone(),
-                    existing_prefix: existing_prefix.clone(),
-                });
-            }
-            continue;
-        }
-        // Check prefix → code direction
-        if let Some(&existing_code) = reverse.get(prefix.as_str()) {
-            if existing_code != code {
-                return Err(NsAllocError::PrefixConflict {
-                    prefix: prefix.clone(),
-                    new_code: code,
-                    existing_code,
-                });
-            }
-            continue;
-        }
-        new_entries.push((code, prefix.clone()));
-    }
-
-    for (code, prefix) in new_entries {
-        existing.insert(code, prefix);
-    }
-    Ok(())
 }
 
 // ============================================================================
