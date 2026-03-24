@@ -1688,7 +1688,12 @@ where
                                     let sid64 = store_opt
                                         .as_ref()
                                         .and_then(|s| {
-                                            s.sid_to_s_id(&entry.class_sid).ok().flatten()
+                                            s.find_subject_id_by_parts(
+                                                entry.class_sid.namespace_code,
+                                                &entry.class_sid.name,
+                                            )
+                                            .ok()
+                                            .flatten()
                                         })
                                         .unwrap_or(0);
                                     if sid64 != 0 {
@@ -1830,7 +1835,12 @@ where
                                         let rc_sid64 = store_opt
                                             .as_ref()
                                             .and_then(|s| {
-                                                s.sid_to_s_id(&rc.class_sid).ok().flatten()
+                                                s.find_subject_id_by_parts(
+                                                    rc.class_sid.namespace_code,
+                                                    &rc.class_sid.name,
+                                                )
+                                                .ok()
+                                                .flatten()
                                             })
                                             .unwrap_or(0);
                                         if rc_sid64 != 0 {

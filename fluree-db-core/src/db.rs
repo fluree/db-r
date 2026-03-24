@@ -829,8 +829,7 @@ mod tests {
         // Once the canonical prefix is registered (by the transact layer),
         // encode uses the exact prefix.
         let mut db2 = db.clone();
-        db2.namespace_codes
-            .insert(100, "urn:fluree:mydb:main#".to_string());
+        db2.insert_namespace_code(100, "urn:fluree:mydb:main#".to_string());
         let sid2 = db2.encode_iri(&txn_meta_iri).unwrap();
         assert_eq!(sid2.namespace_code, 100);
         assert_eq!(sid2.name.as_ref(), "txn-meta");

@@ -1418,8 +1418,8 @@ pub fn subject_ref_to_s_id(store: &BinaryIndexStore, r: &Ref) -> Result<Option<u
             .find_subject_id(iri)
             .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?),
         Ref::Sid(sid) => Ok(store
-            .sid_to_s_id(sid)
-            .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {e}")))?),
+            .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+            .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?),
         Ref::Var(_) => Ok(None),
     }
 }
@@ -1634,8 +1634,8 @@ pub fn term_to_ref_s_id(
     };
     let sid = store.encode_iri(iri.as_ref());
     store
-        .sid_to_s_id(&sid)
-        .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))
+        .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+        .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))
 }
 
 /// Check whether the execution context allows fast-path operators.

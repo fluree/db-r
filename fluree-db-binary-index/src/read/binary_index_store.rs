@@ -943,17 +943,6 @@ impl BinaryIndexStore {
         }
     }
 
-    /// Translate a `Sid` to `s_id` via the reverse subject dictionary.
-    ///
-    /// Returns `Ok(None)` if the namespace code is unknown (post-index
-    /// allocation) or if the IRI is not in the persisted dictionary.
-    pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u64>> {
-        match self.sid_to_iri(sid) {
-            Some(iri) => self.find_subject_id(&iri),
-            None => Ok(None), // unknown ns_code → can't be persisted
-        }
-    }
-
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
     ///
     /// Returns `None` if the namespace code is unknown or the predicate

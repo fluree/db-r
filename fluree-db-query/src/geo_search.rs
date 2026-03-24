@@ -19,7 +19,6 @@ use crate::ir::{GeoSearchCenter, GeoSearchPattern};
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
-use crate::sid_iri;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::format::branch::BranchManifest;
@@ -416,13 +415,15 @@ impl Operator for GeoSearchOperator {
         // Resolve predicate ID once at open (may allocate ephemeral ID if overlay present).
         self.p_id = match self.dict_overlay.as_mut() {
             Some(dict_ov) => {
-                let iri = sid_iri::sid_to_full_iri(ctx.snapshot, &self.pattern.predicate)
+                let iri = ctx
+                    .snapshot
+                    .decode_sid(&self.pattern.predicate)
                     .ok_or_else(|| {
                         QueryError::Internal(
                             "GeoSearch predicate Sid could not be decoded to an IRI".to_string(),
                         )
                     })?;
-                Some(dict_ov.assign_predicate_id(iri.as_ref()))
+                Some(dict_ov.assign_predicate_id(&iri))
             }
             None => store.sid_to_p_id(&self.pattern.predicate),
         };

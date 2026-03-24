@@ -1312,8 +1312,8 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = sid_iri::sid_to_full_iri(ctx.snapshot, sid) {
-            snapshot.encode_iri(iri.as_ref())
+        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+            snapshot.encode_iri(&iri)
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
             // raw SID. This is important when the namespace table has been
@@ -2160,8 +2160,8 @@ pub(crate) fn value_to_otype_okey_simple(
         }
         FlakeValue::Ref(sid) => {
             let s_id = store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))?
                 .ok_or_else(|| {
                     QueryError::execution("ref object not found in V6 dict".to_string())
                 })?;
