@@ -1412,7 +1412,10 @@ async fn test_insert_with_id_and_graph_and_txn_meta() {
                 "ex:machine": "server-01"
             });
 
-            let result = fluree.insert(ledger, &tx_with_id).await.expect("insert with @id");
+            let result = fluree
+                .insert(ledger, &tx_with_id)
+                .await
+                .expect("insert with @id");
             assert_eq!(result.receipt.t, 1);
 
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
