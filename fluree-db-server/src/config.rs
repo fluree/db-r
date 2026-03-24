@@ -11,7 +11,7 @@ pub enum ServerRole {
     /// Write-enabled transaction server (current behavior)
     #[default]
     Transaction,
-    /// Read-only query peer with SSE subscription + write forwarding
+    /// Read-only query peer with SSE subscription + transaction forwarding
     Peer,
 }
 
@@ -48,7 +48,7 @@ pub enum EventsAuthMode {
     Required,
 }
 
-/// Authentication mode for the data API endpoints (query/transact/info/exists).
+/// Authentication mode for the data API endpoints (query/update/info/exists).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum DataAuthMode {
     /// No authentication required (default)
@@ -445,8 +445,8 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_EVENTS_AUTH_INSECURE", hide = true)]
     pub events_auth_insecure_accept_any_issuer: bool,
 
-    // === Data API authentication options (query/transact/info/exists) ===
-    /// Authentication mode for data API endpoints (query/transact/info/exists)
+    // === Data API authentication options (query/update/info/exists) ===
+    /// Authentication mode for data API endpoints (query/update/info/exists)
     #[arg(
         long,
         env = "FLUREE_DATA_AUTH_MODE",
@@ -502,7 +502,7 @@ pub struct ServerConfig {
     pub server_role: ServerRole,
 
     /// Transaction server base URL (required in peer mode).
-    /// Used for write forwarding and default SSE endpoint.
+    /// Used for transaction forwarding and default SSE endpoint.
     #[arg(long, env = "FLUREE_TX_SERVER_URL")]
     pub tx_server_url: Option<String>,
 

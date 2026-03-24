@@ -4,7 +4,7 @@
 //! - `application/json`: JSON-LD query format (JSON body with "from" field)
 //! - `application/sparql-query`: SPARQL query syntax (raw SPARQL string in body)
 //!
-//! For SPARQL UPDATE operations, use the transact endpoints instead.
+//! For SPARQL UPDATE operations, use the update endpoints instead.
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -239,10 +239,10 @@ pub async fn query(
             "Authentication required (signed request or Bearer token)",
         ));
     }
-    // SPARQL UPDATE should use the transact endpoint, not query
+    // SPARQL UPDATE should use the update endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/query",
+            "SPARQL UPDATE requests should use the /v1/fluree/update endpoint, not /v1/fluree/query",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -404,10 +404,10 @@ pub async fn query_ledger(
         ));
     }
 
-    // SPARQL UPDATE should use the transact endpoint, not query
+    // SPARQL UPDATE should use the update endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /v1/fluree/transact/<ledger...> endpoint, not /v1/fluree/query/<ledger...>",
+            "SPARQL UPDATE requests should use the /v1/fluree/update/<ledger...> endpoint, not /v1/fluree/query/<ledger...>",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -562,10 +562,10 @@ pub async fn explain_ledger(
             ));
         }
 
-        // SPARQL UPDATE should use the transact endpoint, not explain
+        // SPARQL UPDATE should use the update endpoint, not explain
         if headers.is_sparql_update() || credential.is_sparql_update {
             let error = ServerError::bad_request(
-                "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/explain",
+                "SPARQL UPDATE requests should use the /v1/fluree/update endpoint, not /v1/fluree/explain",
             );
             set_span_error_code(&span, "error:BadRequest");
             tracing::warn!(error = %error, "SPARQL UPDATE sent to explain endpoint");
@@ -1785,10 +1785,10 @@ pub async fn explain(
             ));
         }
 
-        // SPARQL UPDATE should use the transact endpoint, not explain
+        // SPARQL UPDATE should use the update endpoint, not explain
         if headers.is_sparql_update() || credential.is_sparql_update {
             let error = ServerError::bad_request(
-                "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/explain",
+                "SPARQL UPDATE requests should use the /v1/fluree/update endpoint, not /v1/fluree/explain",
             );
             set_span_error_code(&span, "error:BadRequest");
             tracing::warn!(error = %error, "SPARQL UPDATE sent to explain endpoint");

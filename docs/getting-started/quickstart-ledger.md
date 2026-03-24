@@ -193,22 +193,20 @@ curl -X POST http://localhost:8090/v1/fluree/create \
   -d '{"ledger": "mydb:dev"}'
 
 # Insert data into the branch
-curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:dev \
+curl -X POST http://localhost:8090/v1/fluree/insert?ledger=mydb:dev \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "insert": {
-      "@graph": [
-        {
-          "@id": "ex:bob",
-          "@type": "schema:Person",
+    "@graph": [
+      {
+        "@id": "ex:bob",
+        "@type": "schema:Person",
           "schema:name": "Bob"
-        }
-      ]
-    }
+      }
+    ]
   }'
 ```
 

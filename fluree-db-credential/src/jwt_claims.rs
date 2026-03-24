@@ -23,8 +23,8 @@
 //! # Fluree-specific Claims (Data API)
 //! - `fluree.ledger.read.all` - Grant read/query access to all ledgers
 //! - `fluree.ledger.read.ledgers` - Grant read/query access to specific ledgers
-//! - `fluree.ledger.write.all` - Grant write/transact access to all ledgers
-//! - `fluree.ledger.write.ledgers` - Grant write/transact access to specific ledgers
+//! - `fluree.ledger.write.all` - Grant transaction access to all ledgers
+//! - `fluree.ledger.write.ledgers` - Grant transaction access to specific ledgers
 //!
 //! # Shared Claims
 //! - `fluree.identity` - Identity for policy resolution
@@ -82,10 +82,10 @@ pub struct EventsTokenPayload {
     /// Grant read/query access to specific ledgers
     #[serde(rename = "fluree.ledger.read.ledgers")]
     pub ledger_read_ledgers: Option<Vec<String>>,
-    /// Grant write/transact access to all ledgers
+    /// Grant transaction access to all ledgers
     #[serde(rename = "fluree.ledger.write.all")]
     pub ledger_write_all: Option<bool>,
-    /// Grant write/transact access to specific ledgers
+    /// Grant transaction access to specific ledgers
     #[serde(rename = "fluree.ledger.write.ledgers")]
     pub ledger_write_ledgers: Option<Vec<String>>,
 
@@ -343,7 +343,7 @@ impl EventsTokenPayload {
                 .is_some_and(|l| l.iter().any(|x| x == ledger_id))
     }
 
-    /// Check if token authorizes write/transact access to a specific ledger ID.
+    /// Check if token authorizes transaction access to a specific ledger ID.
     pub fn is_ledger_write_authorized_for(&self, ledger_id: &str) -> bool {
         self.ledger_write_all.unwrap_or(false)
             || self

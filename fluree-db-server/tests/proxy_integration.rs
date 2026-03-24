@@ -827,7 +827,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -940,7 +940,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1046,7 +1046,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1144,7 +1144,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1302,7 +1302,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(data.to_string()))
                 .unwrap(),
@@ -1450,7 +1450,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     // Create some data + reindex so we have a real leaf to fetch.
     let transact_resp = client
-        .post(format!("{}/v1/fluree/transact", server_url))
+        .post(format!("{}/v1/fluree/update", server_url))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1603,7 +1603,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
 
     // Transact + reindex to create real binary leaves (FLI3).
     let transact_resp = client
-        .post(format!("{}/v1/fluree/transact", server_url))
+        .post(format!("{}/v1/fluree/update", server_url))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1852,7 +1852,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(setup_data.to_string()))
                 .unwrap(),
@@ -2022,7 +2022,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact")
+                .uri("/v1/fluree/update")
                 .header("content-type", "application/json")
                 .body(Body::from(data.to_string()))
                 .unwrap(),

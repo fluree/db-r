@@ -1,6 +1,6 @@
 # Policy in Transactions
 
-Policies are enforced during transaction processing, validating that users have permission to write data. This document explains how policies affect write operations.
+Policies are enforced during transaction processing, validating that users have permission to write data. This document explains how policies affect transaction operations.
 
 ## Transaction-Time Authorization
 
@@ -11,7 +11,7 @@ When a transaction is submitted, Fluree:
 4. Validates each assertion/retraction
 5. Rejects transaction if any operation is unauthorized
 
-**Unauthorized writes are rejected entirely.**
+**Unauthorized transactions are rejected entirely.**
 
 ## Basic Example
 
@@ -30,7 +30,7 @@ Result: Success (no restrictions)
 
 ### With Policy
 
-Policy (owner-only writes):
+Policy (owner-only transactions):
 ```json
 {
   "f:subject": "?user",
@@ -206,7 +206,7 @@ Only moderators can delete data.
 
 ### Restricting Specific Properties
 
-Prevent writes to sensitive properties:
+Prevent transactions that modify sensitive properties:
 
 ```json
 {
@@ -343,12 +343,12 @@ Can modify submission within 1 hour.
 
 Users can approve transactions up to their limit.
 
-## Replace Mode (Upsert)
+## Upsert
 
-Policy evaluation with replace mode:
+Policy evaluation with upsert:
 
 ```bash
-POST /transact?ledger=mydb:main&mode=replace
+POST /upsert?ledger=mydb:main
 ```
 
 Fluree checks:
@@ -447,7 +447,7 @@ const transaction = {
 
 const signedTxn = await signTransaction(transaction, privateKey);
 
-await fetch('http://localhost:8090/v1/fluree/transact?ledger=mydb:main', {
+await fetch('http://localhost:8090/v1/fluree/upsert?ledger=mydb:main', {
   method: 'POST',
   headers: { 'Content-Type': 'application/jose' },
   body: signedTxn
@@ -555,7 +555,7 @@ Audit logs cannot be modified or deleted.
 ### Policy Trace
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main" \
   -H "X-Fluree-Policy-Trace: true" \
   -d '{...}'
 ```
@@ -587,7 +587,7 @@ Response (on error):
 Test transaction without committing:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main&dryRun=true" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main&dryRun=true" \
   -d '{...}'
 ```
 

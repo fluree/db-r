@@ -198,7 +198,7 @@ All Bearer-token-authenticated endpoints support both Ed25519 and OIDC verificat
 
 | Endpoint group | Extractor | Scopes checked |
 |----------------|-----------|----------------|
-| Data API (query/transact/info/exists) | `MaybeDataBearer` | `fluree.ledger.read/write.*` |
+| Data API (query/update/info/exists) | `MaybeDataBearer` | `fluree.ledger.read/write.*` |
 | Admin (create/drop) | `require_admin_token` | Issuer trust |
 | Events (SSE) | `MaybeBearer` | `fluree.events.*` |
 | Storage proxy | `StorageProxyBearer` | `fluree.storage.*` |

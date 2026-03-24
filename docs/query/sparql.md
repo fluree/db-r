@@ -775,7 +775,7 @@ WHERE {
 
 ## SPARQL UPDATE
 
-Fluree supports SPARQL 1.1 Update for modifying data using standard SPARQL syntax. SPARQL UPDATE requests use the `application/sparql-update` content type and are sent to the transact endpoints.
+Fluree supports SPARQL 1.1 Update for modifying data using standard SPARQL syntax. SPARQL UPDATE requests use the `application/sparql-update` content type and are sent to the update endpoints.
 
 ### INSERT DATA
 
@@ -794,7 +794,7 @@ INSERT DATA {
 **HTTP Request:**
 
 ```bash
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
@@ -918,24 +918,24 @@ Current MVP restrictions:
 
 ### Endpoint Usage
 
-SPARQL UPDATE uses the transact endpoints with `Content-Type: application/sparql-update`:
+SPARQL UPDATE uses the update endpoints with `Content-Type: application/sparql-update`:
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /fluree/transact` | Connection-scoped, requires `Fluree-Ledger` header |
-| `POST /:ledger/transact` | Ledger-scoped, ledger from URL path |
+| `POST /v1/fluree/update` | Connection-scoped, requires `Fluree-Ledger` header |
+| `POST /v1/fluree/update/<ledger...>` | Ledger-scoped, ledger from URL path |
 
 **Examples:**
 
 ```bash
 # Ledger-scoped (recommended)
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
 
 # Connection-scoped with header
-curl -X POST http://localhost:8090/fluree/transact \
+curl -X POST http://localhost:8090/v1/fluree/update \
   -H "Content-Type: application/sparql-update" \
   -H "Fluree-Ledger: mydb:main" \
   -d 'PREFIX ex: <http://example.org/ns/>
