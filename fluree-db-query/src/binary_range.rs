@@ -228,11 +228,15 @@ fn binary_range_eq_v3(
         // Prefer persisted reverse dict, then DictNovelty. If neither can map
         // this subject to an s_id, there are no base rows to scan; return
         // overlay-only matches.
-        match resolve_or_novelty(store.sid_to_s_id(s_sid)?, dict_novelty, || {
-            dict_novelty
-                .subjects
-                .find_subject(s_sid.namespace_code, &s_sid.name)
-        }) {
+        match resolve_or_novelty(
+            store.find_subject_id_by_parts(s_sid.namespace_code, &s_sid.name)?,
+            dict_novelty,
+            || {
+                dict_novelty
+                    .subjects
+                    .find_subject(s_sid.namespace_code, &s_sid.name)
+            },
+        ) {
             Some(id) => filter.s_id = Some(id),
             None => return overlay_only_flakes(store, g_id, index, match_val, opts, overlay),
         }
@@ -251,11 +255,15 @@ fn binary_range_eq_v3(
         match o_val {
             fluree_db_core::FlakeValue::Ref(sid) => {
                 // Resolve ref object to an s_id (persisted → DictNovelty).
-                let o_id = match resolve_or_novelty(store.sid_to_s_id(sid)?, dict_novelty, || {
-                    dict_novelty
-                        .subjects
-                        .find_subject(sid.namespace_code, &sid.name)
-                }) {
+                let o_id = match resolve_or_novelty(
+                    store.find_subject_id_by_parts(sid.namespace_code, &sid.name)?,
+                    dict_novelty,
+                    || {
+                        dict_novelty
+                            .subjects
+                            .find_subject(sid.namespace_code, &sid.name)
+                    },
+                ) {
                     Some(id) => id,
                     None => {
                         return overlay_only_flakes(store, g_id, index, match_val, opts, overlay)
@@ -583,7 +591,7 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
     let mut s_ids: Vec<u64> = Vec::with_capacity(subjects.len());
     let mut s_id_to_sid: HashMap<u64, Sid> = HashMap::with_capacity(subjects.len());
     for sid in subjects {
-        if let Ok(Some(s_id)) = store.sid_to_s_id(sid) {
+        if let Ok(Some(s_id)) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name) {
             s_id_to_sid.entry(s_id).or_insert_with(|| sid.clone());
             s_ids.push(s_id);
         } else if dict_novelty.is_initialized() {
@@ -918,11 +926,15 @@ fn binary_range_bounded_v3(
         if name < start_name || name >= end_name {
             continue;
         }
-        if let Some(s_id) = resolve_or_novelty(store.sid_to_s_id(&flake.s)?, dict_novelty, || {
-            dict_novelty
-                .subjects
-                .find_subject(flake.s.namespace_code, &flake.s.name)
-        }) {
+        if let Some(s_id) = resolve_or_novelty(
+            store.find_subject_id_by_parts(flake.s.namespace_code, &flake.s.name)?,
+            dict_novelty,
+            || {
+                dict_novelty
+                    .subjects
+                    .find_subject(flake.s.namespace_code, &flake.s.name)
+            },
+        ) {
             s_id_set.insert(s_id);
         }
     }

@@ -238,6 +238,283 @@ async fn test_unknown_named_graph_error() {
 }
 
 #[tokio::test]
+async fn test_update_default_graph_and_template_graph_sugar() {
+    // JSON-LD update graph scoping:
+    // - top-level "graph" scopes default-graph WHERE patterns and template triples
+    // - insert/delete allow ["graph", <graph-iri>, <pattern>] template sugar
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/update-graph-scope:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Seed "old" into a named graph using template sugar.
+            let seed = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "insert": [[
+                    "graph",
+                    "http://example.org/graphs/audit",
+                    { "@id": "ex:event1", "schema:description": "old" }
+                ]]
+            });
+
+            let result = fluree.update(ledger, &seed).await.expect("seed update");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Now UPDATE with a transaction-level default graph.
+            // The WHERE has no explicit graph wrapper, so it should be scoped to the named graph.
+            let update = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "schema": "http://schema.org/"
+                },
+                "graph": "http://example.org/graphs/audit",
+                "where": { "@id": "ex:event1", "schema:description": "?old" },
+                "delete": { "@id": "ex:event1", "schema:description": "?old" },
+                "insert": { "@id": "ex:event1", "schema:description": "new" }
+            });
+
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let result = fluree.update(ledger, &update).await.expect("scoped update");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Query the named graph - should see "new"
+            let named_graph_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
+            let query = json!({
+                "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
+                "from": &named_graph_alias,
+                "select": ["?desc"],
+                "where": { "@id": "ex:event1", "schema:description": "?desc" }
+            });
+
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query named graph");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+            assert_eq!(arr.len(), 1, "expected single description: {arr:?}");
+            assert_eq!(arr[0], "new");
+
+            // Query default graph - should not see the event (it lives in the named graph)
+            let query = json!({
+                "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
+                "from": ledger_id,
+                "select": ["?desc"],
+                "where": { "@id": "ex:event1", "schema:description": "?desc" }
+            });
+
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query default graph");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+            assert!(arr.is_empty(), "expected no default-graph results: {arr:?}");
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn test_update_from_scopes_where_default_graph() {
+    // `from.graph` scopes WHERE evaluation to a named graph (USING equivalent),
+    // while `graph` (top-level) controls the default target graph for templates (WITH equivalent).
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/update-from-scopes-where:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Seed a value in g1, and ensure g2 is initially empty for the copied predicate.
+            let seed = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "insert": [
+                    ["graph", "http://example.org/g1", { "@id": "ex:s", "schema:description": "g1-old" }]
+                ]
+            });
+            let result = fluree.update(ledger, &seed).await.expect("seed");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Read from g1 (WHERE scoped by from.graph) and write to g2 (templates defaulted by graph).
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let update = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "graph": "http://example.org/g2",
+                "from": { "graph": "http://example.org/g1" },
+                "where": { "@id": "ex:s", "schema:description": "?d" },
+                "insert": [
+                    { "@id": "ex:s", "schema:copyFromG1": "?d" }
+                ]
+            });
+            let result = fluree.update(ledger, &update).await.expect("update");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            let named_g2 = format!("{}#http://example.org/g2", ledger_id);
+            let query = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "from": &named_g2,
+                "select": ["?d"],
+                "where": { "@id": "ex:s", "schema:copyFromG1": "?d" }
+            });
+            let results = fluree.query_connection(&query).await.expect("query g2 copy");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+            assert_eq!(arr, &vec![json!("g1-old")]);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn test_update_from_multiple_default_graphs_merge_where() {
+    // JSON-LD update `from` can specify multiple default graphs. Default-graph WHERE patterns
+    // see a merged graph (USING multiple graphs equivalent).
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/update-from-multiple-default-graphs:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Seed ex:a in g1 with ex:p "1" and in g2 with ex:q "2".
+            let seed = json!({
+                "@context": { "ex": "http://example.org/" },
+                "insert": [
+                    ["graph", "http://example.org/g1", { "@id": "ex:a", "ex:p": "1" }],
+                    ["graph", "http://example.org/g2", { "@id": "ex:a", "ex:q": "2" }]
+                ]
+            });
+            let result = fluree.update(ledger, &seed).await.expect("seed");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // WHERE needs to see both triples, but they live in different graphs; `from: [g1,g2]`
+            // makes them visible as one merged default graph.
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let update = json!({
+                "@context": { "ex": "http://example.org/" },
+                "graph": "http://example.org/g1",
+                "from": ["http://example.org/g1", "http://example.org/g2"],
+                "where": [
+                    { "@id": "ex:a", "ex:p": "1" },
+                    { "@id": "ex:a", "ex:q": "2" }
+                ],
+                "insert": [
+                    { "@id": "ex:a", "ex:marker": "ok" }
+                ]
+            });
+            let result = fluree.update(ledger, &update).await.expect("update");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            let named_g1 = format!("{}#http://example.org/g1", ledger_id);
+            let query = json!({
+                "@context": { "ex": "http://example.org/" },
+                "from": &named_g1,
+                "select": ["?m"],
+                "where": { "@id": "ex:a", "ex:marker": "?m" }
+            });
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query g1 marker");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+            assert_eq!(arr, &vec![json!("ok")]);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn test_update_from_named_alias_usable_in_templates() {
+    // Ensure `fromNamed.alias` can be used consistently in UPDATE templates
+    // (not just in WHERE graph patterns).
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/update-from-named-alias-templates:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Insert into g2 using the fromNamed alias as the template graph selector.
+            let insert = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "fromNamed": [
+                    { "alias": "g2", "graph": "http://example.org/g2" }
+                ],
+                "values": ["?x", [1]],
+                "insert": [
+                    ["graph", "g2", { "@id": "ex:s", "schema:description": "via-alias" }]
+                ]
+            });
+            let result = fluree
+                .update(ledger, &insert)
+                .await
+                .expect("insert via alias");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            let named_g2 = format!("{}#http://example.org/g2", ledger_id);
+            let query = json!({
+                "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+                "from": &named_g2,
+                "select": ["?d"],
+                "where": { "@id": "ex:s", "schema:description": "?d" }
+            });
+            let results = fluree.query_connection(&query).await.expect("query g2");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            assert!(
+                ledger
+                    .snapshot
+                    .graph_registry
+                    .graph_id_for_iri("http://example.org/g2")
+                    .is_some(),
+                "expected g2 IRI to be registered in graph_registry"
+            );
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+            assert_eq!(arr, &vec![json!("via-alias")]);
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn test_default_graph_isolation() {
     // Data in named graphs should not appear in default graph queries.
     let fluree = FlureeBuilder::memory()

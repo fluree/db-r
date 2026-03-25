@@ -6,6 +6,7 @@
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{
     ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
     CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
@@ -284,7 +285,7 @@ where
         // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
         // This must happen before novelty apply so encode_iri() works for graph routing.
         base.snapshot
-            .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()));
+            .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()))?;
 
         // Generate ISO 8601 timestamp
         // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
@@ -337,6 +338,11 @@ where
         // Add named graph delta (g_id -> IRI mappings)
         if !graph_delta.is_empty() {
             commit_record.graph_delta = graph_delta;
+        }
+
+        // Persist the split mode in the genesis commit (first commit, no parent).
+        if base.head_commit_id.is_none() {
+            commit_record.ns_split_mode = Some(ns_registry.split_mode());
         }
 
         // Build previous commit reference from the head commit's ContentId.
@@ -409,7 +415,24 @@ where
         {
             let span = tracing::debug_span!("commit_populate_dict_novelty");
             let _g = span.enter();
-            populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
+            // Prefer pulling the BinaryIndexStore from the snapshot's range provider
+            // (this is the most reliable attachment point in the commit path).
+            let store = base
+                .snapshot
+                .range_provider
+                .as_ref()
+                .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+                .map(|brp| Arc::clone(brp.store()))
+                .or_else(|| {
+                    base.binary_store
+                        .as_ref()
+                        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())
+                });
+            populate_dict_novelty(
+                Arc::make_mut(&mut dict_novelty),
+                store.as_deref(),
+                &all_flakes,
+            )?;
         }
 
         let mut new_novelty = Arc::clone(&base.novelty);
@@ -472,8 +495,17 @@ where
 /// Does NOT check the persisted tree — some entries may shadow persisted subjects.
 /// This is safe because `DictOverlay` checks the persisted tree first for reverse
 /// lookups (canonical ID wins).
-fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
-    dict_novelty.populate_from_flakes(flakes);
+fn populate_dict_novelty(
+    dict_novelty: &mut DictNovelty,
+    store: Option<&BinaryIndexStore>,
+    flakes: &[Flake],
+) -> Result<()> {
+    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+        dict_novelty,
+        store,
+        flakes.iter(),
+    )
+    .map_err(|e| TransactError::FlakeGeneration(format!("populate_dict_novelty_safe: {e}")))
 }
 
 /// Verify that this commit follows the expected sequence

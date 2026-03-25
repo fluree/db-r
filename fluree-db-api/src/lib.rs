@@ -54,6 +54,7 @@ pub mod import;
 mod ledger;
 pub mod ledger_info;
 pub mod nameservice_query;
+pub(crate) mod ns_helpers;
 mod overlay;
 pub mod pack;
 pub mod policy_builder;

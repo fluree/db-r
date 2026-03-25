@@ -183,7 +183,7 @@ impl DictOverlay {
     /// prefix_trie decomposition since we already have ns_code + suffix).
     /// Falls back to ephemeral allocation when DictNovelty is uninitialized.
     pub fn assign_subject_id_from_sid(&mut self, sid: &Sid) -> io::Result<u64> {
-        // 1. Persisted tree
+        // 1. Persisted tree (canonical encoding guarantees exact-parts match)
         if let Some(id) = self
             .graph_view
             .store()

@@ -621,14 +621,14 @@ async fn dataset_from_json_named() {
     let _ledger1 = seed_people_ledger(&fluree, "default:main").await;
     let _ledger2 = seed_orgs_ledger(&fluree, "graph1:main").await;
 
-    // Parse from JSON query with "from-named"
+    // Parse from JSON query with "fromNamed" (string array shorthand)
     let query = json!({
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/"
         },
         "from": "default:main",
-        "from-named": ["graph1:main"],
+        "fromNamed": ["graph1:main"],
         "select": ["?name"],
         "where": {
             "@id": "?s",
@@ -1066,7 +1066,7 @@ async fn fql_graph_pattern_basic() {
 
 /// Test JSON-LD ["graph", <alias>, ...] syntax - graph pattern using dataset-local alias
 ///
-/// When `from-named` specifies an alias (e.g., "alias": "folks"), the GRAPH pattern
+/// When `fromNamed` specifies an alias (the object key), the GRAPH pattern
 /// should be able to reference by that alias, not just by the ledger identifier.
 #[tokio::test]
 async fn fql_graph_pattern_with_alias() {

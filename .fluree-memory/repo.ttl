@@ -1128,3 +1128,29 @@ mem:fact-01km8qneeknvq50y6dvm459rne a mem:Fact ;
     mem:sensitivity "public" ;
     mem:supersedes mem:fact-01km8qdr8jp1zs8eh6tmq8jfdx ;
     mem:createdAt "2026-03-21T17:39:08.884534+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbj3527qd54y3whzjhwc4bg a mem:Fact ;
+    mem:content "SPARQL UPDATE improved WHERE support: `fluree-db-sparql` UPDATE `Modify.where_clause` now uses full `GraphPattern` (same as SELECT) so UPDATE WHERE can include OPTIONAL/FILTER/UNION/VALUES/BIND/subselects+aggregates. In `fluree-db-transact`, SPARQL UPDATE lowering (`lower_sparql_update.rs`) now stores the parsed WHERE as `Txn.sparql_where: Option<SparqlWhereClause { prologue, pattern }>` and defers lowering until staging (`stage.rs`) using `fluree_db_sparql::lower_sparql` with the current `LedgerSnapshot` as encoder. `stage::execute_where` now executes either JSON-LD unresolved patterns or SPARQL-lowered patterns via the same query engine (`execute_where_with_overlay_at_strict`). Added tests: `fluree-db-server/tests/integration.rs` covers SPARQL UPDATE with subquery+MAX+BIND; `fluree-db-api/tests/it_transact_conditional.rs` covers JSON-LD update using subquery aggregate `(as (max ?n) ?m)` + bind." ;
+    mem:tag "aggregate" ;
+    mem:tag "bind" ;
+    mem:tag "max" ;
+    mem:tag "query-engine" ;
+    mem:tag "sparql" ;
+    mem:tag "stage" ;
+    mem:tag "subquery" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:tag "where" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/query/sparql.md" ;
+    mem:artifactRef "fluree-db-api/tests/it_transact_conditional.rs" ;
+    mem:artifactRef "fluree-db-server/tests/integration.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/ast/update.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/query/update.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/validate/mod.rs" ;
+    mem:artifactRef "fluree-db-transact/src/ir.rs" ;
+    mem:artifactRef "fluree-db-transact/src/lower_sparql_update.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:createdAt "2026-03-22T19:59:29.863846+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

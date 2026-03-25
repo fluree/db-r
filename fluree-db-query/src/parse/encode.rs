@@ -5,7 +5,7 @@
 //! namespace codes, while WASM/offline implementations can use stubs or
 //! context-only encoders.
 
-use fluree_db_core::{LedgerSnapshot, Sid};
+use fluree_db_core::{canonical_split, LedgerSnapshot, NsSplitMode, Sid};
 use fluree_vocab::{rdf, xsd};
 
 /// Trait for encoding IRIs to SIDs
@@ -42,9 +42,11 @@ impl IriEncoder for NoEncoder {
 /// In-memory encoder with a fixed namespace mapping
 ///
 /// Useful for testing or when the full database isn't available.
+/// Uses [`canonical_split`] for deterministic IRI→SID encoding.
 #[derive(Debug, Default)]
 pub struct MemoryEncoder {
     namespaces: std::collections::HashMap<String, u16>,
+    split_mode: NsSplitMode,
 }
 
 impl MemoryEncoder {
@@ -72,23 +74,18 @@ impl MemoryEncoder {
 }
 
 impl IriEncoder for MemoryEncoder {
+    /// Always returns `Some(...)` — falls back to `Sid(EMPTY, iri)` for
+    /// unregistered prefixes rather than returning `None`. This deviates
+    /// from the `IriEncoder` trait doc ("Returns None if not registered")
+    /// but matches `LedgerSnapshot::encode_iri` behavior and is convenient
+    /// for testing where unknown IRIs should produce empty results, not errors.
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
-        // Find the longest matching namespace prefix
-        let mut best_match: Option<(u16, usize)> = None;
-
-        for (prefix, &code) in &self.namespaces {
-            if iri.starts_with(prefix) && prefix.len() > best_match.map(|(_, l)| l).unwrap_or(0) {
-                best_match = Some((code, prefix.len()));
-            }
+        let (prefix, suffix) = canonical_split(iri, self.split_mode);
+        if let Some(&code) = self.namespaces.get(prefix) {
+            Some(Sid::new(code, suffix))
+        } else {
+            Some(Sid::new(fluree_vocab::namespaces::EMPTY, iri))
         }
-
-        Some(match best_match {
-            Some((code, prefix_len)) => {
-                let name = &iri[prefix_len..];
-                Sid::new(code, name)
-            }
-            None => Sid::new(fluree_vocab::namespaces::EMPTY, iri),
-        })
     }
 }
 
@@ -131,17 +128,18 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_encoder_longest_prefix() {
+    fn test_memory_encoder_canonical_split() {
         let mut encoder = MemoryEncoder::new();
-        encoder.add_namespace("http://example.org/", 100);
         encoder.add_namespace("http://example.org/ns/", 101);
+        encoder.add_namespace("http://example.org/", 100);
 
-        // Should match the longer prefix
+        // canonical_split(MostGranular) splits at last '/' → prefix = "http://example.org/ns/"
+        // Exact lookup finds code 101
         let sid = encoder.encode_iri("http://example.org/ns/Thing").unwrap();
         assert_eq!(sid.namespace_code, 101);
         assert_eq!(sid.name.as_ref(), "Thing");
 
-        // Should match the shorter prefix
+        // canonical_split for "http://example.org/Other" → prefix = "http://example.org/"
         let sid2 = encoder.encode_iri("http://example.org/Other").unwrap();
         assert_eq!(sid2.namespace_code, 100);
         assert_eq!(sid2.name.as_ref(), "Other");

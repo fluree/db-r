@@ -866,6 +866,14 @@ WHERE {
 }
 ```
 
+### Dataset scoping for MODIFY (`WITH` / `USING` / `USING NAMED`)
+
+SPARQL UPDATE `MODIFY` supports dataset scoping for named graphs:
+
+- **`WITH <iri>`**: sets the default graph for INSERT/DELETE templates that don’t use an explicit `GRAPH <iri> { ... }` block.
+- **`USING <iri>`**: scopes the default graph(s) for `WHERE` evaluation. Repeated `USING` clauses are evaluated as a **merged default graph**.
+- **`USING NAMED <iri>`**: scopes which named graphs are visible to `WHERE` `GRAPH <iri> { ... }` patterns. Repeated `USING NAMED` clauses allow multiple named graphs.
+
 ### Blank Nodes in INSERT
 
 Blank nodes can be used in INSERT templates to create new entities:
@@ -910,11 +918,13 @@ INSERT DATA {
 
 ### SPARQL UPDATE Restrictions
 
-Current MVP restrictions:
+Current restrictions / boundaries:
 
-- **WHERE patterns**: Only basic triple patterns are supported. OPTIONAL, FILTER, UNION, and VALUES in WHERE clauses are not yet supported.
-- **Blank nodes in WHERE**: Blank nodes cannot be used in WHERE patterns (use variables instead).
-- **WITH/USING clauses**: Graph scoping via WITH and USING is not yet supported.
+- **Graph management operations**: `LOAD`, `CLEAR`, `DROP`, `CREATE`, `ADD`, `MOVE`, `COPY` are not yet supported.
+- **Template graph variables**: INSERT/DELETE templates support `GRAPH <iri> { ... }` blocks, but `GRAPH ?g { ... }` is not yet supported.
+- **DELETE WHERE + GRAPH blocks**: `GRAPH <iri> { ... }` blocks are not yet supported inside `DELETE WHERE { ... }`.
+- **SERVICE**: Only local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` are supported; arbitrary remote HTTP `SERVICE` endpoints are not supported.
+- **Property paths**: Supported in `WHERE` (subject to Fluree capability settings).
 
 ### Endpoint Usage
 

@@ -33,6 +33,177 @@ This:
 2. Deletes that age value
 3. Inserts the new age value
 
+## WHERE clause capabilities
+
+The update transaction `where` clause uses the **same pattern grammar as JSON-LD queries**, so you can use rich patterns like OPTIONAL, UNION, FILTER, VALUES, and subqueries.
+
+Two common forms:
+
+- **Node-map**: a single object (simple triple patterns)
+- **Array**: a sequence of node-maps plus special forms (recommended for anything beyond basic matching)
+
+Supported special forms inside the `where` array:
+
+- `["filter", <expr>]`
+- `["bind", "?var", <expr>]` (may include multiple var/expr pairs)
+- `["optional", <pattern>]`
+- `["union", <pattern>, <pattern>, ...]`
+- `["minus", <pattern>]`
+- `["exists", <pattern>]` / `["not-exists", <pattern>]`
+- `["values", <values-clause>]`
+- `["query", <subquery>]` (subquery can use `select`, `groupBy`, aggregates like `(max ?x)`, etc.)
+- `["graph", <graph-name>, <pattern>]`
+
+Expression format for `filter`/`bind` supports either:
+
+- **Data expressions** like `["+", "?x", 1]`, `["and", [">=", "?age", 18], ["=", "?status", "pending"]]`
+- **S-expressions** like `"(+ ?x 1)"`
+
+## Graph scoping (named graphs)
+
+JSON-LD update supports writing into **user-defined named graphs** (ingested via TriG or JSON-LD `@graph`) and scoping the update to a named graph.
+
+### Default graph for WHERE/DELETE/INSERT
+
+Use a top-level `graph` key to scope the update to a named graph **as the default graph**:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/graphs/audit",
+  "where":  { "@id": "ex:event1", "schema:description": "?old" },
+  "delete": { "@id": "ex:event1", "schema:description": "?old" },
+  "insert": { "@id": "ex:event1", "schema:description": "new" }
+}
+```
+
+This is the JSON-LD UPDATE analog of SPARQL UPDATE `WITH <iri>`:
+- WHERE patterns are evaluated against the named graph
+- DELETE/INSERT templates without an explicit graph are written to that named graph
+
+### Writing templates to specific graphs
+
+There are two ways to target graphs in `insert` / `delete` templates:
+
+- **Per-node `@graph`**: attach a graph IRI to a node object (overrides the transaction-level `graph`)
+
+```json
+{
+  "insert": [
+    { "@id": "ex:event1", "@graph": "http://example.org/graphs/audit", "schema:description": "v" }
+  ]
+}
+```
+
+- **Template sugar**: inside `insert` / `delete` arrays, use `["graph", "<graph IRI>", <pattern>]`
+
+```json
+{
+  "insert": [
+    ["graph", "http://example.org/graphs/audit", { "@id": "ex:event1", "schema:description": "v" }]
+  ]
+}
+```
+
+Notes:
+- `graph` is a **graph IRI** (a string like `"http://example.org/graphs/audit"`)
+- Named-graph reads are available after indexing completes (see `docs/query/datasets.md`)
+
+## Dataset scoping for WHERE (`from` / `fromNamed`)
+
+JSON-LD update reuses the **same dataset keys as JSON-LD query** to control where the `where` clause reads from:
+
+- **`from`**: scopes the default graph used for `where` evaluation (equivalent to SPARQL UPDATE `USING <iri>`)
+- **`fromNamed`**: restricts which named graphs are visible to `where` `["graph", ...]` patterns (equivalent to SPARQL UPDATE `USING NAMED <iri>`)
+
+This is why JSON-LD update uses `from` rather than introducing new keywords: it matches the existing JSON-LD query language vocabulary and keeps dataset configuration consistent across read-only queries and updates.
+
+### `from` (WHERE default graph)
+
+When `from` is present, it scopes the `where` clause evaluation without changing where templates write:
+
+- `graph` (if present) controls the default graph for DELETE/INSERT templates (SPARQL UPDATE `WITH`)
+- `from` controls the default graph(s) for `where` evaluation (SPARQL UPDATE `USING`)
+
+Notes:
+- `from` can be:
+  - a string graph IRI (shorthand for `{"graph": "<iri>"}`)
+  - an object with `{"graph": "<iri>"}` (or `{"graph": ["<iri1>", "<iri2>"]}`)
+  - an array of graph IRIs/selectors (multiple graphs are evaluated as a merged default graph)
+- If your `insert` / `delete` templates write into the same graph as the top-level `graph`, you can omit per-template graph selection. The top-level `graph` becomes the default target for templates that don't specify `@graph` (or `["graph", ...]` sugar).
+- If you want to write to **multiple** graphs in one update, keep a top-level `graph` as the default (optional) and use per-template `["graph", ...]` for the exceptions.
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/g2",
+  "from": { "graph": "http://example.org/g1" },
+  "where": { "@id": "ex:s", "schema:description": "?d" },
+  "insert": [{ "@id": "ex:s", "schema:copyFromG1": "?d" }]
+}
+```
+
+Example: read from one graph, write to two graphs
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/", "schema": "http://schema.org/" },
+  "graph": "http://example.org/g2",
+  "from": { "graph": "http://example.org/g1" },
+  "where": { "@id": "ex:s", "schema:description": "?d" },
+  "insert": [
+    { "@id": "ex:s", "schema:copyFromG1": "?d" },
+    ["graph", "http://example.org/audit", { "@id": "ex:event1", "schema:description": "copied description" }]
+  ]
+}
+```
+
+### `fromNamed` (WHERE named graphs allowlist)
+
+Use `fromNamed` to allow (and optionally alias) named graphs for `where` `["graph", ...]` patterns:
+
+Notes:
+- In `where` GRAPH patterns, you can reference the graph by **alias** (e.g. `"g2"`) or by the **graph IRI** (e.g. `"http://example.org/g2"`). Aliases are just convenience names for matching.
+- In `insert` / `delete` templates, graph selection is a **write target**. You can use:
+  - the full graph IRI (`"http://example.org/g2"`)
+  - a compact IRI/term that expands via `@context` (e.g. `"ex:g2"`)
+  - the `fromNamed` **alias** (e.g. `"g2"`) for consistency within the same update transaction
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "fromNamed": [
+    { "alias": "g2", "graph": "http://example.org/g2" }
+  ],
+  "where": [
+    ["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]
+  ],
+  "insert": [["graph", "g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
+Same example, but with a compacted graph IRI via `@context`:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "fromNamed": [{ "alias": "g2", "graph": "ex:g2" }],
+  "where": [["graph", "g2", { "@id": "ex:s", "ex:p": "?o" }]],
+  "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
+Same idea without an explicit alias (the `fromNamed` string acts as its own identifier):
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "fromNamed": ["ex:g2"],
+  "where": [["graph", "ex:g2", { "@id": "ex:s", "ex:p": "?o" }]],
+  "insert": [["graph", "ex:g2", { "@id": "ex:s", "ex:q": "touched" }]]
+}
+```
+
 ## Simple Property Update
 
 Update a single property value:
@@ -86,9 +257,9 @@ Only update if condition is met:
 {
   "where": [
     { "@id": "ex:alice", "schema:age": "?age" },
-    { "@id": "ex:alice", "ex:status": "?status" }
+    { "@id": "ex:alice", "ex:status": "?status" },
+    ["filter", ["and", [">=", "?age", 18], ["=", "?status", "pending"]]]
   ],
-  "filter": "?age >= 18 && ?status == 'pending'",
   "delete": [
     { "@id": "ex:alice", "ex:status": "?status" }
   ],
@@ -131,17 +302,15 @@ Update based on relationships:
 {
   "where": [
     { "@id": "?employee", "schema:worksFor": "ex:company-a" },
-    { "@id": "?employee", "ex:salary": "?oldSalary" }
+    { "@id": "?employee", "ex:salary": "?oldSalary" },
+    ["bind", "?newSalary", ["*", "?oldSalary", 1.1]]
   ],
   "delete": [
     { "@id": "?employee", "ex:salary": "?oldSalary" }
   ],
   "insert": [
     { "@id": "?employee", "ex:salary": "?newSalary" }
-  ],
-  "bind": {
-    "?newSalary": "?oldSalary * 1.1"
-  }
+  ]
 }
 ```
 
@@ -154,7 +323,8 @@ Use variables from WHERE in INSERT with transformations:
 ```json
 {
   "where": [
-    { "@id": "ex:product-123", "ex:price": "?currentPrice" }
+    { "@id": "ex:product-123", "ex:price": "?currentPrice" },
+    ["bind", "?newPrice", ["*", "?currentPrice", 0.9]]
   ],
   "delete": [
     { "@id": "ex:product-123", "ex:price": "?currentPrice" }
@@ -162,10 +332,7 @@ Use variables from WHERE in INSERT with transformations:
   "insert": [
     { "@id": "ex:product-123", "ex:price": "?newPrice" },
     { "@id": "ex:product-123", "ex:previousPrice": "?currentPrice" }
-  ],
-  "bind": {
-    "?newPrice": "?currentPrice * 0.9"
-  }
+  ]
 }
 ```
 
@@ -223,15 +390,13 @@ Or conditionally add if missing:
 ```json
 {
   "where": [
-    { "@id": "ex:alice", "schema:name": "?name" }
+    { "@id": "ex:alice", "schema:name": "?name" },
+    ["optional", { "@id": "ex:alice", "schema:telephone": "?existingPhone" }],
+    ["filter", ["not", ["bound", "?existingPhone"]]]
   ],
   "insert": [
     { "@id": "ex:alice", "schema:telephone": "+1-555-0100" }
-  ],
-  "optional": [
-    { "@id": "ex:alice", "schema:telephone": "?existingPhone" }
-  ],
-  "filter": "!bound(?existingPhone)"
+  ]
 }
 ```
 
@@ -379,17 +544,15 @@ Calculate new values based on old:
 {
   "where": [
     { "@id": "ex:product-123", "ex:inventory": "?current" },
-    { "@id": "ex:product-123", "ex:sold": "?sold" }
+    { "@id": "ex:product-123", "ex:sold": "?sold" },
+    ["bind", "?newInventory", ["-", "?current", "?sold"]]
   ],
   "delete": [
     { "@id": "ex:product-123", "ex:inventory": "?current" }
   ],
   "insert": [
     { "@id": "ex:product-123", "ex:inventory": "?newInventory" }
-  ],
-  "bind": {
-    "?newInventory": "?current - ?sold"
-  }
+  ]
 }
 ```
 
@@ -500,8 +663,10 @@ Add filters to prevent unintended updates:
 
 ```json
 {
-  "where": [...],
-  "filter": "?age >= 0 && ?age <= 150",
+  "where": [
+    "...",
+    ["filter", ["and", [">=", "?age", 0], ["<=", "?age", 150]]]
+  ],
   "delete": [...],
   "insert": [...]
 }

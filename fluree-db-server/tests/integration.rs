@@ -1,5 +1,7 @@
 use axum::body::Body;
-use fluree_db_api::{ExportCommitsResponse, PushCommitsRequest};
+use fluree_db_api::{
+    ExportCommitsRequest, ExportCommitsResponse, NamespaceRegistry, PushCommitsRequest,
+};
 use fluree_db_core::{ContentId, Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_db_novelty::{Commit, CommitRef};
 use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
@@ -925,6 +927,1017 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
         error_msg.contains("/v1/fluree/update"),
         "Expected error to mention /v1/fluree/update endpoint, got: {}",
         error_msg
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_supports_subquery_aggregate_and_bind() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed numeric values to aggregate
+    let insert_body = serde_json::json!({
+      "@context": { "ex": "http://example.org/" },
+      "@graph": [
+        { "@id": "ex:item1", "ex:seq": 1 },
+        { "@id": "ex:item2", "ex:seq": 2 }
+      ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(insert_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // SPARQL UPDATE: compute MAX in a subquery, then BIND(max+1) and insert.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+
+        INSERT {
+          ex:counter ex:next ?next .
+        }
+        WHERE {
+          { SELECT (MAX(?n) AS ?m)
+            WHERE { ?s ex:seq ?n . }
+          }
+          BIND((?m + 1) AS ?next)
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "update failed: {json}");
+
+    // Verify inserted value is 3
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?next
+        WHERE { ex:counter ex:next ?next }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json_contains_string(&json, "3"),
+        "Expected SPARQL response to contain '3', got: {}",
+        json
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_templates_support_graph_iri_blocks() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // SPARQL UPDATE: INSERT into a named graph using GRAPH <iri> { ... } in the template.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+
+        INSERT {
+          GRAPH ex:g1 {
+            ex:s ex:p "v" .
+          }
+        }
+        WHERE { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "update failed: {json}");
+
+    // Named graph reads may depend on indexing; assert by inspecting the committed flakes directly.
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+    let expected_graph_sid = ns.sid_for_iri("http://example.org/g1");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(export.commits.len(), 1);
+
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+
+    let expected_graph_sid_str = expected_graph_sid.to_string();
+    assert!(
+        commit
+            .flakes
+            .iter()
+            .any(|f| f.g == Some(expected_graph_sid.clone())),
+        "Expected at least one committed flake in graph http://example.org/g1 (sid={}), got flakes: {:?}",
+        expected_graph_sid_str,
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_with_clause_scopes_default_templates_and_where() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed an "old" value into the named graph ex:g1 (explicit GRAPH in template).
+    let seed = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT { GRAPH ex:g1 { ex:s ex:p "old" } }
+        WHERE  { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(seed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "seed update failed: {json}");
+
+    // WITH ex:g1 should:
+    // - scope default-graph templates to ex:g1 (no explicit GRAPH in DELETE/INSERT templates)
+    // - scope default-graph WHERE patterns to ex:g1 (so it matches "old")
+    let update = r#"
+        PREFIX ex: <http://example.org/>
+        WITH ex:g1
+        DELETE { ex:s ex:p "old" }
+        INSERT { ex:s ex:p "new" }
+        WHERE  { ex:s ex:p "old" }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "with update failed: {json}");
+
+    // Assert via committed flakes (indexing is disabled in these server tests).
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+
+    let g_sid = ns.sid_for_iri("http://example.org/g1");
+    let s_sid = ns.sid_for_iri("http://example.org/s");
+    let p_sid = ns.sid_for_iri("http://example.org/p");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+
+    assert!(
+        commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g_sid.clone())
+                && f.s == s_sid
+                && f.p == p_sid
+                && f.o == FlakeValue::String("new".to_string())
+        }),
+        "Expected commit to assert ex:s ex:p \"new\" in graph ex:g1; flakes: {:?}",
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_using_clause_scopes_where_default_graph() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed an "old" value into the named graph ex:g1 (explicit GRAPH in template).
+    let seed = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT { GRAPH ex:g1 { ex:s ex:p "old" } }
+        WHERE  { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(seed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "seed update failed: {json}");
+
+    // USING ex:g1 should scope WHERE evaluation to the named graph.
+    // Templates explicitly target ex:g1 via GRAPH blocks.
+    let update = r#"
+        PREFIX ex: <http://example.org/>
+        DELETE { GRAPH ex:g1 { ex:s ex:p ?old } }
+        INSERT { GRAPH ex:g1 { ex:s ex:p "new" } }
+        USING ex:g1
+        WHERE  { ex:s ex:p ?old }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "using update failed: {json}");
+
+    // Assert via committed flakes (indexing is disabled in these server tests).
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+
+    let g_sid = ns.sid_for_iri("http://example.org/g1");
+    let s_sid = ns.sid_for_iri("http://example.org/s");
+    let p_sid = ns.sid_for_iri("http://example.org/p");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+
+    assert!(
+        commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g_sid.clone())
+                && f.s == s_sid
+                && f.p == p_sid
+                && f.o == FlakeValue::String("new".to_string())
+        }),
+        "Expected commit to assert ex:s ex:p \"new\" in graph ex:g1; flakes: {:?}",
+        commit.flakes
+    );
+    assert!(
+        commit.flakes.iter().any(|f| {
+            !f.op
+                && f.g == Some(g_sid.clone())
+                && f.s == s_sid
+                && f.p == p_sid
+                && f.o == FlakeValue::String("old".to_string())
+        }),
+        "Expected commit to retract ex:s ex:p \"old\" in graph ex:g1; flakes: {:?}",
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed g1 and g2 with different predicates for the same subject.
+    let seed = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT {
+          GRAPH ex:g1 { ex:a ex:p "1" }
+          GRAPH ex:g2 { ex:a ex:q "2" }
+        }
+        WHERE { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(seed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "seed update failed: {json}");
+
+    // Multiple USING clauses should merge default graphs for WHERE evaluation.
+    // Write target is scoped by WITH to g1.
+    let update = r#"
+        PREFIX ex: <http://example.org/>
+        WITH ex:g1
+        INSERT { ex:a ex:marker "ok" }
+        USING ex:g1
+        USING ex:g2
+        WHERE { ex:a ex:p "1" . ex:a ex:q "2" . }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "multiple USING update failed: {json}"
+    );
+
+    // Assert via committed flakes (indexing is disabled in these server tests).
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+
+    let g1_sid = ns.sid_for_iri("http://example.org/g1");
+    let a_sid = ns.sid_for_iri("http://example.org/a");
+    let marker_sid = ns.sid_for_iri("http://example.org/marker");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+
+    assert!(
+        commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g1_sid.clone())
+                && f.s == a_sid
+                && f.p == marker_sid
+                && f.o == FlakeValue::String("ok".to_string())
+        }),
+        "Expected commit to assert ex:a ex:marker \"ok\" in graph ex:g1; flakes: {:?}",
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed g1 and g2.
+    let seed = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT {
+          GRAPH ex:g1 { ex:s ex:p "g1-old" }
+          GRAPH ex:g2 { ex:s ex:p "g2-old" }
+        }
+        WHERE { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(seed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "seed update failed: {json}");
+
+    // Attempt to update g2, but restrict named graphs in WHERE to g1.
+    // Since INSERT/DELETE templates contain variables, a 0-row WHERE should yield 0 flakes.
+    let using_named_wrong = r#"
+        PREFIX ex: <http://example.org/>
+        DELETE { GRAPH ex:g2 { ex:s ex:p ?old } }
+        INSERT { GRAPH ex:g2 { ex:s ex:p ?new } }
+        USING NAMED ex:g1
+        WHERE  {
+          GRAPH ex:g2 { ex:s ex:p ?old }
+          BIND("g2-new" AS ?new)
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(using_named_wrong))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "using-named update failed: {json}");
+
+    // The latest commit should not contain an assertion of "g2-new" in graph g2.
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+
+    let g2_sid = ns.sid_for_iri("http://example.org/g2");
+    let s_sid = ns.sid_for_iri("http://example.org/s");
+    let p_sid = ns.sid_for_iri("http://example.org/p");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+    assert!(
+        !commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g2_sid.clone())
+                && f.s == s_sid
+                && f.p == p_sid
+                && f.o == FlakeValue::String("g2-new".to_string())
+        }),
+        "Expected USING NAMED ex:g1 to prevent writing g2-new into graph ex:g2; flakes: {:?}",
+        commit.flakes
+    );
+
+    // Now allow g2 explicitly via USING NAMED ex:g2 (and update should succeed).
+    let using_named_right = r#"
+        PREFIX ex: <http://example.org/>
+        DELETE { GRAPH ex:g2 { ex:s ex:p ?old } }
+        INSERT { GRAPH ex:g2 { ex:s ex:p ?new } }
+        USING NAMED ex:g2
+        WHERE  {
+          GRAPH ex:g2 { ex:s ex:p ?old }
+          BIND("g2-new" AS ?new)
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(using_named_right))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "using-named (g2) update failed: {json}"
+    );
+
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+    assert!(
+        commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g2_sid.clone())
+                && f.s == s_sid
+                && f.p == p_sid
+                && f.o == FlakeValue::String("g2-new".to_string())
+        }),
+        "Expected USING NAMED ex:g2 to allow inserting g2-new into graph ex:g2; flakes: {:?}",
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_in_where() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed g1 and g2 with different predicates for the same subject.
+    let seed = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT {
+          GRAPH ex:g1 { ex:a ex:p "1" }
+          GRAPH ex:g2 { ex:a ex:q "2" }
+        }
+        WHERE { BIND(1 AS ?x) }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(seed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "seed update failed: {json}");
+
+    // Multiple USING NAMED clauses should allow multiple named graphs in WHERE evaluation.
+    // Write target is scoped by WITH to g1.
+    let update = r#"
+        PREFIX ex: <http://example.org/>
+        WITH ex:g1
+        INSERT { ex:a ex:marker2 "ok2" }
+        USING NAMED ex:g1
+        USING NAMED ex:g2
+        WHERE {
+          GRAPH ex:g1 { ex:a ex:p "1" }
+          GRAPH ex:g2 { ex:a ex:q "2" }
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "multiple USING NAMED update failed: {json}"
+    );
+
+    // Assert via committed flakes (indexing is disabled in these server tests).
+    let handle = state
+        .fluree
+        .as_file()
+        .ledger_cached("test:main")
+        .await
+        .unwrap();
+    let snap = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
+
+    let g1_sid = ns.sid_for_iri("http://example.org/g1");
+    let a_sid = ns.sid_for_iri("http://example.org/a");
+    let marker_sid = ns.sid_for_iri("http://example.org/marker2");
+
+    let fluree = state.fluree.as_file();
+    let export = fluree
+        .export_commit_range(
+            &handle,
+            &ExportCommitsRequest {
+                cursor: None,
+                cursor_id: None,
+                limit: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_bytes = &export.commits[0].0;
+    let commit = fluree_db_novelty::commit_v2::read_commit(commit_bytes).unwrap();
+
+    assert!(
+        commit.flakes.iter().any(|f| {
+            f.op && f.g == Some(g1_sid.clone())
+                && f.s == a_sid
+                && f.p == marker_sid
+                && f.o == FlakeValue::String("ok2".to_string())
+        }),
+        "Expected commit to assert ex:a ex:marker2 \"ok2\" in graph ex:g1; flakes: {:?}",
+        commit.flakes
+    );
+}
+
+#[tokio::test]
+async fn sparql_update_where_allows_blank_nodes() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed blank-node data via Turtle
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:alice ex:knows _:x .
+        _:x ex:seq 2 .
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "text/turtle")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(turtle))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // SPARQL UPDATE: WHERE uses a blank-node label to match the existing bnode.
+    // INSERT does not need to reference the bnode; it just checks that the pattern matches.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+        INSERT { ex:flag ex:ok true }
+        WHERE {
+          ex:alice ex:knows _:x .
+          _:x ex:seq 2 .
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "update failed: {json}");
+
+    // Verify inserted flag exists
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?ok
+        WHERE { ex:flag ex:ok ?ok }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json_contains_string(&json, "true"),
+        "Expected response to contain 'true', got: {}",
+        json
+    );
+}
+
+#[tokio::test]
+async fn sparql_delete_where_allows_blank_nodes() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let create_body = serde_json::json!({ "ledger": "test:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Seed blank-node data via Turtle
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:alice ex:knows _:x .
+        _:x ex:seq 2 .
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "text/turtle")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(turtle))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // DELETE WHERE using blank-node label should remove both triples.
+    let sparql_update = r#"
+        PREFIX ex: <http://example.org/>
+        DELETE WHERE {
+          ex:alice ex:knows _:x .
+          _:x ex:seq 2 .
+        }
+    "#;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/update")
+                .header("content-type", "application/sparql-update")
+                .header("fluree-ledger", "test:main")
+                .body(Body::from(sparql_update))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "delete-where failed: {json}");
+
+    // Verify no seq=2 remains
+    let sparql = r#"
+        PREFIX ex: <http://example.org/>
+        SELECT ?s
+        WHERE { ?s ex:seq 2 }
+    "#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/test:main")
+                .header("content-type", "application/sparql-query")
+                .body(Body::from(sparql))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !json_contains_string(&json, "seq"),
+        "Expected no results after delete, got: {}",
+        json
     );
 }
 

@@ -146,7 +146,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
         .unwrap_or_default();
-    let compactor = IriCompactor::new(&ledger.snapshot.namespace_codes, &parsed_context);
+    let compactor = IriCompactor::new(ledger.snapshot.namespaces(), &parsed_context);
 
     // Build schema index for hierarchy lookups
     let schema_index = ledger
@@ -196,14 +196,14 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     graph_entry,
                     &ledger.novelty,
                     store,
-                    &ledger.snapshot.namespace_codes,
+                    ledger.snapshot.namespaces(),
                     graph_iri.as_deref(),
                     options.realtime_property_details,
                 );
                 merge_graph_class_counts_from_novelty(
                     graph_entry,
                     &ledger.novelty,
-                    &ledger.snapshot.namespace_codes,
+                    ledger.snapshot.namespaces(),
                     graph_iri.as_deref(),
                     store,
                 );
@@ -217,7 +217,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                         ledger.t(),
                         g_id,
                         graph_entry,
-                        &ledger.snapshot.namespace_codes,
+                        ledger.snapshot.namespaces(),
                         graph_iri.as_deref(),
                         store,
                     )

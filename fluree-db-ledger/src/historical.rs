@@ -269,10 +269,15 @@ impl HistoricalLedgerView {
             for iri in commit.graph_delta.into_values() {
                 all_graph_iris.insert(iri);
             }
+
+            // Extract ns_split_mode (immutable after user namespace allocation).
+            if let Some(mode) = commit.ns_split_mode {
+                snapshot.set_ns_split_mode(mode, commit.t)?;
+            }
         }
 
         // Apply accumulated deltas to snapshot (ns codes + graph IRIs)
-        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)?;
 
         // Resolve the txn-meta graph Sid now that namespace_codes are complete.
         // This produces the same Sid that build_reverse_graph() will map to g_id=1.

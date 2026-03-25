@@ -69,7 +69,7 @@ async fn query_bound_iri_in_new_namespace_after_index_returns_row() {
     let b_prefix = "http://example.org/b/";
     let Some((&b_code, _)) = ledger2
         .snapshot
-        .namespace_codes
+        .namespaces()
         .iter()
         .find(|(_, p)| p.as_str() == b_prefix)
     else {

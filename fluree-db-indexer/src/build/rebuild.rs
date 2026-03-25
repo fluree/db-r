@@ -110,9 +110,10 @@ where
 
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
-            let commit_cids = {
+            let (commit_cids, ledger_split_mode) = {
                 let mut cids = Vec::new();
                 let mut current = Some(head_commit_id.clone());
+                let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
 
                 while let Some(cid) = current {
                     let bytes = content_store
@@ -121,12 +122,16 @@ where
                         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+                    // Extract ns_split_mode (last seen = genesis = authoritative).
+                    if let Some(mode) = envelope.ns_split_mode {
+                        split_mode = mode;
+                    }
                     current = envelope.previous_id().cloned();
                     cids.push(cid);
                 }
 
                 cids.reverse(); // chronological order (genesis first)
-                cids
+                (cids, split_mode)
             };
             drop(_span_a);
 
@@ -1147,6 +1152,13 @@ where
                 ledger_id: ledger_id.clone(),
                 index_t: commit_t,
                 namespace_codes: ns_codes,
+                // Namespace reconciliation at publish time: `shared.ns_prefixes` is the
+                // commit-derived namespace table at `commit_t` (after applying all
+                // commit namespace deltas in forward order with bimap conflict validation).
+                // Root assembly will diff this against the root's materialized table
+                // and fail fast on divergence (indexer/publisher bug).
+                commit_derived_ns: shared.ns_prefixes.clone(),
+                ns_split_mode: ledger_split_mode,
                 predicate_sids,
                 uploaded_dicts,
                 v3_uploaded,

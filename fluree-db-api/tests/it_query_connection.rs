@@ -2,7 +2,7 @@
 //!
 //! Focus:
 //! - `query_connection` with `"from"` (combined datasets)
-//! - `query_connection` with `"from-named"` + `["graph", ...]` patterns (separate named graphs)
+//! - `query_connection` with `"fromNamed"` + `["graph", ...]` patterns (separate named graphs)
 
 mod support;
 
@@ -176,7 +176,7 @@ async fn query_connection_from_named_selecting_subgraphs_depth_3() {
 
     let q = json!({
         "@context": ctx_schema_value(),
-        "from-named": ["test/authors:main", "test/books:main", "test/movies:main"],
+        "fromNamed": ["test/authors:main", "test/books:main", "test/movies:main"],
         "select": { "?goneWithTheWind": ["*"] },
         "depth": 3,
         "where": [
@@ -258,13 +258,13 @@ async fn query_connection_from_named_with_graph_patterns() {
     seed_federated_ledgers(&fluree).await;
 
     // Equivalent:
-    // :from-named ["test/authors" "test/books" "test/movies"]
+    // :fromNamed ["test/authors" "test/books" "test/movies"]
     // :where [[:graph "test/movies" {...}] [:graph "test/books" {...}] [:graph "test/authors" {...}]]
     //
     // Rust JSON-LD WHERE uses ["graph", graphNameOrVar, pattern1, pattern2...]
     let q = json!({
         "@context": "https://schema.org",
-        "from-named": ["test/authors:main", "test/books:main", "test/movies:main"],
+        "fromNamed": ["test/authors:main", "test/books:main", "test/movies:main"],
         "select": ["?movieName", "?bookIsbn", "?authorName"],
         "where": [
             ["graph", "test/movies:main",
