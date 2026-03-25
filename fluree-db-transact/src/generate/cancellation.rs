@@ -41,17 +41,27 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
         }
     }
 
-    // Cancel pairs 1:1 and collect survivors
+    // Cancel pairs 1:1 and collect survivors.
+    //
+    // RDF set semantics: within a single transaction, asserting the same
+    // triple N times is identical to asserting it once, and retracting it
+    // N times is identical to retracting it once. After cancellation we
+    // therefore collapse duplicate assertions (or retractions) to a single
+    // flake per fact identity.
     let mut result: Vec<Flake> = Vec::with_capacity(cap);
     for (_key, (assertions, retractions)) in buckets {
         let cancel_count = assertions.len().min(retractions.len());
-        // Keep un-cancelled assertions
-        for flake in assertions.into_iter().skip(cancel_count) {
-            result.push(flake);
+        let surviving_assertions = assertions.len() - cancel_count;
+        let surviving_retractions = retractions.len() - cancel_count;
+
+        // Keep at most one assertion per fact
+        if surviving_assertions > 0 {
+            // Take the last one (highest t) — arbitrary but deterministic
+            result.push(assertions.into_iter().last().unwrap());
         }
-        // Keep un-cancelled retractions
-        for flake in retractions.into_iter().skip(cancel_count) {
-            result.push(flake);
+        // Keep at most one retraction per fact
+        if surviving_retractions > 0 {
+            result.push(retractions.into_iter().last().unwrap());
         }
     }
 
@@ -160,14 +170,14 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// Regression test: duplicate retractions (same s,p,o but different t) must
-    /// all survive — not be collapsed into one by HashMap dedup.
+    /// RDF set semantics: duplicate retractions of the same fact within one
+    /// transaction collapse to a single retraction.
     ///
     /// Scenario: entity has 4 copies of "open" (asserted at t=1,2,3,4 due to
     /// prior bug). Upsert generates 4 retractions + 1 assertion for "open".
-    /// Expected: 1 assertion cancels 1 retraction → 3 retractions remain.
+    /// After cancellation + set-dedup: 1 retraction survives.
     #[test]
-    fn test_cancellation_preserves_duplicate_retractions() {
+    fn test_cancellation_collapses_duplicate_retractions() {
         let flakes = vec![
             // 4 retractions for same (s,p,o) at different t values
             make_flake(1, 2, 100, 1, false),
@@ -180,17 +190,17 @@ mod tests {
 
         let result = apply_cancellation(flakes);
 
-        // 1 assertion cancels 1 retraction → 3 retractions survive
-        assert_eq!(result.len(), 3, "should have 3 surviving retractions");
+        // 1 assertion cancels 1 retraction, remaining 3 collapse to 1
+        assert_eq!(result.len(), 1, "should have 1 surviving retraction");
         assert!(
             result.iter().all(|f| !f.op),
-            "all survivors should be retractions"
+            "survivor should be a retraction"
         );
     }
 
-    /// Multiple duplicate assertions with fewer retractions.
+    /// RDF set semantics: duplicate assertions collapse to one.
     #[test]
-    fn test_cancellation_preserves_duplicate_assertions() {
+    fn test_cancellation_collapses_duplicate_assertions() {
         let flakes = vec![
             // 3 assertions for same (s,p,o) at different t values
             make_flake(1, 2, 100, 1, true),
@@ -202,19 +212,20 @@ mod tests {
 
         let result = apply_cancellation(flakes);
 
-        // 1 retraction cancels 1 assertion → 2 assertions survive
-        assert_eq!(result.len(), 2, "should have 2 surviving assertions");
+        // 1 retraction cancels 1 assertion, remaining 2 collapse to 1
+        assert_eq!(result.len(), 1, "should have 1 surviving assertion");
         assert!(
             result.iter().all(|f| f.op),
-            "all survivors should be assertions"
+            "survivor should be an assertion"
         );
     }
 
     /// Mixed scenario: some facts have duplicates, some don't.
+    /// Set semantics collapses duplicate survivors to one per fact.
     #[test]
     fn test_cancellation_mixed_duplicates_and_unique() {
         let flakes = vec![
-            // Fact A: 3 retractions, 1 assertion → 2 retractions survive
+            // Fact A: 3 retractions, 1 assertion → 2 retractions collapse to 1
             make_flake(1, 1, 100, 1, false),
             make_flake(1, 1, 100, 2, false),
             make_flake(1, 1, 100, 3, false),
@@ -228,11 +239,34 @@ mod tests {
 
         let result = apply_cancellation(flakes);
 
-        // 2 retractions (fact A) + 1 assertion (fact C) = 3
-        assert_eq!(result.len(), 3);
+        // 1 retraction (fact A) + 1 assertion (fact C) = 2
+        assert_eq!(result.len(), 2);
         let retraction_count = result.iter().filter(|f| !f.op).count();
         let assertion_count = result.iter().filter(|f| f.op).count();
-        assert_eq!(retraction_count, 2, "fact A: 2 retractions survive");
+        assert_eq!(retraction_count, 1, "fact A: 1 retraction survives");
         assert_eq!(assertion_count, 1, "fact C: 1 assertion survives");
+    }
+
+    /// Regression test for the nested-object duplication bug: when a JSON-LD
+    /// transaction contains the same entity nested in multiple parents (e.g.,
+    /// a Member nested in 14 different Channel objects), parsing produces N
+    /// identical assertion flakes per property. Set semantics must collapse
+    /// these to 1 flake per unique fact.
+    #[test]
+    fn test_set_semantics_dedup_pure_assertions() {
+        // Simulates member with 4 properties, each duplicated 14 times
+        let mut flakes = Vec::new();
+        for prop in 1..=4u16 {
+            for _ in 0..14 {
+                flakes.push(make_flake(1, prop, 42, 1, true));
+            }
+        }
+        assert_eq!(flakes.len(), 56);
+
+        let result = apply_cancellation(flakes);
+
+        // Should collapse to 4 unique assertions (one per property)
+        assert_eq!(result.len(), 4, "56 duplicate assertions → 4 unique facts");
+        assert!(result.iter().all(|f| f.op), "all should be assertions");
     }
 }
