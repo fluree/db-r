@@ -11,7 +11,7 @@ use fluree_db_core::{
     RangeMatch, RangeOptions, RangeTest, Storage,
 };
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{BranchPoint, NameService, Publisher};
+use fluree_db_nameservice::{BranchPoint, NameService, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::{compute_delta_keys, trace_commits_by_id, Commit};
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use futures::TryStreamExt;
@@ -229,59 +229,108 @@ where
             }
         }
 
+        // Snapshot the branch's nameservice state before any mutations.
+        // If replay fails, we restore this snapshot to roll back.
+        let pre_rebase_snapshot = NsRecordSnapshot::from_record(&branch_record);
+
         // Copy the source index into the branch namespace before replay.
         // This gives the branch an index to build incrementally from when
         // novelty grows too large mid-rebase.
         self.copy_source_index(&source_id, &branch_id, &source_record)
             .await;
 
-        // Load source state as the replay base.
+        // Run replay and finalization; roll back on any error.
+        let ctx = ReplayContext {
+            branch_id: &branch_id,
+            branch_record: &branch_record,
+            source_id: &source_id,
+            source_head_id: &source_head_id,
+            source_head_t,
+            source_branch: &bp.source,
+            branch_store: &branch_store,
+            summaries: &summaries,
+            strategy: &strategy,
+            total_commits,
+        };
+        let result = self.run_replay(&ctx).await;
+
+        match result {
+            Ok(report) => {
+                if let Some(ref lm) = self.ledger_manager {
+                    lm.disconnect(&branch_id).await;
+                }
+                Ok(report)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    branch = %branch_id,
+                    error = %e,
+                    "rebase failed, rolling back nameservice state"
+                );
+                if let Err(rollback_err) = self
+                    .nameservice
+                    .reset_head(&branch_id, pre_rebase_snapshot)
+                    .await
+                {
+                    tracing::error!(
+                        branch = %branch_id,
+                        error = %rollback_err,
+                        "failed to roll back nameservice state after rebase failure"
+                    );
+                }
+                if let Some(ref lm) = self.ledger_manager {
+                    lm.disconnect(&branch_id).await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The actual replay loop + finalization, extracted so the caller can
+    /// wrap it in a snapshot/rollback guard.
+    async fn run_replay(&self, ctx: &ReplayContext<'_, S>) -> Result<RebaseReport> {
         let mut current_state = LedgerState::load(
             &self.nameservice,
-            &source_id,
+            ctx.source_id,
             self.connection.storage().clone(),
         )
         .await?;
 
-        // Commits publish to the branch namespace, not the source.
-        current_state.snapshot.ledger_id = branch_id.clone();
+        current_state.snapshot.ledger_id = ctx.branch_id.to_string();
 
         let mut report = RebaseReport {
             replayed: 0,
             conflicts: Vec::new(),
             failures: Vec::new(),
-            new_branch_point_t: source_head_t,
-            new_branch_point_id: source_head_id.clone(),
+            new_branch_point_t: ctx.source_head_t,
+            new_branch_point_id: ctx.source_head_id.clone(),
             fast_forward: false,
-            total_commits,
+            total_commits: ctx.total_commits,
             skipped: 0,
         };
 
-        // Pass 2: replay each commit by loading its full payload on demand.
-        for summary in &summaries {
+        for summary in ctx.summaries {
             let has_conflicts = !summary.conflict_keys.is_empty();
 
-            if has_conflicts && strategy == ConflictStrategy::Skip {
+            if has_conflicts && *ctx.strategy == ConflictStrategy::Skip {
                 report.conflicts.push(RebaseConflict {
                     original_t: summary.t,
                     conflict_count: summary.conflict_keys.len(),
                     keys: summary.conflict_keys.clone(),
-                    resolution: strategy.as_str(),
+                    resolution: ctx.strategy.as_str(),
                 });
                 report.skipped += 1;
                 continue;
             }
 
-            // Load the full commit payload for this single commit.
             let commit =
-                fluree_db_novelty::load_commit_by_id(&branch_store, &summary.commit_id).await?;
+                fluree_db_novelty::load_commit_by_id(ctx.branch_store, &summary.commit_id).await?;
 
-            // Build flakes for replay, applying conflict resolution.
             let flakes = self
                 .resolve_flakes(
                     &commit.flakes,
                     &summary.conflict_keys,
-                    &strategy,
+                    ctx.strategy,
                     &current_state,
                 )
                 .await?;
@@ -291,7 +340,7 @@ where
                     original_t: summary.t,
                     conflict_count: summary.conflict_keys.len(),
                     keys: summary.conflict_keys.clone(),
-                    resolution: strategy.as_str(),
+                    resolution: ctx.strategy.as_str(),
                 });
             }
 
@@ -299,34 +348,24 @@ where
                 continue;
             }
 
-            // Stage and commit. Any failure aborts the entire rebase.
             current_state = self.replay_commit(current_state, flakes, &commit).await?;
             report.replayed += 1;
 
-            // Flush novelty when it exceeds the soft threshold by building
-            // an inline index and reloading the state. The reload picks up
-            // the new index and reconstructs novelty only from commits since
-            // the index point, bounding memory usage during large rebases.
             if current_state.should_reindex(&self.index_config) {
                 current_state = self
-                    .flush_rebase_novelty(&branch_id, &branch_record)
+                    .flush_rebase_novelty(ctx.branch_id, ctx.branch_record)
                     .await?;
             }
         }
 
-        // Finalize: update branch point and force reload.
         let new_bp = BranchPoint {
-            source: bp.source.clone(),
-            commit_id: source_head_id,
-            t: source_head_t,
+            source: ctx.source_branch.to_string(),
+            commit_id: ctx.source_head_id.clone(),
+            t: ctx.source_head_t,
         };
         self.nameservice
-            .update_branch_point(&branch_id, new_bp)
+            .update_branch_point(ctx.branch_id, new_bp)
             .await?;
-
-        if let Some(ref lm) = self.ledger_manager {
-            lm.disconnect(&branch_id).await;
-        }
 
         Ok(report)
     }
@@ -584,6 +623,21 @@ where
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Context for the replay loop, bundling references that would otherwise
+/// require 10+ parameters.
+struct ReplayContext<'a, S: Storage> {
+    branch_id: &'a str,
+    branch_record: &'a fluree_db_nameservice::NsRecord,
+    source_id: &'a str,
+    source_head_id: &'a ContentId,
+    source_head_t: i64,
+    source_branch: &'a str,
+    branch_store: &'a fluree_db_core::BranchedContentStore<S>,
+    summaries: &'a [CommitSummary],
+    strategy: &'a ConflictStrategy,
+    total_commits: usize,
+}
 
 /// Lightweight summary of a branch commit, collected during the scan pass.
 /// Holds only the CID, `t`, and pre-computed conflict keys — not the full

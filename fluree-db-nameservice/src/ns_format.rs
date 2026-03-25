@@ -154,6 +154,22 @@ impl NsFileV2 {
 
         ConfigValue { v, payload }
     }
+
+    /// Overwrite commit head, index head, and branch point from a snapshot.
+    /// Used by `reset_head` implementations to roll back after a failed rebase.
+    pub(crate) fn apply_snapshot(&mut self, snapshot: &crate::NsRecordSnapshot) {
+        self.commit_cid = snapshot.commit_head_id.as_ref().map(|c| c.to_string());
+        self.t = snapshot.commit_t;
+        self.index = snapshot.index_head_id.as_ref().map(|id| IndexRef {
+            cid: Some(id.to_string()),
+            t: snapshot.index_t,
+        });
+        self.branch_point = snapshot.branch_point.as_ref().map(|bp| BranchPointRef {
+            source: bp.source.clone(),
+            commit_cid: Some(bp.commit_id.to_string()),
+            t: bp.t,
+        });
+    }
 }
 
 /// JSON structure for index-only ns@v2 file.

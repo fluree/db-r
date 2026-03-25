@@ -635,17 +635,7 @@ impl NameService for FileNameService {
                     return Ok(CasAction::Abort(()));
                 };
                 let mut file: NsFileV2 = deserialize_json(data)?;
-                file.commit_cid = snapshot.commit_head_id.as_ref().map(|c| c.to_string());
-                file.t = snapshot.commit_t;
-                file.index = snapshot.index_head_id.as_ref().map(|id| IndexRef {
-                    cid: Some(id.to_string()),
-                    t: snapshot.index_t,
-                });
-                file.branch_point = snapshot.branch_point.as_ref().map(|bp| BranchPointRef {
-                    source: bp.source.clone(),
-                    commit_cid: Some(bp.commit_id.to_string()),
-                    t: bp.t,
-                });
+                file.apply_snapshot(&snapshot);
                 let new_bytes = serialize_json(&file)?;
                 Ok(CasAction::Write(new_bytes))
             })

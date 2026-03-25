@@ -873,85 +873,82 @@ impl NameService for DynamoDbNameService {
         let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
-        // Reset commit head (SK_HEAD item) — unconditional overwrite
-        let mut head_update = self
-            .client
-            .update_item()
+        // Build commit head update
+        let mut head = Update::builder()
             .table_name(&self.table_name)
             .key(ATTR_PK, AttributeValue::S(pk.clone()))
             .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
             .expression_attribute_values(":now", AttributeValue::N(now.clone()))
             .expression_attribute_names("#ct", ATTR_COMMIT_T)
+            .expression_attribute_names("#ci", ATTR_COMMIT_ID)
             .expression_attribute_values(":t", AttributeValue::N(snapshot.commit_t.to_string()));
-
         if let Some(ref cid) = snapshot.commit_head_id {
-            head_update = head_update
+            head = head
                 .update_expression("SET #ci = :cid, #ct = :t, #ua = :now")
-                .expression_attribute_names("#ci", ATTR_COMMIT_ID)
                 .expression_attribute_values(":cid", AttributeValue::S(cid.to_string()));
         } else {
-            head_update = head_update
-                .update_expression("SET #ct = :t, #ua = :now REMOVE #ci")
-                .expression_attribute_names("#ci", ATTR_COMMIT_ID);
+            head = head.update_expression("SET #ct = :t, #ua = :now REMOVE #ci");
         }
 
-        head_update.send().await.map_err(|e| {
-            NameServiceError::storage(format!("DynamoDB reset_head (commit) failed: {e}"))
-        })?;
-
-        // Reset index head (SK_INDEX item) — unconditional overwrite
-        let mut index_update = self
-            .client
-            .update_item()
+        // Build index head update
+        let mut idx = Update::builder()
             .table_name(&self.table_name)
             .key(ATTR_PK, AttributeValue::S(pk.clone()))
             .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
             .expression_attribute_values(":now", AttributeValue::N(now.clone()))
             .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
             .expression_attribute_values(":it", AttributeValue::N(snapshot.index_t.to_string()));
-
         if let Some(ref id) = snapshot.index_head_id {
-            index_update = index_update
+            idx = idx
                 .update_expression("SET #ii = :iid, #it = :it, #ua = :now")
-                .expression_attribute_names("#ii", ATTR_INDEX_ID)
                 .expression_attribute_values(":iid", AttributeValue::S(id.to_string()));
         } else {
-            index_update = index_update
-                .update_expression("SET #it = :it, #ua = :now REMOVE #ii")
-                .expression_attribute_names("#ii", ATTR_INDEX_ID);
+            idx = idx.update_expression("SET #it = :it, #ua = :now REMOVE #ii");
         }
 
-        index_update.send().await.map_err(|e| {
-            NameServiceError::storage(format!("DynamoDB reset_head (index) failed: {e}"))
-        })?;
+        // Combine into a single atomic transaction
+        let mut txn = self
+            .client
+            .transact_write_items()
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(head.build().expect("valid Update"))
+                    .build(),
+            )
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(idx.build().expect("valid Update"))
+                    .build(),
+            );
 
-        // Reset branch point on meta item
         if let Some(ref bp) = snapshot.branch_point {
-            self.client
-                .update_item()
+            let meta = Update::builder()
                 .table_name(&self.table_name)
                 .key(ATTR_PK, AttributeValue::S(pk))
                 .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
-                .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :t")
+                .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :bpt, #ua = :now")
                 .expression_attribute_names("#bps", ATTR_BP_SOURCE)
                 .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
                 .expression_attribute_names("#bpt", ATTR_BP_T)
+                .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+                .expression_attribute_values(":now", AttributeValue::N(now))
                 .expression_attribute_values(":source", AttributeValue::S(bp.source.clone()))
                 .expression_attribute_values(
                     ":commit_id",
                     AttributeValue::S(bp.commit_id.to_string()),
                 )
-                .expression_attribute_values(":t", AttributeValue::N(bp.t.to_string()))
-                .send()
-                .await
-                .map_err(|e| {
-                    NameServiceError::storage(format!(
-                        "DynamoDB reset_head (branch_point) failed: {e}"
-                    ))
-                })?;
+                .expression_attribute_values(":bpt", AttributeValue::N(bp.t.to_string()))
+                .build()
+                .expect("valid Update");
+            txn = txn.transact_items(TransactWriteItem::builder().update(meta).build());
         }
+
+        txn.send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB reset_head failed: {e}")))?;
 
         Ok(())
     }

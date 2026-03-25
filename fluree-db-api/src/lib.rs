@@ -422,6 +422,14 @@ impl fluree_db_nameservice::NameService for AnyNameService {
             .update_branch_point(ledger_id, new_branch_point)
             .await
     }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0.reset_head(ledger_id, snapshot).await
+    }
 }
 
 #[async_trait]
@@ -561,6 +569,14 @@ where
         self.inner
             .update_branch_point(ledger_id, new_branch_point)
             .await
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner.reset_head(ledger_id, snapshot).await
     }
 }
 

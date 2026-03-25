@@ -509,6 +509,32 @@ pub trait NameService: Debug + Send + Sync {
     async fn reset_head(&self, ledger_id: &str, snapshot: NsRecordSnapshot) -> Result<()>;
 }
 
+/// Captured state of an `NsRecord` for rollback purposes.
+///
+/// Contains only the fields that `reset_head` restores — commit head,
+/// index head, and branch point.
+#[derive(Clone, Debug)]
+pub struct NsRecordSnapshot {
+    pub commit_head_id: Option<ContentId>,
+    pub commit_t: i64,
+    pub index_head_id: Option<ContentId>,
+    pub index_t: i64,
+    pub branch_point: Option<BranchPoint>,
+}
+
+impl NsRecordSnapshot {
+    /// Capture the restorable fields from an `NsRecord`.
+    pub fn from_record(record: &NsRecord) -> Self {
+        Self {
+            commit_head_id: record.commit_head_id.clone(),
+            commit_t: record.commit_t,
+            index_head_id: record.index_head_id.clone(),
+            index_t: record.index_t,
+            branch_point: record.branch_point.clone(),
+        }
+    }
+}
+
 /// Publisher trait for writing nameservice records
 ///
 /// Implementations handle publishing commit and index updates with
