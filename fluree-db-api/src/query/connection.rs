@@ -4,15 +4,189 @@ use std::sync::Arc;
 use crate::query::helpers::{
     extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec,
 };
-use crate::view::DataSetDb;
-use crate::{ApiError, Fluree, FormatterConfig, PolicyContext, QueryResult, Result, Storage};
+use crate::view::{DataSetDb, GraphDb};
+use crate::{
+    ApiError, DatasetSpec, Fluree, FormatterConfig, PolicyContext, QueryConnectionOptions,
+    QueryResult, Result, Storage,
+};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
+
+type TrackedResult<T> = std::result::Result<T, crate::query::TrackedErrorResponse>;
 
 impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
+    async fn prepare_single_view_for_connection(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+    ) -> Result<Option<GraphDb>> {
+        let Some(view) = self.try_single_view_from_spec(spec).await? else {
+            return Ok(None);
+        };
+
+        let source = &spec.default_graphs[0];
+        let view = self
+            .apply_source_or_global_policy(view, source, qc_opts)
+            .await?;
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
+    async fn build_dataset_for_connection(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+    ) -> Result<DataSetDb> {
+        if qc_opts.has_any_policy_inputs() {
+            self.build_dataset_view_with_policy(spec, qc_opts).await
+        } else {
+            self.build_dataset_view(spec).await
+        }
+    }
+
+    async fn prepare_single_view_for_connection_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<Option<GraphDb>> {
+        let Some(view) = self
+            .try_single_view_from_spec_r2rml(spec, r2rml_provider)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let source = &spec.default_graphs[0];
+        let view = self
+            .apply_source_or_global_policy(view, source, qc_opts)
+            .await?;
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
+    async fn build_dataset_for_connection_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<DataSetDb> {
+        if qc_opts.has_any_policy_inputs() {
+            self.build_dataset_view_with_policy_r2rml(spec, qc_opts, r2rml_provider)
+                .await
+        } else {
+            self.build_dataset_view_r2rml(spec, r2rml_provider).await
+        }
+    }
+
+    async fn prepare_single_view_for_connection_tracked(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+    ) -> TrackedResult<Option<GraphDb>> {
+        let view = self
+            .try_single_view_from_spec(spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
+
+        let Some(view) = view else {
+            return Ok(None);
+        };
+
+        let source = &spec.default_graphs[0];
+        let view = self
+            .apply_source_or_global_policy(view, source, qc_opts)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
+    async fn build_dataset_for_connection_tracked(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+    ) -> TrackedResult<DataSetDb> {
+        let dataset = if qc_opts.has_any_policy_inputs() {
+            self.build_dataset_view_with_policy(spec, qc_opts).await
+        } else {
+            self.build_dataset_view(spec).await
+        };
+        dataset.map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))
+    }
+
+    async fn prepare_single_view_for_connection_tracked_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> TrackedResult<Option<GraphDb>> {
+        let view = self
+            .try_single_view_from_spec_r2rml(spec, r2rml_provider)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
+
+        let Some(view) = view else {
+            return Ok(None);
+        };
+
+        let source = &spec.default_graphs[0];
+        let view = self
+            .apply_source_or_global_policy(view, source, qc_opts)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
+    async fn build_dataset_for_connection_tracked_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        qc_opts: &QueryConnectionOptions,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> TrackedResult<DataSetDb> {
+        let dataset = if qc_opts.has_any_policy_inputs() {
+            self.build_dataset_view_with_policy_r2rml(spec, qc_opts, r2rml_provider)
+                .await
+        } else {
+            self.build_dataset_view_r2rml(spec, r2rml_provider).await
+        };
+        dataset.map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))
+    }
+
+    async fn prepare_single_view_for_connection_with_policy(
+        &self,
+        spec: &DatasetSpec,
+        policy: &PolicyContext,
+    ) -> Result<Option<GraphDb>> {
+        let Some(view) = self.try_single_view_from_spec(spec).await? else {
+            return Ok(None);
+        };
+        let view = view.with_policy(Arc::new(policy.clone()));
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
+    async fn prepare_single_view_for_connection_with_policy_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        policy: &PolicyContext,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<Option<GraphDb>> {
+        let Some(view) = self
+            .try_single_view_from_spec_r2rml(spec, r2rml_provider)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let view = view.with_policy(Arc::new(policy.clone()));
+        let view = self.apply_config_defaults(view, None);
+        Ok(Some(view))
+    }
+
     /// Execute a JSON-LD query via connection.
     ///
     /// This is the unified entry point for connection queries. It:
@@ -29,59 +203,24 @@ where
             ));
         }
 
-        // Single-ledger fast path: use GraphDb API
-        if Self::is_single_ledger_fast_path(&spec) {
-            let source = &spec.default_graphs[0];
-            let alias = source.identifier.as_str();
-            let mut view = self.db(alias).await?;
-
-            // Apply graph selector if specified in structured from
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector)?;
-            }
-
-            // Apply policy: per-source overrides global
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await?;
-
-            // Apply config-graph defaults (reasoning + datalog)
-            let view = self.apply_config_defaults(view, None);
-
-            return self.query(&view, query_json).await;
-        }
-
-        // Single-ledger with time travel: use GraphDb API
-        if let Some(mut view) = self.try_single_view_from_spec(&spec).await? {
-            let source = &spec.default_graphs[0];
-
-            // Apply graph selector if specified in structured from
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector)?;
-            }
-
-            // Apply policy: per-source overrides global
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await?;
-
-            // Apply config-graph defaults (reasoning + datalog)
-            let view = self.apply_config_defaults(view, None);
-
+        if let Some(view) = self
+            .prepare_single_view_for_connection(&spec, &qc_opts)
+            .await?
+        {
             return self.query(&view, query_json).await;
         }
 
         // Multi-ledger: use DataSetDb
-        let dataset = if qc_opts.has_any_policy_inputs() {
-            self.build_dataset_view_with_policy(&spec, &qc_opts).await?
-        } else {
-            self.build_dataset_view(&spec).await?
-        };
+        let dataset = self.build_dataset_for_connection(&spec, &qc_opts).await?;
 
         self.query_dataset(&dataset, query_json).await
     }
 
     /// Execute a JSON-LD connection query with explicit R2RML providers.
+    ///
+    /// Uses graph source fallback for alias resolution: if a source in the
+    /// dataset spec is not found as a ledger, it checks graph sources and
+    /// creates a minimal genesis context tagged with the graph source ID.
     pub(crate) async fn query_connection_jsonld_with_r2rml(
         &self,
         query_json: &JsonValue,
@@ -96,51 +235,20 @@ where
             ));
         }
 
-        // Single-ledger fast path: use GraphDb API
-        if Self::is_single_ledger_fast_path(&spec) {
-            let source = &spec.default_graphs[0];
-            let alias = source.identifier.as_str();
-            let mut view = self.db(alias).await?;
-
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector)?;
-            }
-
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await?;
-
-            let view = self.apply_config_defaults(view, None);
-
+        if let Some(view) = self
+            .prepare_single_view_for_connection_r2rml(&spec, &qc_opts, r2rml_provider)
+            .await?
+        {
             return self
                 .query_view_with_r2rml(&view, query_json, r2rml_provider, r2rml_table_provider)
                 .await;
         }
 
-        // Single-ledger with time travel: use GraphDb API
-        if let Some(mut view) = self.try_single_view_from_spec(&spec).await? {
-            let source = &spec.default_graphs[0];
-
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector)?;
-            }
-
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await?;
-
-            let view = self.apply_config_defaults(view, None);
-
-            return self
-                .query_view_with_r2rml(&view, query_json, r2rml_provider, r2rml_table_provider)
-                .await;
-        }
-
-        let dataset = if qc_opts.has_any_policy_inputs() {
-            self.build_dataset_view_with_policy(&spec, &qc_opts).await?
-        } else {
-            self.build_dataset_view(&spec).await?
-        };
+        // Multi-ledger dataset — use standard builder (graph source fallback
+        // in dataset is deferred to the scan backend level)
+        let dataset = self
+            .build_dataset_for_connection_r2rml(&spec, &qc_opts, r2rml_provider)
+            .await?;
 
         self.query_dataset_with_r2rml(&dataset, query_json, r2rml_provider, r2rml_table_provider)
             .await
@@ -162,7 +270,7 @@ where
             ));
         }
 
-        let dataset = self.build_dataset_view(&spec).await?;
+        let dataset = self.build_dataset_view_r2rml(&spec, r2rml_provider).await?;
         self.query_dataset_with_r2rml(&dataset, sparql, r2rml_provider, r2rml_table_provider)
             .await
     }
@@ -187,76 +295,19 @@ where
             ));
         }
 
-        // Single-ledger fast path (no time override): use GraphDb API
-        if Self::is_single_ledger_fast_path(&spec) {
-            let source = &spec.default_graphs[0];
-            let alias = source.identifier.as_str();
-            let mut view = self
-                .db(alias)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            // Apply graph selector if specified in structured from
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
-                })?;
-            }
-
-            // Apply policy: per-source overrides global
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            // Apply config-graph defaults (reasoning + datalog)
-            let view = self.apply_config_defaults(view, None);
-
-            return self
-                .query_tracked(&view, query_json, format_config, None)
-                .await;
-        }
-
-        // Single-ledger with time travel: use GraphDb API
-        let single_view = self
-            .try_single_view_from_spec(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-        if let Some(mut view) = single_view {
-            let source = &spec.default_graphs[0];
-
-            // Apply graph selector if specified in structured from
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
-                })?;
-            }
-
-            // Apply policy: per-source overrides global
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            // Apply config-graph defaults (reasoning + datalog)
-            let view = self.apply_config_defaults(view, None);
-
+        if let Some(view) = self
+            .prepare_single_view_for_connection_tracked(&spec, &qc_opts)
+            .await?
+        {
             return self
                 .query_tracked(&view, query_json, format_config, None)
                 .await;
         }
 
         // Multi-ledger: use DataSetDb
-        let dataset = if qc_opts.has_any_policy_inputs() {
-            self.build_dataset_view_with_policy(&spec, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
-        } else {
-            self.build_dataset_view(&spec)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
-        };
+        let dataset = self
+            .build_dataset_for_connection_tracked(&spec, &qc_opts)
+            .await?;
 
         self.query_dataset_tracked(&dataset, query_json, format_config, None)
             .await
@@ -287,10 +338,10 @@ where
             ));
         }
 
-        // Try single-ledger path (including with time spec)
-        if let Some(view) = self.try_single_view_from_spec(&spec).await? {
-            let view = view.with_policy(Arc::new(policy.clone()));
-            let view = self.apply_config_defaults(view, None);
+        if let Some(view) = self
+            .prepare_single_view_for_connection_with_policy(&spec, policy)
+            .await?
+        {
             return self.query(&view, query_json).await;
         }
 
@@ -315,15 +366,16 @@ where
             ));
         }
 
-        if let Some(view) = self.try_single_view_from_spec(&spec).await? {
-            let view = view.with_policy(Arc::new(policy.clone()));
-            let view = self.apply_config_defaults(view, None);
+        if let Some(view) = self
+            .prepare_single_view_for_connection_with_policy_r2rml(&spec, policy, r2rml_provider)
+            .await?
+        {
             return self
                 .query_view_with_r2rml(&view, query_json, r2rml_provider, r2rml_table_provider)
                 .await;
         }
 
-        let dataset = self.build_dataset_view(&spec).await?;
+        let dataset = self.build_dataset_view_r2rml(&spec, r2rml_provider).await?;
         let dataset = apply_policy_to_dataset(dataset, policy);
         self.query_dataset_with_r2rml(&dataset, query_json, r2rml_provider, r2rml_table_provider)
             .await
@@ -348,27 +400,10 @@ where
             ));
         }
 
-        if Self::is_single_ledger_fast_path(&spec) {
-            let source = &spec.default_graphs[0];
-            let alias = source.identifier.as_str();
-            let mut view = self
-                .db(alias)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
-                })?;
-            }
-
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            let view = self.apply_config_defaults(view, None);
-
+        if let Some(view) = self
+            .prepare_single_view_for_connection_tracked_r2rml(&spec, &qc_opts, r2rml_provider)
+            .await?
+        {
             return self
                 .query_tracked_with_r2rml(
                     &view,
@@ -381,48 +416,9 @@ where
                 .await;
         }
 
-        let single_view = self
-            .try_single_view_from_spec(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-        if let Some(mut view) = single_view {
-            let source = &spec.default_graphs[0];
-
-            if let Some(selector) = &source.graph_selector {
-                view = Self::apply_graph_selector(view, selector).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
-                })?;
-            }
-
-            let view = self
-                .apply_source_or_global_policy(view, source, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
-
-            let view = self.apply_config_defaults(view, None);
-
-            return self
-                .query_tracked_with_r2rml(
-                    &view,
-                    query_json,
-                    format_config,
-                    None,
-                    r2rml_provider,
-                    r2rml_table_provider,
-                )
-                .await;
-        }
-
-        let dataset = if qc_opts.has_any_policy_inputs() {
-            self.build_dataset_view_with_policy(&spec, &qc_opts)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
-        } else {
-            self.build_dataset_view(&spec)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
-        };
+        let dataset = self
+            .build_dataset_for_connection_tracked_r2rml(&spec, &qc_opts, r2rml_provider)
+            .await?;
 
         self.query_dataset_tracked_with_r2rml(
             &dataset,
@@ -456,7 +452,7 @@ where
         }
 
         let single_view = self
-            .try_single_view_from_spec(&spec)
+            .try_single_view_from_spec_r2rml(&spec, r2rml_provider)
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
@@ -476,7 +472,7 @@ where
         }
 
         let dataset = self
-            .build_dataset_view(&spec)
+            .build_dataset_view_r2rml(&spec, r2rml_provider)
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
@@ -590,7 +586,7 @@ where
             ));
         }
 
-        let dataset = self.build_dataset_view(&spec).await?;
+        let dataset = self.build_dataset_view_r2rml(&spec, r2rml_provider).await?;
         let dataset = apply_policy_to_dataset(dataset, policy);
         self.query_dataset_with_r2rml(&dataset, sparql, r2rml_provider, r2rml_table_provider)
             .await
@@ -651,7 +647,7 @@ where
         }
 
         let dataset = self
-            .build_dataset_view(&spec)
+            .build_dataset_view_r2rml(&spec, r2rml_provider)
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
@@ -724,7 +720,7 @@ where
         }
 
         let dataset = self
-            .build_dataset_view(&spec)
+            .build_dataset_view_r2rml(&spec, r2rml_provider)
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);

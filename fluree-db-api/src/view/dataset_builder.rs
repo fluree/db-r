@@ -9,6 +9,79 @@ use crate::{
     Result, Storage,
 };
 use chrono::DateTime;
+use fluree_db_query::r2rml::R2rmlProvider;
+
+macro_rules! build_dataset_view_from_spec {
+    (
+        $self:expr,
+        $spec:expr,
+        history_transform = $history_transform:expr,
+        load_view = $load_view:expr,
+        apply_policy = $apply_policy:expr $(,)?
+    ) => {{
+        let spec = $spec;
+
+        // History/changes queries are a Fluree dataset extension.
+        // In this mode, the "from" array specifies a (from,to) range on ONE ledger,
+        // not two distinct default graphs.
+        if let Some(range) = spec.history_range() {
+            let ledger = $self.ledger(&range.identifier).await?;
+            let latest_t = ledger.t();
+
+            let from_t = resolve_history_endpoint_t(&ledger, &range.from, latest_t).await?;
+            let to_t = resolve_history_endpoint_t(&ledger, &range.to, latest_t).await?;
+
+            let view = GraphDb::from_ledger_state(&ledger);
+            let view = ($history_transform)(view).await?;
+            Ok(DataSetDb::single(view).with_history_range(from_t, to_t))
+        } else {
+            let mut dataset_db = DataSetDb::new();
+
+            // Load default graphs, applying per-source policy and config reasoning
+            for source in &spec.default_graphs {
+                let view = ($load_view)(source).await?;
+                let view = ($apply_policy)(view, source).await?;
+                let view = $self.apply_config_defaults(view, None);
+                dataset_db = dataset_db.with_default(view);
+            }
+
+            // Load named graphs, applying per-source policy and config reasoning
+            for source in &spec.named_graphs {
+                let view = ($load_view)(source).await?;
+                let view = ($apply_policy)(view, source).await?;
+                let view = $self.apply_config_defaults(view, None);
+                // Add by identifier (primary key)
+                dataset_db = dataset_db.with_named(source.identifier.as_str(), view.clone());
+                // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
+                if let Some(alias) = &source.source_alias {
+                    dataset_db = dataset_db.with_named(alias.as_str(), view);
+                }
+            }
+
+            Ok(dataset_db)
+        }
+    }};
+}
+
+macro_rules! try_single_view_from_spec {
+    (
+        $spec:expr,
+        load_view = $load_view:expr $(,)?
+    ) => {{
+        let spec = $spec;
+        // Single default graph, no named graphs, no history range = single-ledger
+        if spec.default_graphs.len() == 1
+            && spec.named_graphs.is_empty()
+            && spec.history_range.is_none()
+        {
+            let source = &spec.default_graphs[0];
+            let view = ($load_view)(source).await?;
+            Ok(Some(view))
+        } else {
+            Ok(None)
+        }
+    }};
+}
 
 // ============================================================================
 // Dataset View Builder
@@ -38,44 +111,13 @@ where
     /// let result = fluree.query_dataset(&dataset, &query).await?;
     /// ```
     pub async fn build_dataset_view(&self, spec: &DatasetSpec) -> Result<DataSetDb> {
-        // History/changes queries are a Fluree dataset extension.
-        // In this mode, the "from" array specifies a (from,to) range on ONE ledger,
-        // not two distinct default graphs.
-        if let Some(range) = spec.history_range() {
-            let ledger = self.ledger(&range.identifier).await?;
-            let latest_t = ledger.t();
-
-            let from_t = resolve_history_endpoint_t(&ledger, &range.from, latest_t).await?;
-            let to_t = resolve_history_endpoint_t(&ledger, &range.to, latest_t).await?;
-
-            let view = GraphDb::from_ledger_state(&ledger);
-            return Ok(DataSetDb::single(view).with_history_range(from_t, to_t));
-        }
-
-        let mut dataset = DataSetDb::new();
-
-        // Load default graphs, applying per-source policy and config reasoning
-        for source in &spec.default_graphs {
-            let view = self.load_view_from_source(source).await?;
-            let view = self.maybe_apply_source_policy(view, source).await?;
-            let view = self.apply_config_defaults(view, None);
-            dataset = dataset.with_default(view);
-        }
-
-        // Load named graphs, applying per-source policy and config reasoning
-        for source in &spec.named_graphs {
-            let view = self.load_view_from_source(source).await?;
-            let view = self.maybe_apply_source_policy(view, source).await?;
-            let view = self.apply_config_defaults(view, None);
-            // Add by identifier (primary key)
-            dataset = dataset.with_named(source.identifier.as_str(), view.clone());
-            // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
-            if let Some(alias) = &source.source_alias {
-                dataset = dataset.with_named(alias.as_str(), view);
-            }
-        }
-
-        Ok(dataset)
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async { Ok::<GraphDb, ApiError>(view) },
+            load_view = |source| self.load_view_from_source(source),
+            apply_policy = |view, source| self.maybe_apply_source_policy(view, source),
+        )
     }
 
     /// Build a `DataSetDb` with policy applied to all views.
@@ -94,44 +136,16 @@ where
         spec: &DatasetSpec,
         opts: &QueryConnectionOptions,
     ) -> Result<DataSetDb> {
-        // History mode: load head view, resolve range, then wrap policy.
-        if let Some(range) = spec.history_range() {
-            let ledger = self.ledger(&range.identifier).await?;
-            let latest_t = ledger.t();
-
-            let from_t = resolve_history_endpoint_t(&ledger, &range.from, latest_t).await?;
-            let to_t = resolve_history_endpoint_t(&ledger, &range.to, latest_t).await?;
-
-            let view = GraphDb::from_ledger_state(&ledger);
-            let view = self.wrap_policy(view, opts, None).await?;
-            let view = self.apply_config_defaults(view, None);
-            return Ok(DataSetDb::single(view).with_history_range(from_t, to_t));
-        }
-
-        let mut dataset = DataSetDb::new();
-
-        // Load default graphs with policy and config reasoning (per-source overrides global)
-        for source in &spec.default_graphs {
-            let view = self.load_view_from_source(source).await?;
-            let view = self.apply_policy_with_override(view, source, opts).await?;
-            let view = self.apply_config_defaults(view, None);
-            dataset = dataset.with_default(view);
-        }
-
-        // Load named graphs with policy and config reasoning (per-source overrides global)
-        for source in &spec.named_graphs {
-            let view = self.load_view_from_source(source).await?;
-            let view = self.apply_policy_with_override(view, source, opts).await?;
-            let view = self.apply_config_defaults(view, None);
-            // Add by identifier (primary key)
-            dataset = dataset.with_named(source.identifier.as_str(), view.clone());
-            // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
-            if let Some(alias) = &source.source_alias {
-                dataset = dataset.with_named(alias.as_str(), view);
-            }
-        }
-
-        Ok(dataset)
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async {
+                let view = self.wrap_policy(view, opts, None).await?;
+                Ok::<GraphDb, ApiError>(self.apply_config_defaults(view, None))
+            },
+            load_view = |source| self.load_view_from_source(source),
+            apply_policy = |view, source| self.apply_policy_with_override(view, source, opts),
+        )
     }
 
     /// Apply per-source policy if present, otherwise no policy.
@@ -215,18 +229,10 @@ where
     ///
     /// Returns the single view if it's a single-ledger fast-path candidate.
     pub async fn try_single_view_from_spec(&self, spec: &DatasetSpec) -> Result<Option<GraphDb>> {
-        // Single default graph, no named graphs, no history range = single-ledger
-        // (load_view_from_source handles both with and without time_spec)
-        if spec.default_graphs.len() == 1
-            && spec.named_graphs.is_empty()
-            && spec.history_range.is_none()
-        {
-            let source = &spec.default_graphs[0];
-            let view = self.load_view_from_source(source).await?;
-            return Ok(Some(view));
-        }
-
-        Ok(None)
+        try_single_view_from_spec!(
+            spec,
+            load_view = |source| self.load_view_from_source(source),
+        )
     }
 
     /// Check if spec qualifies for single-ledger fast path (no time override).
@@ -237,6 +243,116 @@ where
         spec.default_graphs.len() == 1
             && spec.named_graphs.is_empty()
             && spec.default_graphs[0].time_spec.is_none()
+    }
+
+    // === R2RML-aware dataset building (uses provider for graph source detection) ===
+
+    /// Build a `DataSetDb` with R2RML graph source fallback.
+    ///
+    /// Same as `build_dataset_view` but uses the R2RML provider to detect
+    /// graph sources when a source identifier is not found as a ledger.
+    pub async fn build_dataset_view_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<DataSetDb> {
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async { Ok::<GraphDb, ApiError>(view) },
+            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
+            apply_policy = |view, source| self.maybe_apply_source_policy(view, source),
+        )
+    }
+
+    /// Build a `DataSetDb` with policy and R2RML graph source fallback.
+    pub async fn build_dataset_view_with_policy_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        opts: &QueryConnectionOptions,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<DataSetDb> {
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async {
+                let view = self.wrap_policy(view, opts, None).await?;
+                Ok::<GraphDb, ApiError>(self.apply_config_defaults(view, None))
+            },
+            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
+            apply_policy = |view, source| self.apply_policy_with_override(view, source, opts),
+        )
+    }
+
+    /// Like `try_single_view_from_spec` with R2RML graph source fallback.
+    pub async fn try_single_view_from_spec_r2rml(
+        &self,
+        spec: &DatasetSpec,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<Option<GraphDb>> {
+        try_single_view_from_spec!(
+            spec,
+            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
+        )
+    }
+
+    /// Load a view from a source with R2RML fallback.
+    async fn load_view_from_source_r2rml(
+        &self,
+        source: &dataset::GraphSource,
+        r2rml_provider: &dyn R2rmlProvider,
+    ) -> Result<GraphDb> {
+        let view = match &source.time_spec {
+            None => {
+                // Try ledger, fall back to graph source via R2RML provider
+                match self.db(&source.identifier).await {
+                    Ok(v) => v,
+                    Err(ApiError::NotFound(_)) => {
+                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
+                            .unwrap_or_else(|_| source.identifier.clone());
+                        if r2rml_provider.has_r2rml_mapping(&gs_id).await {
+                            let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
+                            let state = fluree_db_ledger::LedgerState::new(
+                                snapshot,
+                                fluree_db_novelty::Novelty::new(0),
+                            );
+                            let mut db = GraphDb::from_ledger_state(&state);
+                            db.graph_source_id = Some(gs_id.into());
+                            db
+                        } else {
+                            return Err(ApiError::NotFound(source.identifier.clone()));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Some(time_spec) => {
+                let ts = convert_time_spec(time_spec)?;
+                match self.db_at(&source.identifier, ts).await {
+                    Ok(v) => v,
+                    Err(ApiError::NotFound(_)) => {
+                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
+                            .unwrap_or_else(|_| source.identifier.clone());
+                        if r2rml_provider.has_r2rml_mapping(&gs_id).await {
+                            return Err(ApiError::query(
+                                "Time travel is not supported for graph sources. \
+                                 Remove the time specification to query at latest.",
+                            ));
+                        }
+                        return Err(ApiError::NotFound(source.identifier.clone()));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+
+        match &source.graph_selector {
+            Some(selector) => {
+                let view = Self::apply_graph_selector(view, selector)?;
+                self.resolve_and_attach_config(view).await
+            }
+            None => Ok(view),
+        }
     }
 }
 
@@ -278,6 +394,115 @@ async fn resolve_history_endpoint_t(
                 latest_t,
             )
             .await
+        }
+    }
+}
+
+// ============================================================================
+// Graph Source–Aware Dataset Builder (requires GraphSourcePublisher)
+// ============================================================================
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + fluree_db_nameservice::GraphSourcePublisher + Clone + Send + Sync + 'static,
+{
+    /// Build a `DataSetDb` from a `DatasetSpec`, falling back to graph source
+    /// resolution when a source identifier is not found as a ledger.
+    ///
+    /// Used by R2RML-enabled query entry points so that `FROM <graph-source>`
+    /// resolves transparently.
+    pub async fn build_dataset_view_with_graph_source_fallback(
+        &self,
+        spec: &DatasetSpec,
+    ) -> Result<DataSetDb> {
+        // Note: history mode remains ledger-only here (no graph source fallback).
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async { Ok::<GraphDb, ApiError>(view) },
+            load_view = |source| self.load_view_from_source_with_fallback(source),
+            apply_policy = |view, source| self.maybe_apply_source_policy(view, source),
+        )
+    }
+
+    /// Like `build_dataset_view_with_policy` but with graph source fallback.
+    pub async fn build_dataset_view_with_policy_and_graph_source_fallback(
+        &self,
+        spec: &DatasetSpec,
+        opts: &QueryConnectionOptions,
+    ) -> Result<DataSetDb> {
+        build_dataset_view_from_spec!(
+            self,
+            spec,
+            history_transform = |view| async {
+                let view = self.wrap_policy(view, opts, None).await?;
+                Ok::<GraphDb, ApiError>(self.apply_config_defaults(view, None))
+            },
+            load_view = |source| self.load_view_from_source_with_fallback(source),
+            apply_policy = |view, source| self.apply_policy_with_override(view, source, opts),
+        )
+    }
+
+    /// Like `try_single_view_from_spec` but with graph source fallback.
+    pub async fn try_single_view_from_spec_with_fallback(
+        &self,
+        spec: &DatasetSpec,
+    ) -> Result<Option<GraphDb>> {
+        try_single_view_from_spec!(
+            spec,
+            load_view = |source| self.load_view_from_source_with_fallback(source),
+        )
+    }
+
+    /// Load a view from a source, falling back to graph source resolution.
+    ///
+    /// For sources without a time spec, uses `load_graph_db_or_graph_source`.
+    /// For sources with a time spec, tries ledger first; if not found, checks
+    /// if it's a graph source and returns an explicit error (time travel not
+    /// supported for graph sources).
+    async fn load_view_from_source_with_fallback(
+        &self,
+        source: &dataset::GraphSource,
+    ) -> Result<GraphDb> {
+        let view = match &source.time_spec {
+            None => {
+                self.load_graph_db_or_graph_source(&source.identifier)
+                    .await?
+            }
+            Some(time_spec) => {
+                let ts = convert_time_spec(time_spec)?;
+                match self.db_at(&source.identifier, ts).await {
+                    Ok(v) => v,
+                    Err(ApiError::NotFound(_)) => {
+                        // Check if it's a graph source — reject time travel explicitly
+                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
+                            .unwrap_or_else(|_| source.identifier.clone());
+                        if self
+                            .nameservice()
+                            .lookup_graph_source(&gs_id)
+                            .await
+                            .map_err(|e| ApiError::internal(e.to_string()))?
+                            .is_some()
+                        {
+                            return Err(ApiError::query(
+                                "Time travel is not supported for graph sources. \
+                                 Remove the time specification to query at latest.",
+                            ));
+                        }
+                        return Err(ApiError::NotFound(source.identifier.clone()));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+
+        match &source.graph_selector {
+            Some(selector) => {
+                let view = Self::apply_graph_selector(view, selector)?;
+                self.resolve_and_attach_config(view).await
+            }
+            None => Ok(view),
         }
     }
 }

@@ -39,6 +39,8 @@ use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 pub struct GraphQueryBuilder<'a, 'g, S: Storage + 'static, N> {
     graph: &'g Graph<'a, S, N>,
     core: QueryCore<'g>,
+    /// When true, use graph source fallback for resolution (set by `with_r2rml()`).
+    graph_source_fallback: bool,
 }
 
 impl<'a, 'g, S, N> GraphQueryBuilder<'a, 'g, S, N>
@@ -51,6 +53,7 @@ where
         Self {
             graph,
             core: QueryCore::new(),
+            graph_source_fallback: false,
         }
     }
 
@@ -108,6 +111,7 @@ where
         let table_provider: Arc<dyn R2rmlTableProvider + 'g> = shared;
         self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
+        self.graph_source_fallback = true;
         self
     }
 
@@ -123,22 +127,64 @@ where
         }
     }
 
+    /// Load the view, using graph source fallback when enabled.
+    async fn load_view(&self) -> Result<crate::view::GraphDb> {
+        let result = self
+            .graph
+            .fluree
+            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
+            .await;
+
+        // If graph source fallback is enabled and the ledger wasn't found,
+        // try resolving as a graph source with a genesis snapshot.
+        #[cfg(feature = "iceberg")]
+        if self.graph_source_fallback {
+            if let Err(ApiError::NotFound(_)) = &result {
+                // Safe to call: graph_source_fallback is only set by with_r2rml()
+                // which requires N: GraphSourcePublisher. Since load_graph_db_or_graph_source
+                // is in a separate impl block with that bound, we call it via the same
+                // Fluree instance that with_r2rml() validated.
+                //
+                // However, we can't call load_graph_db_or_graph_source here because
+                // this impl block only has N: NameService. Instead, we replicate the
+                // fallback logic inline using the nameservice lookup from GraphSourcePublisher.
+                let ledger_id = &self.graph.ledger_id;
+                let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
+                    .unwrap_or_else(|_| ledger_id.to_string());
+
+                // The R2RML provider (stored in core.r2rml) can check if a graph source
+                // exists via has_r2rml_mapping. If it does, create a genesis context.
+                if let Some((r2rml, _)) = &self.core.r2rml {
+                    if r2rml.has_r2rml_mapping(&gs_id).await {
+                        let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
+                        let state = fluree_db_ledger::LedgerState::new(
+                            snapshot,
+                            fluree_db_novelty::Novelty::new(0),
+                        );
+                        let mut db = crate::view::GraphDb::from_ledger_state(&state);
+                        db.graph_source_id = Some(gs_id.into());
+                        return Ok(db);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     /// Execute the query and return raw [`QueryResult`].
     ///
     /// Loads the graph snapshot internally, then runs the query.
-    /// When R2RML is enabled, uses graph source fallback for resolution
-    /// and routes through the R2RML-aware execution path.
+    /// When R2RML is enabled (via `.with_r2rml()`), falls back to graph source
+    /// resolution if the ledger is not found, and routes through the R2RML-aware
+    /// execution path so GRAPH patterns targeting graph sources resolve.
     pub async fn execute(mut self) -> Result<QueryResult> {
         let errs = self.core.validate();
         if !errs.is_empty() {
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let view = self
-            .graph
-            .fluree
-            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
-            .await?;
+        let view = self.load_view().await?;
         let r2rml = self.core.r2rml.take();
         let input = self.core.input.take().unwrap();
         match r2rml.as_ref() {
@@ -159,11 +205,7 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let view = self
-            .graph
-            .fluree
-            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
-            .await?;
+        let view = self.load_view().await?;
         let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
@@ -201,9 +243,7 @@ where
         }
 
         let db = self
-            .graph
-            .fluree
-            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
+            .load_view()
             .await
             .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
         let r2rml = self.core.r2rml.take();

@@ -598,6 +598,34 @@ pub async fn execute_prepared<'a, 'b>(
         ctx = ctx.with_fulltext_providers(providers);
     }
 
+    // Precompute which graphs in the dataset are R2RML-backed.
+    // This avoids async calls in the scan operator hot path.
+    if let (Some(r2rml_provider), Some(dataset)) = (ctx.r2rml_provider, ctx.dataset) {
+        let mut r2rml_ids = std::collections::HashSet::new();
+        for graph_ref in dataset.default_graphs() {
+            if !r2rml_ids.contains(&graph_ref.ledger_id)
+                && r2rml_provider.has_r2rml_mapping(&graph_ref.ledger_id).await
+            {
+                r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
+            }
+        }
+        for (_, graph_ref) in dataset.named_graphs_iter() {
+            if !r2rml_ids.contains(&graph_ref.ledger_id)
+                && r2rml_provider.has_r2rml_mapping(&graph_ref.ledger_id).await
+            {
+                r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
+            }
+        }
+        ctx.r2rml_graph_ids = r2rml_ids;
+    }
+    // Also check the primary snapshot's ledger_id (for single-source graph source queries)
+    if let Some(provider) = ctx.r2rml_provider {
+        if ctx.dataset.is_none() && provider.has_r2rml_mapping(&db.snapshot.ledger_id).await {
+            ctx.r2rml_graph_ids
+                .insert(Arc::from(db.snapshot.ledger_id.as_str()));
+        }
+    }
+
     run_operator(prepared.operator, &ctx).await
 }
 
