@@ -191,55 +191,47 @@ where
                 .await;
         }
 
-        // Collect branch commits oldest-first via BranchedContentStore
-        // (branch commits live in parent namespaces).
+        // Build a BranchedContentStore for reading commits across namespaces.
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
             &branch_record,
             self.connection.storage(),
         )
         .await?;
-        let branch_commits = collect_branch_commits(
-            branch_store,
-            branch_record.commit_head_id.clone().unwrap(),
-            bp.t,
-        )
-        .await?;
-        let total_commits = branch_commits.len();
 
         // Compute source delta: all (s,p,g) tuples modified on source since branch point.
         let source_store =
             fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
         let source_delta = compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?;
 
-        // Detect conflicts for each commit upfront, before replaying anything.
-        // This ensures Abort is truly atomic — no commits are written if any
-        // commit would conflict.
-        let per_commit_conflicts: Vec<Vec<ConflictKey>> = branch_commits
-            .iter()
-            .map(|c| find_conflicting_keys(&c.flakes, &source_delta))
-            .collect();
+        // Pass 1: stream branch commits to collect lightweight summaries
+        // (CID, t, conflict keys) without retaining flake payloads in memory.
+        let summaries = scan_branch_commits(
+            branch_store.clone(),
+            branch_record.commit_head_id.clone().unwrap(),
+            bp.t,
+            &source_delta,
+        )
+        .await?;
+        let total_commits = summaries.len();
 
+        // Abort upfront if any commit conflicts — no commits will be written.
         if strategy == ConflictStrategy::Abort {
-            if let Some((i, keys)) = per_commit_conflicts
-                .iter()
-                .enumerate()
-                .find(|(_, k)| !k.is_empty())
-            {
+            if let Some(summary) = summaries.iter().find(|s| !s.conflict_keys.is_empty()) {
                 return Err(ApiError::Http {
                     status: 409,
                     message: format!(
                         "Rebase aborted: {} conflict(s) at t={} with abort strategy",
-                        keys.len(),
-                        branch_commits[i].t
+                        summary.conflict_keys.len(),
+                        summary.t
                     ),
                 });
             }
         }
 
         // Copy the source index into the branch namespace before replay.
-        // This gives the branch an index to reload against when novelty
-        // grows too large mid-rebase, avoiding unbounded memory growth.
+        // This gives the branch an index to build incrementally from when
+        // novelty grows too large mid-rebase.
         self.copy_source_index(&source_id, &branch_id, &source_record)
             .await;
 
@@ -265,31 +257,40 @@ where
             skipped: 0,
         };
 
-        // Replay loop (oldest → newest).
-        for (commit, conflicting_keys) in branch_commits.iter().zip(per_commit_conflicts) {
-            let has_conflicts = !conflicting_keys.is_empty();
+        // Pass 2: replay each commit by loading its full payload on demand.
+        for summary in &summaries {
+            let has_conflicts = !summary.conflict_keys.is_empty();
 
             if has_conflicts && strategy == ConflictStrategy::Skip {
                 report.conflicts.push(RebaseConflict {
-                    original_t: commit.t,
-                    conflict_count: conflicting_keys.len(),
-                    keys: conflicting_keys,
+                    original_t: summary.t,
+                    conflict_count: summary.conflict_keys.len(),
+                    keys: summary.conflict_keys.clone(),
                     resolution: strategy.as_str(),
                 });
                 report.skipped += 1;
                 continue;
             }
 
+            // Load the full commit payload for this single commit.
+            let commit =
+                fluree_db_novelty::load_commit_by_id(&branch_store, &summary.commit_id).await?;
+
             // Build flakes for replay, applying conflict resolution.
             let flakes = self
-                .resolve_flakes(&commit.flakes, &conflicting_keys, &strategy, &current_state)
+                .resolve_flakes(
+                    &commit.flakes,
+                    &summary.conflict_keys,
+                    &strategy,
+                    &current_state,
+                )
                 .await?;
 
             if has_conflicts {
                 report.conflicts.push(RebaseConflict {
-                    original_t: commit.t,
-                    conflict_count: conflicting_keys.len(),
-                    keys: conflicting_keys,
+                    original_t: summary.t,
+                    conflict_count: summary.conflict_keys.len(),
+                    keys: summary.conflict_keys.clone(),
                     resolution: strategy.as_str(),
                 });
             }
@@ -298,10 +299,8 @@ where
                 continue;
             }
 
-            // Stage and commit. Any failure aborts the entire rebase —
-            // partial replays with a poisoned state are worse than failing
-            // loudly.
-            current_state = self.replay_commit(current_state, flakes, commit).await?;
+            // Stage and commit. Any failure aborts the entire rebase.
+            current_state = self.replay_commit(current_state, flakes, &commit).await?;
             report.replayed += 1;
 
             // Flush novelty when it exceeds the soft threshold by building
@@ -586,18 +585,39 @@ where
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect branch commits from HEAD back to branch_point.t, oldest-first.
-async fn collect_branch_commits<C: fluree_db_core::ContentStore + Clone + 'static>(
+/// Lightweight summary of a branch commit, collected during the scan pass.
+/// Holds only the CID, `t`, and pre-computed conflict keys — not the full
+/// flake payload, so the entire branch history fits in memory.
+struct CommitSummary {
+    commit_id: ContentId,
+    t: i64,
+    conflict_keys: Vec<ConflictKey>,
+}
+
+/// Stream branch commits HEAD→oldest, extract conflict keys, and return
+/// lightweight summaries in oldest-first order. Full flake payloads are
+/// dropped after conflict key extraction so only summaries remain in memory.
+async fn scan_branch_commits<C: fluree_db_core::ContentStore + Clone + 'static>(
     store: C,
     head_id: ContentId,
     stop_at_t: i64,
-) -> Result<Vec<Commit>> {
+    source_delta: &FxHashSet<ConflictKey>,
+) -> Result<Vec<CommitSummary>> {
     let stream = trace_commits_by_id(store, head_id, stop_at_t);
     futures::pin_mut!(stream);
 
-    let mut commits: Vec<Commit> = stream.try_collect().await?;
-    commits.reverse();
-    Ok(commits)
+    let mut summaries = Vec::new();
+    while let Some(commit) = stream.try_next().await? {
+        let conflict_keys = find_conflicting_keys(&commit.flakes, source_delta);
+        summaries.push(CommitSummary {
+            commit_id: commit.id.expect("loaded commit should have an id"),
+            t: commit.t,
+            conflict_keys,
+        });
+    }
+
+    summaries.reverse();
+    Ok(summaries)
 }
 
 /// Find (s, p, g) keys from flakes that overlap with the source delta.
