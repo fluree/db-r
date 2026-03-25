@@ -1243,5 +1243,5 @@ async fn duplicate_entities_in_graph_are_deduped() {
     // Verify Alice has exactly 1 name and 1 email (not 3 of each)
     let alice = &jsonld[0];
     assert_eq!(alice["schema:name"], "Alice");
-    assert_eq!(alice["schema:email"], json!({"@id": "mailto:alice@example.org"}));
+    assert_eq!(alice["schema:email"], "alice@example.org");
 }
