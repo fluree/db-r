@@ -149,10 +149,10 @@ fn table_id() -> TableIdentifier {
 // =============================================================================
 
 /// Full lifecycle test:
-///   1. Write v1 metadata + version-hint.text pointing to v1
+///   1. Write v1 metadata + version-hint.text pointing to metadata filename
 ///   2. Resolve via SendDirectCatalogClient → get v1 metadata location
 ///   3. Read and parse metadata → verify snapshot 1
-///   4. Simulate append: write v2 metadata + update version-hint.text to 2
+///   4. Simulate append: write v2 metadata + update version-hint.text to new filename
 ///   5. Re-resolve → get v2 metadata location
 ///   6. Read and parse → verify snapshot 2 is current
 #[tokio::test]
@@ -182,7 +182,7 @@ async fn direct_catalog_full_lifecycle() {
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/v1.metadata.json", TABLE_PREFIX),
+        &format!("{}/metadata/00001-abc1-0001.metadata.json", TABLE_PREFIX),
         METADATA_V1,
     )
     .await;
@@ -190,7 +190,7 @@ async fn direct_catalog_full_lifecycle() {
         &sdk_config,
         BUCKET,
         &format!("{}/metadata/version-hint.text", TABLE_PREFIX),
-        "1",
+        "00001-abc1-0001.metadata.json",
     )
     .await;
 
@@ -208,7 +208,10 @@ async fn direct_catalog_full_lifecycle() {
 
     assert_eq!(
         response.metadata_location,
-        format!("s3://{}/{}/metadata/v1.metadata.json", BUCKET, TABLE_PREFIX),
+        format!(
+            "s3://{}/{}/metadata/00001-abc1-0001.metadata.json",
+            BUCKET, TABLE_PREFIX
+        ),
         "Should resolve to v1 metadata"
     );
     assert!(
@@ -231,7 +234,7 @@ async fn direct_catalog_full_lifecycle() {
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/v2.metadata.json", TABLE_PREFIX),
+        &format!("{}/metadata/00002-def2-0002.metadata.json", TABLE_PREFIX),
         METADATA_V2,
     )
     .await;
@@ -239,7 +242,7 @@ async fn direct_catalog_full_lifecycle() {
         &sdk_config,
         BUCKET,
         &format!("{}/metadata/version-hint.text", TABLE_PREFIX),
-        "2",
+        "00002-def2-0002.metadata.json",
     )
     .await;
 
@@ -252,7 +255,10 @@ async fn direct_catalog_full_lifecycle() {
 
     assert_eq!(
         response2.metadata_location,
-        format!("s3://{}/{}/metadata/v2.metadata.json", BUCKET, TABLE_PREFIX),
+        format!(
+            "s3://{}/{}/metadata/00002-def2-0002.metadata.json",
+            BUCKET, TABLE_PREFIX
+        ),
         "Should resolve to v2 metadata after append"
     );
 

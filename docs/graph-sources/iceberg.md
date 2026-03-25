@@ -20,7 +20,7 @@ Apache Iceberg is an open table format for huge analytical datasets. It provides
 Fluree supports two ways to discover Iceberg metadata:
 
 - **REST catalog**: discover table metadata via an Iceberg REST catalog API (e.g., Polaris).
-- **Direct S3 (no catalog server)**: bypass REST discovery and read `version-hint.text` from the table’s `metadata/` directory to resolve the current `vN.metadata.json`.
+- **Direct S3 (no catalog server)**: bypass REST discovery and read `version-hint.text` from the table’s `metadata/` directory to resolve the current metadata file.
 
 ### Rust API
 
@@ -104,16 +104,17 @@ Note the nesting: the graph source is “Iceberg” (this page), and `catalog.ty
 
 - `catalog.table_location` must be an S3 URI (`s3://` or `s3a://`) pointing to the table root directory.
 - The table must contain a `metadata/` subdirectory with:
-  - `version-hint.text` (single integer)
-  - `vN.metadata.json` files
+  - `version-hint.text` (containing the current metadata filename, e.g., `00001-abc-def.metadata.json`)
+  - The referenced `.metadata.json` file
 - Direct mode uses ambient AWS credentials (IAM roles, env vars, `~/.aws/credentials`). It does **not** support vended credentials.
 
 **How Direct metadata resolution works:**
 
 - Fluree does **not** require you to provide a path to `version-hint.text` in the config. You provide the **table root** (`table_location`), and Fluree reads:
-  - `"{table_location}/metadata/version-hint.text"` to determine the current version \(N\)
-  - `"{table_location}/metadata/vN.metadata.json"` as the table’s current metadata
-- If `version-hint.text` is missing or malformed, Direct mode fails with an error mentioning `version-hint.text`.
+  - `"{table_location}/metadata/version-hint.text"` to get the current metadata filename
+  - `"{table_location}/metadata/{filename}"` as the table’s current metadata
+- `version-hint.text` may contain a bare filename (e.g., `00001-abc.metadata.json`) or a full absolute path (`s3://...`).
+- If `version-hint.text` is missing or empty, Direct mode fails with an error mentioning `version-hint.text`.
 
 **Iceberg table setup must already exist:**
 

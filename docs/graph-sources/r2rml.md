@@ -21,7 +21,7 @@ Use `R2rmlCreateConfig` to register a graph source that combines:
 - an Iceberg table (REST catalog or Direct S3), and
 - an R2RML mapping (Turtle) that materializes table rows into RDF triples.
 
-If you use **Direct S3** mode, Fluree resolves the current Iceberg metadata by reading `metadata/version-hint.text` under the configured `table_location`, then loading `metadata/vN.metadata.json`. The Iceberg table layout must already exist at that location.
+If you use **Direct S3** mode, Fluree resolves the current Iceberg metadata by reading `metadata/version-hint.text` under the configured `table_location`, then loading the metadata file referenced by the hint. The Iceberg table layout must already exist at that location.
 
 ```rust
 use fluree_db_api::{FlureeBuilder, R2rmlCreateConfig};

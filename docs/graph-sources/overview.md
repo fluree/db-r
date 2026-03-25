@@ -174,7 +174,7 @@ Note the nesting: the outer `"type": "iceberg"` is the graph source backend; the
 }
 ```
 
-**Note:** In Direct mode, Fluree resolves the current metadata by reading `metadata/version-hint.text` under `table_location` and then loading `metadata/vN.metadata.json`. The Iceberg table’s `metadata/` directory and files must already exist.
+**Note:** In Direct mode, Fluree resolves the current metadata by reading `metadata/version-hint.text` under `table_location` (which contains the current metadata filename) and then loading that file. The Iceberg table’s `metadata/` directory and files must already exist.
 
 **Query:**
 ```json

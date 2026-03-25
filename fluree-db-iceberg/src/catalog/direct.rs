@@ -18,7 +18,7 @@
 //! );
 //!
 //! let response = client.load_table(&table_id, false).await?;
-//! // response.metadata_location → "s3://bucket/warehouse/ns/table/metadata/v42.metadata.json"
+//! // response.metadata_location → "s3://bucket/warehouse/ns/table/metadata/00042-abc.metadata.json"
 //! ```
 
 use crate::catalog::{CatalogClient, LoadTableResponse, TableIdentifier};
@@ -32,8 +32,8 @@ use std::sync::Arc;
 ///
 /// Instead of querying a REST catalog API, this client:
 /// 1. Reads `{table_location}/metadata/version-hint.text` (one small S3 GET)
-/// 2. Parses the version number from the hint file
-/// 3. Constructs the metadata path: `{table_location}/metadata/v{N}.metadata.json`
+/// 2. Uses the hint content as the metadata filename (or full path)
+/// 3. Resolves to `{table_location}/metadata/{hint}` (or the absolute path if provided)
 ///
 /// This is ideal for use cases where the writer (e.g., `iceberg-rust`) already
 /// knows the table location and a REST catalog adds unnecessary overhead.
@@ -55,9 +55,11 @@ impl<S: IcebergStorage> DirectCatalogClient<S> {
         }
     }
 
-    /// Resolve the current metadata version via `version-hint.text`.
+    /// Resolve the current metadata location via `version-hint.text`.
     ///
     /// Returns the full S3 path to the current metadata JSON file.
+    /// The hint file should contain the metadata filename
+    /// (e.g., `00001-abc-def.metadata.json`) or a full path.
     async fn resolve_metadata_location(&self) -> Result<String> {
         let hint_path = format!("{}/metadata/version-hint.text", self.table_location);
         let hint_bytes = self.storage.read(&hint_path).await.map_err(|e| {
@@ -67,21 +69,17 @@ impl<S: IcebergStorage> DirectCatalogClient<S> {
             ))
         })?;
 
-        let version_str = std::str::from_utf8(&hint_bytes)
+        let hint = std::str::from_utf8(&hint_bytes)
             .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {}", e)))?
             .trim();
 
-        let version: u32 = version_str.parse().map_err(|e| {
-            IcebergError::Metadata(format!(
-                "version-hint.text contains invalid version '{}': {}",
-                version_str, e
-            ))
-        })?;
+        if hint.is_empty() {
+            return Err(IcebergError::Metadata(
+                "version-hint.text is empty".to_string(),
+            ));
+        }
 
-        Ok(format!(
-            "{}/metadata/v{}.metadata.json",
-            self.table_location, version
-        ))
+        Ok(resolve_hint_to_metadata_path(hint, &self.table_location))
     }
 }
 
@@ -154,7 +152,9 @@ impl<S: SendIcebergStorage> SendDirectCatalogClient<S> {
         }
     }
 
-    /// Resolve the current metadata version via `version-hint.text`.
+    /// Resolve the current metadata location via `version-hint.text`.
+    ///
+    /// See [`DirectCatalogClient`] for format details.
     async fn resolve_metadata_location(&self) -> Result<String> {
         let hint_path = format!("{}/metadata/version-hint.text", self.table_location);
         let hint_bytes = self.storage.read(&hint_path).await.map_err(|e| {
@@ -164,21 +164,17 @@ impl<S: SendIcebergStorage> SendDirectCatalogClient<S> {
             ))
         })?;
 
-        let version_str = std::str::from_utf8(&hint_bytes)
+        let hint = std::str::from_utf8(&hint_bytes)
             .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {}", e)))?
             .trim();
 
-        let version: u32 = version_str.parse().map_err(|e| {
-            IcebergError::Metadata(format!(
-                "version-hint.text contains invalid version '{}': {}",
-                version_str, e
-            ))
-        })?;
+        if hint.is_empty() {
+            return Err(IcebergError::Metadata(
+                "version-hint.text is empty".to_string(),
+            ));
+        }
 
-        Ok(format!(
-            "{}/metadata/v{}.metadata.json",
-            self.table_location, version
-        ))
+        Ok(resolve_hint_to_metadata_path(hint, &self.table_location))
     }
 }
 
@@ -221,6 +217,21 @@ impl<S: SendIcebergStorage + 'static> SendCatalogClient for SendDirectCatalogCli
     }
 }
 
+/// Resolve a version-hint.text value to a full metadata path.
+///
+/// Accepts two formats:
+/// - **Filename** (e.g., `"00001-abc-def.metadata.json"`) →
+///   `{table_location}/metadata/00001-abc-def.metadata.json`
+/// - **Full path** (e.g., `"s3://bucket/.../00001-abc.metadata.json"`) →
+///   returned as-is
+fn resolve_hint_to_metadata_path(hint: &str, table_location: &str) -> String {
+    if hint.contains("://") {
+        hint.to_string()
+    } else {
+        format!("{}/metadata/{}", table_location, hint)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,7 +240,10 @@ mod tests {
     #[tokio::test]
     async fn test_direct_catalog_resolves_version_hint() {
         let mut storage = MemoryStorage::new();
-        storage.add_file("s3://bucket/table/metadata/version-hint.text", "5");
+        storage.add_file(
+            "s3://bucket/table/metadata/version-hint.text",
+            "00005-abcd-1234.metadata.json",
+        );
         // We don't need the actual metadata file for load_table — just the location
         let client = DirectCatalogClient::new("s3://bucket/table".to_string(), Arc::new(storage));
 
@@ -241,7 +255,7 @@ mod tests {
         let response = client.load_table(&table_id, false).await.unwrap();
         assert_eq!(
             response.metadata_location,
-            "s3://bucket/table/metadata/v5.metadata.json"
+            "s3://bucket/table/metadata/00005-abcd-1234.metadata.json"
         );
         assert!(response.credentials.is_none());
     }
@@ -263,30 +277,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_direct_catalog_malformed_version_hint() {
+    async fn test_direct_catalog_uuid_metadata_filename_hint() {
+        // UUID-based naming: version-hint.text contains the full filename
+        // (standard format used by Spark, iceberg-rust, AWS Glue, etc.)
         let mut storage = MemoryStorage::new();
         storage.add_file(
             "s3://bucket/table/metadata/version-hint.text",
-            "not-a-number",
+            "00001-abcd-1234.metadata.json",
         );
-
-        let client = DirectCatalogClient::new("s3://bucket/table".to_string(), Arc::new(storage));
-
-        let table_id = TableIdentifier {
-            namespace: "ns".to_string(),
-            table: "table".to_string(),
-        };
-
-        let result = client.load_table(&table_id, false).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("invalid version"), "Error: {}", err_msg);
-    }
-
-    #[tokio::test]
-    async fn test_direct_catalog_version_hint_with_whitespace() {
-        let mut storage = MemoryStorage::new();
-        storage.add_file("s3://bucket/table/metadata/version-hint.text", "42\n");
 
         let client = DirectCatalogClient::new("s3://bucket/table".to_string(), Arc::new(storage));
 
@@ -298,7 +296,52 @@ mod tests {
         let response = client.load_table(&table_id, false).await.unwrap();
         assert_eq!(
             response.metadata_location,
-            "s3://bucket/table/metadata/v42.metadata.json"
+            "s3://bucket/table/metadata/00001-abcd-1234.metadata.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_direct_catalog_full_path_hint() {
+        // Full absolute path in version-hint.text
+        let mut storage = MemoryStorage::new();
+        storage.add_file(
+            "s3://bucket/table/metadata/version-hint.text",
+            "s3://bucket/table/metadata/00002-efgh-5678.metadata.json",
+        );
+
+        let client = DirectCatalogClient::new("s3://bucket/table".to_string(), Arc::new(storage));
+
+        let table_id = TableIdentifier {
+            namespace: "ns".to_string(),
+            table: "table".to_string(),
+        };
+
+        let response = client.load_table(&table_id, false).await.unwrap();
+        assert_eq!(
+            response.metadata_location,
+            "s3://bucket/table/metadata/00002-efgh-5678.metadata.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_direct_catalog_version_hint_with_whitespace() {
+        let mut storage = MemoryStorage::new();
+        storage.add_file(
+            "s3://bucket/table/metadata/version-hint.text",
+            "00042-efgh-5678.metadata.json\n",
+        );
+
+        let client = DirectCatalogClient::new("s3://bucket/table".to_string(), Arc::new(storage));
+
+        let table_id = TableIdentifier {
+            namespace: "ns".to_string(),
+            table: "table".to_string(),
+        };
+
+        let response = client.load_table(&table_id, false).await.unwrap();
+        assert_eq!(
+            response.metadata_location,
+            "s3://bucket/table/metadata/00042-efgh-5678.metadata.json"
         );
     }
 

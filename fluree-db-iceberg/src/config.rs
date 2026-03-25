@@ -147,7 +147,7 @@ impl IcebergGsConfig {
 /// - `Rest` — discover metadata via an Iceberg REST catalog API (e.g., Polaris).
 /// - `Direct` — metadata location is already known; the engine reads
 ///   `version-hint.text` from the table's metadata directory to resolve the
-///   current `vN.metadata.json`, making this config set-and-forget.
+///   current metadata file, making this config set-and-forget.
 ///
 /// # Serde
 ///
@@ -172,7 +172,7 @@ pub enum CatalogConfig {
 
     /// Metadata location is already known (e.g., from iceberg-rust commit).
     /// The engine reads `version-hint.text` from the metadata directory
-    /// to resolve the current `vN.metadata.json`.
+    /// to resolve the current metadata file.
     Direct {
         /// S3 prefix for the table root directory.
         /// Must contain a `metadata/` subdirectory with Iceberg metadata files.
