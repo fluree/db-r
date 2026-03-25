@@ -885,21 +885,35 @@ where
                     .map(|h| h.entries())
                     .unwrap_or(&[]);
 
+                // Build lang_id → tag lookup for language resolution.
+                let lang_tags: std::collections::HashMap<u16, String> = novelty
+                    .shared
+                    .languages
+                    .iter()
+                    .map(|(lang_id, tag)| (lang_id, tag.to_string()))
+                    .collect();
+
+                // Group by (g_id, p_id, lang_id) — one arena per language per predicate.
                 let mut ft_grouped: BTreeMap<
-                    (u16, u32),
+                    (u16, u32, u16),
                     Vec<&crate::fulltext_hook::FulltextEntry>,
                 > = BTreeMap::new();
                 for entry in fulltext_entries {
                     ft_grouped
-                        .entry((entry.g_id, entry.p_id))
+                        .entry((entry.g_id, entry.p_id, entry.lang_id))
                         .or_default()
                         .push(entry);
                 }
 
-                for ((g_id, p_id), group_entries) in ft_grouped {
+                for ((g_id, p_id, lang_id), group_entries) in ft_grouped {
+                    let lang = super::fulltext::resolve_lang_id(lang_id, &lang_tags);
+
                     let ga_ref = arenas_by_gid.get(&g_id);
-                    let existing_ref =
-                        ga_ref.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+                    let existing_ref = ga_ref.and_then(|a| {
+                        a.fulltext
+                            .iter()
+                            .find(|f| f.p_id == p_id && f.lang_id == lang_id)
+                    });
 
                     let prior_arena = if let Some(ft_ref) = existing_ref {
                         match content_store.get(&ft_ref.arena_cid).await {
@@ -908,12 +922,12 @@ where
                                     &blob,
                                 )
                                 .unwrap_or_else(|e| {
-                                    tracing::warn!(p_id, error = %e, "failed to decode fulltext arena, starting fresh");
+                                    tracing::warn!(p_id, lang_id, error = %e, "failed to decode fulltext arena, starting fresh");
                                     fluree_db_binary_index::arena::fulltext::FulltextArena::new()
                                 })
                             }
                             Err(e) => {
-                                tracing::warn!(p_id, error = %e, "failed to fetch fulltext arena, starting fresh");
+                                tracing::warn!(p_id, lang_id, error = %e, "failed to fetch fulltext arena, starting fresh");
                                 fluree_db_binary_index::arena::fulltext::FulltextArena::new()
                             }
                         }
@@ -925,11 +939,16 @@ where
                         &prior_arena,
                         &group_entries,
                         &novelty.fulltext_string_bytes,
+                        lang,
                     );
 
                     if arena.is_empty() {
                         if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
-                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                            if let Some(pos) = ga
+                                .fulltext
+                                .iter()
+                                .position(|f| f.p_id == p_id && f.lang_id == lang_id)
+                            {
                                 let old = &ga.fulltext[pos];
                                 root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
                                 ga.fulltext.remove(pos);
@@ -955,7 +974,11 @@ where
                             ))
                         })?;
 
-                    let new_ref = FulltextArenaRef { p_id, arena_cid };
+                    let new_ref = FulltextArenaRef {
+                        p_id,
+                        lang_id,
+                        arena_cid,
+                    };
 
                     let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
                         g_id,
@@ -965,18 +988,25 @@ where
                         fulltext: vec![],
                     });
 
-                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                    if let Some(pos) = ga
+                        .fulltext
+                        .iter()
+                        .position(|f| f.p_id == p_id && f.lang_id == lang_id)
+                    {
                         let old = &ga.fulltext[pos];
                         root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
                         ga.fulltext[pos] = new_ref;
                     } else {
                         ga.fulltext.push(new_ref);
-                        ga.fulltext.sort_by_key(|f| f.p_id);
+                        ga.fulltext
+                            .sort_by(|a, b| a.p_id.cmp(&b.p_id).then(a.lang_id.cmp(&b.lang_id)));
                     }
 
                     tracing::info!(
                         g_id,
                         p_id,
+                        lang_id,
+                        %lang,
                         docs = arena.doc_count(),
                         terms = arena.terms().len(),
                         "incremental V6: fulltext arena rebuilt"

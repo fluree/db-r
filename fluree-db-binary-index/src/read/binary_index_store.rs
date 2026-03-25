@@ -20,10 +20,16 @@ use fluree_db_core::GraphId;
 use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
 use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
 
+use crate::arena::fulltext::FulltextArena;
 use crate::dict::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
 use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
 use crate::dict::pack_reader::ForwardPackReader;
 use crate::dict::DictTreeReader;
+
+/// Per-predicate multi-language fulltext provider map.
+///
+/// Keys are `(g_id, p_id)`, values are `Vec<(lang_id, arena)>` pairs.
+pub type FulltextProviderMap = HashMap<(GraphId, u32), Vec<(u16, Arc<FulltextArena>)>>;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
 use crate::format::index_root::{IndexRoot, OTypeTableEntry};
 use crate::format::run_record::RunSortOrder;
@@ -218,7 +224,8 @@ struct GraphIndex {
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
-    fulltext: HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
+    /// Per-(p_id, lang_id) fulltext arenas.
+    fulltext: HashMap<(u32, u16), Arc<crate::arena::fulltext::FulltextArena>>,
 }
 
 // ============================================================================
@@ -1227,15 +1234,15 @@ impl BinaryIndexStore {
 
     /// Fulltext provider map for query context configuration.
     ///
-    /// Returns a map keyed by `(g_id, p_id)` tuple, matching the
-    /// `ContextConfig::fulltext_providers` expected type.
-    pub fn fulltext_provider_map(
-        &self,
-    ) -> HashMap<(GraphId, u32), Arc<crate::arena::fulltext::FulltextArena>> {
-        let mut map = HashMap::new();
+    /// Returns a map keyed by `(g_id, p_id)` → Vec of `(lang_id, arena)` pairs,
+    /// supporting multi-language fulltext search.
+    pub fn fulltext_provider_map(&self) -> FulltextProviderMap {
+        let mut map: FulltextProviderMap = HashMap::new();
         for (g_id, gi) in &self.graph_indexes {
-            for (p_id, arena) in &gi.fulltext {
-                map.insert((*g_id, *p_id), Arc::clone(arena));
+            for (&(p_id, lang_id), arena) in &gi.fulltext {
+                map.entry((*g_id, p_id))
+                    .or_default()
+                    .push((lang_id, Arc::clone(arena)));
             }
         }
         map
@@ -1802,7 +1809,8 @@ struct LoadedArenas {
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
-    fulltext: HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
+    /// Per-(p_id, lang_id) fulltext arenas.
+    fulltext: HashMap<(u32, u16), Arc<crate::arena::fulltext::FulltextArena>>,
 }
 
 /// Load per-graph specialty arenas from GraphArenaRefs.
@@ -1907,7 +1915,7 @@ async fn load_per_graph_arenas(
             let bytes =
                 fetch_cached_bytes(cs.as_ref(), &ft_ref.arena_cid, cache_dir, "fta").await?;
             let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
-            fulltext.insert(ft_ref.p_id, Arc::new(arena));
+            fulltext.insert((ft_ref.p_id, ft_ref.lang_id), Arc::new(arena));
         }
 
         result.insert(

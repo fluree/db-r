@@ -561,7 +561,8 @@ mod tests {
             metric: None
         }));
         assert!(!backend.supports(&QueryVariant::Bm25 {
-            text: "test".to_string()
+            text: "test".to_string(),
+            language: None,
         }));
     }
 
@@ -577,6 +578,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "test".to_string(),
+                    language: None,
                 },
                 10,
                 None,

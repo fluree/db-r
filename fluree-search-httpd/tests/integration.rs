@@ -264,13 +264,10 @@ mod http_tests {
     async fn handle_capabilities(State(state): State<Arc<TestAppState>>) -> impl IntoResponse {
         use fluree_search_protocol::Capabilities;
 
-        let capabilities = Capabilities {
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            bm25_analyzer_version: fluree_search_protocol::BM25_ANALYZER_VERSION.to_string(),
-            supported_query_kinds: vec!["bm25".to_string()],
-            max_limit: state.max_limit,
-            max_timeout_ms: state.max_timeout_ms,
-        };
+        let mut capabilities = Capabilities::new();
+        capabilities.supported_query_kinds = vec!["bm25".to_string()];
+        capabilities.max_limit = state.max_limit;
+        capabilities.max_timeout_ms = state.max_timeout_ms;
 
         Json(capabilities)
     }

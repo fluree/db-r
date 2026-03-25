@@ -486,7 +486,7 @@ pub fn eval_fulltext<R: RowAccess>(
             if ObjKind::from_u8(*o_kind) == ObjKind::LEX_ID {
                 if let Some(ctx) = ctx {
                     let g_id = ctx.binary_g_id;
-                    if let Some(arena) = ctx
+                    if let Some(arenas) = ctx
                         .fulltext_providers
                         .and_then(|providers| providers.get(&(g_id, *p_id)))
                     {
@@ -497,29 +497,42 @@ pub fn eval_fulltext<R: RowAccess>(
 
                         let delta = get_or_build_delta(ctx, g_id, *p_id);
 
-                        if let Some(bow) = arena.doc_bow(*o_key as u32) {
-                            // Indexed doc: score directly from arena BoW
-                            let score =
-                                score_bm25_indexed(arena, bow, &query_terms, delta.as_deref());
-                            return Ok(Some(ComparableValue::Double(score)));
-                        }
-
-                        // Doc not in arena (novelty doc appearing as EncodedLit — rare).
-                        // Decode string, analyze, score with unified BM25.
-                        if let Some(gv) = ctx.graph_view() {
-                            if let Ok(FlakeValue::String(text)) =
-                                gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
-                            {
-                                let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(&text);
-                                let doc_len = doc_term_freqs.values().sum::<u32>();
-                                let score = score_bm25_novelty(
-                                    &doc_term_freqs,
-                                    doc_len,
-                                    &query_terms,
+                        // Search all language arenas for this doc's string_id.
+                        // A doc will exist in exactly one arena (matching its lang_id).
+                        for (_, arena) in arenas {
+                            if let Some(bow) = arena.doc_bow(*o_key as u32) {
+                                let score = score_bm25_indexed(
                                     arena,
+                                    bow,
+                                    &query_terms,
                                     delta.as_deref(),
                                 );
                                 return Ok(Some(ComparableValue::Double(score)));
+                            }
+                        }
+
+                        // Doc not in any arena (novelty doc appearing as EncodedLit — rare).
+                        // Decode string, analyze, score with unified BM25 using the first arena
+                        // for corpus stats.
+                        if let Some((_, arena)) = arenas.first() {
+                            if let Some(gv) = ctx.graph_view() {
+                                if let Ok(FlakeValue::String(text)) = gv
+                                    .decode_value_from_kind(
+                                        *o_kind, *o_key, *p_id, *dt_id, *lang_id,
+                                    )
+                                {
+                                    let doc_term_freqs =
+                                        ENGLISH_ANALYZER.analyze_to_term_freqs(&text);
+                                    let doc_len = doc_term_freqs.values().sum::<u32>();
+                                    let score = score_bm25_novelty(
+                                        &doc_term_freqs,
+                                        doc_len,
+                                        &query_terms,
+                                        arena,
+                                        delta.as_deref(),
+                                    );
+                                    return Ok(Some(ComparableValue::Double(score)));
+                                }
                             }
                         }
                     }
@@ -566,26 +579,28 @@ pub fn eval_fulltext<R: RowAccess>(
             // If p_id is available (from early materialization), use unified BM25
             if let (Some(p_id), Some(ctx)) = (lit_p_id, ctx) {
                 let g_id = ctx.binary_g_id;
-                if let Some(arena) = ctx
+                if let Some(arenas) = ctx
                     .fulltext_providers
                     .and_then(|providers| providers.get(&(g_id, *p_id)))
                 {
-                    let query_terms = analyze_and_dedup_query(&query_str);
-                    if query_terms.is_empty() {
-                        return Ok(Some(ComparableValue::Double(0.0)));
-                    }
+                    if let Some((_, arena)) = arenas.first() {
+                        let query_terms = analyze_and_dedup_query(&query_str);
+                        if query_terms.is_empty() {
+                            return Ok(Some(ComparableValue::Double(0.0)));
+                        }
 
-                    let delta = get_or_build_delta(ctx, g_id, *p_id);
-                    let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(text);
-                    let doc_len = doc_term_freqs.values().sum::<u32>();
-                    let score = score_bm25_novelty(
-                        &doc_term_freqs,
-                        doc_len,
-                        &query_terms,
-                        arena,
-                        delta.as_deref(),
-                    );
-                    return Ok(Some(ComparableValue::Double(score)));
+                        let delta = get_or_build_delta(ctx, g_id, *p_id);
+                        let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(text);
+                        let doc_len = doc_term_freqs.values().sum::<u32>();
+                        let score = score_bm25_novelty(
+                            &doc_term_freqs,
+                            doc_len,
+                            &query_terms,
+                            arena,
+                            delta.as_deref(),
+                        );
+                        return Ok(Some(ComparableValue::Double(score)));
+                    }
                 }
             }
 

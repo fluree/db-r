@@ -181,6 +181,7 @@ impl CommitResolver {
                     record.dt,
                     record.o_kind,
                     record.o_key,
+                    record.lang_id,
                     t as i64,
                     record.op != 0,
                 );
@@ -1237,6 +1238,7 @@ impl SharedResolverState {
                     record.dt,
                     record.o_kind,
                     record.o_key,
+                    record.lang_id,
                     t as i64,
                     record.op != 0,
                 );

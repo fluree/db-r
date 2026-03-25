@@ -1021,12 +1021,13 @@ fn write_graph_arenas_v5(buf: &mut Vec<u8>, ga: &GraphArenaRefs) {
             write_cid(buf, leaf_cid);
         }
     }
-    // fulltext
+    // fulltext (sorted by (p_id, lang_id))
     let mut sorted_ft = ga.fulltext.clone();
-    sorted_ft.sort_by_key(|f| f.p_id);
+    sorted_ft.sort_by(|a, b| a.p_id.cmp(&b.p_id).then(a.lang_id.cmp(&b.lang_id)));
     buf.extend_from_slice(&(sorted_ft.len() as u16).to_le_bytes());
     for ftr in &sorted_ft {
         buf.extend_from_slice(&ftr.p_id.to_le_bytes());
+        buf.extend_from_slice(&ftr.lang_id.to_le_bytes());
         write_cid(buf, &ftr.arena_cid);
     }
 }
@@ -1079,13 +1080,18 @@ fn read_graph_arenas_v5(data: &[u8], pos: &mut usize) -> io::Result<GraphArenaRe
             leaflets,
         });
     }
-    // fulltext
+    // fulltext (with lang_id)
     let ft_count = read_u16_at(data, pos)? as usize;
     let mut fulltext = Vec::with_capacity(ft_count);
     for _ in 0..ft_count {
         let p_id = read_u32_at(data, pos)?;
+        let lang_id = read_u16_at(data, pos)?;
         let arena_cid = read_cid(data, pos)?;
-        fulltext.push(FulltextArenaRef { p_id, arena_cid });
+        fulltext.push(FulltextArenaRef {
+            p_id,
+            lang_id,
+            arena_cid,
+        });
     }
     Ok(GraphArenaRefs {
         g_id,

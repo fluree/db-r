@@ -16,7 +16,7 @@ use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_binary_index::{BinaryIndexStore, FulltextArena};
+use fluree_db_binary_index::{BinaryIndexStore, FulltextProviderMap};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, StatsView, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
@@ -480,8 +480,8 @@ pub struct ContextConfig<'a, 'b> {
     /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
     /// Fulltext BoW arenas for `fulltext()` BM25 scoring.
-    /// Keys are `(g_id, p_id)` pairs.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Keys are `(g_id, p_id)`, values are per-language arenas.
+    pub fulltext_providers: Option<&'a FulltextProviderMap>,
 }
 
 /// Parameters for query execution with dataset, policy, and search providers.

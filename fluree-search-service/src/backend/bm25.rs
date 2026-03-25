@@ -92,8 +92,6 @@ pub struct Bm25Backend<L: IndexLoader> {
     cache: IndexCache,
     /// Semaphore to limit concurrent index loads.
     load_semaphore: Semaphore,
-    /// Text analyzer for query processing.
-    analyzer: Analyzer,
     /// Configuration.
     config: Bm25BackendConfig,
 }
@@ -108,7 +106,6 @@ impl<L: IndexLoader> Bm25Backend<L> {
                 Duration::from_secs(config.cache_ttl_secs),
             ),
             load_semaphore: Semaphore::new(config.max_concurrent_loads),
-            analyzer: Analyzer::english_default(),
             config,
         }
     }
@@ -224,9 +221,16 @@ impl<L: IndexLoader> SearchBackend for Bm25Backend<L> {
         sync: bool,
         timeout_ms: Option<u64>,
     ) -> Result<(i64, Vec<SearchHit>)> {
-        // Extract query text
-        let query_text = match query {
-            QueryVariant::Bm25 { text } => text,
+        // Extract query text and language
+        let (query_text, lang) = match query {
+            QueryVariant::Bm25 { text, language } => {
+                use fluree_db_query::bm25::analyzer::Language;
+                let lang = language
+                    .as_deref()
+                    .map(Language::from_bcp47)
+                    .unwrap_or(Language::English);
+                (text, lang)
+            }
             _ => {
                 return Err(ServiceError::InvalidRequest {
                     message: "BM25 backend only supports Bm25 queries".to_string(),
@@ -244,8 +248,9 @@ impl<L: IndexLoader> SearchBackend for Bm25Backend<L> {
         // Load the index (from cache or storage)
         let index = self.get_or_load_index(graph_source_id, index_t).await?;
 
-        // Analyze query
-        let terms = self.analyzer.analyze_to_strings(query_text);
+        // Analyze query with language-appropriate analyzer
+        let analyzer = Analyzer::for_language(lang);
+        let terms = analyzer.analyze_to_strings(query_text);
         if terms.is_empty() {
             return Ok((index_t, vec![]));
         }
@@ -379,6 +384,7 @@ mod tests {
                 "products:main",
                 &QueryVariant::Bm25 {
                     text: "wireless".to_string(),
+                    language: None,
                 },
                 10,
                 None,
@@ -420,6 +426,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "old".to_string(),
+                    language: None,
                 },
                 10,
                 Some(150),
@@ -445,6 +452,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "the a an".to_string(),
+                    language: None,
                 },
                 10,
                 None,
@@ -470,6 +478,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "wireless".to_string(),
+                    language: None,
                 },
                 10,
                 Some(100),
@@ -497,6 +506,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "wireless".to_string(),
+                    language: None,
                 },
                 10,
                 None,
@@ -512,6 +522,7 @@ mod tests {
                 "search:main",
                 &QueryVariant::Bm25 {
                     text: "headphones".to_string(),
+                    language: None,
                 },
                 10,
                 None,
@@ -531,7 +542,8 @@ mod tests {
         let backend = Bm25Backend::with_defaults(loader);
 
         assert!(backend.supports(&QueryVariant::Bm25 {
-            text: "test".to_string()
+            text: "test".to_string(),
+            language: None,
         }));
         assert!(!backend.supports(&QueryVariant::Vector {
             vector: vec![1.0],

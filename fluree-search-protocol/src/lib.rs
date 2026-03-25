@@ -32,6 +32,7 @@
 //!     timeout_ms: Some(5000),
 //!     query: QueryVariant::Bm25 {
 //!         text: "wireless headphones".to_string(),
+//!         language: None,
 //!     },
 //! };
 //! ```

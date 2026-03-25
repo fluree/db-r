@@ -134,10 +134,12 @@ pub struct SpatialArenaRef {
     pub leaflets: Vec<ContentId>,
 }
 
-/// Fulltext arena ref for one (graph, predicate) pair.
+/// Fulltext arena ref for one (graph, predicate, language) tuple.
 #[derive(Debug, Clone)]
 pub struct FulltextArenaRef {
     pub p_id: u32,
+    /// Language tag ID (0 = none / default English).
+    pub lang_id: u16,
     /// CID of the FTA1 blob.
     pub arena_cid: ContentId,
 }

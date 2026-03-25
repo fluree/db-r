@@ -1,11 +1,15 @@
-//! Text analyzer (default English)
+//! Multi-lingual text analyzer for BM25 scoring and fulltext indexing.
 //!
-//! Implements the default English text analysis pipeline used for BM25 scoring
-//! and fulltext arena building:
+//! Implements the text analysis pipeline used for BM25 scoring and fulltext
+//! arena building:
 //! 1. Lowercase (in tokenizer)
 //! 2. Split on `[^\w]+` (regex word split)
-//! 3. Stopword filtering
-//! 4. Snowball stemming
+//! 3. Stopword filtering (per-language)
+//! 4. Snowball stemming (per-language)
+//!
+//! Supports all 18 Snowball languages plus a no-stemmer fallback for
+//! unsupported languages. The `Language` enum maps BCP-47 tags to the
+//! appropriate pipeline components.
 //!
 //! This module is the single source of truth for text analysis. Both the
 //! query-time BM25 scorer (`fluree-db-query`) and the index-time fulltext
@@ -18,6 +22,189 @@ use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rust_stemmers::{Algorithm, Stemmer};
+
+// ============================================================================
+// Language
+// ============================================================================
+
+/// Supported text analysis languages.
+///
+/// Each variant maps to a Snowball stemming algorithm and a language-specific
+/// stopword list. `Unknown` is used for languages without Snowball support
+/// (e.g., Chinese, Japanese) — it applies tokenization only, with no stemming
+/// and no stopword removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Arabic,
+    Danish,
+    Dutch,
+    English,
+    Finnish,
+    French,
+    German,
+    Greek,
+    Hungarian,
+    Italian,
+    Norwegian,
+    Portuguese,
+    Romanian,
+    Russian,
+    Spanish,
+    Swedish,
+    Tamil,
+    Turkish,
+    /// Fallback for unsupported languages: tokenize + lowercase only.
+    Unknown,
+}
+
+/// All languages that have Snowball stemmer support.
+pub const SUPPORTED_LANGUAGES: &[Language] = &[
+    Language::Arabic,
+    Language::Danish,
+    Language::Dutch,
+    Language::English,
+    Language::Finnish,
+    Language::French,
+    Language::German,
+    Language::Greek,
+    Language::Hungarian,
+    Language::Italian,
+    Language::Norwegian,
+    Language::Portuguese,
+    Language::Romanian,
+    Language::Russian,
+    Language::Spanish,
+    Language::Swedish,
+    Language::Tamil,
+    Language::Turkish,
+];
+
+impl Language {
+    /// Parse a BCP-47 language tag into a `Language`.
+    ///
+    /// Matches on the primary subtag only (e.g., `"fr-CA"` → `French`).
+    /// Returns `Unknown` for unrecognized tags.
+    pub fn from_bcp47(tag: &str) -> Self {
+        // Extract primary subtag (everything before the first '-')
+        let primary = tag.split('-').next().unwrap_or(tag);
+        match primary {
+            "ar" => Self::Arabic,
+            "da" => Self::Danish,
+            "nl" => Self::Dutch,
+            "en" => Self::English,
+            "fi" => Self::Finnish,
+            "fr" => Self::French,
+            "de" => Self::German,
+            "el" => Self::Greek,
+            "hu" => Self::Hungarian,
+            "it" => Self::Italian,
+            "nb" | "nn" | "no" => Self::Norwegian,
+            "pt" => Self::Portuguese,
+            "ro" => Self::Romanian,
+            "ru" => Self::Russian,
+            "es" => Self::Spanish,
+            "sv" => Self::Swedish,
+            "ta" => Self::Tamil,
+            "tr" => Self::Turkish,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Returns the canonical BCP-47 primary subtag for this language.
+    ///
+    /// Returns `None` for `Unknown`.
+    pub fn tag(self) -> Option<&'static str> {
+        match self {
+            Self::Arabic => Some("ar"),
+            Self::Danish => Some("da"),
+            Self::Dutch => Some("nl"),
+            Self::English => Some("en"),
+            Self::Finnish => Some("fi"),
+            Self::French => Some("fr"),
+            Self::German => Some("de"),
+            Self::Greek => Some("el"),
+            Self::Hungarian => Some("hu"),
+            Self::Italian => Some("it"),
+            Self::Norwegian => Some("nb"),
+            Self::Portuguese => Some("pt"),
+            Self::Romanian => Some("ro"),
+            Self::Russian => Some("ru"),
+            Self::Spanish => Some("es"),
+            Self::Swedish => Some("sv"),
+            Self::Tamil => Some("ta"),
+            Self::Turkish => Some("tr"),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Returns the Snowball stemming algorithm for this language.
+    ///
+    /// Returns `None` for `Unknown`.
+    pub fn algorithm(self) -> Option<Algorithm> {
+        match self {
+            Self::Arabic => Some(Algorithm::Arabic),
+            Self::Danish => Some(Algorithm::Danish),
+            Self::Dutch => Some(Algorithm::Dutch),
+            Self::English => Some(Algorithm::English),
+            Self::Finnish => Some(Algorithm::Finnish),
+            Self::French => Some(Algorithm::French),
+            Self::German => Some(Algorithm::German),
+            Self::Greek => Some(Algorithm::Greek),
+            Self::Hungarian => Some(Algorithm::Hungarian),
+            Self::Italian => Some(Algorithm::Italian),
+            Self::Norwegian => Some(Algorithm::Norwegian),
+            Self::Portuguese => Some(Algorithm::Portuguese),
+            Self::Romanian => Some(Algorithm::Romanian),
+            Self::Russian => Some(Algorithm::Russian),
+            Self::Spanish => Some(Algorithm::Spanish),
+            Self::Swedish => Some(Algorithm::Swedish),
+            Self::Tamil => Some(Algorithm::Tamil),
+            Self::Turkish => Some(Algorithm::Turkish),
+            Self::Unknown => None,
+        }
+    }
+
+    /// Returns `true` if this language has Snowball stemmer support.
+    pub fn has_stemmer(self) -> bool {
+        self.algorithm().is_some()
+    }
+
+    /// Returns the analyzer version string for this language.
+    ///
+    /// Used in the search protocol to verify index/query analyzer compatibility.
+    pub fn analyzer_version(self) -> &'static str {
+        match self {
+            Self::Arabic => "arabic_v1",
+            Self::Danish => "danish_v1",
+            Self::Dutch => "dutch_v1",
+            Self::English => "english_default_v1",
+            Self::Finnish => "finnish_v1",
+            Self::French => "french_v1",
+            Self::German => "german_v1",
+            Self::Greek => "greek_v1",
+            Self::Hungarian => "hungarian_v1",
+            Self::Italian => "italian_v1",
+            Self::Norwegian => "norwegian_v1",
+            Self::Portuguese => "portuguese_v1",
+            Self::Romanian => "romanian_v1",
+            Self::Russian => "russian_v1",
+            Self::Spanish => "spanish_v1",
+            Self::Swedish => "swedish_v1",
+            Self::Tamil => "tamil_v1",
+            Self::Turkish => "turkish_v1",
+            Self::Unknown => "nostem_v1",
+        }
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.tag() {
+            Some(tag) => write!(f, "{tag}"),
+            None => write!(f, "unknown"),
+        }
+    }
+}
 
 // ============================================================================
 // Token
@@ -98,6 +285,13 @@ impl StopwordFilter {
     /// Create an English stopword filter.
     pub fn english() -> Self {
         Self::new(ENGLISH_STOPWORDS.clone())
+    }
+
+    /// Create a stopword filter for a specific language.
+    ///
+    /// Returns `None` for `Language::Unknown` (no stopwords to filter).
+    pub fn for_language(lang: Language) -> Option<Self> {
+        stopwords_for(lang).map(|sw| Self::new(sw.clone()))
     }
 
     /// Check if a word is a stopword.
@@ -191,14 +385,27 @@ impl Analyzer {
     /// 2. StopwordFilter (English stopwords)
     /// 3. SnowballStemmerFilter (English stemmer)
     pub fn english_default() -> Self {
-        Self {
-            tokenizer: Box::new(DefaultEnglishTokenizer),
-            // NO LowercaseFilter - already done in tokenizer
-            filters: vec![
-                Box::new(StopwordFilter::english()),
-                Box::new(SnowballStemmerFilter::english()),
-            ],
+        Self::for_language(Language::English)
+    }
+
+    /// Create an analyzer for the given language.
+    ///
+    /// For known Snowball languages: tokenize → stopword filter → Snowball stemmer.
+    /// For `Unknown`: tokenize only (lowercase + word split, no stemming, no stopwords).
+    pub fn for_language(lang: Language) -> Self {
+        let tokenizer: Box<dyn Tokenizer> = Box::new(DefaultEnglishTokenizer);
+
+        let mut filters: Vec<Box<dyn TokenFilter>> = Vec::new();
+
+        if let Some(sw_filter) = StopwordFilter::for_language(lang) {
+            filters.push(Box::new(sw_filter));
         }
+
+        if let Some(algo) = lang.algorithm() {
+            filters.push(Box::new(SnowballStemmerFilter::new(algo)));
+        }
+
+        Self { tokenizer, filters }
     }
 
     /// Analyze text into tokens.
@@ -228,7 +435,7 @@ impl Analyzer {
 }
 
 // ============================================================================
-// Standalone analysis function (no trait dispatch)
+// Standalone analysis functions (no trait dispatch)
 // ============================================================================
 
 /// English Snowball stemmer (shared static instance).
@@ -243,43 +450,165 @@ static ENGLISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::
 ///
 /// Pipeline: lowercase → split on `[^\w]+` → stopword removal → Snowball stem → count.
 pub fn analyze_to_term_freqs(text: &str) -> HashMap<String, u32> {
+    analyze_to_term_freqs_with_lang(text, Language::English)
+}
+
+/// Analyze text into term frequencies using the pipeline for the given language.
+///
+/// Non-trait-dispatch equivalent of
+/// `Analyzer::for_language(lang).analyze_to_term_freqs(text)`.
+///
+/// For known Snowball languages: lowercase → split → stopword removal → stem → count.
+/// For `Unknown`: lowercase → split → count (no stopwords, no stemming).
+pub fn analyze_to_term_freqs_with_lang(text: &str, lang: Language) -> HashMap<String, u32> {
     let lowered = text.to_lowercase();
+    let stopwords = stopwords_for(lang);
+    let stemmer = stemmer_for(lang);
     let mut freqs = HashMap::new();
+
     for token in WORD_SPLIT.split(&lowered) {
         if token.is_empty() {
             continue;
         }
-        if ENGLISH_STOPWORDS.contains(token) {
+        if let Some(sw) = stopwords {
+            if sw.contains(token) {
+                continue;
+            }
+        }
+        let term = match stemmer {
+            Some(s) => s.stem(token).into_owned(),
+            None => token.to_string(),
+        };
+        if term.is_empty() {
             continue;
         }
-        let stemmed = ENGLISH_STEMMER.stem(token).into_owned();
-        if stemmed.is_empty() {
-            continue;
-        }
-        *freqs.entry(stemmed).or_insert(0) += 1;
+        *freqs.entry(term).or_insert(0) += 1;
     }
     freqs
 }
 
 // ============================================================================
-// English Stopwords
+// Per-language stopwords (compile-time embedded)
 // ============================================================================
 
-/// English stopwords for the default analyzer.
-///
-/// This list is loaded at compile time from the resources directory for
-/// deterministic behavior across builds.
-static ENGLISH_STOPWORDS: Lazy<HashSet<String>> = Lazy::new(|| {
-    // Load the stopwords file at compile time
-    const STOPWORDS_FILE: &str = include_str!("../resources/stopwords/en.txt");
-
-    STOPWORDS_FILE
-        .lines()
+/// Helper to parse a stopwords file into a `HashSet`.
+fn parse_stopwords(file: &str) -> HashSet<String> {
+    file.lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|s| s.to_lowercase())
         .collect()
-});
+}
+
+/// Return the static stopword set for a language, or `None` for `Unknown`.
+fn stopwords_for(lang: Language) -> Option<&'static HashSet<String>> {
+    match lang {
+        Language::Arabic => Some(&*ARABIC_STOPWORDS),
+        Language::Danish => Some(&*DANISH_STOPWORDS),
+        Language::Dutch => Some(&*DUTCH_STOPWORDS),
+        Language::English => Some(&*ENGLISH_STOPWORDS),
+        Language::Finnish => Some(&*FINNISH_STOPWORDS),
+        Language::French => Some(&*FRENCH_STOPWORDS),
+        Language::German => Some(&*GERMAN_STOPWORDS),
+        Language::Greek => Some(&*GREEK_STOPWORDS),
+        Language::Hungarian => Some(&*HUNGARIAN_STOPWORDS),
+        Language::Italian => Some(&*ITALIAN_STOPWORDS),
+        Language::Norwegian => Some(&*NORWEGIAN_STOPWORDS),
+        Language::Portuguese => Some(&*PORTUGUESE_STOPWORDS),
+        Language::Romanian => Some(&*ROMANIAN_STOPWORDS),
+        Language::Russian => Some(&*RUSSIAN_STOPWORDS),
+        Language::Spanish => Some(&*SPANISH_STOPWORDS),
+        Language::Swedish => Some(&*SWEDISH_STOPWORDS),
+        Language::Tamil => Some(&*TAMIL_STOPWORDS),
+        Language::Turkish => Some(&*TURKISH_STOPWORDS),
+        Language::Unknown => None,
+    }
+}
+
+/// Return a static stemmer for a language, or `None` for `Unknown`.
+fn stemmer_for(lang: Language) -> Option<&'static Stemmer> {
+    match lang {
+        Language::Arabic => Some(&*ARABIC_STEMMER),
+        Language::Danish => Some(&*DANISH_STEMMER),
+        Language::Dutch => Some(&*DUTCH_STEMMER),
+        Language::English => Some(&*ENGLISH_STEMMER),
+        Language::Finnish => Some(&*FINNISH_STEMMER),
+        Language::French => Some(&*FRENCH_STEMMER),
+        Language::German => Some(&*GERMAN_STEMMER),
+        Language::Greek => Some(&*GREEK_STEMMER),
+        Language::Hungarian => Some(&*HUNGARIAN_STEMMER),
+        Language::Italian => Some(&*ITALIAN_STEMMER),
+        Language::Norwegian => Some(&*NORWEGIAN_STEMMER),
+        Language::Portuguese => Some(&*PORTUGUESE_STEMMER),
+        Language::Romanian => Some(&*ROMANIAN_STEMMER),
+        Language::Russian => Some(&*RUSSIAN_STEMMER),
+        Language::Spanish => Some(&*SPANISH_STEMMER),
+        Language::Swedish => Some(&*SWEDISH_STEMMER),
+        Language::Tamil => Some(&*TAMIL_STEMMER),
+        Language::Turkish => Some(&*TURKISH_STEMMER),
+        Language::Unknown => None,
+    }
+}
+
+// -- Stopword sets (compile-time embedded from resources/stopwords/) ----------
+
+static ARABIC_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ar.txt")));
+static DANISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/da.txt")));
+static DUTCH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/nl.txt")));
+static ENGLISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/en.txt")));
+static FINNISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/fi.txt")));
+static FRENCH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/fr.txt")));
+static GERMAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/de.txt")));
+static GREEK_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/el.txt")));
+static HUNGARIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/hu.txt")));
+static ITALIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/it.txt")));
+static NORWEGIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/nb.txt")));
+static PORTUGUESE_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/pt.txt")));
+static ROMANIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ro.txt")));
+static RUSSIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ru.txt")));
+static SPANISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/es.txt")));
+static SWEDISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/sv.txt")));
+static TAMIL_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ta.txt")));
+static TURKISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/tr.txt")));
+
+// -- Per-language stemmers (lazy-initialized) --------------------------------
+
+static ARABIC_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Arabic));
+static DANISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Danish));
+static DUTCH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Dutch));
+// ENGLISH_STEMMER defined above (used by both `analyze_to_term_freqs` and this table).
+static FINNISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Finnish));
+static FRENCH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::French));
+static GERMAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::German));
+static GREEK_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Greek));
+static HUNGARIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Hungarian));
+static ITALIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Italian));
+static NORWEGIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Norwegian));
+static PORTUGUESE_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Portuguese));
+static ROMANIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Romanian));
+static RUSSIAN_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Russian));
+static SPANISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Spanish));
+static SWEDISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Swedish));
+static TAMIL_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Tamil));
+static TURKISH_STEMMER: Lazy<Stemmer> = Lazy::new(|| Stemmer::create(Algorithm::Turkish));
 
 #[cfg(test)]
 mod tests {
@@ -447,5 +776,191 @@ mod tests {
             let fn_freqs = analyze_to_term_freqs(text);
             assert_eq!(trait_freqs, fn_freqs, "mismatch for input: {text:?}");
         }
+    }
+
+    // ========================================================================
+    // Language enum tests
+    // ========================================================================
+
+    #[test]
+    fn test_bcp47_parsing() {
+        assert_eq!(Language::from_bcp47("en"), Language::English);
+        assert_eq!(Language::from_bcp47("en-US"), Language::English);
+        assert_eq!(Language::from_bcp47("en-GB"), Language::English);
+        assert_eq!(Language::from_bcp47("fr"), Language::French);
+        assert_eq!(Language::from_bcp47("fr-CA"), Language::French);
+        assert_eq!(Language::from_bcp47("de"), Language::German);
+        assert_eq!(Language::from_bcp47("de-AT"), Language::German);
+        assert_eq!(Language::from_bcp47("es"), Language::Spanish);
+        assert_eq!(Language::from_bcp47("pt"), Language::Portuguese);
+        assert_eq!(Language::from_bcp47("pt-BR"), Language::Portuguese);
+        assert_eq!(Language::from_bcp47("ru"), Language::Russian);
+        assert_eq!(Language::from_bcp47("ar"), Language::Arabic);
+        assert_eq!(Language::from_bcp47("ta"), Language::Tamil);
+        assert_eq!(Language::from_bcp47("tr"), Language::Turkish);
+        // Norwegian variants
+        assert_eq!(Language::from_bcp47("nb"), Language::Norwegian);
+        assert_eq!(Language::from_bcp47("nn"), Language::Norwegian);
+        assert_eq!(Language::from_bcp47("no"), Language::Norwegian);
+        // Unknown
+        assert_eq!(Language::from_bcp47("zh"), Language::Unknown);
+        assert_eq!(Language::from_bcp47("ja"), Language::Unknown);
+        assert_eq!(Language::from_bcp47("ko"), Language::Unknown);
+        assert_eq!(Language::from_bcp47(""), Language::Unknown);
+    }
+
+    #[test]
+    fn test_language_tag_roundtrip() {
+        for lang in SUPPORTED_LANGUAGES {
+            let tag = lang.tag().expect("supported language should have a tag");
+            let parsed = Language::from_bcp47(tag);
+            assert_eq!(*lang, parsed, "roundtrip failed for {lang:?}");
+        }
+    }
+
+    #[test]
+    fn test_language_algorithm_mapping() {
+        assert_eq!(Language::English.algorithm(), Some(Algorithm::English));
+        assert_eq!(Language::French.algorithm(), Some(Algorithm::French));
+        assert_eq!(Language::German.algorithm(), Some(Algorithm::German));
+        assert_eq!(Language::Unknown.algorithm(), None);
+    }
+
+    #[test]
+    fn test_all_supported_languages_have_stopwords() {
+        for lang in SUPPORTED_LANGUAGES {
+            let sw = stopwords_for(*lang);
+            assert!(
+                sw.is_some(),
+                "missing stopwords for {lang:?}"
+            );
+            assert!(
+                !sw.unwrap().is_empty(),
+                "empty stopwords for {lang:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_has_no_stopwords() {
+        assert!(stopwords_for(Language::Unknown).is_none());
+    }
+
+    // ========================================================================
+    // Multi-lingual analyzer tests
+    // ========================================================================
+
+    #[test]
+    fn test_french_analyzer() {
+        let analyzer = Analyzer::for_language(Language::French);
+        let terms = analyzer.analyze_to_strings("Les chats mangent des souris");
+        // "les" and "des" are French stopwords
+        assert!(!terms.iter().any(|t| t == "les"));
+        assert!(!terms.iter().any(|t| t == "des"));
+        // "chats" should be stemmed
+        assert!(terms.iter().any(|t| t == "chat"), "expected 'chat' in {terms:?}");
+    }
+
+    #[test]
+    fn test_german_analyzer() {
+        let analyzer = Analyzer::for_language(Language::German);
+        let terms = analyzer.analyze_to_strings("Die Katzen fressen die Mäuse");
+        // "die" is a German stopword
+        assert!(!terms.iter().any(|t| t == "die"));
+        // "Katzen" → "katz" (Snowball German)
+        assert!(terms.iter().any(|t| t == "katz"), "expected 'katz' in {terms:?}");
+    }
+
+    #[test]
+    fn test_spanish_analyzer() {
+        let analyzer = Analyzer::for_language(Language::Spanish);
+        let terms = analyzer.analyze_to_strings("Los gatos comen los ratones");
+        // "los" is a Spanish stopword
+        assert!(!terms.iter().any(|t| t == "los"));
+        // "gatos" should be stemmed to "gat"
+        assert!(terms.iter().any(|t| t == "gat"), "expected 'gat' in {terms:?}");
+    }
+
+    #[test]
+    fn test_russian_analyzer() {
+        let analyzer = Analyzer::for_language(Language::Russian);
+        let terms = analyzer.analyze_to_strings("кошки едят мышей");
+        // Should tokenize and stem Russian text
+        assert!(!terms.is_empty(), "Russian text should produce tokens");
+    }
+
+    #[test]
+    fn test_unknown_language_no_stemming() {
+        let analyzer = Analyzer::for_language(Language::Unknown);
+        // "running" should NOT be stemmed for unknown language
+        let terms = analyzer.analyze_to_strings("running foxes");
+        assert!(
+            terms.contains(&"running".to_string()),
+            "Unknown language should not stem: {terms:?}"
+        );
+        assert!(
+            terms.contains(&"foxes".to_string()),
+            "Unknown language should not stem: {terms:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_language_no_stopwords() {
+        let analyzer = Analyzer::for_language(Language::Unknown);
+        // "the" would be an English stopword, but Unknown has no stopwords
+        let terms = analyzer.analyze_to_strings("the quick brown fox");
+        assert!(
+            terms.contains(&"the".to_string()),
+            "Unknown language should keep all tokens: {terms:?}"
+        );
+    }
+
+    // ========================================================================
+    // Standalone with_lang function tests
+    // ========================================================================
+
+    #[test]
+    fn test_standalone_with_lang_french() {
+        let freqs = analyze_to_term_freqs_with_lang("Les chats mangent des souris", Language::French);
+        assert!(!freqs.contains_key("les"));
+        assert!(!freqs.contains_key("des"));
+        assert!(freqs.contains_key("chat"), "expected 'chat' in {freqs:?}");
+    }
+
+    #[test]
+    fn test_standalone_with_lang_unknown() {
+        let freqs = analyze_to_term_freqs_with_lang("running foxes the", Language::Unknown);
+        // No stemming, no stopwords
+        assert!(freqs.contains_key("running"));
+        assert!(freqs.contains_key("foxes"));
+        assert!(freqs.contains_key("the"));
+    }
+
+    #[test]
+    fn test_standalone_with_lang_matches_trait_analyzer() {
+        // For every supported language, the standalone function must produce
+        // identical results to the trait-based Analyzer.
+        let test_text = "The quick brown fox jumps over the lazy dog";
+        for lang in SUPPORTED_LANGUAGES {
+            let analyzer = Analyzer::for_language(*lang);
+            let trait_freqs = analyzer.analyze_to_term_freqs(test_text);
+            let fn_freqs = analyze_to_term_freqs_with_lang(test_text, *lang);
+            assert_eq!(trait_freqs, fn_freqs, "mismatch for {lang:?}");
+        }
+        // Also test Unknown
+        let analyzer = Analyzer::for_language(Language::Unknown);
+        let trait_freqs = analyzer.analyze_to_term_freqs(test_text);
+        let fn_freqs = analyze_to_term_freqs_with_lang(test_text, Language::Unknown);
+        assert_eq!(trait_freqs, fn_freqs, "mismatch for Unknown");
+    }
+
+    #[test]
+    fn test_english_backward_compat() {
+        // Verify that the refactored english_default() produces identical
+        // results to what the old hardcoded implementation would have.
+        let analyzer = Analyzer::english_default();
+        let freqs_trait = analyzer.analyze_to_term_freqs("The quick brown foxes are running!");
+        let freqs_fn = analyze_to_term_freqs("The quick brown foxes are running!");
+        assert_eq!(freqs_trait, freqs_fn);
     }
 }

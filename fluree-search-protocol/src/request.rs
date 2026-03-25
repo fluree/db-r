@@ -73,7 +73,10 @@ impl SearchRequest {
             as_of_t: None,
             sync: false,
             timeout_ms: None,
-            query: QueryVariant::Bm25 { text: text.into() },
+            query: QueryVariant::Bm25 {
+                text: text.into(),
+                language: None,
+            },
         }
     }
 
@@ -150,6 +153,11 @@ pub enum QueryVariant {
     Bm25 {
         /// The search query text.
         text: String,
+
+        /// Language for text analysis (BCP-47 tag, e.g., "en", "fr", "de").
+        /// Defaults to "en" if omitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
     },
 
     /// Vector similarity search with an explicit embedding vector.
@@ -193,6 +201,7 @@ mod tests {
             timeout_ms: Some(5000),
             query: QueryVariant::Bm25 {
                 text: "wireless headphones".to_string(),
+                language: None,
             },
         };
 
@@ -206,7 +215,7 @@ mod tests {
         assert!(parsed.sync);
 
         match parsed.query {
-            QueryVariant::Bm25 { text } => assert_eq!(text, "wireless headphones"),
+            QueryVariant::Bm25 { text, .. } => assert_eq!(text, "wireless headphones"),
             _ => panic!("Expected BM25 query"),
         }
     }

@@ -223,12 +223,14 @@ score(q,d) = SUM( IDF(t) * TF_norm(t) )  for each query term t
 
 Both documents and queries go through the same analysis pipeline:
 
-1. **Tokenization** -- Split text on whitespace and punctuation
+1. **Tokenization** -- Split text on whitespace and punctuation (Unicode-aware)
 2. **Lowercasing** -- Normalize to lowercase
 3. **Stopword removal** -- Remove common English stopwords ("the", "is", "and", etc.)
 4. **Stemming** -- Reduce words to stems using the Snowball English stemmer ("programming" -> "program", "databases" -> "databas")
 
 This means a query for "programming" will match documents containing "programmed", "programs", or "programmer".
+
+> **Note:** Inline `@fulltext` currently uses English text analysis only. For multi-language support with configurable stemmers and stopword lists, use the [BM25 graph source pipeline](bm25.md) with the `language` configuration option. Future releases will add per-property language configuration via the ledger config graph.
 
 ## Indexing
 

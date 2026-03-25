@@ -33,6 +33,12 @@ pub struct Capabilities {
 
     /// Maximum allowed timeout in milliseconds.
     pub max_timeout_ms: u64,
+
+    /// Supported BM25 analysis languages (BCP-47 tags).
+    ///
+    /// Lists all languages for which the service has stemmer + stopword support.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_languages: Vec<String>,
 }
 
 impl Default for Capabilities {
@@ -50,6 +56,26 @@ impl Capabilities {
             supported_query_kinds: vec!["bm25".to_string()],
             max_limit: MAX_LIMIT,
             max_timeout_ms: MAX_TIMEOUT_MS,
+            supported_languages: vec![
+                "ar".into(),
+                "da".into(),
+                "de".into(),
+                "el".into(),
+                "en".into(),
+                "es".into(),
+                "fi".into(),
+                "fr".into(),
+                "hu".into(),
+                "it".into(),
+                "nb".into(),
+                "nl".into(),
+                "pt".into(),
+                "ro".into(),
+                "ru".into(),
+                "sv".into(),
+                "ta".into(),
+                "tr".into(),
+            ],
         }
     }
 

@@ -16,6 +16,8 @@ pub struct FulltextEntry {
     pub p_id: u32,
     /// String dictionary ID (the o_key for ObjKind::LEX_ID).
     pub string_id: u32,
+    /// Language tag ID (0 = none / default English).
+    pub lang_id: u16,
     /// Transaction time.
     pub t: i64,
     /// true = assertion, false = retraction.
@@ -55,6 +57,7 @@ impl FulltextHook {
         dt_id: u16,
         o_kind: u8,
         o_key: u64,
+        lang_id: u16,
         t: i64,
         is_assert: bool,
     ) {
@@ -68,6 +71,7 @@ impl FulltextHook {
             g_id,
             p_id,
             string_id: o_key as u32,
+            lang_id,
             t,
             is_assert,
         });
@@ -111,12 +115,20 @@ mod tests {
         let mut hook = FulltextHook::new();
         assert!(hook.is_empty());
 
-        // Fulltext dt_id = 14, ObjKind = LEX_ID
-        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 1, true);
+        // Fulltext dt_id = 14, ObjKind = LEX_ID, lang_id = 0
+        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 0, 1, true);
         assert_eq!(hook.entry_count(), 1);
         assert_eq!(hook.entries()[0].string_id, 42);
         assert_eq!(hook.entries()[0].p_id, 5);
+        assert_eq!(hook.entries()[0].lang_id, 0);
         assert!(hook.entries()[0].is_assert);
+    }
+
+    #[test]
+    fn test_hook_preserves_lang_id() {
+        let mut hook = FulltextHook::new();
+        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 7, 1, true);
+        assert_eq!(hook.entries()[0].lang_id, 7);
     }
 
     #[test]
@@ -124,11 +136,11 @@ mod tests {
         let mut hook = FulltextHook::new();
 
         // String dt_id = 1, not fulltext
-        hook.on_op(0, 5, DatatypeDictId::STRING.as_u16(), LEX, 42, 1, true);
+        hook.on_op(0, 5, DatatypeDictId::STRING.as_u16(), LEX, 42, 0, 1, true);
         assert!(hook.is_empty());
 
         // Vector dt_id = 13, not fulltext
-        hook.on_op(0, 5, DatatypeDictId::VECTOR.as_u16(), LEX, 42, 1, true);
+        hook.on_op(0, 5, DatatypeDictId::VECTOR.as_u16(), LEX, 42, 0, 1, true);
         assert!(hook.is_empty());
     }
 
@@ -143,6 +155,7 @@ mod tests {
             DatatypeDictId::FULL_TEXT.as_u16(),
             ObjKind::REF_ID.as_u8(),
             42,
+            0,
             1,
             true,
         );
@@ -155,6 +168,7 @@ mod tests {
             DatatypeDictId::FULL_TEXT.as_u16(),
             ObjKind::NUM_INT.as_u8(),
             42,
+            0,
             1,
             true,
         );
@@ -164,8 +178,8 @@ mod tests {
     #[test]
     fn test_hook_tracks_retractions() {
         let mut hook = FulltextHook::new();
-        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 1, true);
-        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 2, false);
+        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 0, 1, true);
+        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 42, 0, 2, false);
         assert_eq!(hook.entry_count(), 2);
         assert!(hook.entries()[0].is_assert);
         assert!(!hook.entries()[1].is_assert);
@@ -174,11 +188,13 @@ mod tests {
     #[test]
     fn test_into_entries() {
         let mut hook = FulltextHook::new();
-        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 10, 1, true);
-        hook.on_op(1, 7, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 20, 2, true);
+        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 10, 0, 1, true);
+        hook.on_op(1, 7, DatatypeDictId::FULL_TEXT.as_u16(), LEX, 20, 3, 2, true);
         let entries = hook.into_entries();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].g_id, 0);
+        assert_eq!(entries[0].lang_id, 0);
         assert_eq!(entries[1].g_id, 1);
+        assert_eq!(entries[1].lang_id, 3);
     }
 }

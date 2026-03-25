@@ -52,6 +52,11 @@ pub struct Bm25CreateConfig {
 
     /// BM25 b parameter (document length normalization). Default: 0.75
     pub b: Option<f64>,
+
+    /// Language for text analysis (BCP-47 tag, e.g., "en", "fr", "de").
+    /// Default: "en" (English). Determines which stemmer and stopword list
+    /// are used for both indexing and query analysis.
+    pub language: Option<String>,
 }
 
 impl Bm25CreateConfig {
@@ -64,6 +69,7 @@ impl Bm25CreateConfig {
             query,
             k1: None,
             b: None,
+            language: None,
         }
     }
 
@@ -83,6 +89,20 @@ impl Bm25CreateConfig {
     pub fn with_b(mut self, b: f64) -> Self {
         self.b = Some(b);
         self
+    }
+
+    /// Set the text analysis language (BCP-47 tag, e.g., "fr", "de", "es").
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// Get the effective `Language` for text analysis.
+    pub fn effective_language(&self) -> fluree_db_binary_index::analyzer::Language {
+        self.language
+            .as_deref()
+            .map(fluree_db_binary_index::analyzer::Language::from_bcp47)
+            .unwrap_or(fluree_db_binary_index::analyzer::Language::English)
     }
 
     /// Get the effective branch name.
@@ -150,6 +170,17 @@ impl Bm25CreateConfig {
                     "b must be between 0 and 1, got {}",
                     b
                 )));
+            }
+        }
+
+        // Validate language
+        if let Some(lang) = &self.language {
+            let parsed = fluree_db_binary_index::analyzer::Language::from_bcp47(lang);
+            if parsed == fluree_db_binary_index::analyzer::Language::Unknown {
+                tracing::warn!(
+                    language = %lang,
+                    "Unsupported language for BM25 text analysis; text will be tokenized without stemming"
+                );
             }
         }
 

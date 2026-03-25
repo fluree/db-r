@@ -469,13 +469,10 @@ async fn handle_capabilities(State(state): State<Arc<AppState>>) -> impl IntoRes
     #[cfg(feature = "vector")]
     supported_query_kinds.push("vector".to_string());
 
-    let capabilities = Capabilities {
-        protocol_version: fluree_search_protocol::PROTOCOL_VERSION.to_string(),
-        bm25_analyzer_version: fluree_search_protocol::BM25_ANALYZER_VERSION.to_string(),
-        supported_query_kinds,
-        max_limit: state.max_limit,
-        max_timeout_ms: state.max_timeout_ms,
-    };
+    let mut capabilities = Capabilities::new();
+    capabilities.supported_query_kinds = supported_query_kinds;
+    capabilities.max_limit = state.max_limit;
+    capabilities.max_timeout_ms = state.max_timeout_ms;
 
     Json(capabilities)
 }

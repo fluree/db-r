@@ -10,7 +10,7 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
-use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, FulltextArena};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, FulltextProviderMap};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{
     GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker,
@@ -99,10 +99,11 @@ pub struct ExecutionContext<'a> {
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
     /// Optional fulltext BoW arenas for `fulltext()` function BM25 scoring.
     ///
-    /// Keys are `(g_id, p_id)` pairs. When present, `eval_fulltext` uses
-    /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
+    /// Keys are `(g_id, p_id)` pairs, values are `Vec<(lang_id, arena)>` to
+    /// support per-language arenas. When present, `eval_fulltext` searches all
+    /// language arenas for a predicate and returns the best score.
     /// When absent, falls back to per-document TF-saturation scoring.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    pub fulltext_providers: Option<&'a FulltextProviderMap>,
     /// Set of ledger IDs that are backed by R2RML graph sources.
     ///
     /// Precomputed at context setup. When a scan operator encounters a graph
@@ -372,10 +373,7 @@ impl<'a> ExecutionContext<'a> {
     }
 
     /// Attach fulltext BoW arenas to this context (for `fulltext()` BM25 scoring).
-    pub fn with_fulltext_providers(
-        mut self,
-        providers: &'a HashMap<(GraphId, u32), Arc<FulltextArena>>,
-    ) -> Self {
+    pub fn with_fulltext_providers(mut self, providers: &'a FulltextProviderMap) -> Self {
         self.fulltext_providers = Some(providers);
         self
     }

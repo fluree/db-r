@@ -5,6 +5,7 @@
 //! `fluree-db-query` (and downstream crates) continue to compile unchanged.
 
 pub use fluree_db_binary_index::analyzer::{
-    analyze_to_term_freqs, Analyzer, DefaultEnglishTokenizer, SnowballStemmerFilter,
-    StopwordFilter, Token, TokenFilter, Tokenizer,
+    analyze_to_term_freqs, analyze_to_term_freqs_with_lang, Analyzer, DefaultEnglishTokenizer,
+    Language, SnowballStemmerFilter, StopwordFilter, Token, TokenFilter, Tokenizer,
+    SUPPORTED_LANGUAGES,
 };

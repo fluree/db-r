@@ -138,11 +138,14 @@ where
         let prefix_map = extract_prefix_map(&context);
         let results = expand_ids_in_results(results, &prefix_map);
 
-        // 3. Build BM25 index
+        // 3. Build BM25 index (with language-appropriate analyzer)
         let property_deps = PropertyDeps::from_indexing_query(&config.query);
-        let mut builder = Bm25IndexBuilder::new(config.ledger.as_str(), config.bm25_config())
-            .with_property_deps(property_deps)
-            .with_watermark(source_t);
+        let lang = config.effective_language();
+        let analyzer = fluree_db_query::bm25::Analyzer::for_language(lang);
+        let mut builder =
+            Bm25IndexBuilder::with_analyzer(config.ledger.as_str(), config.bm25_config(), analyzer)
+                .with_property_deps(property_deps)
+                .with_watermark(source_t);
 
         builder.add_results(&results)?;
 
@@ -175,6 +178,7 @@ where
         let config_json = serde_json::to_string(&serde_json::json!({
             "k1": config.k1.unwrap_or(1.2),
             "b": config.b.unwrap_or(0.75),
+            "language": config.language.as_deref().unwrap_or("en"),
             "query": config.query,
         }))?;
 
@@ -875,12 +879,18 @@ where
             return self.resync_bm25_index(graph_source_id).await;
         }
 
-        // Parse config to get query
+        // Parse config to get query and language
         let config: JsonValue = serde_json::from_str(&record.config)?;
         let query = config
             .get("query")
             .cloned()
             .unwrap_or(serde_json::json!({}));
+        let lang = config
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("en");
+        let language =
+            fluree_db_binary_index::analyzer::Language::from_bcp47(lang);
 
         // Get source ledger alias from dependencies
         let source_ledger_alias = record
@@ -993,8 +1003,10 @@ where
             }
         }
 
-        // 9. Apply incremental update
-        let mut updater = IncrementalUpdater::new(source_ledger_alias.as_str(), &mut index);
+        // 9. Apply incremental update (with language-appropriate analyzer)
+        let analyzer = fluree_db_query::bm25::Analyzer::for_language(language);
+        let mut updater =
+            IncrementalUpdater::with_analyzer(source_ledger_alias.as_str(), &mut index, analyzer);
         let update_result = updater.apply_update(&results, &affected_iris_expanded, ledger_t);
 
         info!(
@@ -1073,6 +1085,12 @@ where
             .get("query")
             .cloned()
             .unwrap_or(serde_json::json!({}));
+        let lang = config
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("en");
+        let language =
+            fluree_db_binary_index::analyzer::Language::from_bcp47(lang);
 
         let source_ledger = record
             .dependencies
@@ -1106,8 +1124,10 @@ where
             "Executed full indexing query"
         );
 
-        // 5. Apply full sync (replaces all documents)
-        let mut updater = IncrementalUpdater::new(source_ledger.as_str(), &mut index);
+        // 5. Apply full sync (replaces all documents, with language-appropriate analyzer)
+        let analyzer = fluree_db_query::bm25::Analyzer::for_language(language);
+        let mut updater =
+            IncrementalUpdater::with_analyzer(source_ledger.as_str(), &mut index, analyzer);
         let update_result = updater.apply_full_sync(&results, ledger_t);
 
         // 6. Persist updated index blob
@@ -1247,6 +1267,12 @@ where
             .unwrap_or(serde_json::json!({}));
         let k1 = config.get("k1").and_then(|v| v.as_f64()).unwrap_or(1.2);
         let b = config.get("b").and_then(|v| v.as_f64()).unwrap_or(0.75);
+        let lang = config
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("en");
+        let language =
+            fluree_db_binary_index::analyzer::Language::from_bcp47(lang);
 
         let source_ledger = record
             .dependencies
@@ -1286,18 +1312,22 @@ where
             "Executed indexing query at historical t"
         );
 
-        // 5. Build BM25 index
+        // 5. Build BM25 index (with language-appropriate analyzer)
         let property_deps = PropertyDeps::from_indexing_query(&query);
         let bm25_config = fluree_db_query::bm25::Bm25Config::new(k1, b);
-        let mut builder = Bm25IndexBuilder::new(source_ledger.as_str(), bm25_config)
-            .with_property_deps(property_deps)
-            .with_watermark(target_t);
+        let analyzer = fluree_db_query::bm25::Analyzer::for_language(language);
+        let mut builder =
+            Bm25IndexBuilder::with_analyzer(source_ledger.as_str(), bm25_config, analyzer)
+                .with_property_deps(property_deps)
+                .with_watermark(target_t);
 
         builder.add_results(&results)?;
         let mut index = builder.build();
 
-        // Apply as full sync to set watermarks correctly
-        let mut updater = IncrementalUpdater::new(source_ledger.as_str(), &mut index);
+        // Apply as full sync to set watermarks correctly (reuse same language analyzer)
+        let analyzer = fluree_db_query::bm25::Analyzer::for_language(language);
+        let mut updater =
+            IncrementalUpdater::with_analyzer(source_ledger.as_str(), &mut index, analyzer);
         let update_result = updater.apply_full_sync(&results, target_t);
 
         // 6. Persist versioned snapshot blob

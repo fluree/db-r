@@ -177,13 +177,12 @@ impl<B: SearchBackend> SearchService<B> {
 
     /// Get service capabilities.
     pub fn capabilities(&self) -> Capabilities {
-        use fluree_search_protocol::BM25_ANALYZER_VERSION;
-
         let mut supported_kinds = vec![];
 
         // Check what queries the backend supports
         if self.backend.supports(&QueryVariant::Bm25 {
             text: String::new(),
+            language: None,
         }) {
             supported_kinds.push("bm25".to_string());
         }
@@ -200,13 +199,11 @@ impl<B: SearchBackend> SearchService<B> {
             supported_kinds.push("vector_similar_to".to_string());
         }
 
-        Capabilities {
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            bm25_analyzer_version: BM25_ANALYZER_VERSION.to_string(),
-            supported_query_kinds: supported_kinds,
-            max_limit: self.config.max_limit,
-            max_timeout_ms: self.config.max_timeout_ms,
-        }
+        let mut caps = Capabilities::new();
+        caps.supported_query_kinds = supported_kinds;
+        caps.max_limit = self.config.max_limit;
+        caps.max_timeout_ms = self.config.max_timeout_ms;
+        caps
     }
 }
 

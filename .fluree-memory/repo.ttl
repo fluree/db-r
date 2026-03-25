@@ -1171,3 +1171,188 @@ mem:fact-01kmgg192p7hnveqckgqxyakz7 a mem:Fact ;
     mem:artifactRef "fluree-db-iceberg/src/catalog/mod.rs" ;
     mem:createdAt "2026-03-24T17:59:43.446602+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kmbkw0cyytbw9dkab44yn619 a mem:Fact ;
+    mem:content "Fix: `OwnedTransactBuilder::{execute,stage}` now support `.txn(pre_built_txn)` (pre-built Txn IR) without panicking. Previously both methods did `self.core.operation.unwrap()` which panicked when only `pre_built_txn` was set (validate allowed it). New behavior: if `pre_built_txn` is present, builder stages via `Fluree::stage_transaction_from_txn`, commits with no-op handling for Update/Upsert, computes IndexingStatus + triggers background indexing like normal.\n\nValidation also rejects `policy` when using a pre-built txn (policy enforcement requires txn_json / tracked+policy path). Regression test added: `tx_builder::tests::test_owned_builder_execute_pre_built_txn_ir` builds Txn via `fluree_db_transact::lower_sparql_update_ast` and executes via `stage_owned(...).txn(txn).execute()`; asserts commit t increments to 2." ;
+    mem:tag "api" ;
+    mem:tag "builder" ;
+    mem:tag "panic" ;
+    mem:tag "sparql-update" ;
+    mem:tag "transactions" ;
+    mem:tag "tx-builder" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-22T20:30:32.862074+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbska68dc7mpdwa24h7rtpf a mem:Fact ;
+    mem:content "Phase 1 graph-based SPARQL UPDATE templates: `fluree-db-sparql` UPDATE templates now parse into `QuadPatternElement` (default triples + `GRAPH <iri>|?g { ... }` blocks). Validator allows `GRAPH <iri> { ... }` in INSERT/DELETE templates but rejects graph variables (DiagCode F005), and currently rejects GRAPH blocks in `DELETE WHERE`.\n\n`fluree-db-transact` lowering assigns txn-local graph ids and populates `Txn.graph_delta`, setting `TripleTemplate.graph_id` for triples inside GRAPH blocks. This enables SPARQL UPDATE to write into user-defined named graphs.\n\nServer integration test validates by decoding committed flakes (since named-graph reads may depend on indexing being enabled in server tests). Docs updated in `docs/query/sparql.md` restrictions to reflect template GRAPH support + remaining limits." ;
+    mem:tag "docs" ;
+    mem:tag "named-graphs" ;
+    mem:tag "sparql" ;
+    mem:tag "sparql-update" ;
+    mem:tag "templates" ;
+    mem:tag "transact" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-22T22:10:39.432267+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbsknem3k8ft05n4qa3necw a mem:Fact ;
+    mem:content "Investigation note: error `decode_value: string id N not found in forward packs` is the classic signal that query-time decoding is missing a working `DictNovelty` overlay (or index/dict packs are out of sync). `ExecutionContext::extract_dict_novelty()` warns BinaryScanOperator will fall back to persisted forward packs and fail for novelty IDs if `dict_novelty` isn't attached. BinaryScanOperator builds `BinaryGraphView::with_novelty(store,g_id,ctx.dict_novelty.clone())` at scan time, so ctx.dict_novelty must be the same Arc populated during commit/load. Potential new surface areas: (a) aggregate MIN/MAX fast-path compares encoded string literals via `BinaryIndexStore::compare_string_lex` (persisted forward packs only; not novelty-aware) and (b) transact staging materialization `materialize_encoded_bindings_for_txn` uses `BinaryGraphView::new(store,0)` (no novelty) when decoding `Binding::EncodedLit`, so it must never see novelty-only lex IDs. If SPARQL UPDATE subselect aggregates yield dict-backed literals that allocate novelty string IDs, missing/stale dict_novelty on read will manifest as forward-pack NotFound." ;
+    mem:tag "aggregate" ;
+    mem:tag "binary-scan" ;
+    mem:tag "decode_value" ;
+    mem:tag "dict-novelty" ;
+    mem:tag "forward-packs" ;
+    mem:tag "max" ;
+    mem:tag "novelty" ;
+    mem:tag "sparql-update" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/context.rs" ;
+    mem:artifactRef "fluree-db-query/src/group_aggregate.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:createdAt "2026-03-22T22:10:50.964921+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbswmb4b46qas4xst26h25p a mem:Fact ;
+    mem:content "Phase 2 SPARQL UPDATE `WITH <iri>` support: `fluree-db-transact` lowering no longer rejects Modify.with_iri. It now (1) uses WITH as the default graph for INSERT/DELETE template triples that aren't inside explicit `GRAPH <iri> { ... }` blocks (by assigning a txn-local graph id + `Txn.graph_delta` and setting `TripleTemplate.graph_id`), and (2) scopes UPDATE WHERE evaluation by wrapping the stored `SparqlWhereClause.pattern` in a `GraphPattern::Graph` at staging-time lowering. `SparqlWhereClause` now stores `with_iri: Option<Iri>`. Added server integration test `sparql_update_with_clause_scopes_default_templates_and_where` and updated `docs/query/sparql.md` to reflect WITH supported and USING still unsupported." ;
+    mem:tag "named-graphs" ;
+    mem:tag "sparql-update" ;
+    mem:tag "stage" ;
+    mem:tag "transact" ;
+    mem:tag "with-clause" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-22T22:15:44.740572+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbvb42wax4n23twyq3f91q6 a mem:Fact ;
+    mem:content "Lambda transact hardening: in solo3 `fluree-lambda-transact/src/handler.rs`, changed flow to `ledger_cached(normalized)` first (ensures cache entry exists), then `refresh(normalized)`; if refresh fails, return `TransactionResult::Retry` (do not transact against stale cached state). Also switched JSON-LD insert/upsert/update and SPARQL UPDATE to transact via `stage(&LedgerHandle)...execute()` with fuel tracking enabled, so commits update the cached handle in-place and avoid slow `fluree.ledger()` reloads. Turtle paths still avoid fuel tracking (fuel=0) to preserve previous behavior." ;
+    mem:tag "dict-novelty" ;
+    mem:tag "forward-packs" ;
+    mem:tag "lambda" ;
+    mem:tag "ledger_cached" ;
+    mem:tag "novelty" ;
+    mem:tag "refresh" ;
+    mem:tag "sparql-update" ;
+    mem:tag "transactions" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "../solo3/src/rust/lambda/fluree-lambda-transact/src/handler.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-transact/src/commit.rs" ;
+    mem:createdAt "2026-03-22T22:41:08.188405+00:00"^^xsd:dateTime .
+
+mem:fact-01kmbvtb0j3v6fes3kp6x34a3t a mem:Fact ;
+    mem:content "JSON-LD UPDATE now supports a transaction-level default graph via top-level `graph` key.\n\n- `graph: \"<graph IRI>\"` scopes JSON-LD update WHERE execution to that named graph (as the default graph), and provides a default graph for DELETE/INSERT templates that don't specify per-node `@graph`.\n- `insert`/`delete` templates additionally support sugar items of form `[\"graph\", \"<graph IRI>\", <pattern>]`.\n\nImplementation notes:\n- Parsed in `fluree-db-transact/src/parse/jsonld.rs` (stores `Txn.update_where_graph_iri` + applies default graph id to templates).\n- WHERE scoping is applied at staging time by selecting `LedgerState.as_graph_db_ref(g_id)` based on `Txn.update_where_graph_iri` (resolved via snapshot GraphRegistry with binary-store fallback), not by wrapping WHERE in a `GRAPH` pattern.\n- Added dataset-aware WHERE executor entrypoint `execute_where_with_overlay_at_strict_in_dataset` in `fluree-db-query/src/lib.rs` (for GRAPH patterns when a dataset is provided).\n- Integration test: `fluree-db-api/tests/it_named_graphs.rs::test_update_default_graph_and_template_graph_sugar`." ;
+    mem:tag "graph" ;
+    mem:tag "json-ld" ;
+    mem:tag "named-graphs" ;
+    mem:tag "query" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-22T22:49:26.802720+00:00"^^xsd:dateTime .
+
+mem:fact-01kmdda2hwd972ef20nx3e88x5 a mem:Fact ;
+    mem:content "SPARQL UPDATE now supports `USING <iri>` (default graph scoping for WHERE).\n\nImplementation:\n- `fluree-db-transact` IR `SparqlWhereClause` now stores `with_graph_iri: Option<String>` and `using_default_graph_iri: Option<String>` (expanded IRIs).\n- `lower_sparql_update::lower_modify` no longer rejects USING; it expands WITH/USING IRIs, rejects USING NAMED, and uses WITH to set default template graph id.\n- Staging (`stage.rs`) scopes WHERE by selecting the base graph id (`g_id`) for query execution:\n  - SPARQL: `USING` overrides `WITH` for WHERE default graph (`base_g_id = using || with || 0`)\n  - JSON-LD: unchanged (top-level `graph`)\n- Removed the previous approach of wrapping SPARQL WHERE in a `GRAPH` pattern for WITH-scoping.\n\nTest: `fluree-db-server/tests/integration.rs::sparql_update_using_clause_scopes_where_default_graph` seeds a named graph and verifies DELETE/INSERT with USING updates within that graph (assert via committed flakes)." ;
+    mem:tag "named-graphs" ;
+    mem:tag "sparql-update" ;
+    mem:tag "stage" ;
+    mem:tag "transact" ;
+    mem:tag "using" ;
+    mem:tag "with" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-23T13:14:22.652493+00:00"^^xsd:dateTime .
+
+mem:fact-01kmdm8739nwj0zkmvgfhv7pde a mem:Fact ;
+    mem:content "SPARQL UPDATE now supports single-clause `USING NAMED <iri>`.\n\nSemantics:\n- Restricts the set of named graphs visible to WHERE evaluation to the specified graph (affects `GRAPH <iri> { ... }` patterns and `GRAPH ?g` iteration).\n- Does not change the default graph for non-GRAPH patterns (that's `USING <iri>` / `WITH <iri>` handling).\n\nImplementation:\n- `fluree-db-transact::ir::SparqlWhereClause` stores `using_named_graph_iri: Option<String>`.\n- `lower_sparql_update::lower_modify` expands the single named IRI and stores it; rejects multiple USING NAMED (and still doesn't support multiple clauses in general).\n- `stage::execute_where` filters runtime dataset named graphs when `using_named_graph_iri` is set.\n\nTest: `fluree-db-server/tests/integration.rs::sparql_update_using_named_clause_restricts_where_named_graphs` seeds g1/g2 and verifies USING NAMED g1 prevents matching g2, while USING NAMED g2 allows the update." ;
+    mem:tag "datasets" ;
+    mem:tag "graph" ;
+    mem:tag "sparql-update" ;
+    mem:tag "stage" ;
+    mem:tag "transact" ;
+    mem:tag "using-named" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-23T15:15:41.801144+00:00"^^xsd:dateTime .
+
+mem:fact-01kmdsr1ykhatn0akcej7cw99j a mem:Fact ;
+    mem:content "SPARQL UPDATE now supports multiple `USING` and `USING NAMED` clauses.\n\nImplementation:\n- `fluree-db-sparql` parser accumulates repeated USING/USING NAMED into `UsingClause { default_graphs: Vec<Iri>, named_graphs: Vec<Iri> }`.\n- `fluree-db-transact` IR stores `using_default_graph_iris: Vec<String>` and `using_named_graph_iris: Vec<String>` in `SparqlWhereClause`.\n- Staging (`fluree-db-transact/src/stage.rs`) builds a runtime `DataSet` with multiple default graphs for WHERE evaluation when multiple USING clauses are present.\n\nGotcha:\n- Binary-index fast paths must be disabled for multi-default-graph datasets. `ExecutionContext::has_binary_store()` / `graph_view()` now require a single active graph so multi-graph WHERE falls back to dataset-aware range scans.\n\nTests:\n- `fluree-db-server/tests/integration.rs` adds `sparql_update_multiple_using_clauses_merge_default_graph_for_where` and `sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_in_where`." ;
+    mem:tag "binary-index" ;
+    mem:tag "correctness" ;
+    mem:tag "datasets" ;
+    mem:tag "query-engine" ;
+    mem:tag "sparql-update" ;
+    mem:tag "stage" ;
+    mem:tag "tests" ;
+    mem:tag "using" ;
+    mem:tag "using-named" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:createdAt "2026-03-23T16:51:43.699135+00:00"^^xsd:dateTime .
+
+mem:fact-01kmdt3d9yfqt6k5a8ev7rzq0j a mem:Fact ;
+    mem:content "JSON-LD UPDATE dataset scoping (default + named graphs)\n\n- Top-level `graph: \"<graph IRI>\"` sets the **default write target** for DELETE/INSERT templates that don't specify per-template graph selection.\n- `from` scopes the **default graph(s) used for WHERE evaluation** (SPARQL UPDATE `USING`).\n  - Supports a string, an object `{\"graph\": ...}`, or an array (multiple graphs are evaluated as a **merged** default graph).\n- `from-named` restricts which named graphs are visible to WHERE `\"graph\"` patterns (SPARQL UPDATE `USING NAMED`).\n- Templates also support sugar items: `[\"graph\", \"<graph IRI or from-named alias>\", <pattern>]`.\n\nImplementation notes:\n- Parsed in `fluree-db-transact/src/parse/jsonld.rs`.\n- Stored on `Txn` as `update_where_default_graph_iris: Option<Vec<String>>` and `update_where_named_graphs: Option<Vec<UpdateNamedGraph>>`.\n- WHERE scoping is applied at staging by constructing a `DataSet` for query execution (single or multi-default-graph). Multi-default-graph disables binary fast paths for correctness.\n\nTests:\n- `fluree-db-api/tests/it_named_graphs.rs::test_update_from_scopes_where_default_graph`\n- `fluree-db-api/tests/it_named_graphs.rs::test_update_from_multiple_default_graphs_merge_where`" ;
+    mem:tag "dataset" ;
+    mem:tag "from" ;
+    mem:tag "from-named" ;
+    mem:tag "graph" ;
+    mem:tag "json-ld" ;
+    mem:tag "named-graphs" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/tests/it_named_graphs.rs" ;
+    mem:artifactRef "fluree-db-query/src/context.rs" ;
+    mem:artifactRef "fluree-db-transact/src/ir.rs" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:supersedes mem:fact-01kmbvtb0j3v6fes3kp6x34a3t ;
+    mem:createdAt "2026-03-23T16:57:55.774595+00:00"^^xsd:dateTime .
+
+mem:fact-01kme23qk2f668v0tgd3gwc4ff a mem:Fact ;
+    mem:content "JSON-LD update graph selector parsing: `expand_update_graph_iri` accepts selector arrays only when they contain exactly one element (common JSON-LD expansion shape). Multi-element arrays are rejected to avoid silently truncating graph selectors." ;
+    mem:tag "gotcha" ;
+    mem:tag "graph" ;
+    mem:tag "json-ld" ;
+    mem:tag "parsing" ;
+    mem:tag "update" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:createdAt "2026-03-23T19:17:54.914096+00:00"^^xsd:dateTime .
+
+mem:preference-01kme26btrdb9yrp1dx4sjk35y a mem:Preference ;
+    mem:content "SPARQL AST naming: when `UsingClause` fields are plural (`default_graphs`, `named_graphs`), prefer constructor names that reflect single-vs-multiple clearly (`with_default_graph`, `with_named_graph`). Keep old singular constructor names as deprecated wrappers to avoid breaking callers." ;
+    mem:tag "ast" ;
+    mem:tag "conventions" ;
+    mem:tag "naming" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-sparql/src/ast/update.rs" ;
+    mem:createdAt "2026-03-23T19:19:21.176801+00:00"^^xsd:dateTime .
+
+mem:constraint-01kmgberzrff331cpzh7tyqeyx a mem:Constraint ;
+    mem:content "Multilingual fulltext/BM25 gotchas:\n- If you change the FIR6 `GraphArenaRefs.fulltext` wire layout (e.g., add `lang_id` to `FulltextArenaRef`), you MUST bump `ROOT_V6_VERSION` so old indexes fail fast; otherwise old roots will be mis-decoded (p_id/lang_id will consume CID bytes) and failure may be non-obvious.\n- If `ExecutionContext.fulltext_providers` becomes multi-language (e.g., `(g_id,p_id)->Vec<(lang_id,arena)>`), query-time `fulltext()` must not pick `Vec::first()` unless the Vec is deterministically ordered AND matches the binding's `lang_id`. Prefer selecting matching `lang_id`/fallback to 0, or iterating all arenas and taking best score; also analyze query/doc with the same language analyzer used to build that arena." ;
+    mem:tag "bm25" ;
+    mem:tag "correctness" ;
+    mem:tag "fir6" ;
+    mem:tag "fulltext" ;
+    mem:tag "index-format" ;
+    mem:tag "multilingual" ;
+    mem:tag "query" ;
+    mem:tag "versioning" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:severity "must" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/index_root.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/wire_helpers.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/fulltext.rs" ;
+    mem:createdAt "2026-03-24T16:39:42.840662+00:00"^^xsd:dateTime .
