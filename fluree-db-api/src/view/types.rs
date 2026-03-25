@@ -164,6 +164,14 @@ pub struct GraphDb {
     pub(crate) query_time_rules_allowed: bool,
     /// Whether the query can override datalog config settings. Default: `true`.
     pub(crate) datalog_override_allowed: bool,
+
+    // ========================================================================
+    // Graph source context (optional — set when view is created from a graph source)
+    // ========================================================================
+    /// When set, this view was created from a graph source (e.g., Iceberg/R2RML)
+    /// rather than a real ledger. Query patterns should be auto-wrapped in
+    /// `GRAPH <gs_id> { ... }` so the R2RML provider handles them.
+    pub graph_source_id: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for GraphDb {
@@ -225,6 +233,7 @@ impl GraphDb {
             datalog_enabled: true,
             query_time_rules_allowed: true,
             datalog_override_allowed: true,
+            graph_source_id: None,
         }
     }
 

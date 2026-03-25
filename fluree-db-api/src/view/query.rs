@@ -14,8 +14,21 @@ use crate::{
     TrackingOptions,
 };
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::ir::{GraphName, Pattern};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use serde_json::Value as JsonValue;
+
+/// If the view was created from a graph source, wrap all top-level patterns
+/// in `GRAPH <gs_id> { ... }` so the R2RML provider handles them.
+fn maybe_wrap_for_graph_source(db: &GraphDb, parsed: &mut fluree_db_query::parse::ParsedQuery) {
+    if let Some(ref gs_id) = db.graph_source_id {
+        let inner = std::mem::take(&mut parsed.patterns);
+        parsed.patterns = vec![Pattern::Graph {
+            name: GraphName::Iri(gs_id.to_string().into()),
+            patterns: inner,
+        }];
+    }
+}
 
 // ============================================================================
 // Query Execution
@@ -57,7 +70,7 @@ where
 
         // 1. Parse to common IR
         let parse_start = std::time::Instant::now();
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
             }
@@ -68,6 +81,9 @@ where
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
+
+        // 1b. Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         // 2. Build executable with optional reasoning override
         let plan_start = std::time::Instant::now();
@@ -120,7 +136,7 @@ where
         let input = q.into();
 
         // 1. Parse to common IR
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
             }
@@ -130,6 +146,9 @@ where
                 parse_sparql_to_ir(sparql, &db.snapshot, db.default_context.as_ref())?
             }
         };
+
+        // 1b. Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         // 2. Build executable with optional reasoning override
         let executable = self.build_executable_for_view(db, &parsed)?;
@@ -219,7 +238,7 @@ where
         let mut format_config = format_config.unwrap_or(default_format);
 
         // Parse
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
                     |e| {
@@ -238,6 +257,9 @@ where
                 )?
             }
         };
+
+        // Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         // Build executable with reasoning
         let executable = self.build_executable_for_view(db, &parsed).map_err(|e| {
@@ -324,7 +346,7 @@ where
         };
         let mut format_config = format_config.unwrap_or(default_format);
 
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
                     |e| {
@@ -343,6 +365,9 @@ where
                 )?
             }
         };
+
+        // Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         let executable = self.build_executable_for_view(db, &parsed).map_err(|e| {
             crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())

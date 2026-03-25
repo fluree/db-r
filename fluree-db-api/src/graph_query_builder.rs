@@ -4,6 +4,7 @@
 //! - [`GraphSnapshotQueryBuilder`] — query from a materialized snapshot or [`StagedGraph`]
 
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 use crate::error::BuilderErrors;
 use crate::format::FormatterConfig;
@@ -14,6 +15,7 @@ use crate::{
     ApiError, Fluree, NameService, QueryResult, Result, Storage, TrackedErrorResponse,
     TrackedQueryResponse, TrackingOptions,
 };
+use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 
 // ============================================================================
 // GraphQueryBuilder (lazy — defers view load to terminal)
@@ -91,8 +93,20 @@ where
     }
 
     /// Enable R2RML/Iceberg support (feature-gated).
+    ///
+    /// Attaches actual R2RML provider objects so that GRAPH patterns
+    /// targeting graph sources resolve via the R2RML/Iceberg engine.
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self {
+    pub fn with_r2rml(mut self) -> Self
+    where
+        N: crate::GraphSourcePublisher,
+    {
+        let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(
+            self.graph.fluree,
+        ));
+        let provider: Arc<dyn R2rmlProvider + 'g> = shared.clone();
+        let table_provider: Arc<dyn R2rmlTableProvider + 'g> = shared;
+        self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
         self
     }
@@ -112,7 +126,9 @@ where
     /// Execute the query and return raw [`QueryResult`].
     ///
     /// Loads the graph snapshot internally, then runs the query.
-    pub async fn execute(self) -> Result<QueryResult> {
+    /// When R2RML is enabled, uses graph source fallback for resolution
+    /// and routes through the R2RML-aware execution path.
+    pub async fn execute(mut self) -> Result<QueryResult> {
         let errs = self.core.validate();
         if !errs.is_empty() {
             return Err(ApiError::Builder(BuilderErrors(errs)));
@@ -123,8 +139,17 @@ where
             .fluree
             .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
-        let input = self.core.input.unwrap();
-        self.graph.fluree.query(&view, input).await
+        let r2rml = self.core.r2rml.take();
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.graph
+                    .fluree
+                    .query_view_with_r2rml(&view, input, provider.as_ref(), table_provider.as_ref())
+                    .await
+            }
+            None => self.graph.fluree.query(&view, input).await,
+        }
     }
 
     /// Execute and return formatted JSON output.
@@ -139,13 +164,22 @@ where
             .fluree
             .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.graph.fluree.query(&view, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.graph
+                    .fluree
+                    .query_view_with_r2rml(&view, input, provider.as_ref(), table_provider.as_ref())
+                    .await?
+            }
+            None => self.graph.fluree.query(&view, input).await?,
+        };
         match view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(view.as_graph_db_ref(), &format_config, policy)
@@ -172,13 +206,31 @@ where
             .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await
             .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
+        let r2rml = self.core.r2rml.take();
         let format_config = self.core.format.take();
         let tracking = self.core.tracking.take();
-        let input = self.core.input.unwrap();
-        self.graph
-            .fluree
-            .query_tracked(&db, input, format_config, tracking)
-            .await
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.graph
+                    .fluree
+                    .query_tracked_with_r2rml(
+                        &db,
+                        input,
+                        format_config,
+                        tracking,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.graph
+                    .fluree
+                    .query_tracked(&db, input, format_config, tracking)
+                    .await
+            }
+        }
     }
 }
 
@@ -202,13 +254,13 @@ pub struct GraphSnapshotQueryBuilder<'a, 'v, S: Storage + 'static, N> {
     core: QueryCore<'v>,
 }
 
-impl<'a, 'v, S, N> GraphSnapshotQueryBuilder<'a, 'v, S, N>
+impl<'a: 'v, 'v, S, N> GraphSnapshotQueryBuilder<'a, 'v, S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder from a fluree reference and a view.
-    pub(crate) fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v GraphDb) -> Self {
+    pub fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v GraphDb) -> Self {
         Self {
             fluree,
             view,
@@ -256,7 +308,14 @@ where
 
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self {
+    pub fn with_r2rml(mut self) -> Self
+    where
+        N: crate::GraphSourcePublisher,
+    {
+        let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
+        let provider: Arc<dyn R2rmlProvider + 'v> = shared.clone();
+        let table_provider: Arc<dyn R2rmlTableProvider + 'v> = shared;
+        self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
         self
     }
@@ -274,14 +333,27 @@ where
     }
 
     /// Execute the query and return raw [`QueryResult`].
-    pub async fn execute(self) -> Result<QueryResult> {
+    pub async fn execute(mut self) -> Result<QueryResult> {
         let errs = self.core.validate();
         if !errs.is_empty() {
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let input = self.core.input.unwrap();
-        self.fluree.query(self.view, input).await
+        let r2rml = self.core.r2rml.take();
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_view_with_r2rml(
+                        self.view,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => self.fluree.query(self.view, input).await,
+        }
     }
 
     /// Execute and return formatted JSON output.
@@ -291,13 +363,26 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.fluree.query(self.view, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_view_with_r2rml(
+                        self.view,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await?
+            }
+            None => self.fluree.query(self.view, input).await?,
+        };
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &format_config, policy)
@@ -318,11 +403,28 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self.core.format.take();
         let tracking = self.core.tracking.take();
-        let input = self.core.input.unwrap();
-        self.fluree
-            .query_tracked(self.view, input, format_config, tracking)
-            .await
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_tracked_with_r2rml(
+                        self.view,
+                        input,
+                        format_config,
+                        tracking,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.fluree
+                    .query_tracked(self.view, input, format_config, tracking)
+                    .await
+            }
+        }
     }
 }

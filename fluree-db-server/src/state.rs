@@ -243,7 +243,10 @@ impl FlureeInstance {
 
     // === Ledger-level query methods (load graph, run query, return JSON) ===
 
-    /// Load a graph and execute a JSON-LD query
+    /// Load a graph and execute a JSON-LD query.
+    ///
+    /// With iceberg support, resolves graph sources transparently and
+    /// enables R2RML providers for GRAPH pattern execution.
     pub async fn query_ledger_jsonld(
         &self,
         ledger_id: &str,
@@ -251,11 +254,23 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
-                    .jsonld(query_json)
-                    .execute_formatted()
-                    .await
+                #[cfg(feature = "iceberg")]
+                {
+                    let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                    fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
+                        .with_r2rml()
+                        .jsonld(query_json)
+                        .execute_formatted()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.graph(ledger_id)
+                        .query()
+                        .jsonld(query_json)
+                        .execute_formatted()
+                        .await
+                }
             }
             FlureeInstance::Proxy(p) => {
                 p.graph(ledger_id)
@@ -276,11 +291,28 @@ impl FlureeInstance {
     {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
-                    .jsonld(query_json)
-                    .execute_tracked()
-                    .await
+                #[cfg(feature = "iceberg")]
+                {
+                    let view = f
+                        .load_graph_db_or_graph_source(ledger_id)
+                        .await
+                        .map_err(|e| {
+                            fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None)
+                        })?;
+                    fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
+                        .with_r2rml()
+                        .jsonld(query_json)
+                        .execute_tracked()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.graph(ledger_id)
+                        .query()
+                        .jsonld(query_json)
+                        .execute_tracked()
+                        .await
+                }
             }
             FlureeInstance::Proxy(p) => {
                 p.graph(ledger_id)
@@ -300,11 +332,23 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await
+                #[cfg(feature = "iceberg")]
+                {
+                    let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                    fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
+                        .with_r2rml()
+                        .sparql(sparql)
+                        .execute_formatted()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.graph(ledger_id)
+                        .query()
+                        .sparql(sparql)
+                        .execute_formatted()
+                        .await
+                }
             }
             FlureeInstance::Proxy(p) => {
                 p.graph(ledger_id)
