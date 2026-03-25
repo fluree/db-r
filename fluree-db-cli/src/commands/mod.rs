@@ -5,6 +5,7 @@ pub mod config_cmd;
 pub mod create;
 pub mod drop;
 pub mod export;
+pub mod iceberg;
 pub mod history;
 pub mod index;
 pub mod info;

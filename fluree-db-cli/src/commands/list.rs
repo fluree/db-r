@@ -4,6 +4,7 @@ use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
+use fluree_db_api::GraphSourcePublisher;
 use fluree_db_nameservice::NameService;
 
 pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> CliResult<()> {
@@ -21,23 +22,31 @@ pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> C
     let fluree = context::build_fluree(dirs)?;
     let active = config::read_active_ledger(dirs.data_dir());
     let records = fluree.nameservice().all_records().await?;
+    let gs_records = fluree.nameservice().all_graph_source_records().await?;
 
     // Filter out retracted records
     let active_records: Vec<_> = records.iter().filter(|r| !r.retracted).collect();
+    let active_gs: Vec<_> = gs_records.iter().filter(|r| !r.retracted).collect();
 
     let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let tracked = store.tracked_ledgers();
 
-    if active_records.is_empty() && tracked.is_empty() {
+    let has_gs = !active_gs.is_empty();
+
+    if active_records.is_empty() && active_gs.is_empty() && tracked.is_empty() {
         println!("No ledgers found. Run 'fluree create <name>' to create one.");
         return Ok(());
     }
 
-    // Local ledgers
-    if !active_records.is_empty() {
+    // Local ledgers + graph sources in one table
+    if !active_records.is_empty() || has_gs {
         let mut table = Table::new();
         table.set_content_arrangement(ContentArrangement::Dynamic);
-        table.set_header(vec!["", "LEDGER", "BRANCH", "T"]);
+        if has_gs {
+            table.set_header(vec!["", "NAME", "BRANCH", "TYPE", "T"]);
+        } else {
+            table.set_header(vec!["", "LEDGER", "BRANCH", "T"]);
+        }
 
         for record in &active_records {
             let marker = if active.as_deref() == Some(&record.name) {
@@ -45,12 +54,39 @@ pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> C
             } else {
                 " "
             };
-            table.add_row(vec![
-                marker.to_string(),
-                record.name.clone(),
-                record.branch.clone(),
-                record.commit_t.to_string(),
-            ]);
+            if has_gs {
+                table.add_row(vec![
+                    marker.to_string(),
+                    record.name.clone(),
+                    record.branch.clone(),
+                    "Ledger".to_string(),
+                    record.commit_t.to_string(),
+                ]);
+            } else {
+                table.add_row(vec![
+                    marker.to_string(),
+                    record.name.clone(),
+                    record.branch.clone(),
+                    record.commit_t.to_string(),
+                ]);
+            }
+        }
+
+        for gs in &active_gs {
+            let t_str = if gs.index_t > 0 {
+                gs.index_t.to_string()
+            } else {
+                "-".to_string()
+            };
+            if has_gs {
+                table.add_row(vec![
+                    " ".to_string(),
+                    gs.name.clone(),
+                    gs.branch.clone(),
+                    format_source_type(&gs.source_type),
+                    t_str,
+                ]);
+            }
         }
 
         println!("{table}");
@@ -159,4 +195,15 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
 
     println!("{table}");
     Ok(())
+}
+
+fn format_source_type(st: &fluree_db_nameservice::GraphSourceType) -> String {
+    match st {
+        fluree_db_nameservice::GraphSourceType::Bm25 => "BM25".to_string(),
+        fluree_db_nameservice::GraphSourceType::Vector => "Vector".to_string(),
+        fluree_db_nameservice::GraphSourceType::Geo => "Geo".to_string(),
+        fluree_db_nameservice::GraphSourceType::R2rml => "R2RML".to_string(),
+        fluree_db_nameservice::GraphSourceType::Iceberg => "Iceberg".to_string(),
+        fluree_db_nameservice::GraphSourceType::Unknown(s) => format!("Unknown({s})"),
+    }
 }

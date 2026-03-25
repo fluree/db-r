@@ -507,6 +507,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+
+    /// Manage Apache Iceberg table connections
+    Iceberg {
+        #[command(subcommand)]
+        action: IcebergAction,
+    },
 }
 
 /// Branch subcommands.
@@ -1130,4 +1136,95 @@ pub enum UpstreamAction {
 
     /// List all upstream configurations
     List,
+}
+
+// =============================================================================
+// Iceberg subcommands
+// =============================================================================
+
+/// Iceberg subcommands.
+#[derive(Subcommand)]
+pub enum IcebergAction {
+    /// Map an Iceberg table as a graph source
+    ///
+    /// Examples:
+    ///   fluree iceberg map my-gs --catalog-uri https://polaris.example.com --table openflights.airlines
+    ///   fluree iceberg map my-gs --catalog-uri https://... --r2rml mappings/airlines.ttl
+    ///   fluree iceberg map my-gs --mode direct --table-location s3://bucket/warehouse/ns/table
+    Map(Box<IcebergMapArgs>),
+}
+
+/// Arguments for mapping an Iceberg table as a graph source.
+#[derive(Debug, Clone, clap::Args)]
+pub struct IcebergMapArgs {
+    /// Graph source name (e.g., "my-iceberg-gs")
+    pub name: String,
+
+    /// Catalog mode: "rest" (default) or "direct"
+    #[arg(long, default_value = "rest")]
+    pub mode: String,
+
+    /// REST catalog URI (required for rest mode)
+    #[arg(long)]
+    pub catalog_uri: Option<String>,
+
+    /// Table identifier in namespace.table format (e.g., "openflights.airlines").
+    /// Required for rest mode without --r2rml. When using --r2rml, tables are
+    /// defined in the mapping file.
+    #[arg(long)]
+    pub table: Option<String>,
+
+    /// S3 table location for direct mode (e.g., "s3://bucket/warehouse/ns/table")
+    #[arg(long)]
+    pub table_location: Option<String>,
+
+    /// R2RML mapping file (Turtle format). Defines how Iceberg table rows
+    /// are mapped to RDF triples. When provided, table references come from
+    /// the mapping's rr:tableName entries.
+    #[arg(long)]
+    pub r2rml: Option<PathBuf>,
+
+    /// R2RML mapping media type (e.g., "text/turtle"); inferred from extension if omitted
+    #[arg(long)]
+    pub r2rml_type: Option<String>,
+
+    /// Branch name (defaults to "main")
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Bearer token for REST catalog authentication
+    #[arg(long)]
+    pub auth_bearer: Option<String>,
+
+    /// OAuth2 token URL for client credentials auth
+    #[arg(long)]
+    pub oauth2_token_url: Option<String>,
+
+    /// OAuth2 client ID
+    #[arg(long)]
+    pub oauth2_client_id: Option<String>,
+
+    /// OAuth2 client secret
+    #[arg(long)]
+    pub oauth2_client_secret: Option<String>,
+
+    /// Warehouse identifier (REST mode)
+    #[arg(long)]
+    pub warehouse: Option<String>,
+
+    /// Disable vended credentials (REST mode, enabled by default)
+    #[arg(long)]
+    pub no_vended_credentials: bool,
+
+    /// S3 region override
+    #[arg(long)]
+    pub s3_region: Option<String>,
+
+    /// S3 endpoint override (for MinIO, LocalStack)
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+
+    /// Use path-style S3 URLs
+    #[arg(long)]
+    pub s3_path_style: bool,
 }
