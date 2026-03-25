@@ -199,6 +199,16 @@ impl NameService for ProxyNameService {
             "update_branch_point not supported in proxy mode".to_string(),
         ))
     }
+
+    async fn reset_head(
+        &self,
+        _ledger_id: &str,
+        _snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "reset_head not supported in proxy mode".to_string(),
+        ))
+    }
 }
 
 #[async_trait]

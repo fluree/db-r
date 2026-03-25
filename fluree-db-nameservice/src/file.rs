@@ -623,6 +623,40 @@ impl NameService for FileNameService {
 
         Ok(())
     }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let address = Self::ns_address(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.commit_cid = snapshot.commit_head_id.as_ref().map(|c| c.to_string());
+                file.t = snapshot.commit_t;
+                file.index = snapshot.index_head_id.as_ref().map(|id| IndexRef {
+                    cid: Some(id.to_string()),
+                    t: snapshot.index_t,
+                });
+                file.branch_point = snapshot.branch_point.as_ref().map(|bp| BranchPointRef {
+                    source: bp.source.clone(),
+                    commit_cid: Some(bp.commit_id.to_string()),
+                    t: bp.t,
+                });
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]

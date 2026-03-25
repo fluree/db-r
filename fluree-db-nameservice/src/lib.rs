@@ -496,6 +496,17 @@ pub trait NameService: Debug + Send + Sync {
         ledger_id: &str,
         new_branch_point: BranchPoint,
     ) -> Result<()>;
+
+    /// Force-reset a branch's commit head, index head, and branch point to
+    /// a previously captured snapshot.
+    ///
+    /// Unlike [`Publisher::publish_commit`] and [`Publisher::publish_index`],
+    /// this bypasses monotonic guards — the new `t` values may be lower than
+    /// the current ones. Used to roll back a branch after a failed rebase.
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn reset_head(&self, ledger_id: &str, snapshot: NsRecordSnapshot) -> Result<()>;
 }
 
 /// Publisher trait for writing nameservice records
