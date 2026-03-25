@@ -171,7 +171,7 @@ pub struct GraphDb {
     /// When set, this view was created from a graph source (e.g., Iceberg/R2RML)
     /// rather than a real ledger. Query patterns should be auto-wrapped in
     /// `GRAPH <gs_id> { ... }` so the R2RML provider handles them.
-    pub graph_source_id: Option<Arc<str>>,
+    pub(crate) graph_source_id: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for GraphDb {

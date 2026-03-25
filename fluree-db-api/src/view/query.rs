@@ -20,13 +20,22 @@ use serde_json::Value as JsonValue;
 
 /// If the view was created from a graph source, wrap all top-level patterns
 /// in `GRAPH <gs_id> { ... }` so the R2RML provider handles them.
+///
+/// Skips wrapping if the query already contains a top-level GRAPH pattern
+/// (the user explicitly scoped it).
 fn maybe_wrap_for_graph_source(db: &GraphDb, parsed: &mut fluree_db_query::parse::ParsedQuery) {
     if let Some(ref gs_id) = db.graph_source_id {
-        let inner = std::mem::take(&mut parsed.patterns);
-        parsed.patterns = vec![Pattern::Graph {
-            name: GraphName::Iri(gs_id.to_string().into()),
-            patterns: inner,
-        }];
+        let has_graph_pattern = parsed
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Graph { .. }));
+        if !has_graph_pattern {
+            let inner = std::mem::take(&mut parsed.patterns);
+            parsed.patterns = vec![Pattern::Graph {
+                name: GraphName::Iri(gs_id.to_string().into()),
+                patterns: inner,
+            }];
+        }
     }
 }
 
