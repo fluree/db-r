@@ -43,8 +43,8 @@ async fn sdk_config_for_localstack(endpoint: &str) -> aws_config::SdkConfig {
 
 async fn wait_for_localstack(sdk_config: &aws_config::SdkConfig) {
     let s3 = aws_sdk_s3::Client::new(sdk_config);
-    // 120 × 1s = 2 minutes max. CI runners can be slow to start LocalStack.
-    for _ in 0..120 {
+    // 240 × 1s = 4 minutes max. CI runners can be slow to start LocalStack.
+    for _ in 0..240 {
         if s3.list_buckets().send().await.is_ok() {
             return;
         }
