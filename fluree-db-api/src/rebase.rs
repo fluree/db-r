@@ -200,9 +200,21 @@ where
         .await?;
 
         // Compute source delta: all (s,p,g) tuples modified on source since branch point.
-        let source_store =
-            fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
-        let source_delta = compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?;
+        // The source may itself be a branch, so use a BranchedContentStore if it has
+        // a branch_point, otherwise a plain store.
+        let source_delta = if source_record.branch_point.is_some() {
+            let source_store = LedgerState::build_branched_store(
+                &self.nameservice,
+                &source_record,
+                self.connection.storage(),
+            )
+            .await?;
+            compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?
+        } else {
+            let source_store =
+                fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
+            compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?
+        };
 
         // Pass 1: stream branch commits to collect lightweight summaries
         // (CID, t, conflict keys) without retaining flake payloads in memory.
