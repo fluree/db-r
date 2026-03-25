@@ -564,6 +564,46 @@ fluree branch drop dev --ledger mydb
 
 See [POST /fluree/branch](../api/endpoints.md#post-flureebranch), [GET /fluree/branch/{ledger}](../api/endpoints.md#get-flureebranchledger), and [POST /fluree/drop-branch](../api/endpoints.md#post-flureedrop-branch) for full endpoint details.
 
+### Rebasing a Branch
+
+After a branch diverges from its source, you can **rebase** it to replay its unique commits on top of the source branch's current HEAD. This brings the branch up to date with upstream changes without merging.
+
+Rebase detects conflicts when both the branch and source have modified the same (subject, predicate, graph) tuples. Five conflict resolution strategies are available:
+
+| Strategy | Behavior |
+|----------|----------|
+| `take-both` (default) | Replay as-is, both values coexist (multi-cardinality) |
+| `abort` | Fail on first conflict, no changes applied |
+| `take-source` | Drop branch's conflicting flakes (source wins) |
+| `take-branch` | Keep branch's flakes, retract source's conflicting values |
+| `skip` | Skip entire commit if any flakes conflict |
+
+If the branch has no unique commits, rebase performs a **fast-forward**: it simply updates the branch point to the source's current HEAD without replaying anything.
+
+**Rust API:**
+```rust
+use fluree_db_api::ConflictStrategy;
+
+let report = fluree.rebase_branch("mydb", "dev", ConflictStrategy::TakeBoth).await?;
+// report.replayed — number of commits successfully replayed
+// report.conflicts — conflicts detected and resolved
+// report.fast_forward — true if no branch commits to replay
+```
+
+**HTTP API:**
+```bash
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev", "strategy": "take-both"}'
+```
+
+**CLI:**
+```bash
+fluree branch rebase dev --ledger mydb --strategy take-both
+```
+
+See [POST /fluree/rebase](../api/endpoints.md#post-flureerebase) for full endpoint details.
+
 ## Architecture Deep Dive
 
 ### Ledger State Composition

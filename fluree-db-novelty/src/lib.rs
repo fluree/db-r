@@ -27,6 +27,7 @@
 mod commit;
 mod commit_flakes;
 pub mod commit_v2;
+pub mod delta;
 mod error;
 mod stats;
 
@@ -39,6 +40,7 @@ pub use commit_flakes::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
 pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use commit_v2::verify_commit_v2_blob;
+pub use delta::compute_delta_keys;
 pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;

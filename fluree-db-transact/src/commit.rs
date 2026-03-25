@@ -56,6 +56,22 @@ pub struct CommitOpts {
     /// Stored in the commit envelope for replay-safe persistence. The indexer
     /// uses this to resolve graph IRIs to dictionary IDs when building the index.
     pub graph_delta: std::collections::HashMap<u16, String>,
+    /// Namespace code delta to carry forward from original commits during rebase.
+    ///
+    /// When set, this overrides the `NamespaceRegistry::take_delta()` result,
+    /// preserving the original commit's namespace allocations during replay.
+    pub namespace_delta: Option<std::collections::HashMap<u16, String>>,
+    /// Skip backpressure checks (novelty size limits).
+    ///
+    /// Used during rebase replay where the branch is disconnected and we
+    /// control the full commit sequence.
+    pub skip_backpressure: bool,
+    /// Skip sequencing verification (commit head matching).
+    ///
+    /// Used during rebase replay where the base state is the source branch
+    /// but we commit to the target branch namespace. The sequencing check
+    /// would fail because the nameservice head doesn't match the base state.
+    pub skip_sequencing: bool,
 }
 
 impl std::fmt::Debug for CommitOpts {
@@ -71,6 +87,12 @@ impl std::fmt::Debug for CommitOpts {
             )
             .field("txn_meta_count", &self.txn_meta.len())
             .field("graph_delta_count", &self.graph_delta.len())
+            .field(
+                "namespace_delta",
+                &self.namespace_delta.as_ref().map(|d| d.len()),
+            )
+            .field("skip_backpressure", &self.skip_backpressure)
+            .field("skip_sequencing", &self.skip_sequencing)
             .finish()
     }
 }
@@ -117,6 +139,27 @@ impl CommitOpts {
     /// Set the named graph delta (g_id -> IRI mappings)
     pub fn with_graph_delta(mut self, graph_delta: std::collections::HashMap<u16, String>) -> Self {
         self.graph_delta = graph_delta;
+        self
+    }
+
+    /// Set a pre-computed namespace delta (for rebase replay).
+    pub fn with_namespace_delta(
+        mut self,
+        ns_delta: std::collections::HashMap<u16, String>,
+    ) -> Self {
+        self.namespace_delta = Some(ns_delta);
+        self
+    }
+
+    /// Skip backpressure checks (for rebase replay).
+    pub fn with_skip_backpressure(mut self) -> Self {
+        self.skip_backpressure = true;
+        self
+    }
+
+    /// Skip sequencing verification (for rebase replay).
+    pub fn with_skip_sequencing(mut self) -> Self {
+        self.skip_sequencing = true;
         self
     }
 }
@@ -169,6 +212,9 @@ where
         txn_signature,
         txn_meta,
         graph_delta,
+        namespace_delta: override_ns_delta,
+        skip_backpressure,
+        skip_sequencing,
     } = opts;
 
     let commit_span = tracing::debug_span!(
@@ -190,7 +236,7 @@ where
         }
 
         // 3. Check backpressure - current novelty at max
-        if base.at_max_novelty(index_config) {
+        if !skip_backpressure && base.at_max_novelty(index_config) {
             return Err(TransactError::NoveltyAtMax);
         }
 
@@ -201,7 +247,7 @@ where
         commit_span.record("flake_count", flakes.len());
         commit_span.record("delta_bytes", delta_bytes);
         commit_span.record("current_novelty_bytes", current_bytes);
-        if current_bytes + delta_bytes >= max_bytes {
+        if !skip_backpressure && current_bytes + delta_bytes >= max_bytes {
             return Err(TransactError::NoveltyWouldExceed {
                 current_bytes,
                 delta_bytes,
@@ -209,15 +255,17 @@ where
             });
         }
 
-        // 5. Verify sequencing
-        let current = nameservice
-            .lookup(base.ledger_id())
-            .instrument(tracing::debug_span!("commit_nameservice_lookup"))
-            .await?;
-        {
-            let span = tracing::debug_span!("commit_verify_sequencing");
-            let _g = span.enter();
-            verify_sequencing(&base, current.as_ref())?;
+        // 5. Verify sequencing (skipped during rebase replay)
+        if !skip_sequencing {
+            let current = nameservice
+                .lookup(base.ledger_id())
+                .instrument(tracing::debug_span!("commit_nameservice_lookup"))
+                .await?;
+            {
+                let span = tracing::debug_span!("commit_verify_sequencing");
+                let _g = span.enter();
+                verify_sequencing(&base, current.as_ref())?;
+            }
         }
 
         // 6. Build commit record
@@ -231,7 +279,7 @@ where
         let ns_delta = {
             let span = tracing::debug_span!("commit_namespace_delta");
             let _g = span.enter();
-            ns_registry.take_delta()
+            override_ns_delta.unwrap_or_else(|| ns_registry.take_delta())
         };
 
         // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.

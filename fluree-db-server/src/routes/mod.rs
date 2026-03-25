@@ -35,6 +35,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/drop", post(ledger::drop))
         .route("/branch", post(ledger::create_branch))
         .route("/drop-branch", post(ledger::drop_branch))
+        .route("/rebase", post(ledger::rebase))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth::require_admin_token,

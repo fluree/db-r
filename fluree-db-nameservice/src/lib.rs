@@ -478,6 +478,61 @@ pub trait NameService: Debug + Send + Sync {
     /// Returns [`NotFound`](NameServiceError::NotFound) if the branch
     /// record does not exist.
     async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
+
+    /// Update a branch's branch point after a rebase operation.
+    ///
+    /// Replaces the existing [`BranchPoint`] on the branch's [`NsRecord`]
+    /// with `new_branch_point`, effectively re-anchoring the branch to a
+    /// new position on its source branch.
+    ///
+    /// # Arguments
+    /// * `ledger_id` - The full ledger:branch identifier (e.g., `"mydb:feature-x"`)
+    /// * `new_branch_point` - The updated branch point referencing the source's current HEAD
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: BranchPoint,
+    ) -> Result<()>;
+
+    /// Force-reset a branch's commit head, index head, and branch point to
+    /// a previously captured snapshot.
+    ///
+    /// Unlike [`Publisher::publish_commit`] and [`Publisher::publish_index`],
+    /// this bypasses monotonic guards — the new `t` values may be lower than
+    /// the current ones. Used to roll back a branch after a failed rebase.
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn reset_head(&self, ledger_id: &str, snapshot: NsRecordSnapshot) -> Result<()>;
+}
+
+/// Captured state of an `NsRecord` for rollback purposes.
+///
+/// Contains only the fields that `reset_head` restores — commit head,
+/// index head, and branch point.
+#[derive(Clone, Debug)]
+pub struct NsRecordSnapshot {
+    pub commit_head_id: Option<ContentId>,
+    pub commit_t: i64,
+    pub index_head_id: Option<ContentId>,
+    pub index_t: i64,
+    pub branch_point: Option<BranchPoint>,
+}
+
+impl NsRecordSnapshot {
+    /// Capture the restorable fields from an `NsRecord`.
+    pub fn from_record(record: &NsRecord) -> Self {
+        Self {
+            commit_head_id: record.commit_head_id.clone(),
+            commit_t: record.commit_t,
+            index_head_id: record.index_head_id.clone(),
+            index_t: record.index_t,
+            branch_point: record.branch_point.clone(),
+        }
+    }
 }
 
 /// Publisher trait for writing nameservice records

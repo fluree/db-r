@@ -165,6 +165,67 @@ Dropped branch 'feature'.
   Cascaded drops: mydb:dev
 ```
 
+### fluree branch rebase
+
+Rebase a branch onto its source branch's current HEAD.
+
+**Usage:**
+
+```bash
+fluree branch rebase <NAME> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<NAME>` | Branch name to rebase (e.g., "dev", "feature-x") |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--ledger <LEDGER>` | Ledger name (defaults to active ledger) |
+| `--strategy <STRATEGY>` | Conflict resolution strategy (default: "take-both"). Options: `take-both`, `abort`, `take-source`, `take-branch`, `skip` |
+| `--remote <REMOTE>` | Execute against a remote server |
+
+**Description:**
+
+Replays a branch's unique commits on top of the source branch's current HEAD. This brings the branch up to date with upstream changes. The `main` branch cannot be rebased.
+
+If the branch has no unique commits, a fast-forward rebase is performed — the branch point is simply updated to the source's current HEAD.
+
+Conflicts occur when both the branch and source have modified the same (subject, predicate, graph) tuples. See [conflict strategies](../concepts/ledgers-and-nameservice.md#rebasing-a-branch) for details.
+
+**Examples:**
+
+```bash
+# Rebase with default strategy
+fluree branch rebase dev
+
+# Rebase with abort-on-conflict strategy
+fluree branch rebase dev --strategy abort
+
+# Rebase for a specific ledger
+fluree branch rebase feature-x --ledger mydb --strategy take-source
+
+# Rebase on a remote server
+fluree branch rebase dev --ledger mydb --remote origin
+```
+
+**Output (fast-forward):**
+
+```
+Fast-forward rebase of 'dev' to t=5.
+```
+
+**Output (with replay):**
+
+```
+Rebased 'dev': 3 commits replayed, 0 skipped, 1 conflicts, 0 failures.
+  New branch point: t=8
+```
+
 ## See Also
 
 - [create](create.md) - Create a new ledger
