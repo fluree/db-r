@@ -324,7 +324,7 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> 
 impl<S, N> R2rmlProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     /// Check if a graph source has an R2RML mapping.
     async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
@@ -495,7 +495,7 @@ where
 impl<S, N> R2rmlTableProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     /// Scan an Iceberg table and return column batches.
     ///

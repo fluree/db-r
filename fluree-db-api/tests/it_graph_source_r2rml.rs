@@ -20,10 +20,11 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, ExecutableQuery, FlureeBuilder, GraphSourcePublisher, ParsedContext,
-    Pattern, StorageWrite, VarRegistry,
+    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, StorageWrite,
+    VarRegistry,
 };
 use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
+use fluree_db_nameservice::GraphSourceLookup;
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::triple::{Ref, Term, TriplePattern};

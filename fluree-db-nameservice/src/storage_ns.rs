@@ -22,9 +22,10 @@ use crate::ns_format::{
 };
 use crate::{
     deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
-    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord,
-    GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher, StatusValue,
+    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher,
+    StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -1235,14 +1236,19 @@ where
         })
         .await
     }
+}
 
+#[async_trait]
+impl<S> GraphSourceLookup for StorageNameService<S>
+where
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+{
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
     ) -> Result<Option<GraphSourceRecord>> {
         let (name, branch) = split_ledger_id(graph_source_id)?;
 
-        // First check if it's a graph source record
         if !self.is_graph_source_record(&name, &branch).await? {
             return Ok(None);
         }

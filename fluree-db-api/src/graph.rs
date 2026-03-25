@@ -92,8 +92,15 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
+    /// Create a query builder.
+    ///
+    /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
+    /// support is automatically enabled — graph sources resolve transparently.
     pub fn query(&self) -> GraphQueryBuilder<'a, '_, S, N> {
-        GraphQueryBuilder::new(self)
+        let builder = GraphQueryBuilder::new(self);
+        #[cfg(feature = "iceberg")]
+        let builder = builder.with_r2rml();
+        builder
     }
 
     /// Create a transaction builder. No I/O occurs until `.commit().await?`

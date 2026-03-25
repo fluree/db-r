@@ -185,6 +185,13 @@ Use SQL views for complex mappings:
 
 ## Querying R2RML Graph Sources
 
+R2RML graph sources are queried using standard SPARQL and JSON-LD query syntax — no special API calls or configuration needed. When the `iceberg` feature is compiled, R2RML support is automatically enabled for all query paths.
+
+Graph sources can be:
+- **Queried directly** as the target: `fluree query my-gs 'SELECT * WHERE { ?s ?p ?o }'`
+- **Referenced in FROM clauses**: `SELECT * FROM <my-gs:main> WHERE { ... }`
+- **Referenced in GRAPH patterns**: `SELECT * WHERE { GRAPH <my-gs:main> { ... } }` (useful for joining with ledger data)
+
 ### Basic Query
 
 ```json

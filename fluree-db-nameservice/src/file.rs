@@ -29,9 +29,9 @@ use crate::ns_format::{
 use crate::{
     check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
     serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -1009,7 +1009,10 @@ impl GraphSourcePublisher for FileNameService {
 
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for FileNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,

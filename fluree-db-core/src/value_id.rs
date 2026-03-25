@@ -600,6 +600,8 @@ impl ValueTypeTag {
     pub const G_DAY: Self = Self(35);
     pub const G_YEAR_MONTH: Self = Self(36);
     pub const G_MONTH_DAY: Self = Self(37);
+    pub const VECTOR: Self = Self(38);
+    pub const FULL_TEXT: Self = Self(39);
     pub const UNKNOWN: Self = Self(255);
 
     /// Resolve a (namespace_code, local_name) pair to a ValueTypeTag.
@@ -612,6 +614,7 @@ impl ValueTypeTag {
             namespaces::XSD => Self::from_xsd_name(name),
             namespaces::RDF => Self::from_rdf_name(name),
             namespaces::JSON_LD => Self::from_jsonld_name(name),
+            namespaces::FLUREE_DB => Self::from_fluree_db_name(name),
             _ => Self::UNKNOWN,
         }
     }
@@ -671,6 +674,15 @@ impl ValueTypeTag {
     fn from_jsonld_name(name: &str) -> Self {
         match name {
             jsonld_names::ID => Self::JSON_LD_ID,
+            _ => Self::UNKNOWN,
+        }
+    }
+
+    /// Resolve a Fluree DB local name to ValueTypeTag.
+    fn from_fluree_db_name(name: &str) -> Self {
+        match name {
+            "embeddingVector" => Self::VECTOR,
+            "fullText" => Self::FULL_TEXT,
             _ => Self::UNKNOWN,
         }
     }
@@ -827,6 +839,8 @@ impl fmt::Display for ValueTypeTag {
             35 => "xsd:gDay",
             36 => "xsd:gYearMonth",
             37 => "xsd:gMonthDay",
+            38 => "f:embeddingVector",
+            39 => "f:fullText",
             255 => "UNKNOWN",
             n => return write!(f, "ValueTypeTag({})", n),
         };

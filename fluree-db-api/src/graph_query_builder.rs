@@ -100,10 +100,7 @@ where
     /// Attaches actual R2RML provider objects so that GRAPH patterns
     /// targeting graph sources resolve via the R2RML/Iceberg engine.
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self
-    where
-        N: crate::GraphSourcePublisher,
-    {
+    pub fn with_r2rml(mut self) -> Self {
         let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(
             self.graph.fluree,
         ));
@@ -137,23 +134,16 @@ where
 
         // If graph source fallback is enabled and the ledger wasn't found,
         // try resolving as a graph source with a genesis snapshot.
+        // The R2RML provider (stored in core.r2rml by with_r2rml()) checks
+        // has_r2rml_mapping to detect graph sources without requiring
+        // additional trait bounds beyond NameService.
         #[cfg(feature = "iceberg")]
         if self.graph_source_fallback {
             if let Err(ApiError::NotFound(_)) = &result {
-                // Safe to call: graph_source_fallback is only set by with_r2rml()
-                // which requires N: GraphSourcePublisher. Since load_graph_db_or_graph_source
-                // is in a separate impl block with that bound, we call it via the same
-                // Fluree instance that with_r2rml() validated.
-                //
-                // However, we can't call load_graph_db_or_graph_source here because
-                // this impl block only has N: NameService. Instead, we replicate the
-                // fallback logic inline using the nameservice lookup from GraphSourcePublisher.
                 let ledger_id = &self.graph.ledger_id;
                 let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
                     .unwrap_or_else(|_| ledger_id.to_string());
 
-                // The R2RML provider (stored in core.r2rml) can check if a graph source
-                // exists via has_r2rml_mapping. If it does, create a genesis context.
                 if let Some((r2rml, _)) = &self.core.r2rml {
                     if r2rml.has_r2rml_mapping(&gs_id).await {
                         let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
@@ -348,10 +338,7 @@ where
 
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self
-    where
-        N: crate::GraphSourcePublisher,
-    {
+    pub fn with_r2rml(mut self) -> Self {
         let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
         let provider: Arc<dyn R2rmlProvider + 'v> = shared.clone();
         let table_provider: Arc<dyn R2rmlTableProvider + 'v> = shared;

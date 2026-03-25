@@ -303,22 +303,38 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
 
 ### Querying graph sources
 
-Graph source queries work through normal query endpoints (`POST {api_base_url}/query/*ledger`). No separate endpoint is needed.
+Graph source queries work through normal query endpoints. No separate endpoint or special wiring is needed.
 
-When a SPARQL query contains `GRAPH <my-gs:main> { ... }` or a JSON-LD query uses `fromNamed`, the query engine resolves graph source references via the nameservice and executes R2RML table scans transparently.
+**As a direct target:**
 
-**Server requirement:** The query execution pipeline must wire an R2RML provider into the execution context. In `fluree-db-server`, this is done by calling `.with_r2rml()` on the query builder when the `iceberg` feature is enabled:
+Graph sources can be queried directly, just like ledgers:
 
-```rust
-// In FlureeInstance::query_connection_jsonld (state.rs)
-#[cfg(feature = "iceberg")]
-f.query_from().with_r2rml().jsonld(query_json).execute_formatted().await
+- `POST {api_base_url}/query/execution-log:main` with a SPARQL or JSON-LD query body
+- The server resolves the name as a graph source (not a ledger), creates a minimal query context, and routes triple patterns through the R2RML/Iceberg scan engine
 
-#[cfg(not(feature = "iceberg"))]
-f.query_from().jsonld(query_json).execute_formatted().await
+**Via FROM clauses:**
+
+Graph sources can appear in `FROM` / `FROM NAMED` clauses:
+
+```sparql
+SELECT * FROM <execution-log:main> WHERE { ?s ?p ?o } LIMIT 10
 ```
 
-If your server uses a different query execution path, ensure you create a `FlureeR2rmlProvider` and pass it to `ContextConfig.r2rml` in `execute_prepared()`. Without this wiring, GRAPH patterns against R2RML sources will silently return no results.
+**Via GRAPH patterns (from within a ledger query):**
+
+```sparql
+SELECT * WHERE { GRAPH <execution-log:main> { ?s ?p ?o } } LIMIT 10
+```
+
+**How it works:** When the `iceberg` feature is compiled, `query_from()` and `graph().query()` automatically enable R2RML provider support. The `NameService` trait requires `GraphSourceLookup` (read-only graph source discovery), so graph source resolution is always available. No special API calls are needed — callers just use the standard query API:
+
+```rust
+// Standard query — graph sources resolve transparently
+f.query_from().sparql(sparql).execute_formatted().await
+f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
+```
+
+**Known limitation:** `FROM <ledger>, <graph-source>` with bare WHERE patterns (no GRAPH wrapper) — the graph source participates in the dataset but bare triple patterns only scan native indexes. Use explicit `GRAPH <gs:main> { ... }` for the graph source part in mixed-source queries.
 
 ### Authentication
 

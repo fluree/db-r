@@ -237,6 +237,47 @@ fluree.create_iceberg_graph_source(config).await?;
 
 ## Querying Graph Sources
 
+Graph sources come in two flavors with different query models:
+
+- **Iceberg / R2RML sources** — queried transparently using standard SPARQL/JSON-LD patterns (FROM, GRAPH, or as a direct query target)
+- **Search indexes** (BM25, Vector) — queried using the `f:graphSource` / `f:searchText` pattern
+
+### Iceberg / R2RML (Transparent)
+
+Iceberg graph sources are queried just like ledgers. No special syntax is needed:
+
+**As a direct target:**
+```sparql
+-- Query the graph source directly
+SELECT ?s ?p ?o FROM <execution-log:main> WHERE { ?s ?p ?o } LIMIT 10
+```
+
+**Via GRAPH pattern (joining with ledger data):**
+```json
+{
+  "from": "mydb:main",
+  "select": ["?customer", "?orderId", "?total"],
+  "where": [
+    { "@id": "?customer", "schema:name": "?name" },
+    { "@id": "?customer", "ex:customerId": "?custId" },
+    {
+      "graph": "warehouse-orders:main",
+      "where": [
+        { "@id": "?order", "ex:customerId": "?custId" },
+        { "@id": "?order", "ex:orderId": "?orderId" },
+        { "@id": "?order", "ex:total": "?total" }
+      ]
+    }
+  ]
+}
+```
+
+R2RML mappings define how Iceberg table rows become RDF triples. See [Iceberg / Parquet](iceberg.md) and [R2RML](r2rml.md) for details.
+
+### Search Indexes (BM25, Vector)
+
+Search indexes use the `f:graphSource` pattern:
+
 ### Single Graph Source
 
 Query one graph source:

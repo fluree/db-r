@@ -240,10 +240,7 @@ where
 
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self
-    where
-        N: crate::GraphSourcePublisher,
-    {
+    pub fn with_r2rml(mut self) -> Self {
         let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
         let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
         let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;
@@ -493,10 +490,7 @@ where
 
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self
-    where
-        N: crate::GraphSourcePublisher,
-    {
+    pub fn with_r2rml(mut self) -> Self {
         let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
         let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
         let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;
@@ -743,10 +737,7 @@ where
 
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
-    pub fn with_r2rml(mut self) -> Self
-    where
-        N: crate::GraphSourcePublisher,
-    {
+    pub fn with_r2rml(mut self) -> Self {
         let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
         let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
         let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;

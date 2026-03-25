@@ -174,6 +174,16 @@ Iceberg types map to XSD types:
 
 ## Querying Iceberg Tables
 
+Iceberg graph sources are queried using standard SPARQL and JSON-LD syntax. When the `iceberg` feature is compiled, R2RML support is automatically enabled.
+
+```rust
+// Rust API — graph sources resolve transparently
+let result = fluree.query_from()
+    .sparql("SELECT * FROM <warehouse-orders:main> WHERE { ?s ?p ?o } LIMIT 10")
+    .execute()
+    .await?;
+```
+
 ### Basic Query
 
 ```json

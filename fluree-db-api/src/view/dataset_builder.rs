@@ -9,7 +9,6 @@ use crate::{
     Result, Storage,
 };
 use chrono::DateTime;
-use fluree_db_query::r2rml::R2rmlProvider;
 
 macro_rules! build_dataset_view_from_spec {
     (
@@ -188,24 +187,53 @@ where
 
     /// Build a single `GraphDb` from a `GraphSource`.
     ///
-    /// Applies time travel specification and graph selector if present.
+    /// Tries to resolve as a ledger first. If not found, checks if the
+    /// identifier is a graph source (Iceberg/R2RML) and creates a minimal
+    /// genesis context tagged with the graph source ID.
     ///
-    /// Graph selection can come from two sources (mutually exclusive):
-    /// - Fragment syntax in identifier: `ledger:main#txn-meta`
-    /// - Explicit `graph_selector` field in the GraphSource
+    /// For sources with a time spec, time travel on graph sources is
+    /// explicitly rejected with a clear error.
     ///
-    /// If `graph_selector` is set, it overrides any fragment in the identifier
-    /// (but this combination is rejected at parse time as ambiguous).
+    /// If `graph_selector` is set, it is applied after resolution
+    /// (the parser rejects the ambiguous case where both fragment and
+    /// graph_selector are present).
     pub(crate) async fn load_view_from_source(
         &self,
         source: &dataset::GraphSource,
     ) -> Result<GraphDb> {
         let view = match &source.time_spec {
-            None => self.db(&source.identifier).await?,
+            None => match self.db(&source.identifier).await {
+                Ok(v) => v,
+                Err(ApiError::NotFound(_)) => {
+                    self.resolve_as_graph_source(&source.identifier).await?
+                }
+                Err(e) => return Err(e),
+            },
             Some(time_spec) => {
-                // Convert dataset::TimeSpec to crate::TimeSpec
                 let ts = convert_time_spec(time_spec)?;
-                self.db_at(&source.identifier, ts).await?
+                match self.db_at(&source.identifier, ts).await {
+                    Ok(v) => v,
+                    Err(ApiError::NotFound(_)) => {
+                        // Check if it's a graph source — reject time travel explicitly
+                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
+                            .unwrap_or_else(|_| source.identifier.clone());
+
+                        if self
+                            .nameservice()
+                            .lookup_graph_source(&gs_id)
+                            .await
+                            .map_err(|e| ApiError::internal(e.to_string()))?
+                            .is_some()
+                        {
+                            return Err(ApiError::query(
+                                "Time travel is not supported for graph sources. \
+                                 Remove the time specification to query at latest.",
+                            ));
+                        }
+                        return Err(ApiError::NotFound(source.identifier.clone()));
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         };
 
@@ -245,114 +273,27 @@ where
             && spec.default_graphs[0].time_spec.is_none()
     }
 
-    // === R2RML-aware dataset building (uses provider for graph source detection) ===
-
-    /// Build a `DataSetDb` with R2RML graph source fallback.
-    ///
-    /// Same as `build_dataset_view` but uses the R2RML provider to detect
-    /// graph sources when a source identifier is not found as a ledger.
-    pub async fn build_dataset_view_r2rml(
-        &self,
-        spec: &DatasetSpec,
-        r2rml_provider: &dyn R2rmlProvider,
-    ) -> Result<DataSetDb> {
-        build_dataset_view_from_spec!(
-            self,
-            spec,
-            history_transform = |view| async { Ok::<GraphDb, ApiError>(view) },
-            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
-            apply_policy = |view, source| self.maybe_apply_source_policy(view, source),
-        )
-    }
-
-    /// Build a `DataSetDb` with policy and R2RML graph source fallback.
-    pub async fn build_dataset_view_with_policy_r2rml(
-        &self,
-        spec: &DatasetSpec,
-        opts: &QueryConnectionOptions,
-        r2rml_provider: &dyn R2rmlProvider,
-    ) -> Result<DataSetDb> {
-        build_dataset_view_from_spec!(
-            self,
-            spec,
-            history_transform = |view| async {
-                let view = self.wrap_policy(view, opts, None).await?;
-                Ok::<GraphDb, ApiError>(self.apply_config_defaults(view, None))
-            },
-            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
-            apply_policy = |view, source| self.apply_policy_with_override(view, source, opts),
-        )
-    }
-
-    /// Like `try_single_view_from_spec` with R2RML graph source fallback.
-    pub async fn try_single_view_from_spec_r2rml(
-        &self,
-        spec: &DatasetSpec,
-        r2rml_provider: &dyn R2rmlProvider,
-    ) -> Result<Option<GraphDb>> {
-        try_single_view_from_spec!(
-            spec,
-            load_view = |source| self.load_view_from_source_r2rml(source, r2rml_provider),
-        )
-    }
-
-    /// Load a view from a source with R2RML fallback.
-    async fn load_view_from_source_r2rml(
-        &self,
-        source: &dataset::GraphSource,
-        r2rml_provider: &dyn R2rmlProvider,
-    ) -> Result<GraphDb> {
-        let view = match &source.time_spec {
-            None => {
-                // Try ledger, fall back to graph source via R2RML provider
-                match self.db(&source.identifier).await {
-                    Ok(v) => v,
-                    Err(ApiError::NotFound(_)) => {
-                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
-                            .unwrap_or_else(|_| source.identifier.clone());
-                        if r2rml_provider.has_r2rml_mapping(&gs_id).await {
-                            let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
-                            let state = fluree_db_ledger::LedgerState::new(
-                                snapshot,
-                                fluree_db_novelty::Novelty::new(0),
-                            );
-                            let mut db = GraphDb::from_ledger_state(&state);
-                            db.graph_source_id = Some(gs_id.into());
-                            db
-                        } else {
-                            return Err(ApiError::NotFound(source.identifier.clone()));
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            Some(time_spec) => {
-                let ts = convert_time_spec(time_spec)?;
-                match self.db_at(&source.identifier, ts).await {
-                    Ok(v) => v,
-                    Err(ApiError::NotFound(_)) => {
-                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
-                            .unwrap_or_else(|_| source.identifier.clone());
-                        if r2rml_provider.has_r2rml_mapping(&gs_id).await {
-                            return Err(ApiError::query(
-                                "Time travel is not supported for graph sources. \
-                                 Remove the time specification to query at latest.",
-                            ));
-                        }
-                        return Err(ApiError::NotFound(source.identifier.clone()));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        };
-
-        match &source.graph_selector {
-            Some(selector) => {
-                let view = Self::apply_graph_selector(view, selector)?;
-                self.resolve_and_attach_config(view).await
-            }
-            None => Ok(view),
+    /// Resolve an identifier as a graph source, creating a minimal genesis context.
+    async fn resolve_as_graph_source(&self, identifier: &str) -> Result<GraphDb> {
+        let gs_id = fluree_db_core::normalize_ledger_id(identifier)
+            .unwrap_or_else(|_| identifier.to_string());
+        // Verify the graph source exists (we don't need the record itself)
+        if self
+            .nameservice()
+            .lookup_graph_source(&gs_id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .is_none()
+        {
+            return Err(ApiError::NotFound(identifier.to_string()));
         }
+
+        let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
+        let state =
+            fluree_db_ledger::LedgerState::new(snapshot, fluree_db_novelty::Novelty::new(0));
+        let mut db = GraphDb::from_ledger_state(&state);
+        db.graph_source_id = Some(gs_id.into());
+        Ok(db)
     }
 }
 
@@ -394,115 +335,6 @@ async fn resolve_history_endpoint_t(
                 latest_t,
             )
             .await
-        }
-    }
-}
-
-// ============================================================================
-// Graph Source–Aware Dataset Builder (requires GraphSourcePublisher)
-// ============================================================================
-
-impl<S, N> Fluree<S, N>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + fluree_db_nameservice::GraphSourcePublisher + Clone + Send + Sync + 'static,
-{
-    /// Build a `DataSetDb` from a `DatasetSpec`, falling back to graph source
-    /// resolution when a source identifier is not found as a ledger.
-    ///
-    /// Used by R2RML-enabled query entry points so that `FROM <graph-source>`
-    /// resolves transparently.
-    pub async fn build_dataset_view_with_graph_source_fallback(
-        &self,
-        spec: &DatasetSpec,
-    ) -> Result<DataSetDb> {
-        // Note: history mode remains ledger-only here (no graph source fallback).
-        build_dataset_view_from_spec!(
-            self,
-            spec,
-            history_transform = |view| async { Ok::<GraphDb, ApiError>(view) },
-            load_view = |source| self.load_view_from_source_with_fallback(source),
-            apply_policy = |view, source| self.maybe_apply_source_policy(view, source),
-        )
-    }
-
-    /// Like `build_dataset_view_with_policy` but with graph source fallback.
-    pub async fn build_dataset_view_with_policy_and_graph_source_fallback(
-        &self,
-        spec: &DatasetSpec,
-        opts: &QueryConnectionOptions,
-    ) -> Result<DataSetDb> {
-        build_dataset_view_from_spec!(
-            self,
-            spec,
-            history_transform = |view| async {
-                let view = self.wrap_policy(view, opts, None).await?;
-                Ok::<GraphDb, ApiError>(self.apply_config_defaults(view, None))
-            },
-            load_view = |source| self.load_view_from_source_with_fallback(source),
-            apply_policy = |view, source| self.apply_policy_with_override(view, source, opts),
-        )
-    }
-
-    /// Like `try_single_view_from_spec` but with graph source fallback.
-    pub async fn try_single_view_from_spec_with_fallback(
-        &self,
-        spec: &DatasetSpec,
-    ) -> Result<Option<GraphDb>> {
-        try_single_view_from_spec!(
-            spec,
-            load_view = |source| self.load_view_from_source_with_fallback(source),
-        )
-    }
-
-    /// Load a view from a source, falling back to graph source resolution.
-    ///
-    /// For sources without a time spec, uses `load_graph_db_or_graph_source`.
-    /// For sources with a time spec, tries ledger first; if not found, checks
-    /// if it's a graph source and returns an explicit error (time travel not
-    /// supported for graph sources).
-    async fn load_view_from_source_with_fallback(
-        &self,
-        source: &dataset::GraphSource,
-    ) -> Result<GraphDb> {
-        let view = match &source.time_spec {
-            None => {
-                self.load_graph_db_or_graph_source(&source.identifier)
-                    .await?
-            }
-            Some(time_spec) => {
-                let ts = convert_time_spec(time_spec)?;
-                match self.db_at(&source.identifier, ts).await {
-                    Ok(v) => v,
-                    Err(ApiError::NotFound(_)) => {
-                        // Check if it's a graph source — reject time travel explicitly
-                        let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
-                            .unwrap_or_else(|_| source.identifier.clone());
-                        if self
-                            .nameservice()
-                            .lookup_graph_source(&gs_id)
-                            .await
-                            .map_err(|e| ApiError::internal(e.to_string()))?
-                            .is_some()
-                        {
-                            return Err(ApiError::query(
-                                "Time travel is not supported for graph sources. \
-                                 Remove the time specification to query at latest.",
-                            ));
-                        }
-                        return Err(ApiError::NotFound(source.identifier.clone()));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        };
-
-        match &source.graph_selector {
-            Some(selector) => {
-                let view = Self::apply_graph_selector(view, selector)?;
-                self.resolve_and_attach_config(view).await
-            }
-            None => Ok(view),
         }
     }
 }

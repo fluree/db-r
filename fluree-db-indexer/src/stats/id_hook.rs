@@ -197,6 +197,8 @@ fn otype_to_value_type_tag(ot: fluree_db_core::o_type::OType) -> ValueTypeTag {
         OType::XSD_DURATION => ValueTypeTag::DURATION,
         OType::XSD_DAY_TIME_DURATION => ValueTypeTag::DAY_TIME_DURATION,
         OType::XSD_YEAR_MONTH_DURATION => ValueTypeTag::YEAR_MONTH_DURATION,
+        OType::VECTOR => ValueTypeTag::VECTOR,
+        OType::FULLTEXT => ValueTypeTag::FULL_TEXT,
         _ => ValueTypeTag::UNKNOWN,
     }
 }

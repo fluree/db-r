@@ -182,7 +182,9 @@ pub use fluree_db_core::{
 pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
-pub use fluree_db_nameservice::{GraphSourcePublisher, NameService, NsRecord, Publisher};
+pub use fluree_db_nameservice::{
+    GraphSourceLookup, GraphSourcePublisher, NameService, NsRecord, Publisher,
+};
 pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
@@ -516,7 +518,10 @@ impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.retract_graph_source(name, branch).await
     }
+}
 
+#[async_trait]
+impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
@@ -734,7 +739,17 @@ where
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.inner.retract_graph_source(name, branch).await
     }
+}
 
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::GraphSourceLookup for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
@@ -2625,8 +2640,16 @@ where
     ///     .policy(ctx)
     ///     .execute().await?;
     /// ```
+    /// Create a FROM-driven query builder.
+    ///
+    /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
+    /// support is automatically enabled — graph sources referenced via
+    /// `FROM` or `GRAPH` patterns resolve transparently.
     pub fn query_from(&self) -> FromQueryBuilder<'_, S, N> {
-        FromQueryBuilder::new(self)
+        let builder = FromQueryBuilder::new(self);
+        #[cfg(feature = "iceberg")]
+        let builder = builder.with_r2rml();
+        builder
     }
 
     /// Create a ledger info builder for retrieving comprehensive ledger metadata.

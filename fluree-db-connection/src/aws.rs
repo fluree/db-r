@@ -25,10 +25,10 @@ use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
 use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
-    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPublisher, StatusValue,
-    StorageNameService,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
+    StatusPublisher, StatusValue, StorageNameService,
 };
 use fluree_db_storage_aws::{DynamoDbNameService, S3Storage};
 use once_cell::sync::OnceCell;
@@ -258,7 +258,10 @@ impl GraphSourcePublisher for AwsNameService {
             Self::Storage(ns) => ns.retract_graph_source(name, branch).await,
         }
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for AwsNameService {
     async fn lookup_graph_source(
         &self,
         address: &str,
