@@ -371,6 +371,9 @@ impl Operator for Bm25SearchOperator {
                     self.pattern.timeout,
                 )
                 .await?;
+            // Use the language from the index config for query-time analysis
+            let lang = super::analyzer::Language::from_bcp47(&idx.config.language);
+            self.analyzer = Analyzer::for_language(lang);
             self.index = Some(idx);
         } else {
             return Err(QueryError::InvalidQuery(

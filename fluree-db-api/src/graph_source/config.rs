@@ -117,7 +117,11 @@ impl Bm25CreateConfig {
 
     /// Build BM25Config from the options.
     pub fn bm25_config(&self) -> Bm25Config {
-        Bm25Config::new(self.k1.unwrap_or(1.2), self.b.unwrap_or(0.75))
+        Bm25Config::with_language(
+            self.k1.unwrap_or(1.2),
+            self.b.unwrap_or(0.75),
+            self.language.as_deref().unwrap_or("en"),
+        )
     }
 
     /// Validate the configuration.

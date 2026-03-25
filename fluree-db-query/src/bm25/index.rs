@@ -211,24 +211,49 @@ impl TermEntry {
 /// Default values match the legacy implementation:
 /// - k1 = 1.2 (term frequency saturation)
 /// - b = 0.75 (document length normalization)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bm25Config {
     /// Term frequency saturation parameter (default: 1.2)
     pub k1: f64,
     /// Document length normalization parameter (default: 0.75)
     pub b: f64,
+    /// BCP-47 language tag for text analysis (default: "en").
+    /// Persisted in the index so query-time analysis matches index-time.
+    #[serde(default = "default_language_tag")]
+    pub language: String,
+}
+
+fn default_language_tag() -> String {
+    "en".to_string()
 }
 
 impl Default for Bm25Config {
     fn default() -> Self {
-        Self { k1: 1.2, b: 0.75 }
+        Self {
+            k1: 1.2,
+            b: 0.75,
+            language: "en".to_string(),
+        }
     }
 }
 
 impl Bm25Config {
     /// Create a new BM25 config with custom parameters
     pub fn new(k1: f64, b: f64) -> Self {
-        Self { k1, b }
+        Self {
+            k1,
+            b,
+            language: "en".to_string(),
+        }
+    }
+
+    /// Create a new BM25 config with custom parameters and language.
+    pub fn with_language(k1: f64, b: f64, language: impl Into<String>) -> Self {
+        Self {
+            k1,
+            b,
+            language: language.into(),
+        }
     }
 }
 
