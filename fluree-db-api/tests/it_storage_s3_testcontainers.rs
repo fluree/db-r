@@ -15,7 +15,7 @@ use fluree_db_nameservice::NameService;
 use fluree_db_storage_aws::{DynamoDbConfig, DynamoDbNameService, S3Config, S3Storage};
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::core::IntoContainerPort;
+use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 const LOCALSTACK_EDGE_PORT: u16 = 4566;
@@ -39,18 +39,6 @@ async fn sdk_config_for_localstack(endpoint: &str) -> aws_config::SdkConfig {
         .endpoint_url(endpoint)
         .load()
         .await
-}
-
-async fn wait_for_localstack(sdk_config: &aws_config::SdkConfig) {
-    let s3 = aws_sdk_s3::Client::new(sdk_config);
-    // 240 × 1s = 4 minutes max. CI runners can be slow to start LocalStack.
-    for _ in 0..240 {
-        if s3.list_buckets().send().await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    panic!("LocalStack did not become ready in time");
 }
 
 async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
@@ -100,11 +88,13 @@ async fn list_object_keys(sdk_config: &aws_config::SdkConfig, bucket: &str) -> V
 #[tokio::test]
 async fn s3_testcontainers_basic_test() {
     // Boot LocalStack (edge port 4566)
-    let image = GenericImage::new("localstack/localstack", "latest")
+    let image = GenericImage::new("localstack/localstack", "4.4")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
         .with_env_var("SERVICES", "s3,dynamodb")
         .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
     let container = image
         .start()
         .await
@@ -115,9 +105,7 @@ async fn s3_testcontainers_basic_test() {
         .expect("LocalStack edge port mapped");
     let endpoint = format!("http://127.0.0.1:{host_port}");
 
-    // Configure AWS SDK to route ALL services to LocalStack
     let sdk_config = sdk_config_for_localstack(&endpoint).await;
-    wait_for_localstack(&sdk_config).await;
 
     // Provision infra
     let bucket = "fluree-test";
@@ -212,11 +200,13 @@ async fn s3_testcontainers_indexing_test() {
     use fluree_db_transact::{CommitOpts, TxnOpts};
 
     // Boot LocalStack
-    let image = GenericImage::new("localstack/localstack", "latest")
+    let image = GenericImage::new("localstack/localstack", "4.4")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
         .with_env_var("SERVICES", "s3,dynamodb")
         .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
     let container = image
         .start()
         .await
@@ -228,7 +218,6 @@ async fn s3_testcontainers_indexing_test() {
     let endpoint = format!("http://127.0.0.1:{host_port}");
 
     let sdk_config = sdk_config_for_localstack(&endpoint).await;
-    wait_for_localstack(&sdk_config).await;
 
     let bucket = "fluree-indexing-test";
     let table = "fluree-indexing-test-ns";

@@ -15,7 +15,7 @@ use fluree_db_nameservice::{
 use fluree_db_storage_aws::DynamoDbNameService;
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::core::IntoContainerPort;
+use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 /// Helper to create a deterministic `ContentId` for test commit refs.
@@ -45,18 +45,6 @@ fn set_localstack_env(endpoint: &str) {
     std::env::set_var("AWS_ENDPOINT_URL", endpoint);
 }
 
-async fn wait_for_localstack(sdk_config: &aws_config::SdkConfig) {
-    let s3 = aws_sdk_s3::Client::new(sdk_config);
-    // 240 × 1s = 4 minutes max. CI runners can be slow to start LocalStack.
-    for _ in 0..240 {
-        if s3.list_buckets().send().await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    panic!("LocalStack did not become ready in time");
-}
-
 async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
     let s3 = aws_sdk_s3::Client::new(sdk_config);
 
@@ -84,11 +72,13 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
 async fn localstack_s3_and_dynamodb_smoke() {
     // 1) Boot LocalStack (edge port 4566)
     // Note: call `GenericImage` methods before `ImageExt` methods (per testcontainers docs).
-    let image = GenericImage::new("localstack/localstack", "latest")
+    let image = GenericImage::new("localstack/localstack", "4.4")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
         .with_env_var("SERVICES", "s3,dynamodb")
         .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
     let container = match image.start().await {
         Ok(c) => c,
         Err(e) => {
@@ -114,8 +104,6 @@ async fn localstack_s3_and_dynamodb_smoke() {
     // 2) Configure AWS SDK to talk to LocalStack
     set_localstack_env(&endpoint);
     let sdk_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-
-    wait_for_localstack(&sdk_config).await;
 
     // 3) Provision minimal infra
     let bucket = "test-fluree-bucket";
@@ -229,19 +217,6 @@ async fn sdk_config_for_endpoint(endpoint: &str) -> aws_config::SdkConfig {
         .await
 }
 
-async fn wait_for_dynamodb(sdk_config: &aws_config::SdkConfig) {
-    let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
-    // 240 × 1s = 4 minutes max. CI runners (especially GitHub Actions) can be
-    // slow to start the LocalStack container; 30s was not enough.
-    for _ in 0..240 {
-        if ddb.list_tables().send().await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    panic!("DynamoDB did not become ready in time");
-}
-
 /// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService, sdk_config).
 async fn setup_localstack_ns() -> (
     testcontainers::ContainerAsync<GenericImage>,
@@ -257,11 +232,13 @@ async fn setup_localstack_ns_with_config() -> (
     DynamoDbNameService,
     aws_config::SdkConfig,
 ) {
-    let image = GenericImage::new("localstack/localstack", "latest")
+    let image = GenericImage::new("localstack/localstack", "4.4")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
         .with_env_var("SERVICES", "dynamodb")
         .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
     let container = image
         .start()
         .await
@@ -272,7 +249,6 @@ async fn setup_localstack_ns_with_config() -> (
         .expect("LocalStack edge port mapped");
     let endpoint = format!("http://127.0.0.1:{host_port}");
     let sdk_config = sdk_config_for_endpoint(&endpoint).await;
-    wait_for_dynamodb(&sdk_config).await;
 
     let table = "fluree-ns-test";
     ensure_dynamodb_table(&sdk_config, table).await;
