@@ -22,6 +22,31 @@ Fluree supports two ways to discover Iceberg metadata:
 - **REST catalog**: discover table metadata via an Iceberg REST catalog API (e.g., Polaris).
 - **Direct S3 (no catalog server)**: bypass REST discovery and read `version-hint.text` from the table’s `metadata/` directory to resolve the current metadata file.
 
+### CLI
+
+The `fluree iceberg map` command creates Iceberg graph sources from the command line:
+
+```bash
+# REST catalog
+fluree iceberg map warehouse-orders \
+  --catalog-uri https://polaris.example.com/api/catalog \
+  --table sales.orders \
+  --auth-bearer $POLARIS_TOKEN
+
+# REST catalog with R2RML mapping
+fluree iceberg map warehouse-orders \
+  --catalog-uri https://polaris.example.com/api/catalog \
+  --r2rml mappings/orders.ttl \
+  --auth-bearer $POLARIS_TOKEN
+
+# Direct S3 (no catalog server)
+fluree iceberg map execution-log \
+  --mode direct \
+  --table-location s3://bucket/warehouse/logs/execution_log
+```
+
+Once mapped, graph sources appear in `fluree list`, can be inspected with `fluree info`, and removed with `fluree drop`. See [CLI iceberg reference](../cli/iceberg.md) for all options.
+
 ### Rust API
 
 **REST catalog mode (Polaris-style):**

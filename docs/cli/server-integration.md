@@ -116,6 +116,116 @@ The CLI can do origin-based `clone --origin` and `pull` fallback without a named
 
 If your nameservice advertises `config_id` on the NsRecord, the CLI will attempt to fetch that `LedgerConfig` blob (by CID) and then use it to try additional origins.
 
+## Graph Source Endpoints (Iceberg, R2RML, BM25, etc.)
+
+The CLI routes graph source operations through the server when one is running (same auto-routing as query/insert/etc.). These endpoints are implemented in `fluree-db-server`.
+
+### `fluree list` (includes graph sources)
+
+- `GET {api_base_url}/ledgers`
+
+Returns a JSON array of **both** ledger records and graph source records:
+
+```json
+[
+  { "name": "mydb", "branch": "main", "type": "Ledger", "t": 5 },
+  { "name": "warehouse-orders", "branch": "main", "type": "Iceberg", "t": 0 },
+  { "name": "my-search", "branch": "main", "type": "BM25", "t": 5 }
+]
+```
+
+Each entry has `name`, `branch`, `type` (`"Ledger"`, `"Iceberg"`, `"R2RML"`, `"BM25"`, `"Vector"`, `"Geo"`), and `t` (commit_t for ledgers, index_t for graph sources). Retracted records are excluded.
+
+### `fluree info <name>` (graph source fallback)
+
+- `GET {api_base_url}/info/*name`
+
+Existing endpoint. When the name matches a ledger, returns the standard ledger info response. When the ledger is **not found**, the server falls back to graph source lookup and returns:
+
+```json
+{
+  "name": "warehouse-orders",
+  "branch": "main",
+  "type": "Iceberg",
+  "graph_source_id": "warehouse-orders:main",
+  "retracted": false,
+  "index_t": 0,
+  "config": { "catalog": { ... }, "table": "sales.orders", ... }
+}
+```
+
+The CLI detects graph source responses by the presence of `graph_source_id` in the JSON.
+
+### `fluree drop <name>` (graph source fallback)
+
+- `POST {api_base_url}/drop`
+
+Existing endpoint. Request body: `{ "ledger": "<name>", "hard": true }`.
+
+When the ledger is not found, the server falls back to dropping as a graph source before returning 404. The response format is the same as ledger drop: `{ "ledger_id": "name:branch", "status": "dropped" }`.
+
+### `fluree iceberg map` (Iceberg graph source creation)
+
+- `POST {api_base_url}/iceberg/map` (admin-protected, requires `iceberg` feature flag)
+
+Request body:
+
+```json
+{
+  "name": "warehouse-orders",
+  "mode": "rest",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "table": "sales.orders",
+  "auth_bearer": "my-token",
+  "warehouse": "my-warehouse"
+}
+```
+
+With R2RML mapping:
+
+```json
+{
+  "name": "airlines",
+  "mode": "rest",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "r2rml": "mappings/airlines.ttl",
+  "auth_bearer": "my-token"
+}
+```
+
+Direct S3 mode:
+
+```json
+{
+  "name": "execution-log",
+  "mode": "direct",
+  "table_location": "s3://bucket/warehouse/logs/execution_log",
+  "s3_region": "us-east-1"
+}
+```
+
+Response (`201 Created`):
+
+```json
+{
+  "graph_source_id": "warehouse-orders:main",
+  "table_identifier": "sales.orders",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "connection_tested": true,
+  "mapping_source": "mappings/airlines.ttl",
+  "triples_map_count": 3,
+  "mapping_validated": true
+}
+```
+
+Optional fields (`mapping_source`, `triples_map_count`, `mapping_validated`) are only present when `r2rml` is provided.
+
+### Authentication
+
+Graph source creation (`POST /iceberg/map`) and deletion (`POST /drop`) are admin-protected endpoints — they require the admin token when the server has admin auth configured.
+
+Graph source queries go through normal query endpoints (`POST {api_base_url}/query/*ledger`) using SPARQL `GRAPH` patterns or JSON-LD `from`/`fromNamed`.
+
 ## Quick Validation Script
 
 From a clean project directory:

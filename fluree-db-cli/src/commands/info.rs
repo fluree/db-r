@@ -53,37 +53,42 @@ pub async fn run(
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
-            println!(
-                "Ledger:         {} (tracked)",
-                info.get("ledger")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&local_alias)
-            );
-            if let Some(t) = info.get("t").and_then(|v| v.as_i64()) {
-                println!("t:              {}", t);
-            }
-            if let Some(commit) = info
-                .get("commitId")
-                .and_then(|v| v.as_str())
-                .or_else(|| info.get("commit_head_id").and_then(|v| v.as_str()))
-            {
-                println!("Commit ID:      {}", commit);
-            }
-            if let Some(index) = info
-                .get("indexId")
-                .and_then(|v| v.as_str())
-                .or_else(|| info.get("index_head_id").and_then(|v| v.as_str()))
-            {
-                println!("Index ID:       {}", index);
-            }
-
-            // Print full JSON if there are stats
-            if info.get("stats").is_some() {
-                println!();
+            // Detect graph source response (has graph_source_id but no ledger_id)
+            if info.get("graph_source_id").is_some() {
+                print_remote_graph_source_info(&info);
+            } else {
                 println!(
-                    "{}",
-                    serde_json::to_string_pretty(&info).unwrap_or_default()
+                    "Ledger:         {} (tracked)",
+                    info.get("ledger")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&local_alias)
                 );
+                if let Some(t) = info.get("t").and_then(|v| v.as_i64()) {
+                    println!("t:              {}", t);
+                }
+                if let Some(commit) = info
+                    .get("commitId")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| info.get("commit_head_id").and_then(|v| v.as_str()))
+                {
+                    println!("Commit ID:      {}", commit);
+                }
+                if let Some(index) = info
+                    .get("indexId")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| info.get("index_head_id").and_then(|v| v.as_str()))
+                {
+                    println!("Index ID:       {}", index);
+                }
+
+                // Print full JSON if there are stats
+                if info.get("stats").is_some() {
+                    println!();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&info).unwrap_or_default()
+                    );
+                }
             }
         }
         LedgerMode::Local { fluree, alias } => {
@@ -127,6 +132,43 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Print graph source info from a JSON response (remote/server mode).
+fn print_remote_graph_source_info(info: &serde_json::Value) {
+    let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let branch = info.get("branch").and_then(|v| v.as_str()).unwrap_or("?");
+    let gs_type = info.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+    let gs_id = info
+        .get("graph_source_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+
+    println!("Name:           {name}");
+    println!("Branch:         {branch}");
+    println!("Type:           {gs_type}");
+    println!("ID:             {gs_id}");
+
+    if let Some(t) = info.get("index_t").and_then(|v| v.as_i64()) {
+        println!("Index t:        {t}");
+    }
+    if let Some(id) = info.get("index_id").and_then(|v| v.as_str()) {
+        println!("Index ID:       {id}");
+    }
+    if let Some(deps) = info.get("dependencies").and_then(|v| v.as_array()) {
+        let dep_strs: Vec<&str> = deps.iter().filter_map(|v| v.as_str()).collect();
+        if !dep_strs.is_empty() {
+            println!("Dependencies:   {}", dep_strs.join(", "));
+        }
+    }
+    if let Some(config) = info.get("config") {
+        println!();
+        println!("Configuration:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(config).unwrap_or_default()
+        );
+    }
 }
 
 fn print_graph_source_info(gs: &fluree_db_nameservice::GraphSourceRecord) {

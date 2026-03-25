@@ -155,7 +155,7 @@ async fn run_remote_with_client(
 
 /// Print a ledger list from a JSON response.
 fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> CliResult<()> {
-    let ledgers = match result.as_array() {
+    let entries = match result.as_array() {
         Some(arr) => arr,
         None => {
             return Err(CliError::Remote(
@@ -164,7 +164,7 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
         }
     };
 
-    if ledgers.is_empty() {
+    if entries.is_empty() {
         match remote_label {
             Some(name) => println!("No ledgers on remote '{}'.", name),
             None => println!("No ledgers found."),
@@ -176,21 +176,50 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
         println!("Ledgers on remote '{}':", name.green());
     }
 
+    // Check if any entry has a non-Ledger type (to decide whether to show TYPE column)
+    let has_graph_sources = entries.iter().any(|e| {
+        e.get("type")
+            .and_then(|v| v.as_str())
+            .is_some_and(|t| t != "Ledger")
+    });
+
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["LEDGER", "T"]);
+    if has_graph_sources {
+        table.set_header(vec!["NAME", "BRANCH", "TYPE", "T"]);
+    } else {
+        table.set_header(vec!["LEDGER", "BRANCH", "T"]);
+    }
 
-    for ledger in ledgers {
-        let name = ledger
+    for entry in entries {
+        let name = entry
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
-        let t = ledger
+        let branch = entry
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main");
+        let t = entry
             .get("t")
             .and_then(|v| v.as_i64())
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
-        table.add_row(vec![name.to_string(), t]);
+
+        if has_graph_sources {
+            let entry_type = entry
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Ledger");
+            table.add_row(vec![
+                name.to_string(),
+                branch.to_string(),
+                entry_type.to_string(),
+                t,
+            ]);
+        } else {
+            table.add_row(vec![name.to_string(), branch.to_string(), t]);
+        }
     }
 
     println!("{table}");

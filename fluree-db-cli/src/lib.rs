@@ -363,7 +363,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             match action {
                 cli::IcebergAction::Map(args) => {
-                    commands::iceberg::run_iceberg_map(*args, &fluree_dir).await
+                    commands::iceberg::run_iceberg_map(*args, &fluree_dir, direct).await
                 }
             }
         }

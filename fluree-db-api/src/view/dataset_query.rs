@@ -14,6 +14,7 @@ use crate::{
 };
 use fluree_db_core::GraphDbRef;
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 
 // ============================================================================
 // Dataset Query Execution
@@ -113,6 +114,98 @@ where
             .await?;
 
         // 5. Build result with max_t across all views
+        Ok(build_query_result(
+            vars,
+            parsed,
+            batches,
+            dataset.max_t(),
+            dataset.composite_overlay(),
+            primary.binary_graph(),
+        ))
+    }
+
+    pub(crate) async fn query_dataset_with_r2rml(
+        &self,
+        dataset: &DataSetDb,
+        q: impl Into<QueryInput<'_>>,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
+    ) -> Result<QueryResult> {
+        let input = q.into();
+
+        // Single-ledger fast path (only safe for JSON-LD or SPARQL without dataset clauses).
+        if dataset.is_single_ledger() {
+            if let Some(view) = dataset.primary() {
+                match &input {
+                    QueryInput::JsonLd(_) => {
+                        return self
+                            .query_view_with_r2rml(
+                                view,
+                                input,
+                                r2rml_provider,
+                                r2rml_table_provider,
+                            )
+                            .await;
+                    }
+                    QueryInput::Sparql(sparql) => {
+                        let ast = parse_and_validate_sparql(sparql)?;
+                        let has_dataset = match &ast.body {
+                            fluree_db_sparql::ast::QueryBody::Select(q) => q.dataset.is_some(),
+                            fluree_db_sparql::ast::QueryBody::Ask(q) => q.dataset.is_some(),
+                            fluree_db_sparql::ast::QueryBody::Describe(q) => q.dataset.is_some(),
+                            fluree_db_sparql::ast::QueryBody::Construct(q) => q.dataset.is_some(),
+                            fluree_db_sparql::ast::QueryBody::Update(_) => false,
+                        };
+                        if !has_dataset {
+                            return self
+                                .query_view_with_r2rml(
+                                    view,
+                                    input,
+                                    r2rml_provider,
+                                    r2rml_table_provider,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
+        let primary = dataset
+            .primary()
+            .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
+
+        // 1. Parse to common IR (using primary db for namespace resolution).
+        let (vars, parsed) = match &input {
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
+            }
+            QueryInput::Sparql(sparql) => {
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
+            }
+        };
+
+        // 2. Build executable with optional reasoning override from primary view
+        let executable = self.build_executable_for_dataset(dataset, &parsed)?;
+
+        // 3. Get tracker for fuel limits
+        let tracker = match &input {
+            QueryInput::JsonLd(json) => tracker_for_limits(json),
+            QueryInput::Sparql(_) => Tracker::disabled(),
+        };
+
+        // 4. Execute against merged dataset
+        let batches = self
+            .execute_dataset_internal_with_r2rml(
+                dataset,
+                &vars,
+                &executable,
+                &tracker,
+                r2rml_provider,
+                r2rml_table_provider,
+            )
+            .await?;
+
         Ok(build_query_result(
             vars,
             parsed,
@@ -236,6 +329,114 @@ where
         ))
     }
 
+    pub(crate) async fn query_dataset_tracked_with_r2rml(
+        &self,
+        dataset: &DataSetDb,
+        q: impl Into<QueryInput<'_>>,
+        format_config: Option<crate::format::FormatterConfig>,
+        tracking_override: Option<TrackingOptions>,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
+    ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
+    {
+        let input = q.into();
+
+        let tracker = if let Some(opts) = tracking_override {
+            Tracker::new(opts)
+        } else {
+            match &input {
+                QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+                QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+            }
+        };
+
+        let default_format = match &input {
+            QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
+            _ => crate::format::FormatterConfig::jsonld(),
+        };
+        let mut format_config = format_config.unwrap_or(default_format);
+
+        let primary = dataset.primary().ok_or_else(|| {
+            crate::query::TrackedErrorResponse::new(400, "Dataset has no graphs", tracker.tally())
+        })?;
+
+        let (vars, parsed) = match &input {
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    })?
+            }
+            QueryInput::Sparql(sparql) => {
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    })?
+            }
+        };
+
+        let executable = self
+            .build_executable_for_dataset(dataset, &parsed)
+            .map_err(|e| {
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+            })?;
+
+        let batches = self
+            .execute_dataset_tracked_with_r2rml(
+                dataset,
+                &vars,
+                &executable,
+                &tracker,
+                r2rml_provider,
+                r2rml_table_provider,
+            )
+            .await
+            .map_err(|e| {
+                let status = status_for_query_error(&e);
+                crate::query::TrackedErrorResponse::new(status, e.to_string(), tracker.tally())
+            })?;
+
+        let query_result = build_query_result(
+            vars,
+            parsed,
+            batches,
+            dataset.max_t(),
+            None,
+            primary.binary_graph(),
+        );
+
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
+
+        let result_json = match primary.policy() {
+            Some(policy) => query_result
+                .format_async_with_policy_tracked(
+                    primary.as_graph_db_ref(),
+                    &format_config,
+                    policy,
+                    &tracker,
+                )
+                .await
+                .map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
+                })?,
+            None => query_result
+                .format_async_tracked(primary.as_graph_db_ref(), &format_config, &tracker)
+                .await
+                .map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
+                })?,
+        };
+
+        Ok(crate::query::TrackedQueryResponse::success(
+            result_json,
+            tracker.tally(),
+        ))
+    }
+
     // ========================================================================
     // Internal Helpers
     // ========================================================================
@@ -279,12 +480,24 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        // Primary default graph drives planning/optimization.
-        //
-        // NOTE: We pass `primary.snapshot` to the query engine as the "planning db".
-        // The engine will attach `runtime_dataset` to the ExecutionContext and scans
-        // will union across all default graphs, but planning (including stats-based
-        // reordering) is intentionally based on this primary graph for now.
+        let noop = crate::NoOpR2rmlProvider::new();
+        self.execute_dataset_internal_with_r2rml(dataset, vars, executable, tracker, &noop, &noop)
+            .await
+    }
+
+    /// Execute against dataset with explicit R2RML provider.
+    ///
+    /// Used by callers that have access to the full `Fluree<S, N>` instance
+    /// with `N: GraphSourcePublisher` (e.g., server query handlers with iceberg support).
+    pub(crate) async fn execute_dataset_internal_with_r2rml<'b>(
+        &self,
+        dataset: &DataSetDb,
+        vars: &crate::VarRegistry,
+        executable: &ExecutableQuery,
+        tracker: &Tracker,
+        r2rml_provider: &'b dyn fluree_db_query::r2rml::R2rmlProvider,
+        r2rml_table_provider: &'b dyn fluree_db_query::r2rml::R2rmlTableProvider,
+    ) -> Result<Vec<crate::Batch>> {
         let primary = dataset
             .primary()
             .ok_or_else(|| ApiError::query("Dataset has no default graphs"))?;
@@ -344,6 +557,7 @@ where
             },
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
+            r2rml: Some((r2rml_provider, r2rml_table_provider)),
             binary_g_id: primary.graph_id,
             binary_store,
             dict_novelty,
@@ -370,6 +584,20 @@ where
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
+    ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
+        let noop = crate::NoOpR2rmlProvider::new();
+        self.execute_dataset_tracked_with_r2rml(dataset, vars, executable, tracker, &noop, &noop)
+            .await
+    }
+
+    async fn execute_dataset_tracked_with_r2rml(
+        &self,
+        dataset: &DataSetDb,
+        vars: &crate::VarRegistry,
+        executable: &ExecutableQuery,
+        tracker: &Tracker,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
         let primary = dataset.primary().ok_or_else(|| {
             fluree_db_query::QueryError::InvalidQuery("Dataset has no default graphs".into())
@@ -419,6 +647,7 @@ where
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
             policy_enforcer: primary.policy_enforcer().cloned(),
+            r2rml: Some((r2rml_provider, r2rml_table_provider)),
             binary_g_id: primary.graph_id,
             binary_store,
             dict_novelty,

@@ -122,6 +122,42 @@ impl FlureeInstance {
         }
     }
 
+    /// List all nameservice records (ledgers)
+    pub async fn all_ns_records(
+        &self,
+    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::NsRecord>> {
+        use fluree_db_api::NameService;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().all_records().await,
+            FlureeInstance::Proxy(p) => p.nameservice().all_records().await,
+        }
+    }
+
+    /// List all graph source records
+    pub async fn all_graph_source_records(
+        &self,
+    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
+        use fluree_db_api::GraphSourcePublisher;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().all_graph_source_records().await,
+            // Proxy mode: graph source records not available locally
+            FlureeInstance::Proxy(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Lookup a graph source by ID (e.g., "my-gs:main")
+    pub async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::GraphSourceRecord>> {
+        use fluree_db_api::GraphSourcePublisher;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().lookup_graph_source(graph_source_id).await,
+            // Proxy mode: graph source records not available locally
+            FlureeInstance::Proxy(_) => Ok(None),
+        }
+    }
+
     // === Connection-level query methods (no ledger loading required) ===
 
     /// Execute a SPARQL query against a connection (dataset specified via FROM clause)
@@ -130,7 +166,20 @@ impl FlureeInstance {
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::File(f) => f.query_from().sparql(sparql).execute_formatted().await,
+            FlureeInstance::File(f) => {
+                #[cfg(feature = "iceberg")]
+                {
+                    f.query_from()
+                        .with_r2rml()
+                        .sparql(sparql)
+                        .execute_formatted()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.query_from().sparql(sparql).execute_formatted().await
+                }
+            }
             FlureeInstance::Proxy(p) => p.query_from().sparql(sparql).execute_formatted().await,
         }
     }
@@ -146,7 +195,20 @@ impl FlureeInstance {
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::File(f) => f.query_from().jsonld(query_json).execute_formatted().await,
+            FlureeInstance::File(f) => {
+                #[cfg(feature = "iceberg")]
+                {
+                    f.query_from()
+                        .with_r2rml()
+                        .jsonld(query_json)
+                        .execute_formatted()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.query_from().jsonld(query_json).execute_formatted().await
+                }
+            }
             FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_formatted().await,
         }
     }
@@ -161,7 +223,20 @@ impl FlureeInstance {
     ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
     {
         match self {
-            FlureeInstance::File(f) => f.query_from().jsonld(query_json).execute_tracked().await,
+            FlureeInstance::File(f) => {
+                #[cfg(feature = "iceberg")]
+                {
+                    f.query_from()
+                        .with_r2rml()
+                        .jsonld(query_json)
+                        .execute_tracked()
+                        .await
+                }
+                #[cfg(not(feature = "iceberg"))]
+                {
+                    f.query_from().jsonld(query_json).execute_tracked().await
+                }
+            }
             FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_tracked().await,
         }
     }
