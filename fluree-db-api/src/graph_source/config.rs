@@ -495,6 +495,8 @@ impl IcebergCreateConfig {
             rest.auth = fluree_db_iceberg::auth::AuthConfig::Bearer {
                 token: fluree_db_iceberg::ConfigValue::literal(token.into()),
             };
+        } else {
+            tracing::warn!("with_auth_bearer has no effect in Direct catalog mode");
         }
         self
     }
@@ -514,6 +516,8 @@ impl IcebergCreateConfig {
                 scope: None,
                 audience: None,
             };
+        } else {
+            tracing::warn!("with_auth_oauth2 has no effect in Direct catalog mode");
         }
         self
     }
@@ -522,6 +526,8 @@ impl IcebergCreateConfig {
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
         if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
             rest.warehouse = Some(warehouse.into());
+        } else {
+            tracing::warn!("with_warehouse has no effect in Direct catalog mode");
         }
         self
     }
@@ -530,6 +536,8 @@ impl IcebergCreateConfig {
     pub fn with_vended_credentials(mut self, enabled: bool) -> Self {
         if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
             rest.vended_credentials = enabled;
+        } else {
+            tracing::warn!("with_vended_credentials has no effect in Direct catalog mode");
         }
         self
     }

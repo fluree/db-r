@@ -26,7 +26,7 @@ async fn run_iceberg_map_remote(
     client: &crate::remote_client::RemoteLedgerClient,
     args: &IcebergMapArgs,
 ) -> CliResult<()> {
-    let body = args_to_json(args);
+    let body = args_to_json(args)?;
     let result = client.iceberg_map(&body).await?;
 
     // Print response
@@ -89,7 +89,7 @@ async fn run_iceberg_map_remote(
 }
 
 /// Convert CLI args to a JSON body for the server endpoint.
-fn args_to_json(args: &IcebergMapArgs) -> serde_json::Value {
+fn args_to_json(args: &IcebergMapArgs) -> CliResult<serde_json::Value> {
     let mut body = serde_json::json!({
         "name": args.name,
         "mode": args.mode,
@@ -107,7 +107,9 @@ fn args_to_json(args: &IcebergMapArgs) -> serde_json::Value {
     }
     if let Some(ref v) = args.r2rml {
         // Read file content and send it (not the path)
-        let content = std::fs::read_to_string(v).unwrap_or_default();
+        let content = std::fs::read_to_string(v).map_err(|e| {
+            CliError::Input(format!("failed to read R2RML file {}: {e}", v.display()))
+        })?;
         obj.insert("r2rml".into(), content.into());
     }
     if let Some(ref v) = args.r2rml_type {
@@ -144,7 +146,7 @@ fn args_to_json(args: &IcebergMapArgs) -> serde_json::Value {
         obj.insert("s3_path_style".into(), true.into());
     }
 
-    body
+    Ok(body)
 }
 
 // =============================================================================

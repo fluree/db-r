@@ -49,7 +49,7 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
     // therefore collapse duplicate assertions (or retractions) to a single
     // flake per fact identity.
     let mut result: Vec<Flake> = Vec::with_capacity(cap);
-    for (_key, (assertions, retractions)) in buckets {
+    for (_key, (mut assertions, mut retractions)) in buckets {
         let cancel_count = assertions.len().min(retractions.len());
         let surviving_assertions = assertions.len() - cancel_count;
         let surviving_retractions = retractions.len() - cancel_count;
@@ -57,11 +57,11 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
         // Keep at most one assertion per fact
         if surviving_assertions > 0 {
             // Take the last one (highest t) — arbitrary but deterministic
-            result.push(assertions.into_iter().last().unwrap());
+            result.push(assertions.pop().unwrap());
         }
         // Keep at most one retraction per fact
         if surviving_retractions > 0 {
-            result.push(retractions.into_iter().last().unwrap());
+            result.push(retractions.pop().unwrap());
         }
     }
 
