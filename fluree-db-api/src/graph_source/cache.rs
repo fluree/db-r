@@ -10,7 +10,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "iceberg")]
-use fluree_db_iceberg::metadata::TableMetadata;
+use fluree_db_iceberg::{io::parquet::ParquetFooterCache, metadata::TableMetadata, DataFile};
+
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+pub(crate) struct CachedScanFiles {
+    pub data_files: Arc<Vec<DataFile>>,
+    pub estimated_row_count: i64,
+    pub files_selected: usize,
+    pub files_pruned: usize,
+}
 
 /// Cache for R2RML compiled mappings and Iceberg table metadata.
 ///
@@ -41,6 +50,17 @@ pub struct R2rmlCache {
     /// Value: Parsed TableMetadata
     #[cfg(feature = "iceberg")]
     table_metadata: RwLock<LruCache<String, Arc<TableMetadata>>>,
+
+    /// Cache for manifest-derived file selections keyed by metadata location.
+    ///
+    /// This avoids reparsing manifest lists/manifests for repeated scans of the
+    /// same Iceberg snapshot with different projections.
+    #[cfg(feature = "iceberg")]
+    scan_files: RwLock<LruCache<String, Arc<CachedScanFiles>>>,
+
+    /// Shared Parquet footer cache for repeated scans of the same files.
+    #[cfg(feature = "iceberg")]
+    parquet_footers: ParquetFooterCache,
 }
 
 impl R2rmlCache {
@@ -60,6 +80,10 @@ impl R2rmlCache {
                 table_metadata: RwLock::new(LruCache::new(
                     NonZeroUsize::new(metadata_capacity.max(1)).unwrap(),
                 )),
+                scan_files: RwLock::new(LruCache::new(
+                    NonZeroUsize::new(metadata_capacity.max(1)).unwrap(),
+                )),
+                parquet_footers: ParquetFooterCache::new((metadata_capacity.max(1) / 2).max(32)),
             }
         }
 
@@ -105,6 +129,33 @@ impl R2rmlCache {
         cache.put(metadata_location, metadata);
     }
 
+    /// Get cached scan file selections for a metadata location.
+    #[cfg(feature = "iceberg")]
+    pub(crate) async fn get_scan_files(
+        &self,
+        metadata_location: &str,
+    ) -> Option<Arc<CachedScanFiles>> {
+        let mut cache = self.scan_files.write().await;
+        cache.get(metadata_location).cloned()
+    }
+
+    /// Store manifest-derived scan file selections for a metadata location.
+    #[cfg(feature = "iceberg")]
+    pub(crate) async fn put_scan_files(
+        &self,
+        metadata_location: String,
+        scan_files: Arc<CachedScanFiles>,
+    ) {
+        let mut cache = self.scan_files.write().await;
+        cache.put(metadata_location, scan_files);
+    }
+
+    /// Get the shared Parquet footer cache.
+    #[cfg(feature = "iceberg")]
+    pub fn parquet_footers(&self) -> &ParquetFooterCache {
+        &self.parquet_footers
+    }
+
     /// Clear all caches.
     pub async fn clear(&self) {
         let mut mappings = self.compiled_mappings.write().await;
@@ -114,6 +165,11 @@ impl R2rmlCache {
         {
             let mut metadata = self.table_metadata.write().await;
             metadata.clear();
+
+            let mut scan_files = self.scan_files.write().await;
+            scan_files.clear();
+
+            self.parquet_footers.clear().await;
         }
     }
 

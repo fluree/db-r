@@ -5,7 +5,7 @@
 //!
 //! This module is only available with the `iceberg` feature.
 
-use crate::graph_source::cache::R2rmlCache;
+use crate::graph_source::cache::{CachedScanFiles, R2rmlCache};
 use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateConfig};
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
@@ -15,7 +15,7 @@ use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
     metadata::TableMetadata,
-    scan::{ScanConfig, SendScanPlanner},
+    scan::{FileScanTask, ScanConfig, SendScanPlanner},
     IcebergGsConfig,
 };
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
@@ -740,33 +740,89 @@ where
             )));
         }
 
-        // Create scan configuration with projection
-        let scan_config = ScanConfig::new().with_projection(projected_field_ids.clone());
+        let schema_arc = Arc::new(schema.clone());
 
-        // Create scan planner and generate scan plan
-        let planner = SendScanPlanner::new(storage.as_ref(), &metadata, scan_config);
-        let plan = planner
-            .plan_scan()
-            .await
-            .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
+        // Reuse manifest-derived file selections across repeated scans of the
+        // same snapshot. Projection still varies per scan, so we rebuild tasks.
+        let (tasks, files_selected, files_pruned, estimated_row_count) =
+            if let Some(cached) = cache.get_scan_files(metadata_location).await {
+                debug!(
+                    metadata_location = %metadata_location,
+                    cached_files = cached.data_files.len(),
+                    "Iceberg scan-files cache hit"
+                );
+
+                let tasks = cached
+                    .data_files
+                    .iter()
+                    .cloned()
+                    .map(|data_file| {
+                        FileScanTask::for_whole_file_with_schema(
+                            data_file,
+                            projected_field_ids.clone(),
+                            None,
+                            Arc::clone(&schema_arc),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                (
+                    tasks,
+                    cached.files_selected,
+                    cached.files_pruned,
+                    cached.estimated_row_count,
+                )
+            } else {
+                debug!(metadata_location = %metadata_location, "Iceberg scan-files cache miss");
+
+                // Create scan configuration with projection for the first plan.
+                let scan_config = ScanConfig::new().with_projection(projected_field_ids.clone());
+                let planner = SendScanPlanner::new(storage.as_ref(), &metadata, scan_config);
+                let plan = planner
+                    .plan_scan()
+                    .await
+                    .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
+
+                let cached = Arc::new(CachedScanFiles {
+                    data_files: Arc::new(
+                        plan.tasks
+                            .iter()
+                            .map(|task| task.data_file.clone())
+                            .collect(),
+                    ),
+                    estimated_row_count: plan.estimated_row_count,
+                    files_selected: plan.files_selected,
+                    files_pruned: plan.files_pruned,
+                });
+                cache
+                    .put_scan_files(metadata_location.clone(), Arc::clone(&cached))
+                    .await;
+
+                (
+                    plan.tasks,
+                    cached.files_selected,
+                    cached.files_pruned,
+                    cached.estimated_row_count,
+                )
+            };
 
         info!(
-            files_selected = plan.files_selected,
-            files_pruned = plan.files_pruned,
-            estimated_rows = plan.estimated_row_count,
+            files_selected,
+            files_pruned,
+            estimated_rows = estimated_row_count,
             "Scan plan created"
         );
 
-        if plan.is_empty() {
+        if tasks.is_empty() {
             info!("Scan plan has no files - returning empty result");
             return Ok(Vec::new());
         }
 
         // Read data files
-        let reader = SendParquetReader::new(storage.as_ref());
+        let reader = SendParquetReader::with_cache(storage.as_ref(), cache.parquet_footers());
         let mut all_batches = Vec::new();
 
-        for task in &plan.tasks {
+        for task in &tasks {
             info!(
                 file_path = %task.data_file.file_path,
                 record_count = task.data_file.record_count,

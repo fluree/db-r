@@ -104,6 +104,12 @@ impl ParquetFooterCache {
             },
         );
     }
+
+    /// Clear all cached Parquet footers.
+    pub async fn clear(&self) {
+        let mut cache = self.cache.lock().await;
+        cache.clear();
+    }
 }
 
 impl Default for ParquetFooterCache {

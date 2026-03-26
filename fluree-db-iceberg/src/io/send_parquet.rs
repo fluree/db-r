@@ -399,7 +399,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         if file_size < 1_024 * 1_024 {
             tracing::debug!(path, file_size, "Reading entire small Parquet file");
             let data = self.storage.read(path).await?;
-            return Ok(Bytes::from(data));
+            return Ok(data);
         }
 
         // Get metadata (may be cached)
