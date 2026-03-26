@@ -506,7 +506,7 @@ pub async fn info(
         // If ledger is not found, fall back to graph source lookup.
         let ledger_state = match super::query::load_ledger_for_query(&state, alias, &span).await {
             Ok(ls) => ls,
-            Err(ServerError::Api(ApiError::NotFound(_))) => {
+            Err(ServerError::Api(ref e)) if e.is_not_found() => {
                 // Try graph source lookup
                 if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
                     tracing::info!(status = "success", "graph source info retrieved");

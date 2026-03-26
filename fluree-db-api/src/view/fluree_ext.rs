@@ -486,7 +486,7 @@ where
     pub async fn load_graph_db_or_graph_source(&self, ledger_id: &str) -> Result<GraphDb> {
         match self.load_graph_db(ledger_id).await {
             Ok(db) => Ok(db),
-            Err(ApiError::NotFound(_)) => {
+            Err(ref e) if e.is_not_found() => {
                 let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
                     .unwrap_or_else(|_| ledger_id.to_string());
 

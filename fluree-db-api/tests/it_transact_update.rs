@@ -2008,7 +2008,11 @@ async fn update_wildcard_delete_duplicate_facts_across_index_and_novelty() {
             .expect("query before delete")
             .to_jsonld(&txn2.ledger.snapshot)
             .expect("to_jsonld");
-            assert_eq!(before_delete, json!(["My Space"]), "should see one name before delete");
+            assert_eq!(
+                before_delete,
+                json!(["My Space"]),
+                "should see one name before delete"
+            );
 
             // Now wildcard delete
             let deleted = fluree

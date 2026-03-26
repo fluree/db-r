@@ -138,23 +138,21 @@ where
         // has_r2rml_mapping to detect graph sources without requiring
         // additional trait bounds beyond NameService.
         #[cfg(feature = "iceberg")]
-        if self.graph_source_fallback {
-            if let Err(ApiError::NotFound(_)) = &result {
-                let ledger_id = &self.graph.ledger_id;
-                let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
-                    .unwrap_or_else(|_| ledger_id.to_string());
+        if self.graph_source_fallback && result.as_ref().is_err_and(|e| e.is_not_found()) {
+            let ledger_id = &self.graph.ledger_id;
+            let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
+                .unwrap_or_else(|_| ledger_id.to_string());
 
-                if let Some((r2rml, _)) = &self.core.r2rml {
-                    if r2rml.has_r2rml_mapping(&gs_id).await {
-                        let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
-                        let state = fluree_db_ledger::LedgerState::new(
-                            snapshot,
-                            fluree_db_novelty::Novelty::new(0),
-                        );
-                        let mut db = crate::view::GraphDb::from_ledger_state(&state);
-                        db.graph_source_id = Some(gs_id.into());
-                        return Ok(db);
-                    }
+            if let Some((r2rml, _)) = &self.core.r2rml {
+                if r2rml.has_r2rml_mapping(&gs_id).await {
+                    let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
+                    let state = fluree_db_ledger::LedgerState::new(
+                        snapshot,
+                        fluree_db_novelty::Novelty::new(0),
+                    );
+                    let mut db = crate::view::GraphDb::from_ledger_state(&state);
+                    db.graph_source_id = Some(gs_id.into());
+                    return Ok(db);
                 }
             }
         }

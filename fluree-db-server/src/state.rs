@@ -240,9 +240,12 @@ impl FlureeInstance {
     {
         match self {
             FlureeInstance::File(f) => {
-                let view = f.load_graph_db_or_graph_source(ledger_id).await.map_err(
-                    |e| fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None),
-                )?;
+                let view = f
+                    .load_graph_db_or_graph_source(ledger_id)
+                    .await
+                    .map_err(|e| {
+                        fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None)
+                    })?;
                 fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .jsonld(query_json)
                     .execute_tracked()

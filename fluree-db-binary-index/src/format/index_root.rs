@@ -25,6 +25,7 @@ use super::wire_helpers::{
 };
 use fluree_db_core::index_schema::IndexSchema;
 use fluree_db_core::index_stats::IndexStats;
+use fluree_vocab::{fluree, geo, rdf, xsd};
 
 // ============================================================================
 // OType table entry
@@ -41,8 +42,8 @@ pub struct OTypeTableEntry {
     pub o_type: u16,
     /// Decode routing kind.
     pub decode_kind: DecodeKind,
-    /// Datatype IRI string. Present for most types; absent for refs and blank nodes.
-    /// For `rdf:langString`, stored as `"rdf:langString@{tag}"` (includes the language).
+    /// Datatype IRI string (full IRI). Present for most literal types; absent for
+    /// ref-like types where the object is a node reference (IRI/bnode).
     pub datatype_iri: Option<String>,
     /// Which dictionary/arena family `o_key` indexes into.
     /// Absent for embedded types (o_key is the value itself).
@@ -207,128 +208,126 @@ impl IndexRoot {
 
         // Built-in embedded types (tag 00).
         let embedded_types: &[(u16, DecodeKind, Option<&str>)] = &[
-            (OType::NULL.as_u16(), DecodeKind::Null, None),
+            // Null isn't a standard RDF literal, but Fluree currently treats it as xsd:string
+            // for fact identity consistency.
+            (OType::NULL.as_u16(), DecodeKind::Null, Some(xsd::STRING)),
             (
                 OType::XSD_BOOLEAN.as_u16(),
                 DecodeKind::Bool,
-                Some("xsd:boolean"),
+                Some(xsd::BOOLEAN),
             ),
             (
                 OType::XSD_INTEGER.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:integer"),
+                Some(xsd::INTEGER),
             ),
-            (OType::XSD_LONG.as_u16(), DecodeKind::I64, Some("xsd:long")),
-            (OType::XSD_INT.as_u16(), DecodeKind::I64, Some("xsd:int")),
-            (
-                OType::XSD_SHORT.as_u16(),
-                DecodeKind::I64,
-                Some("xsd:short"),
-            ),
-            (OType::XSD_BYTE.as_u16(), DecodeKind::I64, Some("xsd:byte")),
+            (OType::XSD_LONG.as_u16(), DecodeKind::I64, Some(xsd::LONG)),
+            (OType::XSD_INT.as_u16(), DecodeKind::I64, Some(xsd::INT)),
+            (OType::XSD_SHORT.as_u16(), DecodeKind::I64, Some(xsd::SHORT)),
+            (OType::XSD_BYTE.as_u16(), DecodeKind::I64, Some(xsd::BYTE)),
             (
                 OType::XSD_UNSIGNED_LONG.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:unsignedLong"),
+                Some(xsd::UNSIGNED_LONG),
             ),
             (
                 OType::XSD_UNSIGNED_INT.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:unsignedInt"),
+                Some(xsd::UNSIGNED_INT),
             ),
             (
                 OType::XSD_UNSIGNED_SHORT.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:unsignedShort"),
+                Some(xsd::UNSIGNED_SHORT),
             ),
             (
                 OType::XSD_UNSIGNED_BYTE.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:unsignedByte"),
+                Some(xsd::UNSIGNED_BYTE),
             ),
             (
                 OType::XSD_NON_NEGATIVE_INTEGER.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:nonNegativeInteger"),
+                Some(xsd::NON_NEGATIVE_INTEGER),
             ),
             (
                 OType::XSD_POSITIVE_INTEGER.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:positiveInteger"),
+                Some(xsd::POSITIVE_INTEGER),
             ),
             (
                 OType::XSD_NON_POSITIVE_INTEGER.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:nonPositiveInteger"),
+                Some(xsd::NON_POSITIVE_INTEGER),
             ),
             (
                 OType::XSD_NEGATIVE_INTEGER.as_u16(),
                 DecodeKind::I64,
-                Some("xsd:negativeInteger"),
+                Some(xsd::NEGATIVE_INTEGER),
             ),
             (
                 OType::XSD_DOUBLE.as_u16(),
                 DecodeKind::F64,
-                Some("xsd:double"),
+                Some(xsd::DOUBLE),
             ),
-            (
-                OType::XSD_FLOAT.as_u16(),
-                DecodeKind::F64,
-                Some("xsd:float"),
-            ),
+            (OType::XSD_FLOAT.as_u16(), DecodeKind::F64, Some(xsd::FLOAT)),
             (
                 OType::XSD_DECIMAL.as_u16(),
                 DecodeKind::F64,
-                Some("xsd:decimal"),
+                Some(xsd::DECIMAL),
             ),
-            (OType::XSD_DATE.as_u16(), DecodeKind::Date, Some("xsd:date")),
-            (OType::XSD_TIME.as_u16(), DecodeKind::Time, Some("xsd:time")),
+            (OType::XSD_DATE.as_u16(), DecodeKind::Date, Some(xsd::DATE)),
+            (OType::XSD_TIME.as_u16(), DecodeKind::Time, Some(xsd::TIME)),
             (
                 OType::XSD_DATE_TIME.as_u16(),
                 DecodeKind::DateTime,
-                Some("xsd:dateTime"),
+                Some(xsd::DATE_TIME),
             ),
             (
                 OType::XSD_G_YEAR.as_u16(),
                 DecodeKind::GYear,
-                Some("xsd:gYear"),
+                Some(xsd::G_YEAR),
             ),
             (
                 OType::XSD_G_YEAR_MONTH.as_u16(),
                 DecodeKind::GYearMonth,
-                Some("xsd:gYearMonth"),
+                Some(xsd::G_YEAR_MONTH),
             ),
             (
                 OType::XSD_G_MONTH.as_u16(),
                 DecodeKind::GMonth,
-                Some("xsd:gMonth"),
+                Some(xsd::G_MONTH),
             ),
             (
                 OType::XSD_G_DAY.as_u16(),
                 DecodeKind::GDay,
-                Some("xsd:gDay"),
+                Some(xsd::G_DAY),
             ),
             (
                 OType::XSD_G_MONTH_DAY.as_u16(),
                 DecodeKind::GMonthDay,
-                Some("xsd:gMonthDay"),
+                Some(xsd::G_MONTH_DAY),
             ),
             (
                 OType::XSD_YEAR_MONTH_DURATION.as_u16(),
                 DecodeKind::YearMonthDuration,
-                Some("xsd:yearMonthDuration"),
+                Some(xsd::YEAR_MONTH_DURATION),
             ),
             (
                 OType::XSD_DAY_TIME_DURATION.as_u16(),
                 DecodeKind::DayTimeDuration,
-                Some("xsd:dayTimeDuration"),
+                Some(xsd::DAY_TIME_DURATION),
             ),
             (
                 OType::XSD_DURATION.as_u16(),
                 DecodeKind::Duration,
-                Some("xsd:duration"),
+                Some(xsd::DURATION),
             ),
-            (OType::GEO_POINT.as_u16(), DecodeKind::GeoPoint, None),
+            (
+                OType::GEO_POINT.as_u16(),
+                DecodeKind::GeoPoint,
+                Some(geo::WKT_LITERAL),
+            ),
             (OType::BLANK_NODE.as_u16(), DecodeKind::BlankNode, None),
         ];
 
@@ -346,43 +345,43 @@ impl IndexRoot {
             (
                 OType::XSD_STRING.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:string"),
+                Some(xsd::STRING),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_ANY_URI.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:anyURI"),
+                Some(xsd::ANY_URI),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_NORMALIZED_STRING.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:normalizedString"),
+                Some(xsd::NORMALIZED_STRING),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_TOKEN.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:token"),
+                Some(xsd::TOKEN),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_LANGUAGE.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:language"),
+                Some(xsd::LANGUAGE),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_BASE64_BINARY.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:base64Binary"),
+                Some(xsd::BASE64_BINARY),
                 DictFamily::StringDict,
             ),
             (
                 OType::XSD_HEX_BINARY.as_u16(),
                 DecodeKind::StringDict,
-                Some("xsd:hexBinary"),
+                Some(xsd::HEX_BINARY),
                 DictFamily::StringDict,
             ),
             (
@@ -394,19 +393,19 @@ impl IndexRoot {
             (
                 OType::RDF_JSON.as_u16(),
                 DecodeKind::JsonArena,
-                Some("rdf:JSON"),
+                Some(rdf::JSON),
                 DictFamily::JsonArena,
             ),
             (
                 OType::VECTOR.as_u16(),
                 DecodeKind::VectorArena,
-                None,
+                Some(fluree::EMBEDDING_VECTOR),
                 DictFamily::VectorArena,
             ),
             (
                 OType::FULLTEXT.as_u16(),
                 DecodeKind::StringDict,
-                None,
+                Some(fluree::FULL_TEXT),
                 DictFamily::StringDict,
             ),
             (
@@ -435,13 +434,13 @@ impl IndexRoot {
         // LangString entries (tag 11).
         // LanguageTagDict is 1-based: lang_id=1 is the first tag, lang_id=0 means "no tag".
         // language_tags[0] → lang_id=1, language_tags[1] → lang_id=2, etc.
-        for (i, tag) in language_tags.iter().enumerate() {
+        for (i, _tag) in language_tags.iter().enumerate() {
             let lang_id = (i as u16) + 1; // 1-based
             let ot = OType::lang_string(lang_id);
             table.push(OTypeTableEntry {
                 o_type: ot.as_u16(),
                 decode_kind: DecodeKind::StringDict,
-                datatype_iri: Some(format!("rdf:langString@{tag}")),
+                datatype_iri: Some(rdf::LANG_STRING.to_string()),
                 dict_family: Some(DictFamily::StringDict),
             });
         }
@@ -1110,6 +1109,7 @@ mod tests {
     use super::super::wire_helpers::{DictPackRefs, DictRefs, DictTreeRefs, PackBranchEntry};
     use super::*;
     use fluree_db_core::subject_id::SubjectId;
+    use fluree_vocab::{rdf, xsd};
 
     /// Build a minimal IndexRoot for testing.
     fn minimal_root_v6() -> IndexRoot {
@@ -1132,7 +1132,7 @@ mod tests {
             },
             predicate_sids: vec![(0, "name".to_string()), (0, "age".to_string())],
             graph_iris: vec![],
-            datatype_iris: vec!["xsd:string".to_string(), "xsd:integer".to_string()],
+            datatype_iris: vec![xsd::STRING.to_string(), xsd::INTEGER.to_string()],
             language_tags: vec!["en".to_string()],
             dict_refs: DictRefs {
                 forward_packs: DictPackRefs {
@@ -1332,7 +1332,7 @@ mod tests {
             .find(|e| e.o_type == OType::XSD_INTEGER.as_u16())
             .unwrap();
         assert_eq!(int_entry.decode_kind, DecodeKind::I64);
-        assert_eq!(int_entry.datatype_iri.as_deref(), Some("xsd:integer"));
+        assert_eq!(int_entry.datatype_iri.as_deref(), Some(xsd::INTEGER));
         assert!(int_entry.dict_family.is_none());
 
         let string_entry = table
@@ -1362,7 +1362,7 @@ mod tests {
             .find(|e| e.o_type == OType::lang_string(1).as_u16())
             .unwrap();
         assert_eq!(en_entry.decode_kind, DecodeKind::StringDict);
-        assert!(en_entry.datatype_iri.as_ref().unwrap().contains("en"));
+        assert_eq!(en_entry.datatype_iri.as_deref(), Some(rdf::LANG_STRING));
     }
 
     #[test]

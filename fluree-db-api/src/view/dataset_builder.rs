@@ -204,7 +204,7 @@ where
         let view = match &source.time_spec {
             None => match self.db(&source.identifier).await {
                 Ok(v) => v,
-                Err(ApiError::NotFound(_)) => {
+                Err(ref e) if e.is_not_found() => {
                     self.resolve_as_graph_source(&source.identifier).await?
                 }
                 Err(e) => return Err(e),
@@ -213,7 +213,7 @@ where
                 let ts = convert_time_spec(time_spec)?;
                 match self.db_at(&source.identifier, ts).await {
                     Ok(v) => v,
-                    Err(ApiError::NotFound(_)) => {
+                    Err(ref e) if e.is_not_found() => {
                         // Check if it's a graph source — reject time travel explicitly
                         let gs_id = fluree_db_core::normalize_ledger_id(&source.identifier)
                             .unwrap_or_else(|_| source.identifier.clone());
