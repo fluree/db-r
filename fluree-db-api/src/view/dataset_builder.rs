@@ -41,6 +41,11 @@ macro_rules! build_dataset_view_from_spec {
                 let view = ($load_view)(source).await?;
                 let view = ($apply_policy)(view, source).await?;
                 let view = $self.apply_config_defaults(view, None);
+                // If this is a graph source, also register as a named graph
+                // so GRAPH <gs_id> patterns can resolve it during execution.
+                if let Some(ref gs_id) = view.graph_source_id {
+                    dataset_db = dataset_db.with_named(gs_id.as_ref(), view.clone());
+                }
                 dataset_db = dataset_db.with_default(view);
             }
 
