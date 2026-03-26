@@ -1083,6 +1083,11 @@ where
         }
 
         let r2rml = self.core.r2rml.take();
+        tracing::info!(
+            has_r2rml = r2rml.is_some(),
+            has_policy = self.policy.is_some(),
+            "[DIAG] FromQueryBuilder::execute_tracked: dispatching"
+        );
         let format_config = self.core.format.take();
         let input = self.core.input.take().unwrap();
         match input {

@@ -328,6 +328,10 @@ where
 {
     /// Check if a graph source has an R2RML mapping.
     async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
+        tracing::info!(
+            graph_source_id = %graph_source_id,
+            "[DIAG] FlureeR2rmlProvider::has_r2rml_mapping: checking"
+        );
         match self
             .fluree
             .nameservice()
@@ -335,23 +339,62 @@ where
             .await
         {
             Ok(Some(record)) => {
+                tracing::info!(
+                    graph_source_id = %graph_source_id,
+                    source_type = ?record.source_type,
+                    config_len = record.config.len(),
+                    "[DIAG] has_r2rml_mapping: found record"
+                );
                 // First check if this is an R2RML or Iceberg graph source type
                 if !matches!(
                     record.source_type,
                     GraphSourceType::R2rml | GraphSourceType::Iceberg
                 ) {
+                    tracing::info!(
+                        graph_source_id = %graph_source_id,
+                        "[DIAG] has_r2rml_mapping: type is not R2RML/Iceberg, returning false"
+                    );
                     return false;
                 }
 
                 // Parse into typed config to stay aligned with real config schema
-                if let Ok(config) = IcebergGsConfig::from_json(&record.config) {
-                    config.mapping.is_some()
-                } else {
-                    false
+                match IcebergGsConfig::from_json(&record.config) {
+                    Ok(config) => {
+                        let has = config.mapping.is_some();
+                        tracing::info!(
+                            graph_source_id = %graph_source_id,
+                            has_mapping = has,
+                            mapping_source = ?config.mapping.as_ref().map(|m| &m.source),
+                            "[DIAG] has_r2rml_mapping: parsed config"
+                        );
+                        has
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            graph_source_id = %graph_source_id,
+                            error = %e,
+                            config_preview = %&record.config[..record.config.len().min(200)],
+                            "[DIAG] has_r2rml_mapping: FAILED to parse config as IcebergGsConfig"
+                        );
+                        false
+                    }
                 }
             }
-            Ok(None) => false,
-            Err(_) => false,
+            Ok(None) => {
+                tracing::info!(
+                    graph_source_id = %graph_source_id,
+                    "[DIAG] has_r2rml_mapping: NOT FOUND in nameservice"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::info!(
+                    graph_source_id = %graph_source_id,
+                    error = %e,
+                    "[DIAG] has_r2rml_mapping: nameservice ERROR"
+                );
+                false
+            }
         }
     }
 

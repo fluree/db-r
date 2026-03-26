@@ -33,6 +33,12 @@ pub(crate) fn maybe_wrap_for_graph_source(
             .iter()
             .any(|p| matches!(p, Pattern::Graph { .. }));
         if !has_graph_pattern {
+            tracing::info!(
+                gs_id = %gs_id,
+                pattern_count = parsed.patterns.len(),
+                "[DIAG] maybe_wrap_for_graph_source: WRAPPING patterns in GRAPH <{}>",
+                gs_id
+            );
             let inner = std::mem::take(&mut parsed.patterns);
             parsed.patterns = vec![Pattern::Graph {
                 name: GraphName::Iri(gs_id.to_string().into()),

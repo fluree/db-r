@@ -201,14 +201,40 @@ where
         &self,
         source: &dataset::GraphSource,
     ) -> Result<GraphDb> {
+        tracing::info!(
+            identifier = %source.identifier,
+            has_time_spec = source.time_spec.is_some(),
+            "[DIAG] load_view_from_source: resolving source"
+        );
         let view = match &source.time_spec {
-            None => match self.db(&source.identifier).await {
-                Ok(v) => v,
-                Err(ref e) if e.is_not_found() => {
-                    self.resolve_as_graph_source(&source.identifier).await?
+            None => {
+                let result = self.db(&source.identifier).await;
+                match result {
+                    Ok(v) => {
+                        tracing::info!(
+                            identifier = %source.identifier,
+                            "[DIAG] load_view_from_source: resolved as ledger"
+                        );
+                        v
+                    }
+                    Err(ref e) if e.is_not_found() => {
+                        tracing::info!(
+                            identifier = %source.identifier,
+                            error = %e,
+                            "[DIAG] load_view_from_source: ledger not found, trying graph source fallback"
+                        );
+                        self.resolve_as_graph_source(&source.identifier).await?
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            identifier = %source.identifier,
+                            error = %e,
+                            "[DIAG] load_view_from_source: ledger lookup error (NOT not-found, no fallback)"
+                        );
+                        return Err(e);
+                    }
                 }
-                Err(e) => return Err(e),
-            },
+            }
             Some(time_spec) => {
                 let ts = convert_time_spec(time_spec)?;
                 match self.db_at(&source.identifier, ts).await {
@@ -277,16 +303,27 @@ where
     async fn resolve_as_graph_source(&self, identifier: &str) -> Result<GraphDb> {
         let gs_id = fluree_db_core::normalize_ledger_id(identifier)
             .unwrap_or_else(|_| identifier.to_string());
-        // Verify the graph source exists (we don't need the record itself)
-        if self
+        tracing::info!(
+            identifier = %identifier,
+            gs_id = %gs_id,
+            "[DIAG] resolve_as_graph_source: looking up graph source"
+        );
+        let record = self
             .nameservice()
             .lookup_graph_source(&gs_id)
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
-            .is_none()
-        {
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if record.is_none() {
+            tracing::info!(
+                gs_id = %gs_id,
+                "[DIAG] resolve_as_graph_source: NOT FOUND in nameservice"
+            );
             return Err(ApiError::NotFound(identifier.to_string()));
         }
+        tracing::info!(
+            gs_id = %gs_id,
+            "[DIAG] resolve_as_graph_source: FOUND, creating genesis GraphDb with graph_source_id"
+        );
 
         let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
         let state =
