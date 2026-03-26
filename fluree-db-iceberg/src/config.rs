@@ -125,6 +125,8 @@ impl IcebergGsConfig {
                         table_location
                     )));
                 }
+                // Validate table identifier can be derived from table_location
+                self.table_identifier()?;
                 // Vended credentials are not supported with Direct catalog
                 if self.io.vended_credentials {
                     return Err(IcebergError::Config(

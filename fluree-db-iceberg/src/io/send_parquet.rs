@@ -175,7 +175,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
         // Read the file bytes via range reads for the needed column chunks
         let file_bytes = self
-            .read_file_for_task(path, task, &real_column_indices)
+            .read_file_for_task(path, task, &real_column_indices, &metadata)
             .await?;
 
         // Parse using parquet-rs
@@ -397,6 +397,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         path: &str,
         task: &FileScanTask,
         real_column_indices: &[usize],
+        metadata: &Arc<ParquetMetaData>,
     ) -> Result<Bytes> {
         let file_size = task.data_file.file_size_in_bytes as u64;
 
@@ -408,11 +409,8 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
             return Ok(data);
         }
 
-        // Get metadata (may be cached)
-        let metadata = self.read_metadata(path).await?;
-
         // Calculate column chunk ranges using the exact resolved Parquet indices.
-        let column_ranges = calculate_column_chunk_ranges(&metadata, real_column_indices);
+        let column_ranges = calculate_column_chunk_ranges(metadata, real_column_indices);
 
         // Calculate footer range
         let footer_and_size = self
