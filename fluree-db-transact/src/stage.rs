@@ -388,6 +388,35 @@ pub async fn stage(
             "transaction staging completed"
         );
 
+        // DEBUG: dump retraction flakes with their dt Sid to diagnose retraction mismatch.
+        // Compare dt namespace_code between retractions and their matching assertions in novelty.
+        // TODO: remove after diagnosing string retraction bug
+        if retractions > 0 {
+            tracing::info!("=== RETRACTION FLAKES (dt diagnostic) ===");
+            for f in flakes.iter().filter(|f| !f.op) {
+                tracing::info!(
+                    "  RETRACT s={}:{} p={}:{} o={:?} dt={}:{} (ns_code={}) t={}",
+                    f.s.namespace_code, f.s.name, f.p.namespace_code, f.p.name,
+                    f.o, f.dt.namespace_code, f.dt.name, f.dt.namespace_code, f.t
+                );
+            }
+            // Also dump matching assertions currently in novelty for comparison
+            tracing::info!("=== EXISTING NOVELTY ASSERTIONS (for subjects being retracted) ===");
+            let retracted_subjects: std::collections::HashSet<&fluree_db_core::Sid> =
+                flakes.iter().filter(|f| !f.op).map(|f| &f.s).collect();
+            for fid in ledger.novelty.iter_index(fluree_db_core::IndexType::Spot) {
+                let nf = ledger.novelty.get_flake(fid);
+                if nf.op && retracted_subjects.contains(&nf.s) {
+                    tracing::info!(
+                        "  ASSERT  s={}:{} p={}:{} o={:?} dt={}:{} (ns_code={}) t={}",
+                        nf.s.namespace_code, nf.s.name, nf.p.namespace_code, nf.p.name,
+                        nf.o, nf.dt.namespace_code, nf.dt.name, nf.dt.namespace_code, nf.t
+                    );
+                }
+            }
+            tracing::info!("=== END DT DIAGNOSTIC ===");
+        }
+
         Ok((
             LedgerView::stage(ledger, flakes, &reverse_graph)?,
             ns_registry,

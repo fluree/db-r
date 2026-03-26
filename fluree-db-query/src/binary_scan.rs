@@ -1644,17 +1644,16 @@ impl Operator for BinaryScanOperator {
                 sort_overlay_ops(&mut ops, order);
 
                 // DEBUG: dump overlay ops before resolution to diagnose retraction mismatch.
-                // Look for the same (s_id, p_id, o_type) with DIFFERENT o_key — that's the bug.
                 // TODO: remove after diagnosing string retraction bug
-                eprintln!("=== OVERLAY OPS BEFORE RESOLVE ({} ops, order={:?}) ===", ops.len(), order);
+                tracing::info!("=== OVERLAY OPS BEFORE RESOLVE ({} ops, order={:?}) ===", ops.len(), order);
                 for op in &ops {
-                    eprintln!(
+                    tracing::info!(
                         "  s_id={} p_id={} o_type=0x{:04X} o_key={} o_i={} t={} op={}",
                         op.s_id, op.p_id, op.o_type, op.o_key, op.o_i, op.t,
                         if op.op { "assert" } else { "RETRACT" }
                     );
                 }
-                eprintln!("=== END OVERLAY OPS ===");
+                tracing::info!("=== END OVERLAY OPS ===");
 
                 resolve_overlay_ops(&mut ops);
                 let epoch = ctx.overlay().epoch();
