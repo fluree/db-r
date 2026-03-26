@@ -463,6 +463,7 @@ impl Operator for PropertyJoinOperator {
                 // Batched probe requires binary store with batched_lookup support.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
+                    && !ctx.is_multi_ledger()
                     && ctx.binary_store.is_some()
                     && dtc.is_none();
 

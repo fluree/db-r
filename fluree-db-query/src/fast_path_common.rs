@@ -1644,7 +1644,11 @@ pub fn term_to_ref_s_id(
 /// enforcement (or root policy), and no uncommitted overlay.
 #[inline]
 fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
-    !ctx.history_mode
+    // Fast paths rely on a single binary index + single-ledger semantics for encoded IDs.
+    // Dataset (multi-ledger) execution can span multiple ledgers/graphs, so disable fast
+    // paths for correctness unless/until they are made dataset-aware.
+    !ctx.is_multi_ledger()
+        && !ctx.history_mode
         && ctx.from_t.is_none()
         && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
         && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0
