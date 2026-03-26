@@ -11,6 +11,8 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "iceberg")]
 use fluree_db_iceberg::{io::parquet::ParquetFooterCache, metadata::TableMetadata, DataFile};
+#[cfg(feature = "iceberg")]
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
@@ -20,6 +22,16 @@ pub(crate) struct CachedScanFiles {
     pub files_selected: usize,
     pub files_pruned: usize,
 }
+
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+struct CachedMetadataLocation {
+    metadata_location: String,
+    cached_at: Instant,
+}
+
+#[cfg(feature = "iceberg")]
+const DIRECT_METADATA_LOCATION_TTL: Duration = Duration::from_secs(2);
 
 /// Cache for R2RML compiled mappings and Iceberg table metadata.
 ///
@@ -61,6 +73,14 @@ pub struct R2rmlCache {
     /// Shared Parquet footer cache for repeated scans of the same files.
     #[cfg(feature = "iceberg")]
     parquet_footers: ParquetFooterCache,
+
+    /// Short-lived cache for direct-catalog `version-hint.text` resolution.
+    ///
+    /// This is intentionally time-bounded so repeated scans within the same
+    /// query or warm invocation can reuse the metadata location without pinning
+    /// a stale snapshot for long if a writer advances the table.
+    #[cfg(feature = "iceberg")]
+    direct_metadata_locations: RwLock<LruCache<String, CachedMetadataLocation>>,
 }
 
 impl R2rmlCache {
@@ -84,6 +104,9 @@ impl R2rmlCache {
                     NonZeroUsize::new(metadata_capacity.max(1)).unwrap(),
                 )),
                 parquet_footers: ParquetFooterCache::new((metadata_capacity.max(1) / 2).max(32)),
+                direct_metadata_locations: RwLock::new(LruCache::new(
+                    NonZeroUsize::new(metadata_capacity.max(1)).unwrap(),
+                )),
             }
         }
 
@@ -156,6 +179,39 @@ impl R2rmlCache {
         &self.parquet_footers
     }
 
+    /// Get a recently resolved direct-catalog metadata location.
+    #[cfg(feature = "iceberg")]
+    pub(crate) async fn get_direct_metadata_location(
+        &self,
+        table_location: &str,
+    ) -> Option<String> {
+        let mut cache = self.direct_metadata_locations.write().await;
+        if let Some(cached) = cache.get(table_location) {
+            if cached.cached_at.elapsed() <= DIRECT_METADATA_LOCATION_TTL {
+                return Some(cached.metadata_location.clone());
+            }
+        }
+        cache.pop(table_location);
+        None
+    }
+
+    /// Store a resolved direct-catalog metadata location.
+    #[cfg(feature = "iceberg")]
+    pub(crate) async fn put_direct_metadata_location(
+        &self,
+        table_location: String,
+        metadata_location: String,
+    ) {
+        let mut cache = self.direct_metadata_locations.write().await;
+        cache.put(
+            table_location,
+            CachedMetadataLocation {
+                metadata_location,
+                cached_at: Instant::now(),
+            },
+        );
+    }
+
     /// Clear all caches.
     pub async fn clear(&self) {
         let mut mappings = self.compiled_mappings.write().await;
@@ -170,6 +226,9 @@ impl R2rmlCache {
             scan_files.clear();
 
             self.parquet_footers.clear().await;
+
+            let mut direct_locations = self.direct_metadata_locations.write().await;
+            direct_locations.clear();
         }
     }
 

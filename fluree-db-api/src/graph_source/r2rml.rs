@@ -647,19 +647,44 @@ where
                     })?,
                 );
 
-                let direct_catalog =
-                    SendDirectCatalogClient::new(table_location.clone(), Arc::clone(&storage));
+                let cache = self.fluree.r2rml_cache();
+                let load_response = if let Some(metadata_location) =
+                    cache.get_direct_metadata_location(table_location).await
+                {
+                    debug!(
+                        table_location = %table_location,
+                        metadata_location = %metadata_location,
+                        "Direct metadata-location cache hit"
+                    );
+                    fluree_db_iceberg::catalog::LoadTableResponse {
+                        metadata_location,
+                        config: Default::default(),
+                        credentials: None,
+                    }
+                } else {
+                    debug!(table_location = %table_location, "Direct metadata-location cache miss");
 
-                let load_response =
-                    direct_catalog
-                        .load_table(&table_id, false)
-                        .await
-                        .map_err(|e| {
-                            QueryError::Internal(format!(
-                                "Failed to resolve table metadata from {}: {}",
-                                table_location, e
-                            ))
-                        })?;
+                    let direct_catalog =
+                        SendDirectCatalogClient::new(table_location.clone(), Arc::clone(&storage));
+
+                    let load_response =
+                        direct_catalog
+                            .load_table(&table_id, false)
+                            .await
+                            .map_err(|e| {
+                                QueryError::Internal(format!(
+                                    "Failed to resolve table metadata from {}: {}",
+                                    table_location, e
+                                ))
+                            })?;
+                    cache
+                        .put_direct_metadata_location(
+                            table_location.clone(),
+                            load_response.metadata_location.clone(),
+                        )
+                        .await;
+                    load_response
+                };
 
                 info!(
                     metadata_location = %load_response.metadata_location,
