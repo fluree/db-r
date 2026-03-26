@@ -10,7 +10,7 @@ use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateC
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
+use fluree_db_core::{ContentStore, Storage};
 use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
@@ -102,85 +102,83 @@ where
 
     /// Create an R2RML graph source (Iceberg table with R2RML mapping).
     ///
-    /// This operation:
-    /// 1. Validates the configuration
-    /// 2. Loads and validates the R2RML mapping
-    /// 3. Optionally tests the catalog connection
-    /// 4. Publishes the graph source record to the nameservice
+    /// For `R2rmlMappingInput::Content`, validates the mapping content and
+    /// stores it to CAS. For `R2rmlMappingInput::Address`, validates from
+    /// the pre-existing storage address.
     pub async fn create_r2rml_graph_source(
         &self,
         config: R2rmlCreateConfig,
     ) -> Result<R2rmlCreateResult> {
-        let graph_source_id = config.graph_source_id();
-        info!(
-            graph_source_id = %graph_source_id,
-            catalog = %config.iceberg.catalog_uri_or_location(),
-            table = %config.iceberg.table_identifier_display(),
-            mapping = %config.mapping_source,
-            "Creating R2RML graph source"
-        );
+        use crate::graph_source::config::R2rmlMappingInput;
 
-        // 1. Validate configuration
+        let graph_source_id = config.graph_source_id();
+        info!(graph_source_id = %graph_source_id, "Creating R2RML graph source");
+
         config.validate()?;
 
-        // 2. Load and validate the R2RML mapping
-        let (triples_map_count, mapping_validated) = self
-            .validate_r2rml_mapping(&config)
-            .await
-            .map(|count| (count, true))
-            .unwrap_or_else(|e| {
-                warn!(
-                    graph_source_id = %graph_source_id,
-                    error = %e,
-                    "Could not validate R2RML mapping - graph source will be created but may fail at query time"
-                );
-                (0, false)
-            });
-
-        // 3. Test catalog connection (REST mode only)
-        let connection_tested = if config.iceberg.is_rest() {
-            let ok = self.test_iceberg_connection(&config.iceberg).await.is_ok();
-            if !ok {
-                warn!(
-                    graph_source_id = %graph_source_id,
-                    "Could not verify catalog connection - graph source will be created but may fail at query time"
-                );
+        // Resolve mapping: validate and store to CAS if inline content
+        let (mapping_address, triples_map_count, mapping_validated) = match &config.mapping {
+            R2rmlMappingInput::Content(content) => {
+                let compiled = Self::compile_r2rml_content(content, &config)?;
+                let count = compiled.len();
+                let gs_id = config.graph_source_id();
+                let cs = fluree_db_core::content_store_for(self.storage().clone(), &gs_id);
+                let cid = cs
+                    .put(
+                        fluree_db_core::ContentKind::GraphSourceMapping,
+                        content.as_bytes(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        crate::ApiError::Config(format!("Failed to store R2RML mapping: {e}"))
+                    })?;
+                let addr = cid.to_string();
+                info!(graph_source_id = %graph_source_id, mapping_cid = %addr, "R2RML mapping stored to CAS");
+                (addr, count, true)
             }
-            ok
+            R2rmlMappingInput::Address(address) => {
+                let (count, validated) = self
+                    .validate_r2rml_mapping_from_address(address, &config)
+                    .await
+                    .map(|c| (c, true))
+                    .unwrap_or_else(|e| {
+                        warn!(graph_source_id = %graph_source_id, error = %e, "Could not validate R2RML mapping from address");
+                        (0, false)
+                    });
+                (address.clone(), count, validated)
+            }
+        };
+
+        // Test catalog connection (REST mode only)
+        let connection_tested = if config.iceberg.is_rest() {
+            self.test_iceberg_connection(&config.iceberg).await.is_ok()
         } else {
             false
         };
 
-        // 4. Convert config to storage format
-        let iceberg_config = config.to_iceberg_gs_config();
+        // Store config with CAS mapping address
+        let iceberg_config = config.to_iceberg_gs_config(&mapping_address);
         let config_json = iceberg_config
             .to_json()
-            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {e}")))?;
 
-        // 5. Publish graph source record to nameservice
         self.nameservice
             .publish_graph_source(
                 &config.iceberg.name,
                 config.iceberg.effective_branch(),
                 GraphSourceType::Iceberg,
                 &config_json,
-                &[], // No ledger dependencies for Iceberg/R2RML graph sources
+                &[],
             )
             .await?;
 
-        info!(
-            graph_source_id = %graph_source_id,
-            triples_map_count = triples_map_count,
-            connection_tested = connection_tested,
-            mapping_validated = mapping_validated,
-            "Created R2RML graph source"
-        );
+        info!(graph_source_id = %graph_source_id, mapping_address = %mapping_address, "Created R2RML graph source");
 
         Ok(R2rmlCreateResult {
             graph_source_id,
             table_identifier: config.iceberg.table_identifier_display(),
             catalog_uri: config.iceberg.catalog_uri_or_location().to_string(),
-            mapping_source: config.mapping_source.clone(),
+            mapping_source: mapping_address,
             triples_map_count,
             connection_tested,
             mapping_validated,
@@ -233,53 +231,44 @@ where
         Ok(())
     }
 
-    /// Validate an R2RML mapping by loading and compiling it.
-    ///
-    /// Returns the number of TriplesMap definitions in the mapping.
-    async fn validate_r2rml_mapping(&self, config: &R2rmlCreateConfig) -> Result<usize> {
-        // Load the mapping content from storage
-        let mapping_bytes = self
-            .storage()
-            .read_bytes(&config.mapping_source)
-            .await
-            .map_err(|e| {
-                crate::ApiError::Config(format!(
-                    "Failed to load R2RML mapping from '{}': {}",
-                    config.mapping_source, e
-                ))
-            })?;
-
-        let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
-            crate::ApiError::Config(format!("R2RML mapping is not valid UTF-8: {}", e))
-        })?;
-
-        // Determine format by extension or media type
-        let is_turtle = config.mapping_media_type.as_ref().map_or_else(
-            || {
-                config.mapping_source.ends_with(".ttl")
-                    || config.mapping_source.ends_with(".turtle")
-            },
-            |mt| mt.contains("turtle"),
-        );
-
-        // Parse and compile the mapping
-        let compiled = if is_turtle {
-            fluree_db_r2rml::loader::R2rmlLoader::from_turtle(&mapping_content)
-                .map_err(|e| {
-                    crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {}", e))
-                })?
+    /// Compile R2RML content and return the compiled mapping.
+    fn compile_r2rml_content(
+        content: &str,
+        config: &R2rmlCreateConfig,
+    ) -> Result<fluree_db_r2rml::mapping::CompiledR2rmlMapping> {
+        let is_turtle = config
+            .mapping_media_type
+            .as_ref()
+            .is_none_or(|mt| mt.contains("turtle"));
+        if is_turtle {
+            fluree_db_r2rml::loader::R2rmlLoader::from_turtle(content)
+                .map_err(|e| crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {e}")))?
                 .compile()
                 .map_err(|e| {
-                    crate::ApiError::Config(format!("Failed to compile R2RML mapping: {}", e))
-                })?
+                    crate::ApiError::Config(format!("Failed to compile R2RML mapping: {e}"))
+                })
         } else {
-            return Err(crate::ApiError::Config(
-                "R2RML mapping must be in Turtle format (.ttl). JSON-LD is not yet supported."
-                    .to_string(),
-            ));
-        };
+            Err(crate::ApiError::Config(
+                "R2RML mapping must be in Turtle format. JSON-LD is not yet supported.".into(),
+            ))
+        }
+    }
 
-        Ok(compiled.len())
+    /// Validate an R2RML mapping from a pre-existing storage address.
+    async fn validate_r2rml_mapping_from_address(
+        &self,
+        address: &str,
+        config: &R2rmlCreateConfig,
+    ) -> Result<usize> {
+        let bytes = self.storage().read_bytes(address).await.map_err(|e| {
+            crate::ApiError::Config(format!(
+                "Failed to load R2RML mapping from '{address}': {e}"
+            ))
+        })?;
+        let content = String::from_utf8(bytes).map_err(|e| {
+            crate::ApiError::Config(format!("R2RML mapping is not valid UTF-8: {e}"))
+        })?;
+        Ok(Self::compile_r2rml_content(&content, config)?.len())
     }
 }
 
@@ -328,10 +317,6 @@ where
 {
     /// Check if a graph source has an R2RML mapping.
     async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
-        tracing::info!(
-            graph_source_id = %graph_source_id,
-            "[DIAG] FlureeR2rmlProvider::has_r2rml_mapping: checking"
-        );
         match self
             .fluree
             .nameservice()
@@ -339,62 +324,22 @@ where
             .await
         {
             Ok(Some(record)) => {
-                tracing::info!(
-                    graph_source_id = %graph_source_id,
-                    source_type = ?record.source_type,
-                    config_len = record.config.len(),
-                    "[DIAG] has_r2rml_mapping: found record"
-                );
                 // First check if this is an R2RML or Iceberg graph source type
                 if !matches!(
                     record.source_type,
                     GraphSourceType::R2rml | GraphSourceType::Iceberg
                 ) {
-                    tracing::info!(
-                        graph_source_id = %graph_source_id,
-                        "[DIAG] has_r2rml_mapping: type is not R2RML/Iceberg, returning false"
-                    );
                     return false;
                 }
 
                 // Parse into typed config to stay aligned with real config schema
                 match IcebergGsConfig::from_json(&record.config) {
-                    Ok(config) => {
-                        let has = config.mapping.is_some();
-                        tracing::info!(
-                            graph_source_id = %graph_source_id,
-                            has_mapping = has,
-                            mapping_source = ?config.mapping.as_ref().map(|m| &m.source),
-                            "[DIAG] has_r2rml_mapping: parsed config"
-                        );
-                        has
-                    }
-                    Err(e) => {
-                        tracing::info!(
-                            graph_source_id = %graph_source_id,
-                            error = %e,
-                            config_preview = %&record.config[..record.config.len().min(200)],
-                            "[DIAG] has_r2rml_mapping: FAILED to parse config as IcebergGsConfig"
-                        );
-                        false
-                    }
+                    Ok(config) => config.mapping.is_some(),
+                    Err(_) => false,
                 }
             }
-            Ok(None) => {
-                tracing::info!(
-                    graph_source_id = %graph_source_id,
-                    "[DIAG] has_r2rml_mapping: NOT FOUND in nameservice"
-                );
-                false
-            }
-            Err(e) => {
-                tracing::info!(
-                    graph_source_id = %graph_source_id,
-                    error = %e,
-                    "[DIAG] has_r2rml_mapping: nameservice ERROR"
-                );
-                false
-            }
+            Ok(None) => false,
+            Err(_) => false,
         }
     }
 
@@ -465,35 +410,28 @@ where
             "R2RML mapping cache miss - loading from storage"
         );
 
-        // Cache miss - load the mapping content
-        let storage = self.fluree.storage();
-        tracing::info!(
-            graph_source_id = %graph_source_id,
-            mapping_source = %mapping_source,
-            storage_method = %storage.storage_method(),
-            "[DIAG] compiled_mapping: loading mapping file from storage"
-        );
-        let mapping_bytes = storage.read_bytes(mapping_source).await.map_err(|e| {
-            tracing::info!(
-                graph_source_id = %graph_source_id,
-                mapping_source = %mapping_source,
-                storage_method = %storage.storage_method(),
-                error = %e,
-                "[DIAG] compiled_mapping: FAILED to load mapping file"
-            );
-            QueryError::InvalidQuery(format!(
-                "Failed to load R2RML mapping from '{}' (storage: {}): {}",
-                mapping_source,
-                storage.storage_method(),
-                e
-            ))
-        })?;
-        tracing::info!(
-            graph_source_id = %graph_source_id,
-            mapping_source = %mapping_source,
-            bytes = mapping_bytes.len(),
-            "[DIAG] compiled_mapping: mapping file loaded successfully"
-        );
+        // Cache miss - load the mapping content.
+        // Try CID-based content store first (CAS-stored mappings),
+        // fall back to raw storage read (legacy address-based mappings).
+        let mapping_bytes = if let Ok(cid) = mapping_source.parse::<fluree_db_core::ContentId>() {
+            let cs =
+                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            cs.get(&cid).await.map_err(|e| {
+                QueryError::InvalidQuery(format!(
+                    "Failed to load R2RML mapping (CID {mapping_source}): {e}"
+                ))
+            })?
+        } else {
+            let storage = self.fluree.storage();
+            storage.read_bytes(mapping_source).await.map_err(|e| {
+                QueryError::InvalidQuery(format!(
+                    "Failed to load R2RML mapping from '{}' (storage: {}): {}",
+                    mapping_source,
+                    storage.storage_method(),
+                    e
+                ))
+            })?
+        };
 
         let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
             QueryError::InvalidQuery(format!(

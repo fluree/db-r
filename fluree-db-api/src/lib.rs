@@ -143,7 +143,7 @@ pub use view::{DataSetDb, GraphDb, QueryInput, ReasoningModePrecedence};
 #[cfg(feature = "iceberg")]
 pub use graph_source::{
     CatalogMode, FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
-    R2rmlCreateResult, RestCatalogMode,
+    R2rmlCreateResult, R2rmlMappingInput, RestCatalogMode,
 };
 
 pub use bm25_worker::{

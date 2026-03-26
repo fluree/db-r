@@ -124,7 +124,7 @@ pub use config::VectorCreateConfig;
 pub use config::{CatalogMode, IcebergCreateConfig, RestCatalogMode};
 
 #[cfg(feature = "iceberg")]
-pub use config::R2rmlCreateConfig;
+pub use config::{R2rmlCreateConfig, R2rmlMappingInput};
 
 // Re-export result types
 pub use result::Bm25CreateResult;

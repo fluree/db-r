@@ -140,19 +140,8 @@ impl GraphOperator {
         // Check if this graph is backed by an R2RML mapping
         let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
             let result = provider.has_r2rml_mapping(&graph_iri).await;
-            tracing::info!(
-                graph_iri = %graph_iri,
-                has_provider = true,
-                is_r2rml = result,
-                "[DIAG] GraphOperator: R2RML mapping check"
-            );
             result
         } else {
-            tracing::info!(
-                graph_iri = %graph_iri,
-                has_provider = false,
-                "[DIAG] GraphOperator: no R2RML provider available"
-            );
             false
         };
 
@@ -161,12 +150,6 @@ impl GraphOperator {
             // Rewrite triple patterns to R2RML patterns
             let rewrite_result =
                 rewrite_patterns_for_r2rml(&self.inner_patterns, &graph_iri, ctx.snapshot);
-            tracing::info!(
-                graph_iri = %graph_iri,
-                converted = rewrite_result.converted_count,
-                unconverted = rewrite_result.unconverted_count,
-                "[DIAG] GraphOperator: R2RML rewrite result"
-            );
 
             // If there are unconverted patterns in an R2RML graph source, return an error.
             // R2RML graph sources don't have ledger-backed indexes, so unconverted patterns

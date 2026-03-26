@@ -236,11 +236,6 @@ impl Operator for R2rmlScanOperator {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        tracing::info!(
-            graph_source_id = %self.pattern.graph_source_id,
-            has_provider = ctx.r2rml_provider.is_some(),
-            "[DIAG] R2rmlScanOperator::open: starting"
-        );
         // Open child first
         self.child.open(ctx).await?;
 

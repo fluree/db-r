@@ -510,9 +510,6 @@ where
         format_config: Option<FormatterConfig>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        tracing::info!(
-            "[DIAG] query_connection_sparql_tracked: ENTERED (NO R2RML providers — NoOp path)"
-        );
         let ast = parse_and_validate_sparql(sparql)
             .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
         let spec = extract_sparql_dataset_spec(&ast)
@@ -543,9 +540,6 @@ where
         r2rml_table_provider: &dyn R2rmlTableProvider,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        tracing::info!(
-            "[DIAG] query_connection_sparql_tracked_with_r2rml: ENTERED (has real R2RML providers)"
-        );
         let ast = parse_and_validate_sparql(sparql)
             .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
         let spec = extract_sparql_dataset_spec(&ast)

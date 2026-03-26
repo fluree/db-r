@@ -117,11 +117,11 @@ async fn iceberg_map_local(state: Arc<AppState>, request: Request) -> Result<imp
         let fluree = state.fluree.as_file();
         let iceberg_config = build_iceberg_config(&req)?;
 
-        let response = if let Some(ref r2rml_source) = req.r2rml {
-            // R2RML mode
+        let response = if let Some(ref r2rml_content) = req.r2rml {
+            // R2RML mode — mapping content provided inline
             let config = fluree_db_api::R2rmlCreateConfig {
                 iceberg: iceberg_config,
-                mapping_source: r2rml_source.clone(),
+                mapping: fluree_db_api::R2rmlMappingInput::Content(r2rml_content.clone()),
                 mapping_media_type: req.r2rml_type.clone(),
             };
 

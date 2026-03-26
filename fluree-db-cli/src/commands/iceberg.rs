@@ -106,7 +106,9 @@ fn args_to_json(args: &IcebergMapArgs) -> serde_json::Value {
         obj.insert("table_location".into(), v.clone().into());
     }
     if let Some(ref v) = args.r2rml {
-        obj.insert("r2rml".into(), v.to_string_lossy().to_string().into());
+        // Read file content and send it (not the path)
+        let content = std::fs::read_to_string(v).unwrap_or_default();
+        obj.insert("r2rml".into(), content.into());
     }
     if let Some(ref v) = args.r2rml_type {
         obj.insert("r2rml_type".into(), v.clone().into());
@@ -155,11 +157,18 @@ async fn run_iceberg_map_local(args: IcebergMapArgs, dirs: &FlureeDir) -> CliRes
     let iceberg_config = build_iceberg_config(&args)?;
 
     if let Some(ref r2rml_path) = args.r2rml {
-        let mapping_source = r2rml_path.to_string_lossy().to_string();
+        // Read mapping file content
+        let mapping_content = std::fs::read_to_string(r2rml_path).map_err(|e| {
+            crate::error::CliError::Input(format!(
+                "Failed to read R2RML mapping file '{}': {}",
+                r2rml_path.display(),
+                e
+            ))
+        })?;
 
         let config = fluree_db_api::R2rmlCreateConfig {
             iceberg: iceberg_config,
-            mapping_source,
+            mapping: fluree_db_api::R2rmlMappingInput::Content(mapping_content),
             mapping_media_type: args.r2rml_type.clone(),
         };
 

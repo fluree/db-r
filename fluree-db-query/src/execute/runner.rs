@@ -599,52 +599,26 @@ pub async fn execute_prepared<'a, 'b>(
     }
 
     // Precompute which graphs in the dataset are R2RML-backed.
-    tracing::info!(
-        has_r2rml_provider = ctx.r2rml_provider.is_some(),
-        has_dataset = ctx.dataset.is_some(),
-        primary_ledger_id = %db.snapshot.ledger_id,
-        "[DIAG] execute_prepared: checking R2RML graph IDs"
-    );
     if let (Some(r2rml_provider), Some(dataset)) = (ctx.r2rml_provider, ctx.dataset) {
         let mut r2rml_ids = std::collections::HashSet::new();
         for graph_ref in dataset.default_graphs() {
             let is_r2rml = r2rml_provider.has_r2rml_mapping(&graph_ref.ledger_id).await;
-            tracing::info!(
-                ledger_id = %graph_ref.ledger_id,
-                is_r2rml = is_r2rml,
-                "[DIAG] execute_prepared: checked default graph"
-            );
             if is_r2rml {
                 r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
             }
         }
-        for (iri, graph_ref) in dataset.named_graphs_iter() {
+        for (_iri, graph_ref) in dataset.named_graphs_iter() {
             let is_r2rml = r2rml_provider.has_r2rml_mapping(&graph_ref.ledger_id).await;
-            tracing::info!(
-                iri = %iri,
-                ledger_id = %graph_ref.ledger_id,
-                is_r2rml = is_r2rml,
-                "[DIAG] execute_prepared: checked named graph"
-            );
             if is_r2rml {
                 r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
             }
         }
-        tracing::info!(
-            r2rml_graph_count = r2rml_ids.len(),
-            "[DIAG] execute_prepared: r2rml_graph_ids precomputed"
-        );
         ctx.r2rml_graph_ids = r2rml_ids;
     }
     // Also check the primary snapshot's ledger_id (for single-source graph source queries)
     if let Some(provider) = ctx.r2rml_provider {
         if ctx.dataset.is_none() {
             let is_r2rml = provider.has_r2rml_mapping(&db.snapshot.ledger_id).await;
-            tracing::info!(
-                ledger_id = %db.snapshot.ledger_id,
-                is_r2rml = is_r2rml,
-                "[DIAG] execute_prepared: single-source R2RML check"
-            );
             if is_r2rml {
                 ctx.r2rml_graph_ids
                     .insert(Arc::from(db.snapshot.ledger_id.as_str()));

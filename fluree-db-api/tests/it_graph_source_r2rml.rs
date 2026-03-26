@@ -20,8 +20,7 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, StorageWrite,
-    VarRegistry,
+    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, VarRegistry,
 };
 use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
 use fluree_db_nameservice::GraphSourceLookup;
@@ -595,7 +594,7 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         "airlines-e2e",
         &catalog_uri,
         "openflights.airlines",
-        mapping_address,
+        AIRLINES_R2RML,
     )
     .with_warehouse(&warehouse)
     .with_mapping_media_type("text/turtle")
@@ -1416,7 +1415,9 @@ fn test_r2rml_create_config_builder() {
     .with_warehouse("analytics");
 
     assert_eq!(config.graph_source_id(), "airlines-rdf:staging");
-    assert_eq!(config.mapping_source, "s3://bucket/mappings/airlines.ttl");
+    assert!(
+        matches!(&config.mapping, fluree_db_api::R2rmlMappingInput::Content(c) if c == "s3://bucket/mappings/airlines.ttl")
+    );
     assert_eq!(config.mapping_media_type, Some("text/turtle".to_string()));
     match &config.iceberg.catalog_mode {
         fluree_db_api::CatalogMode::Rest(rest) => {
@@ -1472,7 +1473,7 @@ fn test_r2rml_graph_source_config_serialization() {
     .with_mapping_media_type("text/turtle");
 
     // Convert to IcebergGsConfig for storage
-    let iceberg_config = config.to_iceberg_gs_config();
+    let iceberg_config = config.to_iceberg_gs_config("test-mapping-address");
 
     // Serialize to JSON
     let json = iceberg_config
@@ -1486,7 +1487,7 @@ fn test_r2rml_graph_source_config_serialization() {
     // Should have mapping
     assert!(parsed.mapping.is_some(), "Mapping should be present");
     let mapping = parsed.mapping.unwrap();
-    assert_eq!(mapping.source, "fluree:file://mapping.ttl");
+    assert_eq!(mapping.source, "test-mapping-address");
     assert_eq!(mapping.media_type, Some("text/turtle".to_string()));
 }
 
@@ -1541,24 +1542,16 @@ async fn integration_create_iceberg_graph_source() {
 async fn integration_create_r2rml_graph_source_with_mapping() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // First, store the mapping file
-    let mapping_address = "fluree:file://test-mappings/airlines.ttl";
-    fluree
-        .storage()
-        .write_bytes(mapping_address, AIRLINE_MAPPING_TTL.as_bytes())
-        .await
-        .expect("Failed to store mapping");
-
-    // Create R2RML graph source config
+    // Create R2RML graph source config with inline mapping content
     let config = R2rmlCreateConfig::new(
         "airlines-rdf",
         "https://polaris.example.com",
         "openflights.airlines",
-        mapping_address,
+        AIRLINE_MAPPING_TTL,
     )
     .with_mapping_media_type("text/turtle");
 
-    // Create the graph source
+    // Create the graph source — mapping content is stored to CAS internally
     let result = fluree.create_r2rml_graph_source(config).await;
 
     assert!(
@@ -1569,7 +1562,8 @@ async fn integration_create_r2rml_graph_source_with_mapping() {
 
     let create_result = result.unwrap();
     assert_eq!(create_result.graph_source_id, "airlines-rdf:main");
-    assert_eq!(create_result.mapping_source, mapping_address);
+    // mapping_source should be a CID (content-addressed)
+    assert!(!create_result.mapping_source.is_empty());
     assert!(
         create_result.mapping_validated,
         "Mapping should be validated"
@@ -1615,19 +1609,12 @@ async fn integration_query_graph_source_provider_wiring() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Store the mapping file
-    let mapping_address = "fluree:file://test-mappings/airlines-query.ttl";
-    fluree
-        .storage()
-        .write_bytes(mapping_address, AIRLINE_MAPPING_TTL.as_bytes())
-        .await
-        .expect("Failed to store mapping");
-
-    // Create R2RML graph source
+    // Create R2RML graph source with inline mapping content
     let config = R2rmlCreateConfig::new(
         "airlines-query-test",
         "https://polaris.example.com",
         "openflights.airlines",
-        mapping_address,
+        AIRLINE_MAPPING_TTL,
     )
     .with_mapping_media_type("text/turtle");
 

@@ -706,44 +706,56 @@ impl IcebergCreateConfig {
 ///
 /// let result = fluree.create_r2rml_graph_source(config).await?;
 /// ```
+/// How the R2RML mapping is provided.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+pub enum R2rmlMappingInput {
+    /// Mapping content provided inline (Turtle format).
+    /// Will be stored to CAS during graph source creation.
+    Content(String),
+    /// Pre-existing storage address (legacy / advanced use).
+    /// The mapping must already exist at this address.
+    Address(String),
+}
+
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct R2rmlCreateConfig {
     /// Underlying Iceberg configuration
     pub iceberg: IcebergCreateConfig,
 
-    /// R2RML mapping source (storage address or URL)
-    pub mapping_source: String,
+    /// R2RML mapping input — content or pre-existing address
+    pub mapping: R2rmlMappingInput,
 
-    /// R2RML mapping media type (optional, inferred from extension if omitted)
+    /// R2RML mapping media type (optional, inferred if omitted)
     pub mapping_media_type: Option<String>,
 }
 
 #[cfg(feature = "iceberg")]
 impl R2rmlCreateConfig {
-    /// Create a new R2RML graph source config with REST catalog.
+    /// Create a new R2RML graph source config with REST catalog and inline mapping.
     pub fn new(
         name: impl Into<String>,
         catalog_uri: impl Into<String>,
         table_identifier: impl Into<String>,
-        mapping_source: impl Into<String>,
+        mapping_content: impl Into<String>,
     ) -> Self {
         Self {
             iceberg: IcebergCreateConfig::new(name, catalog_uri, table_identifier),
-            mapping_source: mapping_source.into(),
+            mapping: R2rmlMappingInput::Content(mapping_content.into()),
             mapping_media_type: None,
         }
     }
 
-    /// Create a new R2RML graph source config with direct S3 access.
+    /// Create a new R2RML graph source config with direct S3 access and inline mapping.
     pub fn new_direct(
         name: impl Into<String>,
         table_location: impl Into<String>,
-        mapping_source: impl Into<String>,
+        mapping_content: impl Into<String>,
     ) -> Self {
         Self {
             iceberg: IcebergCreateConfig::new_direct(name, table_location),
-            mapping_source: mapping_source.into(),
+            mapping: R2rmlMappingInput::Content(mapping_content.into()),
             mapping_media_type: None,
         }
     }
@@ -815,13 +827,31 @@ impl R2rmlCreateConfig {
     }
 
     /// Convert to the internal IcebergGsConfig structure with mapping for storage.
-    pub fn to_iceberg_gs_config(&self) -> IcebergGsConfig {
+    ///
+    /// `mapping_address` is the CAS address where the mapping was stored.
+    pub fn to_iceberg_gs_config(&self, mapping_address: &str) -> IcebergGsConfig {
         let mut config = self.iceberg.to_iceberg_gs_config();
         config.mapping = Some(fluree_db_iceberg::config::MappingSource {
-            source: self.mapping_source.clone(),
+            source: mapping_address.to_string(),
             media_type: self.mapping_media_type.clone(),
         });
         config
+    }
+
+    /// Get the mapping content (for Content variant) or None (for Address variant).
+    pub fn mapping_content(&self) -> Option<&str> {
+        match &self.mapping {
+            R2rmlMappingInput::Content(c) => Some(c),
+            R2rmlMappingInput::Address(_) => None,
+        }
+    }
+
+    /// Get the mapping address (for Address variant) or None (for Content variant).
+    pub fn mapping_address(&self) -> Option<&str> {
+        match &self.mapping {
+            R2rmlMappingInput::Address(a) => Some(a),
+            R2rmlMappingInput::Content(_) => None,
+        }
     }
 
     /// Validate the configuration.
@@ -829,11 +859,19 @@ impl R2rmlCreateConfig {
         // Validate the underlying Iceberg config
         self.iceberg.validate()?;
 
-        // Validate mapping source
-        if self.mapping_source.trim().is_empty() {
-            return Err(crate::ApiError::config(
-                "R2RML mapping source cannot be empty",
-            ));
+        // Validate mapping
+        match &self.mapping {
+            R2rmlMappingInput::Content(c) if c.trim().is_empty() => {
+                return Err(crate::ApiError::config(
+                    "R2RML mapping content cannot be empty",
+                ));
+            }
+            R2rmlMappingInput::Address(a) if a.trim().is_empty() => {
+                return Err(crate::ApiError::config(
+                    "R2RML mapping address cannot be empty",
+                ));
+            }
+            _ => {}
         }
 
         Ok(())
