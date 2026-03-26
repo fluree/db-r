@@ -88,7 +88,7 @@ where
             .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
 
         // 1. Parse to common IR (using primary db for namespace resolution).
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
             }
@@ -98,6 +98,9 @@ where
                 parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
             }
         };
+
+        // 1b. Auto-wrap for graph source context
+        super::query::maybe_wrap_for_graph_source(primary, &mut parsed);
 
         // 2. Build executable with optional reasoning override from primary view
         let executable = self.build_executable_for_dataset(dataset, &parsed)?;
@@ -176,7 +179,7 @@ where
             .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
 
         // 1. Parse to common IR (using primary db for namespace resolution).
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
             }
@@ -184,6 +187,9 @@ where
                 parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
             }
         };
+
+        // 1b. Auto-wrap for graph source context
+        super::query::maybe_wrap_for_graph_source(primary, &mut parsed);
 
         // 2. Build executable with optional reasoning override from primary view
         let executable = self.build_executable_for_dataset(dataset, &parsed)?;
@@ -254,7 +260,7 @@ where
         })?;
 
         // Parse
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
                     .map_err(|e| {
@@ -360,7 +366,7 @@ where
             crate::query::TrackedErrorResponse::new(400, "Dataset has no graphs", tracker.tally())
         })?;
 
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
                     .map_err(|e| {

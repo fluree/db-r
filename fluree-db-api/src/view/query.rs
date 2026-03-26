@@ -23,7 +23,10 @@ use serde_json::Value as JsonValue;
 ///
 /// Skips wrapping if the query already contains a top-level GRAPH pattern
 /// (the user explicitly scoped it).
-fn maybe_wrap_for_graph_source(db: &GraphDb, parsed: &mut fluree_db_query::parse::ParsedQuery) {
+pub(crate) fn maybe_wrap_for_graph_source(
+    db: &GraphDb,
+    parsed: &mut fluree_db_query::parse::ParsedQuery,
+) {
     if let Some(ref gs_id) = db.graph_source_id {
         let has_graph_pattern = parsed
             .patterns
