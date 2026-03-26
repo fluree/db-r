@@ -1224,3 +1224,153 @@ async fn indexed_novelty_only_ref_object_returns_data() {
         })
         .await;
 }
+
+// =============================================================================
+// IRI_REF and BLANK_NODE datatype resolution through binary index
+// =============================================================================
+
+/// Verify that IRI references and blank nodes resolve correctly through the
+/// binary index path (via `resolve_datatype_sid` mapping IRI_REF/BLANK_NODE
+/// to `jsonld:@id`).
+///
+/// Previously these OTypes returned `None` from `resolve_datatype_sid`, which
+/// could cause callers to skip or use a fallback. This test ensures both
+/// IRI-valued bindings (`skos:broader ?o` → IRI) and blank node subjects
+/// (`isBlank(?s)`) work correctly through the indexed path.
+#[tokio::test]
+async fn indexed_iri_ref_and_blank_node_resolve_correctly() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/iri-bnode-resolve-idx:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+
+            // Insert data with both IRI references and blank nodes.
+            // The blank node (no @id) will get a system-generated blank node ID.
+            let insert = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/"
+                },
+                "@graph": [
+                    {
+                        "@id": "ex:alice",
+                        "ex:name": "Alice",
+                        "ex:knows": {"@id": "ex:bob"}
+                    },
+                    {
+                        "@id": "ex:bob",
+                        "ex:name": "Bob",
+                        "ex:knows": {
+                            "ex:name": "Anonymous"
+                        }
+                    }
+                ]
+            });
+
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &insert,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert");
+            let ledger = result.ledger;
+
+            // Trigger indexing
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1, "should index to t=1");
+            }
+
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            // Test 1: IRI-valued bindings resolve correctly through binary index.
+            // `ex:knows` points to IRIs (stored as OType::IRI_REF), including both
+            // named IRIs (ex:bob) and blank nodes (the anonymous friend).
+            let iri_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s ?friend
+                WHERE {
+                    ?s ex:knows ?friend .
+                }
+                ORDER BY ?s
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(iri_query))
+                .await
+                .expect("IRI ref query should succeed through indexed path");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("should be array");
+            assert_eq!(
+                rows.len(),
+                2,
+                "should find 2 ex:knows bindings (alice->bob, bob->bnode); got: {jsonld:?}"
+            );
+            // Verify named IRI reference resolves correctly
+            let alice_row = rows
+                .iter()
+                .find(|r| r[0].as_str() == Some("ex:alice"))
+                .expect("should find alice row");
+            assert_eq!(
+                alice_row[1].as_str().unwrap(),
+                "ex:bob",
+                "IRI ref should resolve to ex:bob"
+            );
+            // Verify blank node reference also resolves (starts with _:)
+            let bob_row = rows
+                .iter()
+                .find(|r| r[0].as_str() == Some("ex:bob"))
+                .expect("should find bob row");
+            assert!(
+                bob_row[1].as_str().unwrap().starts_with("_:"),
+                "blank node ref should start with _:, got: {}",
+                bob_row[1]
+            );
+
+            // Test 2: Blank node subjects are queryable through binary index.
+            // Bob's anonymous friend has a blank node ID.
+            let bnode_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?bnode ?name
+                WHERE {
+                    ?bnode ex:name ?name .
+                    FILTER(isBlank(?bnode))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(bnode_query))
+                .await
+                .expect("blank node query should succeed through indexed path");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("should be array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "should find 1 blank node subject with ex:name; got: {jsonld:?}"
+            );
+            assert_eq!(
+                rows[0][1].as_str().unwrap(),
+                "Anonymous",
+                "blank node's name should be 'Anonymous'"
+            );
+        })
+        .await;
+}
