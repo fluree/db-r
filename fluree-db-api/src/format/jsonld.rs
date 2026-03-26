@@ -1,10 +1,9 @@
 //! JSON-LD Query format
 //!
-//! Simple JSON format with compact IRIs. Supports two row shapes:
-//! - **Array** (default): `[["ex:alice", "Alice", 30], ...]`
-//! - **Object** (API-friendly): `[{"?s": "ex:alice", "?name": "Alice"}, ...]`
+//! Simple JSON format with compact IRIs. Rows are arrays aligned to SELECT order:
+//! `[["ex:alice", "Alice", 30], ...]`
 
-use super::config::{FormatterConfig, JsonLdRowShape};
+use super::config::FormatterConfig;
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
@@ -18,7 +17,7 @@ use serde_json::{json, Map, Value as JsonValue};
 pub fn format(
     result: &QueryResult,
     compactor: &IriCompactor,
-    config: &FormatterConfig,
+    _config: &FormatterConfig,
 ) -> Result<JsonValue> {
     let select_one = result.output.is_select_one();
     let mut rows = Vec::new();
@@ -29,24 +28,13 @@ pub fn format(
                 // Wildcard: use batch schema, return all bound vars as object
                 format_row_wildcard(result, batch, row_idx, &result.vars, compactor)?
             } else {
-                // Normal select: use select list
-                match config.jsonld_row_shape {
-                    JsonLdRowShape::Array => format_row_array(
-                        result,
-                        batch,
-                        row_idx,
-                        result.output.select_vars_or_empty(),
-                        compactor,
-                    )?,
-                    JsonLdRowShape::Object => format_row_object(
-                        result,
-                        batch,
-                        row_idx,
-                        result.output.select_vars_or_empty(),
-                        &result.vars,
-                        compactor,
-                    )?,
-                }
+                format_row_array(
+                    result,
+                    batch,
+                    row_idx,
+                    result.output.select_vars_or_empty(),
+                    compactor,
+                )?
             };
             rows.push(row);
 
@@ -59,12 +47,8 @@ pub fn format(
         }
     }
 
-    // For a 1-column SELECT in array-row mode, return a flat array of values.
-    // (not `[ [v1], [v2] ]`).
-    if config.jsonld_row_shape == JsonLdRowShape::Array
-        && !result.output.is_wildcard()
-        && result.output.select_vars_or_empty().len() == 1
-    {
+    // For a 1-column SELECT, return a flat array of values (not `[ [v1], [v2] ]`).
+    if !result.output.is_wildcard() && result.output.select_vars_or_empty().len() == 1 {
         rows = rows
             .into_iter()
             .map(|row| match row {
@@ -311,27 +295,6 @@ fn format_row_array(
         })
         .collect();
     Ok(JsonValue::Array(values?))
-}
-
-/// Format row as object {var: value}
-fn format_row_object(
-    result: &QueryResult,
-    batch: &fluree_db_query::Batch,
-    row_idx: usize,
-    select: &[fluree_db_query::VarId],
-    vars: &fluree_db_query::VarRegistry,
-    compactor: &IriCompactor,
-) -> Result<JsonValue> {
-    let mut obj = Map::new();
-    for &var_id in select {
-        let var_name = vars.name(var_id);
-        let value = match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding_with_result(result, binding, compactor)?,
-            None => JsonValue::Null,
-        };
-        obj.insert(var_name.to_string(), value);
-    }
-    Ok(JsonValue::Object(obj))
 }
 
 /// Format row for wildcard select (all bound variables as object)

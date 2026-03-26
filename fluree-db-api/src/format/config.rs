@@ -15,7 +15,7 @@ pub use fluree_db_query::parse::QueryOutput;
 pub enum OutputFormat {
     /// JSON-LD Query format (default)
     ///
-    /// Simple JSON with compact IRIs. Row shape controlled by `JsonLdRowShape`.
+    /// Simple JSON with compact IRIs. Rows are arrays aligned to SELECT order.
     /// - Array mode: `[["ex:alice", "Alice", 30], ...]`
     /// - Object mode: `[{"?s": "ex:alice", "?name": "Alice"}, ...]`
     #[default]
@@ -79,28 +79,35 @@ pub enum OutputFormat {
     /// `format_results_string()`, `QueryResult::to_csv()`, or `to_csv_bytes()`
     /// instead of `format_results()`.
     Csv,
+
+    /// Agent JSON format (optimized for LLM/agent consumption)
+    ///
+    /// Produces a self-describing envelope with a schema header, compact object rows
+    /// using native JSON types, and optional byte-budget truncation with pagination
+    /// metadata:
+    /// ```json
+    /// {
+    ///   "schema": {"?name": "xsd:string", "?age": "xsd:integer"},
+    ///   "rows": [{"?name": "Alice", "?age": 30}],
+    ///   "rowCount": 1,
+    ///   "t": 5,
+    ///   "hasMore": false
+    /// }
+    /// ```
+    AgentJson,
 }
 
-/// JSON-LD Query row shape
+/// Additional context for AgentJson formatting (resume query, timestamps)
 ///
-/// Controls whether rows are formatted as arrays or objects.
-/// Only used when `OutputFormat::JsonLd` is selected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum JsonLdRowShape {
-    /// Rows are arrays aligned to select order.
-    ///
-    /// ```json
-    /// [["ex:alice", "Alice", 30], ["ex:bob", "Bob", 25]]
-    /// ```
-    #[default]
-    Array,
-
-    /// Rows are maps keyed by variable name (API-friendly)
-    ///
-    /// ```json
-    /// [{"?s": "ex:alice", "?name": "Alice"}, {"?s": "ex:bob", "?name": "Bob"}]
-    /// ```
-    Object,
+/// Passed via `FormatterConfig` to avoid modifying `QueryResult`.
+#[derive(Debug, Clone, Default)]
+pub struct AgentJsonContext {
+    /// Original SPARQL query text (for generating resume queries)
+    pub sparql_text: Option<String>,
+    /// Number of FROM clauses in the query (1 = single-ledger)
+    pub from_count: usize,
+    /// Pre-resolved ISO-8601 timestamp for the query's effective time
+    pub iso_timestamp: Option<String>,
 }
 
 /// Configuration for result formatting
@@ -110,11 +117,6 @@ pub enum JsonLdRowShape {
 pub struct FormatterConfig {
     /// Output format to use
     pub format: OutputFormat,
-
-    /// Row shape for JSON-LD Query format
-    ///
-    /// Only used when `format == OutputFormat::JsonLd`.
-    pub jsonld_row_shape: JsonLdRowShape,
 
     /// Pretty-print JSON output
     ///
@@ -133,20 +135,21 @@ pub struct FormatterConfig {
     ///
     /// Only affects graph crawl formatting; tabular SELECT results are unaffected.
     pub normalize_arrays: bool,
+
+    /// Maximum byte budget for AgentJson output
+    ///
+    /// When set, the AgentJson formatter truncates rows once cumulative serialized
+    /// size exceeds this limit and sets `hasMore: true` in the envelope.
+    pub max_bytes: Option<usize>,
+
+    /// Additional context for AgentJson formatting
+    pub agent_json_context: Option<AgentJsonContext>,
 }
 
 impl FormatterConfig {
     /// Create a default JSON-LD Query config (array rows)
     pub fn jsonld() -> Self {
         Self::default()
-    }
-
-    /// Create a JSON-LD Query config with object rows
-    pub fn jsonld_objects() -> Self {
-        Self {
-            jsonld_row_shape: JsonLdRowShape::Object,
-            ..Default::default()
-        }
     }
 
     /// Create a SPARQL JSON config
@@ -197,15 +200,17 @@ impl FormatterConfig {
         }
     }
 
+    /// Create an AgentJson config (LLM/agent-optimized envelope format)
+    pub fn agent_json() -> Self {
+        Self {
+            format: OutputFormat::AgentJson,
+            ..Default::default()
+        }
+    }
+
     /// Enable pretty printing
     pub fn with_pretty(mut self) -> Self {
         self.pretty = true;
-        self
-    }
-
-    /// Set the JSON-LD row shape
-    pub fn with_row_shape(mut self, shape: JsonLdRowShape) -> Self {
-        self.jsonld_row_shape = shape;
         self
     }
 
@@ -218,6 +223,18 @@ impl FormatterConfig {
         self.normalize_arrays = true;
         self
     }
+
+    /// Set byte budget for AgentJson truncation
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = Some(max_bytes);
+        self
+    }
+
+    /// Set AgentJson context (SPARQL text, FROM count, ISO timestamp)
+    pub fn with_agent_json_context(mut self, context: AgentJsonContext) -> Self {
+        self.agent_json_context = Some(context);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -228,15 +245,7 @@ mod tests {
     fn test_default_config() {
         let config = FormatterConfig::default();
         assert_eq!(config.format, OutputFormat::JsonLd);
-        assert_eq!(config.jsonld_row_shape, JsonLdRowShape::Array);
         assert!(!config.pretty);
-    }
-
-    #[test]
-    fn test_jsonld_objects_config() {
-        let config = FormatterConfig::jsonld_objects();
-        assert_eq!(config.format, OutputFormat::JsonLd);
-        assert_eq!(config.jsonld_row_shape, JsonLdRowShape::Object);
     }
 
     #[test]
@@ -276,12 +285,33 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_json_config() {
+        let config = FormatterConfig::agent_json();
+        assert_eq!(config.format, OutputFormat::AgentJson);
+        assert!(config.max_bytes.is_none());
+        assert!(config.agent_json_context.is_none());
+    }
+
+    #[test]
     fn test_builder_methods() {
-        let config = FormatterConfig::jsonld()
-            .with_pretty()
-            .with_row_shape(JsonLdRowShape::Object);
+        let config = FormatterConfig::jsonld().with_pretty();
 
         assert!(config.pretty);
-        assert_eq!(config.jsonld_row_shape, JsonLdRowShape::Object);
+    }
+
+    #[test]
+    fn test_agent_json_builder_methods() {
+        let config = FormatterConfig::agent_json()
+            .with_max_bytes(32768)
+            .with_agent_json_context(AgentJsonContext {
+                sparql_text: Some("SELECT * WHERE { ?s ?p ?o }".to_string()),
+                from_count: 1,
+                iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+            });
+
+        assert_eq!(config.max_bytes, Some(32768));
+        let ctx = config.agent_json_context.unwrap();
+        assert_eq!(ctx.from_count, 1);
+        assert!(ctx.iso_timestamp.is_some());
     }
 }

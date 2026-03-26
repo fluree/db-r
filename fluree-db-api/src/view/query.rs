@@ -127,7 +127,7 @@ where
             vars,
             parsed,
             batches,
-            db.t,
+            Some(db.t),
             Some(db.overlay.clone()),
             db.binary_graph(),
         ))
@@ -188,7 +188,7 @@ where
             vars,
             parsed,
             batches,
-            db.t,
+            Some(db.t),
             Some(db.overlay.clone()),
             db.binary_graph(),
         ))
@@ -292,7 +292,7 @@ where
             vars,
             parsed,
             batches,
-            db.t,
+            Some(db.t),
             Some(db.overlay.clone()),
             db.binary_graph(),
         );
@@ -404,7 +404,7 @@ where
             vars,
             parsed,
             batches,
-            db.t,
+            Some(db.t),
             Some(db.overlay.clone()),
             db.binary_graph(),
         );

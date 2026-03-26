@@ -142,11 +142,29 @@ impl DataSetDb {
 
     /// Get the maximum `t` across all views in the dataset.
     ///
-    /// This is useful for result metadata when querying across multiple ledgers.
+    /// This is only a safe upper bound for internal operations that need a bound
+    /// across overlays. It is NOT meaningful user-facing result metadata for
+    /// multi-ledger datasets because `t` values are ledger-local.
     pub fn max_t(&self) -> i64 {
         let default_max = self.default.iter().map(|v| v.t).max().unwrap_or(0);
         let named_max = self.named.values().map(|v| v.t).max().unwrap_or(0);
         default_max.max(named_max)
+    }
+
+    /// Get a meaningful result `t` if the dataset is effectively one ledger/time.
+    ///
+    /// Returns `Some(t)` only when every view in the dataset points at the same
+    /// ledger and the same transaction boundary. Returns `None` for multi-ledger
+    /// or mixed-time datasets.
+    pub fn result_t(&self) -> Option<i64> {
+        let mut views = self.default.iter().chain(self.named.values());
+        let first = views.next()?;
+        let ledger_id = first.ledger_id.as_ref();
+        let t = first.t;
+
+        views
+            .all(|view| view.ledger_id.as_ref() == ledger_id && view.t == t)
+            .then_some(t)
     }
 
     /// Build a runtime `fluree-db-query` dataset from this view.
@@ -321,5 +339,21 @@ mod tests {
             .with_named("http://example.org/old", view_t0);
 
         assert_eq!(dataset.max_t(), 1);
+        assert_eq!(dataset.result_t(), None);
+    }
+
+    #[tokio::test]
+    async fn test_dataset_view_result_t_single_ledger_same_time() {
+        let fluree = FlureeBuilder::memory().build_memory();
+        let _ledger = fluree.create_ledger("dataset_result_t_test").await.unwrap();
+
+        let view1 = fluree.db("dataset_result_t_test:main").await.unwrap();
+        let view2 = fluree.db("dataset_result_t_test:main").await.unwrap();
+
+        let dataset = DataSetDb::new()
+            .with_default(view1.clone())
+            .with_named("http://example.org/same-ledger", view2);
+
+        assert_eq!(dataset.result_t(), Some(view1.t));
     }
 }

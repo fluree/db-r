@@ -87,12 +87,16 @@ where
         // Dataset graph crawl formatting may need to see flakes from multiple ledgers (union),
         // and each ledger may have a different `t`. We therefore:
         // - use a composite overlay (union of novelty overlays)
-        // - use max_t across the dataset (safe upper bound for overlay filtering)
+        // - omit result `t` unless the dataset resolves to one meaningful ledger/time
         let novelty = dataset.composite_overlay();
-        let max_t = dataset.max_t();
 
         Ok(super::helpers::build_query_result(
-            vars, parsed, batches, max_t, novelty, None,
+            vars,
+            parsed,
+            batches,
+            dataset.result_t(),
+            novelty,
+            None,
         ))
     }
 

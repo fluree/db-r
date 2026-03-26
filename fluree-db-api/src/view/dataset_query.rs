@@ -121,7 +121,7 @@ where
             vars,
             parsed,
             batches,
-            dataset.max_t(),
+            dataset.result_t(),
             dataset.composite_overlay(),
             primary.binary_graph(),
         ))
@@ -216,7 +216,7 @@ where
             vars,
             parsed,
             batches,
-            dataset.max_t(),
+            dataset.result_t(),
             dataset.composite_overlay(),
             primary.binary_graph(),
         ))
@@ -301,7 +301,7 @@ where
             vars,
             parsed,
             batches,
-            dataset.max_t(),
+            dataset.result_t(),
             None,
             primary.binary_graph(),
         );
@@ -416,7 +416,7 @@ where
             vars,
             parsed,
             batches,
-            dataset.max_t(),
+            dataset.result_t(),
             None,
             primary.binary_graph(),
         );

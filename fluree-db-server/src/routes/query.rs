@@ -287,6 +287,48 @@ pub async fn query(
             }
         }
 
+        // AgentJson: connection-scoped SPARQL with agent-optimized envelope
+        if headers.wants_agent_json() {
+            let parsed = fluree_db_sparql::parse_sparql(&sparql);
+            let from_count = parsed.ast.as_ref()
+                .and_then(|ast| match &ast.body {
+                    fluree_db_sparql::ast::QueryBody::Select(q) => q.dataset.as_ref(),
+                    fluree_db_sparql::ast::QueryBody::Construct(q) => q.dataset.as_ref(),
+                    fluree_db_sparql::ast::QueryBody::Ask(q) => q.dataset.as_ref(),
+                    fluree_db_sparql::ast::QueryBody::Describe(q) => q.dataset.as_ref(),
+                    fluree_db_sparql::ast::QueryBody::Update(_) => None,
+                })
+                .map(|d| d.default_graphs.len())
+                .unwrap_or(0);
+            let agent_ctx = fluree_db_api::AgentJsonContext {
+                sparql_text: Some(sparql.to_string()),
+                from_count,
+                iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            };
+            let mut config = fluree_db_api::FormatterConfig::agent_json()
+                .with_agent_json_context(agent_ctx);
+            if let Some(max_bytes) = headers.max_bytes() {
+                config = config.with_max_bytes(max_bytes);
+            }
+            let result = match &state.fluree {
+                FlureeInstance::File(f) => f.query_from().sparql(&sparql).format(config).execute_formatted().await,
+                FlureeInstance::Proxy(p) => p.query_from().sparql(&sparql).format(config).execute_formatted().await,
+            };
+            return match result {
+                Ok(json) => {
+                    tracing::info!(status = "success", query_kind = "sparql", format = "agent-json");
+                    let content_type = "application/vnd.fluree.agent+json; charset=utf-8";
+                    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], Json(json)).into_response())
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&span, "error:InvalidQuery");
+                    tracing::error!(error = %server_error, query_kind = "sparql", "query failed");
+                    Err(server_error)
+                }
+            };
+        }
+
         match state.fluree.query_connection_sparql_jsonld(&sparql).await {
             Ok(result) => {
                 tracing::info!(
@@ -930,9 +972,7 @@ async fn execute_query(
                 fmt.name().to_uppercase()
             )));
         }
-        return execute_history_query(state, ledger_id, query_json, &span)
-            .await
-            .map(IntoResponse::into_response);
+        return execute_history_query(state, ledger_id, query_json, &span).await;
     }
 
     // Check for dataset features (fromNamed, from array, from object with graph/alias/time)
@@ -944,9 +984,7 @@ async fn execute_query(
                 fmt.name().to_uppercase()
             )));
         }
-        return execute_dataset_query(state, ledger_id, query_json, &span)
-            .await
-            .map(IntoResponse::into_response);
+        return execute_dataset_query(state, ledger_id, query_json, &span).await;
     }
 
     // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
@@ -957,9 +995,7 @@ async fn execute_query(
                 fmt.name().to_uppercase()
             )));
         }
-        return execute_query_proxy(state, ledger_id, query_json, &span)
-            .await
-            .map(IntoResponse::into_response);
+        return execute_query_proxy(state, ledger_id, query_json, &span).await;
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
@@ -1009,20 +1045,8 @@ async fn execute_query(
         };
         let headers = tracking_headers(&tally);
 
-        // Serialize TrackedQueryResponse to JSON
-        let json = match serde_json::to_value(&response) {
-            Ok(json) => json,
-            Err(e) => {
-                let server_error =
-                    ServerError::internal(format!("Failed to serialize response: {}", e));
-                set_span_error_code(&span, "error:InternalError");
-                tracing::error!(error = %server_error, "response serialization failed");
-                return Err(server_error);
-            }
-        };
-
         tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
-        return Ok((headers, Json(json)).into_response());
+        return Ok((headers, Json(response)).into_response());
     }
 
     // Delimited fast path: execute raw query and format as TSV/CSV bytes
@@ -1090,7 +1114,7 @@ async fn execute_query_proxy(
     ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
-) -> Result<(HeaderMap, Json<JsonValue>)> {
+) -> Result<Response> {
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
         // Execute tracked query via FlureeInstance wrapper
@@ -1125,20 +1149,8 @@ async fn execute_query_proxy(
         };
         let headers = tracking_headers(&tally);
 
-        // Serialize TrackedQueryResponse to JSON
-        let json = match serde_json::to_value(&response) {
-            Ok(json) => json,
-            Err(e) => {
-                let server_error =
-                    ServerError::internal(format!("Failed to serialize response: {}", e));
-                set_span_error_code(span, "error:InternalError");
-                tracing::error!(error = %server_error, "response serialization failed");
-                return Err(server_error);
-            }
-        };
-
         tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
-        return Ok((headers, Json(json)));
+        return Ok((headers, Json(response)).into_response());
     }
 
     // Execute query via FlureeInstance wrapper
@@ -1162,7 +1174,7 @@ async fn execute_query_proxy(
             return Err(server_error);
         }
     };
-    Ok((HeaderMap::new(), Json(result)))
+    Ok((HeaderMap::new(), Json(result)).into_response())
 }
 
 /// Execute a SPARQL query against a specific ledger and return result
@@ -1462,12 +1474,9 @@ async fn execute_sparql_ledger(
                     policy: response.policy.clone(),
                 };
                 let headers = tracking_headers(&tally);
-                let json = serde_json::to_value(&response).map_err(|e| {
-                    ServerError::internal(format!("Failed to serialize response: {}", e))
-                })?;
 
                 tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
-                return Ok((headers, Json(json)).into_response());
+                return Ok((headers, Json(response)).into_response());
             }
 
             // SPARQL Results XML: execute and format as XML string (SELECT/ASK only)
@@ -1542,6 +1551,49 @@ async fn execute_sparql_ledger(
                 return Ok((
                     [(axum::http::header::CONTENT_TYPE, content_type)],
                     xml.into_bytes(),
+                )
+                    .into_response());
+            }
+
+            // AgentJson: dataset query with agent-optimized envelope
+            if headers.wants_agent_json() {
+                let from_count = dc.default_graphs.len();
+                let agent_ctx = fluree_db_api::AgentJsonContext {
+                    sparql_text: Some(sparql.to_string()),
+                    from_count,
+                    iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                };
+                let mut config = fluree_db_api::FormatterConfig::agent_json()
+                    .with_agent_json_context(agent_ctx);
+                if let Some(max_bytes) = headers.max_bytes() {
+                    config = config.with_max_bytes(max_bytes);
+                }
+                let result = match &state.fluree {
+                    FlureeInstance::File(f) => {
+                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(f.as_ref())
+                            .sparql(sparql)
+                            .format(config)
+                            .execute_formatted()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                    FlureeInstance::Proxy(p) => {
+                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                        dataset
+                            .query(p.as_ref())
+                            .sparql(sparql)
+                            .format(config)
+                            .execute_formatted()
+                            .await
+                            .map_err(ServerError::Api)?
+                    }
+                };
+                let content_type = "application/vnd.fluree.agent+json; charset=utf-8";
+                return Ok((
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    Json(result),
                 )
                     .into_response());
             }
@@ -1631,13 +1683,8 @@ async fn execute_sparql_ledger(
             };
             let resp_headers = tracking_headers(&tally);
 
-            let json = serde_json::to_value(&response).map_err(|e| {
-                set_span_error_code(&span, "error:InternalError");
-                ServerError::internal(format!("Failed to serialize response: {}", e))
-            })?;
-
             tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
-            return Ok((resp_headers, Json(json)).into_response());
+            return Ok((resp_headers, Json(response)).into_response());
         }
 
         // Delimited fast path: execute raw query and format as TSV/CSV bytes
@@ -1717,6 +1764,38 @@ async fn execute_sparql_ledger(
             return Ok((
                 [(axum::http::header::CONTENT_TYPE, content_type)],
                 xml.into_bytes(),
+            )
+                .into_response());
+        }
+
+        // AgentJson: execute with agent-optimized envelope format
+        if headers.wants_agent_json() {
+            let from_count = dataset_clause
+                .map(|d| d.default_graphs.len())
+                .unwrap_or(0);
+            let agent_ctx = fluree_db_api::AgentJsonContext {
+                sparql_text: Some(sparql.to_string()),
+                from_count,
+                iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            };
+            let mut config = fluree_db_api::FormatterConfig::agent_json()
+                .with_agent_json_context(agent_ctx);
+            if let Some(max_bytes) = headers.max_bytes() {
+                config = config.with_max_bytes(max_bytes);
+            }
+            let result = graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .format(config)
+                .execute_formatted()
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })?;
+            let content_type = "application/vnd.fluree.agent+json; charset=utf-8";
+            return Ok((
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                Json(result),
             )
                 .into_response());
         }
@@ -2036,7 +2115,7 @@ async fn execute_history_query(
     ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
-) -> Result<(HeaderMap, Json<JsonValue>)> {
+) -> Result<Response> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
@@ -2080,18 +2159,6 @@ async fn execute_history_query(
         };
         let headers = tracking_headers(&tally);
 
-        // Serialize TrackedQueryResponse to JSON
-        let json = match serde_json::to_value(&response) {
-            Ok(json) => json,
-            Err(e) => {
-                let server_error =
-                    ServerError::internal(format!("Failed to serialize response: {}", e));
-                set_span_error_code(span, "error:InternalError");
-                tracing::error!(error = %server_error, "response serialization failed");
-                return Err(server_error);
-            }
-        };
-
         tracing::info!(
             status = "success",
             tracked = true,
@@ -2099,7 +2166,7 @@ async fn execute_history_query(
             time = ?response.time,
             fuel = response.fuel
         );
-        Ok((headers, Json(json)))
+        Ok((headers, Json(response)).into_response())
     } else {
         match state.fluree.query_connection_jsonld(&query).await {
             Ok(result) => {
@@ -2108,7 +2175,7 @@ async fn execute_history_query(
                     query_kind = "history",
                     result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
                 );
-                Ok((HeaderMap::new(), Json(result)))
+                Ok((HeaderMap::new(), Json(result)).into_response())
             }
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -2138,7 +2205,7 @@ async fn execute_dataset_query(
     ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
-) -> Result<(HeaderMap, Json<JsonValue>)> {
+) -> Result<Response> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
@@ -2182,18 +2249,6 @@ async fn execute_dataset_query(
         };
         let headers = tracking_headers(&tally);
 
-        // Serialize TrackedQueryResponse to JSON
-        let json = match serde_json::to_value(&response) {
-            Ok(json) => json,
-            Err(e) => {
-                let server_error =
-                    ServerError::internal(format!("Failed to serialize response: {}", e));
-                set_span_error_code(span, "error:InternalError");
-                tracing::error!(error = %server_error, "response serialization failed");
-                return Err(server_error);
-            }
-        };
-
         tracing::info!(
             status = "success",
             tracked = true,
@@ -2201,7 +2256,7 @@ async fn execute_dataset_query(
             time = ?response.time,
             fuel = response.fuel
         );
-        Ok((headers, Json(json)))
+        Ok((headers, Json(response)).into_response())
     } else {
         match state.fluree.query_connection_jsonld(&query).await {
             Ok(result) => {
@@ -2210,7 +2265,7 @@ async fn execute_dataset_query(
                     query_kind = "dataset",
                     result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
                 );
-                Ok((HeaderMap::new(), Json(result)))
+                Ok((HeaderMap::new(), Json(result)).into_response())
             }
             Err(e) => {
                 let server_error = ServerError::Api(e);

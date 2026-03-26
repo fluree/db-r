@@ -23,8 +23,12 @@ use fluree_db_query::parse::{GraphSelectSpec, QueryOutput};
 pub struct QueryResult {
     /// Variable registry mapping names to IDs
     pub vars: VarRegistry,
-    /// Effective "as-of" time boundary for this result (used for formatting with overlays).
-    pub t: i64,
+    /// Effective "as-of" time boundary for this result when one meaningful `t` exists.
+    ///
+    /// Single-ledger queries populate this with the view's `t`. Multi-ledger dataset
+    /// queries leave it as `None` because there is no shared ledger-local transaction
+    /// number that can be reported or reused safely across ledgers.
+    pub t: Option<i64>,
     /// Novelty overlay used during execution (for graph crawl formatting).
     ///
     /// Most query execution runs against `LedgerSnapshot + Novelty` (range_with_overlay). Graph crawl formatting
@@ -162,14 +166,6 @@ impl QueryResult {
         format::format_results(self, &self.context, snapshot, &config)
     }
 
-    /// Format as JSON-LD Query JSON with object rows (API-friendly)
-    ///
-    /// Rows are maps keyed by variable name (e.g., `{"?s": "ex:alice", ...}`).
-    pub fn to_jsonld_objects(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects();
-        format::format_results(self, &self.context, snapshot, &config)
-    }
-
     /// Format as SPARQL 1.1 Query Results JSON
     ///
     /// Returns W3C standard format with `{"head": {"vars": [...]}, "results": {"bindings": [...]}}`.
@@ -184,6 +180,37 @@ impl QueryResult {
     pub fn to_typed_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         let config = FormatterConfig::typed_json();
         format::format_results(self, &self.context, snapshot, &config)
+    }
+
+    /// Format as AgentJson (LLM/agent-optimized envelope)
+    ///
+    /// Returns an envelope with schema header, compact object rows, and pagination metadata.
+    /// Use `to_agent_json_with_config` for byte budget and resume query support.
+    pub fn to_agent_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
+        let config = FormatterConfig::agent_json();
+        format::format_results(self, &self.context, snapshot, &config)
+    }
+
+    /// Format as AgentJson with full configuration
+    ///
+    /// Accepts a pre-built `FormatterConfig` for byte budget, SPARQL text, and ISO timestamp.
+    ///
+    /// ```ignore
+    /// let config = FormatterConfig::agent_json()
+    ///     .with_max_bytes(32768)
+    ///     .with_agent_json_context(AgentJsonContext {
+    ///         sparql_text: Some(sparql.to_string()),
+    ///         from_count: 1,
+    ///         iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+    ///     });
+    /// let json = result.to_agent_json_with_config(snapshot, &config)?;
+    /// ```
+    pub fn to_agent_json_with_config(
+        &self,
+        snapshot: &LedgerSnapshot,
+        config: &FormatterConfig,
+    ) -> format::Result<JsonValue> {
+        format::format_results(self, &self.context, snapshot, config)
     }
 
     /// Format CONSTRUCT query results as JSON-LD graph
@@ -317,14 +344,6 @@ impl QueryResult {
     /// ```
     pub async fn to_jsonld_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld();
-        format::format_results_async(self, &self.context, db, &config, None, None).await
-    }
-
-    /// Format as JSON-LD Query JSON with object rows (async version)
-    ///
-    /// Async version of `to_jsonld_objects()`. Required for graph crawl queries.
-    pub async fn to_jsonld_objects_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
-        let config = FormatterConfig::jsonld_objects();
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
 

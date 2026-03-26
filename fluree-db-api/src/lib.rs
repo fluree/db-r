@@ -101,7 +101,7 @@ pub use dataset::{
     TimeSpec,
 };
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
-pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
+pub use format::{AgentJsonContext, FormatError, FormatterConfig, OutputFormat, QueryOutput};
 pub use graph::Graph;
 pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
