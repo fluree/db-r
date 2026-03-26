@@ -339,7 +339,7 @@ where
     /// arenas (numbig, vector, spatial, fulltext). Dictionary blobs are
     /// **not** copied — they are stored globally per ledger (not per branch),
     /// so all branches already share the same dict artifacts.
-    async fn copy_index_to_branch(
+    pub(crate) async fn copy_index_to_branch(
         &self,
         source_id: &str,
         target_id: &str,

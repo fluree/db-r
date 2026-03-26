@@ -67,7 +67,7 @@ pub use run_index::build::build_from_commits::{
     CommitInput,
 };
 
-use fluree_db_core::Storage;
+use fluree_db_core::{ContentStore, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
 use tracing::Instrument;
 
@@ -198,6 +198,31 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config).await
+}
+
+/// Like [`rebuild_index_from_commits`], but accepts a caller-provided
+/// [`ContentStore`] for reading commit blobs. Use this when commit history
+/// spans multiple storage namespaces (e.g. rebasing a branch whose commit
+/// chain falls through to parent namespaces via `BranchedContentStore`).
+pub async fn rebuild_index_from_commits_with_store<S, C>(
+    storage: &S,
+    commit_store: C,
+    ledger_id: &str,
+    record: &fluree_db_nameservice::NsRecord,
+    config: IndexerConfig,
+) -> Result<IndexResult>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    C: ContentStore + Clone + Send + Sync + 'static,
+{
+    build::rebuild::rebuild_index_from_commits_with_store(
+        storage,
+        commit_store,
+        ledger_id,
+        record,
+        config,
+    )
+    .await
 }
 
 /// Incremental index from an existing FIR6 root.

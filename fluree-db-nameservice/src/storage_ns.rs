@@ -672,6 +672,62 @@ where
             None => Ok(None),
         }
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.branch_point = Some(BranchPointRef {
+                    source: new_branch_point.source.clone(),
+                    commit_cid: Some(new_branch_point.commit_id.to_string()),
+                    t: new_branch_point.t,
+                });
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.apply_snapshot(&snapshot);
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]

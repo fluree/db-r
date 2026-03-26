@@ -31,6 +31,22 @@ pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliRes
             ledger,
             remote,
         } => run_drop(&name, ledger.as_deref(), dirs, remote.as_deref(), direct).await,
+        BranchAction::Rebase {
+            name,
+            ledger,
+            strategy,
+            remote,
+        } => {
+            run_rebase(
+                &name,
+                ledger.as_deref(),
+                &strategy,
+                dirs,
+                remote.as_deref(),
+                direct,
+            )
+            .await
+        }
     }
 }
 
@@ -304,6 +320,122 @@ async fn run_drop(
         }
     }
 
+    Ok(())
+}
+
+// =============================================================================
+// Rebase
+// =============================================================================
+
+async fn run_rebase(
+    name: &str,
+    ledger: Option<&str>,
+    strategy: &str,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let alias = context::resolve_ledger(ledger, dirs)?;
+        let (ledger_name, _) = split_ledger_id(&alias)?;
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let result = client
+            .rebase_branch(&ledger_name, name, Some(strategy))
+            .await?;
+
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+
+        print_rebase_result(&result)?;
+        return Ok(());
+    }
+
+    let mode = {
+        let mode = context::resolve_ledger_mode(ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
+    };
+
+    let conflict_strategy = fluree_db_api::ConflictStrategy::from_str_name(strategy)
+        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {}", strategy)))?;
+
+    match mode {
+        LedgerMode::Tracked {
+            client,
+            remote_alias,
+            remote_name,
+            ..
+        } => {
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client
+                .rebase_branch(&ledger_name, name, Some(strategy))
+                .await?;
+
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+            print_rebase_result(&result)?;
+        }
+        LedgerMode::Local { fluree, alias } => {
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+            let report = fluree
+                .rebase_branch(&ledger_name, name, conflict_strategy)
+                .await?;
+
+            if report.fast_forward {
+                println!(
+                    "Fast-forward rebase of '{}' to t={}.",
+                    name, report.new_branch_point_t
+                );
+            } else {
+                println!(
+                    "Rebased '{}': {} commits replayed, {} skipped, {} conflicts, {} failures.",
+                    name,
+                    report.replayed,
+                    report.skipped,
+                    report.conflicts.len(),
+                    report.failures.len(),
+                );
+                println!("  New branch point: t={}", report.new_branch_point_t);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
+    let fast_forward = result
+        .get("fast_forward")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let branch = result
+        .get("branch")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let new_t = result
+        .get("new_branch_point_t")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    if fast_forward {
+        println!("Fast-forward rebase of '{}' to t={}.", branch, new_t);
+    } else {
+        let replayed = result.get("replayed").and_then(|v| v.as_u64()).unwrap_or(0);
+        let skipped = result.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+        let conflicts = result
+            .get("conflicts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let failures = result.get("failures").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        println!(
+            "Rebased '{}': {} commits replayed, {} skipped, {} conflicts, {} failures.",
+            branch, replayed, skipped, conflicts, failures,
+        );
+        println!("  New branch point: t={}", new_t);
+    }
     Ok(())
 }
 

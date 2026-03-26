@@ -559,6 +559,25 @@ pub enum BranchAction {
         #[arg(long)]
         remote: Option<String>,
     },
+
+    /// Rebase a branch onto its source branch's current HEAD
+    Rebase {
+        /// Branch name to rebase (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Conflict resolution strategy (default: "take-both")
+        /// Options: take-both, abort, take-source (theirs), take-branch (ours), skip
+        #[arg(long, default_value = "take-both")]
+        strategy: String,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
 }
 
 /// Memory subcommands.

@@ -60,6 +60,7 @@ pub mod pack;
 pub mod policy_builder;
 pub mod policy_view;
 mod query;
+mod rebase;
 pub mod server_defaults;
 mod time_resolve;
 pub mod tx;
@@ -133,6 +134,7 @@ pub use query::builder::{
 };
 pub use query::nameservice_builder::NameserviceQueryBuilder;
 pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
+pub use rebase::{ConflictStrategy, RebaseConflict, RebaseFailure, RebaseReport};
 pub use tx::{
     IndexingMode, IndexingStatus, StageResult, TrackedTransactionInput, TransactResult,
     TransactResultRef,
@@ -414,6 +416,24 @@ impl fluree_db_nameservice::NameService for AnyNameService {
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
         self.0.drop_branch(ledger_id).await
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .update_branch_point(ledger_id, new_branch_point)
+            .await
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0.reset_head(ledger_id, snapshot).await
+    }
 }
 
 #[async_trait]
@@ -611,6 +631,24 @@ where
         ledger_id: &str,
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
         self.inner.drop_branch(ledger_id).await
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .update_branch_point(ledger_id, new_branch_point)
+            .await
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner.reset_head(ledger_id, snapshot).await
     }
 }
 

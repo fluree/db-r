@@ -106,6 +106,28 @@ impl NameService for AwsNameService {
             Self::Storage(ns) => ns.drop_branch(ledger_id).await,
         }
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.update_branch_point(ledger_id, new_branch_point).await,
+            Self::Storage(ns) => ns.update_branch_point(ledger_id, new_branch_point).await,
+        }
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.reset_head(ledger_id, snapshot).await,
+            Self::Storage(ns) => ns.reset_head(ledger_id, snapshot).await,
+        }
+    }
 }
 
 #[async_trait]

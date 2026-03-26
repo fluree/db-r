@@ -815,6 +815,143 @@ impl NameService for DynamoDbNameService {
             None => Ok(None),
         }
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        match self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :t")
+            .expression_attribute_names("#bps", ATTR_BP_SOURCE)
+            .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
+            .expression_attribute_names("#bpt", ATTR_BP_T)
+            .expression_attribute_values(
+                ":source",
+                AttributeValue::S(new_branch_point.source),
+            )
+            .expression_attribute_values(
+                ":commit_id",
+                AttributeValue::S(new_branch_point.commit_id.to_string()),
+            )
+            .expression_attribute_values(
+                ":t",
+                AttributeValue::N(new_branch_point.t.to_string()),
+            )
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::update_item::UpdateItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                Err(NameServiceError::not_found(ledger_id))
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB update_branch_point failed: {e}"
+            ))),
+        }
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+        let now = Self::now_epoch_ms().to_string();
+
+        // Build commit head update
+        let mut head = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .expression_attribute_names("#ct", ATTR_COMMIT_T)
+            .expression_attribute_names("#ci", ATTR_COMMIT_ID)
+            .expression_attribute_values(":t", AttributeValue::N(snapshot.commit_t.to_string()));
+        if let Some(ref cid) = snapshot.commit_head_id {
+            head = head
+                .update_expression("SET #ci = :cid, #ct = :t, #ua = :now")
+                .expression_attribute_values(":cid", AttributeValue::S(cid.to_string()));
+        } else {
+            head = head.update_expression("SET #ct = :t, #ua = :now REMOVE #ci");
+        }
+
+        // Build index head update
+        let mut idx = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
+            .expression_attribute_values(":it", AttributeValue::N(snapshot.index_t.to_string()));
+        if let Some(ref id) = snapshot.index_head_id {
+            idx = idx
+                .update_expression("SET #ii = :iid, #it = :it, #ua = :now")
+                .expression_attribute_values(":iid", AttributeValue::S(id.to_string()));
+        } else {
+            idx = idx.update_expression("SET #it = :it, #ua = :now REMOVE #ii");
+        }
+
+        // Combine into a single atomic transaction
+        let mut txn = self
+            .client
+            .transact_write_items()
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(head.build().expect("valid Update"))
+                    .build(),
+            )
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(idx.build().expect("valid Update"))
+                    .build(),
+            );
+
+        if let Some(ref bp) = snapshot.branch_point {
+            let meta = Update::builder()
+                .table_name(&self.table_name)
+                .key(ATTR_PK, AttributeValue::S(pk))
+                .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+                .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :bpt, #ua = :now")
+                .expression_attribute_names("#bps", ATTR_BP_SOURCE)
+                .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
+                .expression_attribute_names("#bpt", ATTR_BP_T)
+                .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+                .expression_attribute_values(":now", AttributeValue::N(now))
+                .expression_attribute_values(":source", AttributeValue::S(bp.source.clone()))
+                .expression_attribute_values(
+                    ":commit_id",
+                    AttributeValue::S(bp.commit_id.to_string()),
+                )
+                .expression_attribute_values(":bpt", AttributeValue::N(bp.t.to_string()))
+                .build()
+                .expect("valid Update");
+            txn = txn.transact_items(TransactWriteItem::builder().update(meta).build());
+        }
+
+        txn.send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB reset_head failed: {e}")))?;
+
+        Ok(())
+    }
 }
 
 // ─── Publisher ──────────────────────────────────────────────────────────────

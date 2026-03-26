@@ -183,6 +183,38 @@ impl NameService for MemoryNameService {
 
         Ok(parent_new_count)
     }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: BranchPoint,
+    ) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .get_mut(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        record.branch_point = Some(new_branch_point);
+        Ok(())
+    }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .get_mut(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        record.commit_head_id = snapshot.commit_head_id;
+        record.commit_t = snapshot.commit_t;
+        record.index_head_id = snapshot.index_head_id;
+        record.index_t = snapshot.index_t;
+        record.branch_point = snapshot.branch_point;
+        Ok(())
+    }
 }
 
 #[async_trait]
