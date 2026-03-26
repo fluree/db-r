@@ -4,7 +4,6 @@
 //! - [`GraphSnapshotQueryBuilder`] — query from a materialized snapshot or [`StagedGraph`]
 
 use serde_json::Value as JsonValue;
-use std::sync::Arc;
 
 use crate::error::BuilderErrors;
 use crate::format::FormatterConfig;
@@ -15,7 +14,11 @@ use crate::{
     ApiError, Fluree, NameService, QueryResult, Result, Storage, TrackedErrorResponse,
     TrackedQueryResponse, TrackingOptions,
 };
+
+#[cfg(feature = "iceberg")]
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
+#[cfg(feature = "iceberg")]
+use std::sync::Arc;
 
 // ============================================================================
 // GraphQueryBuilder (lazy — defers view load to terminal)

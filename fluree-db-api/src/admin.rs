@@ -648,6 +648,7 @@ where
         report.status = status;
 
         // 2. Delete graph source artifacts (Hard mode)
+        #[cfg(feature = "iceberg")]
         if matches!(mode, DropMode::Hard) {
             if let Some(ref record) = record {
                 // Try to delete the CAS-stored mapping blob
