@@ -275,6 +275,11 @@ where
             }
         };
 
+        // Auto-wrap for graph source context
+        if let Some(primary) = dataset.primary() {
+            super::query::maybe_wrap_for_graph_source(primary, &mut parsed);
+        }
+
         // Build executable
         let executable = self
             .build_executable_for_dataset(dataset, &parsed)
@@ -380,6 +385,11 @@ where
                     })?
             }
         };
+
+        // Auto-wrap for graph source context
+        if let Some(primary) = dataset.primary() {
+            super::query::maybe_wrap_for_graph_source(primary, &mut parsed);
+        }
 
         let executable = self
             .build_executable_for_dataset(dataset, &parsed)
