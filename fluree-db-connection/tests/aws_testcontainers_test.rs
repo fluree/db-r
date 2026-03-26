@@ -9,8 +9,9 @@ use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{ContentId, ContentKind, StorageRead, StorageWrite};
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult, Publisher, RefKind,
-    RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult,
+    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher,
+    StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
 use serde_json::json;

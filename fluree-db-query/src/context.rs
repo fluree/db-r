@@ -103,6 +103,12 @@ pub struct ExecutionContext<'a> {
     /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
     /// When absent, falls back to per-document TF-saturation scoring.
     pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Set of ledger IDs that are backed by R2RML graph sources.
+    ///
+    /// Precomputed at context setup. When a scan operator encounters a graph
+    /// with its `ledger_id` in this set, it routes triple patterns through
+    /// R2RML scan instead of native index scan.
+    pub r2rml_graph_ids: std::collections::HashSet<Arc<str>>,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -131,6 +137,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -165,6 +172,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -203,6 +211,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -236,6 +245,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -274,6 +284,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -308,6 +319,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -634,6 +646,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
         }
     }
 
@@ -677,6 +690,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
         }
     }
 
@@ -711,6 +725,7 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
         }
     }
 

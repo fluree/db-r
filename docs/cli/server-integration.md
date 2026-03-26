@@ -116,6 +116,232 @@ The CLI can do origin-based `clone --origin` and `pull` fallback without a named
 
 If your nameservice advertises `config_id` on the NsRecord, the CLI will attempt to fetch that `LedgerConfig` blob (by CID) and then use it to try additional origins.
 
+## Graph Source Endpoints (Iceberg, R2RML, BM25, etc.)
+
+The CLI routes graph source operations through the server when one is running. This uses the same auto-routing mechanism as query/insert/etc.: the CLI checks for `server.meta.json` (written by `fluree server start`), verifies the PID is alive, and routes through `http://{listen_addr}/v1/fluree`. Users can bypass with `--direct`.
+
+### `fluree list` (includes graph sources)
+
+- `GET {api_base_url}/ledgers`
+
+Returns a JSON array of **both** ledger records and graph source records. Retracted records are excluded.
+
+**Response fields (required for each entry):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Ledger or graph source name |
+| `branch` | string | Branch name (e.g., `"main"`) |
+| `type` | string | One of: `"Ledger"`, `"Iceberg"`, `"R2RML"`, `"BM25"`, `"Vector"`, `"Geo"` |
+| `t` | integer | `commit_t` for ledgers, `index_t` for graph sources (0 if not indexed) |
+
+**Example response:**
+
+```json
+[
+  { "name": "mydb", "branch": "main", "type": "Ledger", "t": 5 },
+  { "name": "warehouse-orders", "branch": "main", "type": "Iceberg", "t": 0 },
+  { "name": "my-search", "branch": "main", "type": "BM25", "t": 5 }
+]
+```
+
+The CLI shows a TYPE column only when the response contains non-Ledger entries.
+
+**Error responses:** `500` on internal failure. Empty array `[]` when no records exist.
+
+### `fluree info <name>` (graph source fallback)
+
+- `GET {api_base_url}/info/*name`
+
+Existing endpoint, extended with graph source fallback. Resolution order:
+
+1. Look up `name` as a **ledger** — if found, return the standard ledger info response (unchanged)
+2. Look up `name` as a **graph source** (append `:main` if no branch suffix) — if found, return the graph source response below
+3. Return `404 Not Found`
+
+**Graph source response fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Graph source name |
+| `branch` | string | Branch name |
+| `type` | string | Source type (e.g., `"Iceberg"`) |
+| `graph_source_id` | string | Canonical ID (e.g., `"warehouse-orders:main"`) |
+| `retracted` | boolean | Whether retracted |
+| `index_t` | integer | Index watermark |
+| `index_id` | string? | Index ContentId (omitted if none) |
+| `dependencies` | string[]? | Source ledger IDs (omitted if empty) |
+| `config` | object? | Parsed configuration JSON (omitted if empty/`{}`) |
+
+**Example:**
+
+```json
+{
+  "name": "warehouse-orders",
+  "branch": "main",
+  "type": "Iceberg",
+  "graph_source_id": "warehouse-orders:main",
+  "retracted": false,
+  "index_t": 0,
+  "config": {
+    "catalog": {
+      "type": "rest",
+      "uri": "https://polaris.example.com/api/catalog",
+      "warehouse": "my-warehouse"
+    },
+    "table": "sales.orders",
+    "io": {
+      "vended_credentials": true,
+      "s3_region": "us-east-1"
+    }
+  }
+}
+```
+
+**CLI detection:** The CLI distinguishes graph source responses from ledger responses by checking for the `graph_source_id` field in the JSON.
+
+### `fluree drop <name>` (graph source fallback)
+
+- `POST {api_base_url}/drop`
+
+Existing endpoint, extended with graph source fallback. Request body is unchanged: `{ "ledger": "<name>", "hard": true }`.
+
+**Resolution order:**
+
+1. Try dropping `name` as a **ledger** — if the drop report has `status: "dropped"` or `status: "already_retracted"`, return that
+2. If the ledger drop report has `status: "not_found"`, try dropping as a **graph source** (default branch `"main"`)
+3. If both return not found, return the not-found response
+
+**Response:** Same schema as ledger drop: `{ "ledger_id": "name:branch", "status": "dropped"|"already_retracted"|"not_found", "warnings": [...] }`. For graph sources, `ledger_id` contains the graph source ID (e.g., `"warehouse-orders:main"`).
+
+### `fluree iceberg map` (Iceberg graph source creation)
+
+- `POST {api_base_url}/iceberg/map` (admin-protected)
+
+Creates an Iceberg graph source, optionally with an R2RML mapping. This is a write operation and should be admin-protected (same middleware as `/create` and `/drop`).
+
+**Request body fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Graph source name (no colons) |
+| `mode` | string | No | `"rest"` (default) or `"direct"` |
+| `catalog_uri` | string | REST mode | REST catalog URI |
+| `table` | string | REST mode (without `r2rml`) | Table identifier (`namespace.table`) |
+| `table_location` | string | Direct mode | S3 URI (`s3://bucket/path/to/table`) |
+| `r2rml` | string | No | R2RML mapping source (storage address or path) |
+| `r2rml_type` | string | No | Mapping media type (e.g., `"text/turtle"`); inferred from extension |
+| `branch` | string | No | Branch name (default: `"main"`) |
+| `auth_bearer` | string | No | Bearer token for REST catalog auth |
+| `oauth2_token_url` | string | No | OAuth2 token endpoint |
+| `oauth2_client_id` | string | No | OAuth2 client ID |
+| `oauth2_client_secret` | string | No | OAuth2 client secret |
+| `warehouse` | string | No | Warehouse identifier (REST mode) |
+| `no_vended_credentials` | boolean | No | Disable vended credentials (default: `false`) |
+| `s3_region` | string | No | S3 region override |
+| `s3_endpoint` | string | No | S3 endpoint override (MinIO, LocalStack) |
+| `s3_path_style` | boolean | No | Use path-style S3 URLs (default: `false`) |
+
+**Validation rules:**
+- `name` must not be empty or contain `:`
+- REST mode requires `catalog_uri`; requires `table` unless `r2rml` is provided
+- Direct mode requires `table_location` (must start with `s3://` or `s3a://`)
+- OAuth2 fields must all be provided together (url + id + secret)
+
+**Example — REST catalog:**
+
+```json
+{
+  "name": "warehouse-orders",
+  "mode": "rest",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "table": "sales.orders",
+  "auth_bearer": "my-token",
+  "warehouse": "my-warehouse"
+}
+```
+
+**Example — REST catalog with R2RML:**
+
+```json
+{
+  "name": "airlines",
+  "mode": "rest",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "r2rml": "mappings/airlines.ttl",
+  "auth_bearer": "my-token"
+}
+```
+
+**Example — Direct S3 (no catalog):**
+
+```json
+{
+  "name": "execution-log",
+  "mode": "direct",
+  "table_location": "s3://bucket/warehouse/logs/execution_log",
+  "s3_region": "us-east-1"
+}
+```
+
+**Response (`201 Created`):**
+
+| Field | Type | Present | Description |
+|-------|------|---------|-------------|
+| `graph_source_id` | string | Always | Created ID (e.g., `"warehouse-orders:main"`) |
+| `table_identifier` | string | Always | Table identifier or derived from location |
+| `catalog_uri` | string | Always | Catalog URI or S3 location |
+| `connection_tested` | boolean | Always | Whether catalog connection was verified (always `false` for direct mode) |
+| `mapping_source` | string | With `r2rml` | R2RML mapping source |
+| `triples_map_count` | integer | With `r2rml` | Number of TriplesMap definitions found |
+| `mapping_validated` | boolean | With `r2rml` | Whether mapping was parsed and compiled successfully |
+
+**Error responses:**
+- `400 Bad Request` — validation failures (missing fields, invalid mode, bad table identifier)
+- `409 Conflict` — graph source with this name already exists (if your nameservice enforces uniqueness)
+- `500 Internal Server Error` — catalog connection failure, mapping load failure, nameservice write failure
+
+### Querying graph sources
+
+Graph source queries work through normal query endpoints. No separate endpoint or special wiring is needed.
+
+**As a direct target:**
+
+Graph sources can be queried directly, just like ledgers:
+
+- `POST {api_base_url}/query/execution-log:main` with a SPARQL or JSON-LD query body
+- The server resolves the name as a graph source (not a ledger), creates a minimal query context, and routes triple patterns through the R2RML/Iceberg scan engine
+
+**Via FROM clauses:**
+
+Graph sources can appear in `FROM` / `FROM NAMED` clauses:
+
+```sparql
+SELECT * FROM <execution-log:main> WHERE { ?s ?p ?o } LIMIT 10
+```
+
+**Via GRAPH patterns (from within a ledger query):**
+
+```sparql
+SELECT * WHERE { GRAPH <execution-log:main> { ?s ?p ?o } } LIMIT 10
+```
+
+**How it works:** When the `iceberg` feature is compiled, `query_from()` and `graph().query()` automatically enable R2RML provider support. The `NameService` trait requires `GraphSourceLookup` (read-only graph source discovery), so graph source resolution is always available. No special API calls are needed — callers just use the standard query API:
+
+```rust
+// Standard query — graph sources resolve transparently
+f.query_from().sparql(sparql).execute_formatted().await
+f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
+```
+
+**Known limitation:** `FROM <ledger>, <graph-source>` with bare WHERE patterns (no GRAPH wrapper) — the graph source participates in the dataset but bare triple patterns only scan native indexes. Use explicit `GRAPH <gs:main> { ... }` for the graph source part in mixed-source queries.
+
+### Authentication
+
+- **`POST /iceberg/map`** and **`POST /drop`** are admin-protected (same middleware as `/create`)
+- **`GET /ledgers`** and **`GET /info/*name`** are read-only (same auth as other read endpoints)
+- **`POST /query/*ledger`** with graph source GRAPH patterns uses normal query auth
+
 ## Quick Validation Script
 
 From a clean project directory:
@@ -125,8 +351,19 @@ fluree init
 fluree remote add origin http://localhost:8090
 fluree auth login --remote origin --token @token.txt
 
+# Ledger operations
 fluree fetch origin
 fluree clone origin mydb:main
 fluree pull mydb:main
 fluree push mydb:main
+
+# Iceberg operations (requires iceberg feature on server)
+fluree iceberg map my-gs \
+  --catalog-uri https://polaris.example.com/api/catalog \
+  --table sales.orders \
+  --auth-bearer $POLARIS_TOKEN
+
+fluree list                    # should show mydb (Ledger) + my-gs (Iceberg)
+fluree info my-gs              # should show Iceberg config
+fluree drop my-gs --force      # should drop the graph source
 ```

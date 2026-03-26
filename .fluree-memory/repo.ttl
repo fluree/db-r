@@ -1154,3 +1154,20 @@ mem:fact-01kmbj3527qd54y3whzjhwc4bg a mem:Fact ;
     mem:artifactRef "fluree-db-transact/src/stage.rs" ;
     mem:createdAt "2026-03-22T19:59:29.863846+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kmgg192p7hnveqckgqxyakz7 a mem:Fact ;
+    mem:content "Iceberg Direct catalog flow: in server-side scan paths, create the S3 storage client once and share it (e.g., Arc<Storage>) with SendDirectCatalogClient; avoid moving the storage into the catalog client and then re-creating storage just to read metadata/manifests. Use Arc::clone(&storage) for the catalog and pass &*storage to planners/readers." ;
+    mem:tag "aws" ;
+    mem:tag "direct-catalog" ;
+    mem:tag "gotcha" ;
+    mem:tag "iceberg" ;
+    mem:tag "performance" ;
+    mem:tag "s3" ;
+    mem:tag "storage" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/graph_source/r2rml.rs" ;
+    mem:artifactRef "fluree-db-iceberg/src/catalog/direct.rs" ;
+    mem:artifactRef "fluree-db-iceberg/src/catalog/mod.rs" ;
+    mem:createdAt "2026-03-24T17:59:43.446602+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

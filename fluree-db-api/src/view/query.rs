@@ -14,7 +14,33 @@ use crate::{
     TrackingOptions,
 };
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::ir::{GraphName, Pattern};
+use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use serde_json::Value as JsonValue;
+
+/// If the view was created from a graph source, wrap all top-level patterns
+/// in `GRAPH <gs_id> { ... }` so the R2RML provider handles them.
+///
+/// Skips wrapping if the query already contains a top-level GRAPH pattern
+/// (the user explicitly scoped it).
+pub(crate) fn maybe_wrap_for_graph_source(
+    db: &GraphDb,
+    parsed: &mut fluree_db_query::parse::ParsedQuery,
+) {
+    if let Some(ref gs_id) = db.graph_source_id {
+        let has_graph_pattern = parsed
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Graph { .. }));
+        if !has_graph_pattern {
+            let inner = std::mem::take(&mut parsed.patterns);
+            parsed.patterns = vec![Pattern::Graph {
+                name: GraphName::Iri(gs_id.to_string().into()),
+                patterns: inner,
+            }];
+        }
+    }
+}
 
 // ============================================================================
 // Query Execution
@@ -56,7 +82,7 @@ where
 
         // 1. Parse to common IR
         let parse_start = std::time::Instant::now();
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
             }
@@ -67,6 +93,9 @@ where
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
+
+        // 1b. Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         // 2. Build executable with optional reasoning override
         let plan_start = std::time::Instant::now();
@@ -92,6 +121,67 @@ where
             exec_ms = format!("{:.2}", exec_ms),
             "query phases"
         );
+
+        // 5. Build result
+        Ok(build_query_result(
+            vars,
+            parsed,
+            batches,
+            db.t,
+            Some(db.overlay.clone()),
+            db.binary_graph(),
+        ))
+    }
+
+    /// Execute a query against a GraphDb with explicit R2RML providers.
+    ///
+    /// This is used by connection query paths (and builders) that need to resolve
+    /// graph sources via R2RML/Iceberg while still running against a ledger-backed
+    /// planning database.
+    pub(crate) async fn query_view_with_r2rml(
+        &self,
+        db: &GraphDb,
+        q: impl Into<QueryInput<'_>>,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
+    ) -> Result<QueryResult> {
+        let input = q.into();
+
+        // 1. Parse to common IR
+        let (vars, mut parsed) = match &input {
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
+            }
+            QueryInput::Sparql(sparql) => {
+                // Validate no dataset clauses
+                self.validate_sparql_for_view(sparql)?;
+                parse_sparql_to_ir(sparql, &db.snapshot, db.default_context.as_ref())?
+            }
+        };
+
+        // 1b. Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
+
+        // 2. Build executable with optional reasoning override
+        let executable = self.build_executable_for_view(db, &parsed)?;
+
+        // 3. Tracker (fuel limits only)
+        let tracker = match &input {
+            QueryInput::JsonLd(json) => tracker_for_limits(json),
+            QueryInput::Sparql(_) => Tracker::disabled(),
+        };
+
+        // 4. Execute
+        let batches = self
+            .execute_view_internal_with_r2rml(
+                db,
+                &vars,
+                &executable,
+                &tracker,
+                r2rml_provider,
+                r2rml_table_provider,
+            )
+            .await?;
 
         // 5. Build result
         Ok(build_query_result(
@@ -160,7 +250,7 @@ where
         let mut format_config = format_config.unwrap_or(default_format);
 
         // Parse
-        let (vars, parsed) = match &input {
+        let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
                 parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
                     |e| {
@@ -179,6 +269,9 @@ where
                 )?
             }
         };
+
+        // Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
 
         // Build executable with reasoning
         let executable = self.build_executable_for_view(db, &parsed).map_err(|e| {
@@ -212,6 +305,116 @@ where
         }
 
         // Format with tracking
+        let result_json = match db.policy() {
+            Some(policy) => query_result
+                .format_async_with_policy_tracked(
+                    db.as_graph_db_ref(),
+                    &format_config,
+                    policy,
+                    &tracker,
+                )
+                .await
+                .map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
+                })?,
+            None => query_result
+                .format_async_tracked(db.as_graph_db_ref(), &format_config, &tracker)
+                .await
+                .map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
+                })?,
+        };
+
+        Ok(crate::query::TrackedQueryResponse::success(
+            result_json,
+            tracker.tally(),
+        ))
+    }
+
+    pub(crate) async fn query_tracked_with_r2rml(
+        &self,
+        db: &GraphDb,
+        q: impl Into<QueryInput<'_>>,
+        format_config: Option<crate::format::FormatterConfig>,
+        tracking_override: Option<TrackingOptions>,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
+    ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
+    {
+        let input = q.into();
+
+        let tracker = if let Some(opts) = tracking_override {
+            Tracker::new(opts)
+        } else {
+            match &input {
+                QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+                QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
+            }
+        };
+
+        let default_format = match &input {
+            QueryInput::Sparql(_) => crate::format::FormatterConfig::sparql_json(),
+            _ => crate::format::FormatterConfig::jsonld(),
+        };
+        let mut format_config = format_config.unwrap_or(default_format);
+
+        let (vars, mut parsed) = match &input {
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
+            }
+            QueryInput::Sparql(sparql) => {
+                self.validate_sparql_for_view(sparql).map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                })?;
+                parse_sparql_to_ir(sparql, &db.snapshot, db.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
+            }
+        };
+
+        // Auto-wrap for graph source context
+        maybe_wrap_for_graph_source(db, &mut parsed);
+
+        let executable = self.build_executable_for_view(db, &parsed).map_err(|e| {
+            crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+        })?;
+
+        let batches = self
+            .execute_view_tracked_with_r2rml(
+                db,
+                &vars,
+                &executable,
+                &tracker,
+                r2rml_provider,
+                r2rml_table_provider,
+            )
+            .await
+            .map_err(|e| {
+                let status = query_error_to_status(&e);
+                crate::query::TrackedErrorResponse::new(status, e.to_string(), tracker.tally())
+            })?;
+
+        let query_result = build_query_result(
+            vars,
+            parsed,
+            batches,
+            db.t,
+            Some(db.overlay.clone()),
+            db.binary_graph(),
+        );
+
+        if query_result.output.construct_template().is_some()
+            && format_config.format != crate::format::OutputFormat::JsonLd
+        {
+            format_config = crate::format::FormatterConfig::jsonld();
+        }
+
         let result_json = match db.policy() {
             Some(policy) => query_result
                 .format_async_with_policy_tracked(
@@ -319,6 +522,24 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
+        let noop = crate::NoOpR2rmlProvider::new();
+        self.execute_view_internal_with_r2rml(db, vars, executable, tracker, &noop, &noop)
+            .await
+    }
+
+    /// Execute against a GraphDb with explicit R2RML provider.
+    ///
+    /// Used by callers that have access to the full `Fluree<S, N>` instance
+    /// with `N: GraphSourcePublisher` (e.g., server query handlers with iceberg support).
+    pub(crate) async fn execute_view_internal_with_r2rml<'b>(
+        &self,
+        db: &GraphDb,
+        vars: &crate::VarRegistry,
+        executable: &ExecutableQuery,
+        tracker: &Tracker,
+        r2rml_provider: &'b dyn fluree_db_query::r2rml::R2rmlProvider,
+        r2rml_table_provider: &'b dyn fluree_db_query::r2rml::R2rmlTableProvider,
+    ) -> Result<Vec<crate::Batch>> {
         let db_ref = db.as_graph_db_ref();
         let prepared = prepare_execution(db_ref, executable)
             .await
@@ -330,6 +551,7 @@ where
         let config = ContextConfig {
             tracker: Some(tracker),
             policy_enforcer: db.policy_enforcer().cloned(),
+            r2rml: Some((r2rml_provider, r2rml_table_provider)),
             binary_store: db.binary_store.clone(),
             binary_g_id: db.graph_id,
             dict_novelty: db.dict_novelty.clone(),
@@ -354,6 +576,20 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
+        let noop = crate::NoOpR2rmlProvider::new();
+        self.execute_view_tracked_with_r2rml(db, vars, executable, tracker, &noop, &noop)
+            .await
+    }
+
+    pub(crate) async fn execute_view_tracked_with_r2rml(
+        &self,
+        db: &GraphDb,
+        vars: &crate::VarRegistry,
+        executable: &ExecutableQuery,
+        tracker: &Tracker,
+        r2rml_provider: &dyn R2rmlProvider,
+        r2rml_table_provider: &dyn R2rmlTableProvider,
+    ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
         let db_ref = db.as_graph_db_ref();
         let prepared = prepare_execution(db_ref, executable).await?;
 
@@ -363,6 +599,7 @@ where
         let config = ContextConfig {
             tracker: Some(tracker),
             policy_enforcer: db.policy_enforcer().cloned(),
+            r2rml: Some((r2rml_provider, r2rml_table_provider)),
             binary_store: db.binary_store.clone(),
             binary_g_id: db.graph_id,
             dict_novelty: db.dict_novelty.clone(),

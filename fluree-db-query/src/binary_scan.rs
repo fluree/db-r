@@ -1385,6 +1385,14 @@ impl Operator for BinaryScanOperator {
         self.store = ctx.binary_store.clone();
         self.g_id = ctx.binary_g_id;
 
+        // Dataset (multi-ledger) execution cannot use the binary cursor path:
+        // - Binary scans are single-graph and do not represent dataset unions.
+        // - Late-materialized IDs (`Binding::EncodedSid`) are single-ledger only and
+        //   break correlated OPTIONAL substitution when a binary graph view is unavailable.
+        if ctx.is_multi_ledger() {
+            return self.open_range_fallback(ctx).await;
+        }
+
         if self.store.is_none() {
             return self.open_range_fallback(ctx).await;
         }

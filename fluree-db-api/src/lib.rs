@@ -144,8 +144,8 @@ pub use view::{DataSetDb, GraphDb, QueryInput, ReasoningModePrecedence};
 
 #[cfg(feature = "iceberg")]
 pub use graph_source::{
-    FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
-    R2rmlCreateResult,
+    CatalogMode, FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
+    R2rmlCreateResult, R2rmlMappingInput, RestCatalogMode,
 };
 
 pub use bm25_worker::{
@@ -184,7 +184,9 @@ pub use fluree_db_core::{
 pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
-pub use fluree_db_nameservice::{GraphSourcePublisher, NameService, NsRecord, Publisher};
+pub use fluree_db_nameservice::{
+    GraphSourceLookup, GraphSourcePublisher, NameService, NsRecord, Publisher,
+};
 pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
@@ -350,12 +352,14 @@ pub trait NameServicePublisher:
     fluree_db_nameservice::NameService
     + fluree_db_nameservice::Publisher
     + fluree_db_nameservice::RefPublisher
+    + fluree_db_nameservice::GraphSourcePublisher
 {
 }
 impl<T> NameServicePublisher for T where
     T: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::RefPublisher
+        + fluree_db_nameservice::GraphSourcePublisher
 {
 }
 
@@ -497,6 +501,74 @@ impl fluree_db_nameservice::RefPublisher for AnyNameService {
         self.0
             .compare_and_set_ref(ledger_id, kind, expected, new)
             .await
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
+    async fn publish_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_type: fluree_db_nameservice::GraphSourceType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .publish_graph_source(name, branch, source_type, config, dependencies)
+            .await
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_id: &fluree_db_core::ContentId,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .publish_graph_source_index(name, branch, index_id, index_t)
+            .await
+    }
+
+    async fn retract_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0.retract_graph_source(name, branch).await
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.lookup_graph_source(graph_source_id).await
+    }
+
+    async fn lookup_any(
+        &self,
+        resource_id: &str,
+    ) -> std::result::Result<
+        fluree_db_nameservice::NsLookupResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.lookup_any(resource_id).await
+    }
+
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.all_graph_source_records().await
     }
 }
 
@@ -660,6 +732,89 @@ where
         self.inner
             .compare_and_set_ref(ledger_id, kind, expected, new)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::GraphSourcePublisher for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::GraphSourcePublisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
+    async fn publish_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_type: fluree_db_nameservice::GraphSourceType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .publish_graph_source(name, branch, source_type, config, dependencies)
+            .await
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_id: &fluree_db_core::ContentId,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .publish_graph_source_index(name, branch, index_id, index_t)
+            .await
+    }
+
+    async fn retract_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner.retract_graph_source(name, branch).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::GraphSourceLookup for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.lookup_graph_source(graph_source_id).await
+    }
+
+    async fn lookup_any(
+        &self,
+        resource_id: &str,
+    ) -> std::result::Result<
+        fluree_db_nameservice::NsLookupResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.lookup_any(resource_id).await
+    }
+
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.all_graph_source_records().await
     }
 }
 
@@ -2523,8 +2678,16 @@ where
     ///     .policy(ctx)
     ///     .execute().await?;
     /// ```
+    /// Create a FROM-driven query builder.
+    ///
+    /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
+    /// support is automatically enabled — graph sources referenced via
+    /// `FROM` or `GRAPH` patterns resolve transparently.
     pub fn query_from(&self) -> FromQueryBuilder<'_, S, N> {
-        FromQueryBuilder::new(self)
+        let builder = FromQueryBuilder::new(self);
+        #[cfg(feature = "iceberg")]
+        let builder = builder.with_r2rml();
+        builder
     }
 
     /// Create a ledger info builder for retrieving comprehensive ledger metadata.

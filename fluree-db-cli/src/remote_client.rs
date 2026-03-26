@@ -1033,6 +1033,29 @@ fn extract_error_message(body: &str) -> String {
     trimmed.to_string()
 }
 
+impl RemoteLedgerClient {
+    // =========================================================================
+    // Iceberg graph source operations
+    // =========================================================================
+
+    /// Map an Iceberg table as a graph source on the remote server.
+    ///
+    /// Calls `POST {base_url}/iceberg/map`.
+    pub async fn iceberg_map(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("iceberg/map");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
+}
+
 fn push_idempotency_key(ledger: &str, request: &fluree_db_api::PushCommitsRequest) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"fluree-push-v1\0");

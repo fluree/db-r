@@ -34,6 +34,7 @@
   - [server](cli/server.md)
   - [memory](cli/memory.md)
   - [mcp](cli/mcp.md)
+  - [iceberg](cli/iceberg.md)
   - [completions](cli/completions.md)
 
 - [Getting started](getting-started/README.md)

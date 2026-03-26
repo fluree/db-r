@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core", features = ["native"] }
 fluree-db-spatial = { path = "../fluree-db-spatial" }
+fluree-vocab = { path = "../fluree-vocab" }
 
 # Core dependencies
 serde.workspace = true

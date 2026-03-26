@@ -1268,6 +1268,10 @@ fn decode_class_stats(
 fn datatype_display_string(tag: u8) -> String {
     if tag == ValueTypeTag::JSON_LD_ID.as_u8() {
         "@id".to_string()
+    } else if tag == ValueTypeTag::VECTOR.as_u8() {
+        "@vector".to_string()
+    } else if tag == ValueTypeTag::FULL_TEXT.as_u8() {
+        "@fulltext".to_string()
     } else {
         ValueTypeTag::from_u8(tag).to_string()
     }
@@ -1552,6 +1556,8 @@ mod tests {
         assert_eq!(datatype_display_string(16), "@id");
         assert_eq!(datatype_display_string(7), "xsd:double");
         assert_eq!(datatype_display_string(14), "rdf:langString");
+        assert_eq!(datatype_display_string(38), "@vector");
+        assert_eq!(datatype_display_string(39), "@fulltext");
     }
 
     #[test]

@@ -1179,3 +1179,69 @@ ex:foo ex:name "UPDATED Name" ;
     );
     assert_eq!(ledger2.t(), 2);
 }
+
+/// Regression test: when the same entity appears multiple times in an @graph
+/// array (e.g., a member object duplicated once per channel), the transaction
+/// should deduplicate and store only one copy of each unique fact.
+#[tokio::test]
+async fn duplicate_entities_in_graph_are_deduped() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = fluree.create_ledger("tx/dedup-graph:main").await.unwrap();
+
+    // Insert 3 channels, each referencing the same 2 members.
+    // The members appear as separate top-level @graph objects each time
+    // (mimicking how a webhook might serialize denormalized data).
+    let txn = json!({
+        "@context": [default_context(), {"ex": "http://example.org/ns/"}],
+        "insert": {
+            "@graph": [
+                // Member Alice — appears 3 times (once per channel)
+                {"@id": "ex:alice", "@type": "ex:Member", "schema:name": "Alice", "schema:email": "alice@example.org"},
+                {"@id": "ex:alice", "@type": "ex:Member", "schema:name": "Alice", "schema:email": "alice@example.org"},
+                {"@id": "ex:alice", "@type": "ex:Member", "schema:name": "Alice", "schema:email": "alice@example.org"},
+                // Member Bob — appears 3 times
+                {"@id": "ex:bob", "@type": "ex:Member", "schema:name": "Bob", "schema:email": "bob@example.org"},
+                {"@id": "ex:bob", "@type": "ex:Member", "schema:name": "Bob", "schema:email": "bob@example.org"},
+                {"@id": "ex:bob", "@type": "ex:Member", "schema:name": "Bob", "schema:email": "bob@example.org"},
+                // 3 channels referencing the members
+                {"@id": "ex:ch1", "@type": "ex:Channel", "schema:name": "general", "ex:member": [{"@id": "ex:alice"}, {"@id": "ex:bob"}]},
+                {"@id": "ex:ch2", "@type": "ex:Channel", "schema:name": "random",  "ex:member": [{"@id": "ex:alice"}, {"@id": "ex:bob"}]},
+                {"@id": "ex:ch3", "@type": "ex:Channel", "schema:name": "dev",     "ex:member": [{"@id": "ex:alice"}, {"@id": "ex:bob"}]}
+            ]
+        }
+    });
+
+    let result = fluree.update(ledger0, &txn).await.unwrap();
+    let ledger = result.ledger;
+
+    // Verify dedup at the flake level: the commit receipt should reflect
+    // deduplicated counts, not the inflated raw count.
+    let flake_count = result.receipt.flake_count;
+    // Expected unique data flakes:
+    //   Alice: type + name + email = 3
+    //   Bob:   type + name + email = 3
+    //   ch1:   type + name + 2 member refs = 4
+    //   ch2:   type + name + 2 member refs = 4
+    //   ch3:   type + name + 2 member refs = 4
+    //   Total data: 18
+    // Without dedup this would be 30 (members tripled).
+    // Commit metadata adds a few more, but should stay well under 50.
+    assert!(
+        flake_count < 50,
+        "expected < 50 total flakes (deduped), got {flake_count}"
+    );
+
+    // Query Alice's properties — should see exactly 1 of each, not 3
+    let query = json!({
+        "@context": [default_context(), {"ex": "http://example.org/ns/"}],
+        "select": {"ex:alice": ["*"]}
+    });
+    let jsonld = support::query_jsonld_formatted(&fluree, &ledger, &query)
+        .await
+        .unwrap();
+
+    // Verify Alice has exactly 1 name and 1 email (not 3 of each)
+    let alice = &jsonld[0];
+    assert_eq!(alice["schema:name"], "Alice");
+    assert_eq!(alice["schema:email"], "alice@example.org");
+}

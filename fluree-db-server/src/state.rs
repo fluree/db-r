@@ -92,7 +92,7 @@ impl FlureeInstance {
         &self,
         ledger_id: &str,
     ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::NsRecord>> {
-        use fluree_db_api::NameService;
+        use fluree_db_nameservice::NameService as _;
         match self {
             FlureeInstance::File(f) => f.nameservice().lookup(ledger_id).await,
             FlureeInstance::Proxy(p) => p.nameservice().lookup(ledger_id).await,
@@ -119,6 +119,42 @@ impl FlureeInstance {
         match self {
             FlureeInstance::File(f) => f.list_branches(ledger_name).await,
             FlureeInstance::Proxy(p) => p.list_branches(ledger_name).await,
+        }
+    }
+
+    /// List all nameservice records (ledgers)
+    pub async fn all_ns_records(
+        &self,
+    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::NsRecord>> {
+        use fluree_db_nameservice::NameService as _;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().all_records().await,
+            FlureeInstance::Proxy(p) => p.nameservice().all_records().await,
+        }
+    }
+
+    /// List all graph source records
+    pub async fn all_graph_source_records(
+        &self,
+    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
+        use fluree_db_nameservice::GraphSourceLookup as _;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().all_graph_source_records().await,
+            // Proxy mode: graph source records not available locally
+            FlureeInstance::Proxy(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Lookup a graph source by ID (e.g., "my-gs:main")
+    pub async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::GraphSourceRecord>> {
+        use fluree_db_nameservice::GraphSourceLookup as _;
+        match self {
+            FlureeInstance::File(f) => f.nameservice().lookup_graph_source(graph_source_id).await,
+            // Proxy mode: graph source records not available locally
+            FlureeInstance::Proxy(_) => Ok(None),
         }
     }
 
@@ -168,7 +204,10 @@ impl FlureeInstance {
 
     // === Ledger-level query methods (load graph, run query, return JSON) ===
 
-    /// Load a graph and execute a JSON-LD query
+    /// Load a graph and execute a JSON-LD query.
+    ///
+    /// With iceberg support, resolves graph sources transparently and
+    /// enables R2RML providers for GRAPH pattern execution.
     pub async fn query_ledger_jsonld(
         &self,
         ledger_id: &str,
@@ -176,8 +215,8 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
+                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .jsonld(query_json)
                     .execute_formatted()
                     .await
@@ -201,8 +240,13 @@ impl FlureeInstance {
     {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
+                let view = f
+                    .load_graph_db_or_graph_source(ledger_id)
+                    .await
+                    .map_err(|e| {
+                        fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None)
+                    })?;
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .jsonld(query_json)
                     .execute_tracked()
                     .await
@@ -225,8 +269,8 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(ledger_id)
-                    .query()
+                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .sparql(sparql)
                     .execute_formatted()
                     .await

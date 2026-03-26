@@ -54,7 +54,7 @@ pub trait SendCatalogAuth: Debug + Send + Sync {
 }
 
 /// Configuration for catalog authentication.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[derive(Default)]
 pub enum AuthConfig {

@@ -402,20 +402,8 @@ pub struct IcebergCreateConfig {
     /// Branch name (defaults to "main")
     pub branch: Option<String>,
 
-    /// REST catalog URI
-    pub catalog_uri: String,
-
-    /// Table identifier (e.g., "openflights.airlines" or "namespace.table")
-    pub table_identifier: String,
-
-    /// Optional warehouse identifier
-    pub warehouse: Option<String>,
-
-    /// Authentication configuration
-    pub auth: fluree_db_iceberg::auth::AuthConfig,
-
-    /// Whether to use vended credentials (default: true)
-    pub vended_credentials: bool,
+    /// Catalog mode: REST or Direct S3 access.
+    pub catalog_mode: CatalogMode,
 
     /// S3 region override
     pub s3_region: Option<String>,
@@ -427,9 +415,39 @@ pub struct IcebergCreateConfig {
     pub s3_path_style: bool,
 }
 
+/// How the Iceberg catalog is accessed.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+pub enum CatalogMode {
+    /// Connect to a REST catalog at the given URI.
+    Rest(Box<RestCatalogMode>),
+    /// Read directly from an S3 table location (no REST catalog).
+    Direct {
+        /// S3 prefix for the table root directory.
+        /// Example: "s3://bucket/warehouse/my_namespace/my_table"
+        table_location: String,
+    },
+}
+
+/// REST catalog mode configuration.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+pub struct RestCatalogMode {
+    /// REST catalog URI
+    pub catalog_uri: String,
+    /// Table identifier (e.g., "openflights.airlines")
+    pub table_identifier: String,
+    /// Optional warehouse identifier
+    pub warehouse: Option<String>,
+    /// Authentication configuration
+    pub auth: fluree_db_iceberg::auth::AuthConfig,
+    /// Whether to use vended credentials (default: true)
+    pub vended_credentials: bool,
+}
+
 #[cfg(feature = "iceberg")]
 impl IcebergCreateConfig {
-    /// Create a new Iceberg graph source config with minimal required fields.
+    /// Create a new Iceberg graph source config for REST catalog mode.
     pub fn new(
         name: impl Into<String>,
         catalog_uri: impl Into<String>,
@@ -438,11 +456,27 @@ impl IcebergCreateConfig {
         Self {
             name: name.into(),
             branch: None,
-            catalog_uri: catalog_uri.into(),
-            table_identifier: table_identifier.into(),
-            warehouse: None,
-            auth: fluree_db_iceberg::auth::AuthConfig::None,
-            vended_credentials: true,
+            catalog_mode: CatalogMode::Rest(Box::new(RestCatalogMode {
+                catalog_uri: catalog_uri.into(),
+                table_identifier: table_identifier.into(),
+                warehouse: None,
+                auth: fluree_db_iceberg::auth::AuthConfig::None,
+                vended_credentials: true,
+            })),
+            s3_region: None,
+            s3_endpoint: None,
+            s3_path_style: false,
+        }
+    }
+
+    /// Create a new Iceberg graph source config for direct S3 access (no REST catalog).
+    pub fn new_direct(name: impl Into<String>, table_location: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            branch: None,
+            catalog_mode: CatalogMode::Direct {
+                table_location: table_location.into(),
+            },
             s3_region: None,
             s3_endpoint: None,
             s3_path_style: false,
@@ -455,40 +489,56 @@ impl IcebergCreateConfig {
         self
     }
 
-    /// Set bearer token authentication.
+    /// Set bearer token authentication (REST mode only).
     pub fn with_auth_bearer(mut self, token: impl Into<String>) -> Self {
-        self.auth = fluree_db_iceberg::auth::AuthConfig::Bearer {
-            token: fluree_db_iceberg::ConfigValue::literal(token.into()),
-        };
+        if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
+            rest.auth = fluree_db_iceberg::auth::AuthConfig::Bearer {
+                token: fluree_db_iceberg::ConfigValue::literal(token.into()),
+            };
+        } else {
+            tracing::warn!("with_auth_bearer has no effect in Direct catalog mode");
+        }
         self
     }
 
-    /// Set OAuth2 client credentials authentication.
+    /// Set OAuth2 client credentials authentication (REST mode only).
     pub fn with_auth_oauth2(
         mut self,
         token_url: impl Into<String>,
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
     ) -> Self {
-        self.auth = fluree_db_iceberg::auth::AuthConfig::OAuth2ClientCredentials {
-            token_url: token_url.into(),
-            client_id: fluree_db_iceberg::ConfigValue::literal(client_id.into()),
-            client_secret: fluree_db_iceberg::ConfigValue::literal(client_secret.into()),
-            scope: None,
-            audience: None,
-        };
+        if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
+            rest.auth = fluree_db_iceberg::auth::AuthConfig::OAuth2ClientCredentials {
+                token_url: token_url.into(),
+                client_id: fluree_db_iceberg::ConfigValue::literal(client_id.into()),
+                client_secret: fluree_db_iceberg::ConfigValue::literal(client_secret.into()),
+                scope: None,
+                audience: None,
+            };
+        } else {
+            tracing::warn!("with_auth_oauth2 has no effect in Direct catalog mode");
+        }
         self
     }
 
-    /// Set the warehouse identifier.
+    /// Set the warehouse identifier (REST mode only).
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
-        self.warehouse = Some(warehouse.into());
+        if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
+            rest.warehouse = Some(warehouse.into());
+        } else {
+            tracing::warn!("with_warehouse has no effect in Direct catalog mode");
+        }
         self
     }
 
-    /// Enable or disable vended credentials.
+    /// Enable or disable vended credentials (REST mode only).
     pub fn with_vended_credentials(mut self, enabled: bool) -> Self {
-        self.vended_credentials = enabled;
+        if let CatalogMode::Rest(ref mut rest) = self.catalog_mode {
+            rest.vended_credentials = enabled;
+        } else {
+            tracing::warn!("with_vended_credentials has no effect in Direct catalog mode");
+        }
         self
     }
 
@@ -520,25 +570,68 @@ impl IcebergCreateConfig {
         format_ledger_id(&self.name, self.effective_branch())
     }
 
+    /// Get the catalog URI (for REST mode) or table location (for direct mode).
+    pub fn catalog_uri_or_location(&self) -> &str {
+        match &self.catalog_mode {
+            CatalogMode::Rest(rest) => &rest.catalog_uri,
+            CatalogMode::Direct { table_location } => table_location,
+        }
+    }
+
+    /// Get the table identifier string (for REST mode), or derive from location (for direct mode).
+    pub fn table_identifier_display(&self) -> String {
+        match &self.catalog_mode {
+            CatalogMode::Rest(rest) => rest.table_identifier.clone(),
+            CatalogMode::Direct { table_location } => {
+                let path = table_location
+                    .trim_start_matches("s3://")
+                    .trim_start_matches("s3a://");
+                let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+                if segments.len() >= 3 {
+                    format!(
+                        "{}.{}",
+                        segments[segments.len() - 2],
+                        segments[segments.len() - 1]
+                    )
+                } else {
+                    table_location.clone()
+                }
+            }
+        }
+    }
+
     /// Convert to the internal IcebergGsConfig structure for storage.
     pub fn to_iceberg_gs_config(&self) -> IcebergGsConfig {
         use fluree_db_iceberg::config::{CatalogConfig, IoConfig, TableConfig};
 
-        IcebergGsConfig {
-            catalog: CatalogConfig {
-                catalog_type: "polaris".to_string(),
-                uri: self.catalog_uri.clone(),
-                auth: self.auth.clone(),
-                warehouse: self.warehouse.clone(),
+        match &self.catalog_mode {
+            CatalogMode::Rest(rest) => IcebergGsConfig {
+                catalog: CatalogConfig::Rest {
+                    catalog_type: "polaris".to_string(),
+                    uri: rest.catalog_uri.clone(),
+                    auth: rest.auth.clone(),
+                    warehouse: rest.warehouse.clone(),
+                },
+                table: TableConfig::Identifier(rest.table_identifier.clone()),
+                io: IoConfig {
+                    vended_credentials: rest.vended_credentials,
+                    s3_region: self.s3_region.clone(),
+                    s3_endpoint: self.s3_endpoint.clone(),
+                    s3_path_style: self.s3_path_style,
+                },
+                mapping: None,
             },
-            table: TableConfig::Identifier(self.table_identifier.clone()),
-            io: IoConfig {
-                vended_credentials: self.vended_credentials,
-                s3_region: self.s3_region.clone(),
-                s3_endpoint: self.s3_endpoint.clone(),
-                s3_path_style: self.s3_path_style,
+            CatalogMode::Direct { table_location } => IcebergGsConfig {
+                catalog: CatalogConfig::direct(table_location),
+                table: TableConfig::Identifier(String::new()),
+                io: IoConfig {
+                    vended_credentials: false,
+                    s3_region: self.s3_region.clone(),
+                    s3_endpoint: self.s3_endpoint.clone(),
+                    s3_path_style: self.s3_path_style,
+                },
+                mapping: None,
             },
-            mapping: None,
         }
     }
 
@@ -554,20 +647,45 @@ impl IcebergCreateConfig {
             ));
         }
 
-        if self.catalog_uri.trim().is_empty() {
-            return Err(crate::ApiError::config("Catalog URI cannot be empty"));
+        match &self.catalog_mode {
+            CatalogMode::Rest(rest) => {
+                if rest.catalog_uri.trim().is_empty() {
+                    return Err(crate::ApiError::config("Catalog URI cannot be empty"));
+                }
+                if rest.table_identifier.trim().is_empty() {
+                    return Err(crate::ApiError::config("Table identifier cannot be empty"));
+                }
+                use fluree_db_iceberg::catalog::parse_table_identifier;
+                parse_table_identifier(&rest.table_identifier).map_err(|e| {
+                    crate::ApiError::config(format!("Invalid table identifier: {}", e))
+                })?;
+            }
+            CatalogMode::Direct { table_location } => {
+                if table_location.trim().is_empty() {
+                    return Err(crate::ApiError::config(
+                        "Table location cannot be empty for direct catalog mode",
+                    ));
+                }
+                if !table_location.starts_with("s3://") && !table_location.starts_with("s3a://") {
+                    return Err(crate::ApiError::config(format!(
+                        "Direct catalog table_location must be an S3 URI (s3:// or s3a://), got: {}",
+                        table_location
+                    )));
+                }
+            }
         }
-
-        if self.table_identifier.trim().is_empty() {
-            return Err(crate::ApiError::config("Table identifier cannot be empty"));
-        }
-
-        // Validate table identifier format
-        use fluree_db_iceberg::catalog::parse_table_identifier;
-        parse_table_identifier(&self.table_identifier)
-            .map_err(|e| crate::ApiError::config(format!("Invalid table identifier: {}", e)))?;
 
         Ok(())
+    }
+
+    /// Returns `true` if this config uses REST catalog mode.
+    pub fn is_rest(&self) -> bool {
+        matches!(self.catalog_mode, CatalogMode::Rest(_))
+    }
+
+    /// Returns `true` if this config uses direct S3 catalog mode.
+    pub fn is_direct(&self) -> bool {
+        matches!(self.catalog_mode, CatalogMode::Direct { .. })
     }
 }
 
@@ -596,31 +714,56 @@ impl IcebergCreateConfig {
 ///
 /// let result = fluree.create_r2rml_graph_source(config).await?;
 /// ```
+/// How the R2RML mapping is provided.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone)]
+pub enum R2rmlMappingInput {
+    /// Mapping content provided inline (Turtle format).
+    /// Will be stored to CAS during graph source creation.
+    Content(String),
+    /// Pre-existing storage address (legacy / advanced use).
+    /// The mapping must already exist at this address.
+    Address(String),
+}
+
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct R2rmlCreateConfig {
     /// Underlying Iceberg configuration
     pub iceberg: IcebergCreateConfig,
 
-    /// R2RML mapping source (storage address or URL)
-    pub mapping_source: String,
+    /// R2RML mapping input — content or pre-existing address
+    pub mapping: R2rmlMappingInput,
 
-    /// R2RML mapping media type (optional, inferred from extension if omitted)
+    /// R2RML mapping media type (optional, inferred if omitted)
     pub mapping_media_type: Option<String>,
 }
 
 #[cfg(feature = "iceberg")]
 impl R2rmlCreateConfig {
-    /// Create a new R2RML graph source config with minimal required fields.
+    /// Create a new R2RML graph source config with REST catalog and inline mapping.
     pub fn new(
         name: impl Into<String>,
         catalog_uri: impl Into<String>,
         table_identifier: impl Into<String>,
-        mapping_source: impl Into<String>,
+        mapping_content: impl Into<String>,
     ) -> Self {
         Self {
             iceberg: IcebergCreateConfig::new(name, catalog_uri, table_identifier),
-            mapping_source: mapping_source.into(),
+            mapping: R2rmlMappingInput::Content(mapping_content.into()),
+            mapping_media_type: None,
+        }
+    }
+
+    /// Create a new R2RML graph source config with direct S3 access and inline mapping.
+    pub fn new_direct(
+        name: impl Into<String>,
+        table_location: impl Into<String>,
+        mapping_content: impl Into<String>,
+    ) -> Self {
+        Self {
+            iceberg: IcebergCreateConfig::new_direct(name, table_location),
+            mapping: R2rmlMappingInput::Content(mapping_content.into()),
             mapping_media_type: None,
         }
     }
@@ -692,13 +835,31 @@ impl R2rmlCreateConfig {
     }
 
     /// Convert to the internal IcebergGsConfig structure with mapping for storage.
-    pub fn to_iceberg_gs_config(&self) -> IcebergGsConfig {
+    ///
+    /// `mapping_address` is the CAS address where the mapping was stored.
+    pub fn to_iceberg_gs_config(&self, mapping_address: &str) -> IcebergGsConfig {
         let mut config = self.iceberg.to_iceberg_gs_config();
         config.mapping = Some(fluree_db_iceberg::config::MappingSource {
-            source: self.mapping_source.clone(),
+            source: mapping_address.to_string(),
             media_type: self.mapping_media_type.clone(),
         });
         config
+    }
+
+    /// Get the mapping content (for Content variant) or None (for Address variant).
+    pub fn mapping_content(&self) -> Option<&str> {
+        match &self.mapping {
+            R2rmlMappingInput::Content(c) => Some(c),
+            R2rmlMappingInput::Address(_) => None,
+        }
+    }
+
+    /// Get the mapping address (for Address variant) or None (for Content variant).
+    pub fn mapping_address(&self) -> Option<&str> {
+        match &self.mapping {
+            R2rmlMappingInput::Address(a) => Some(a),
+            R2rmlMappingInput::Content(_) => None,
+        }
     }
 
     /// Validate the configuration.
@@ -706,11 +867,19 @@ impl R2rmlCreateConfig {
         // Validate the underlying Iceberg config
         self.iceberg.validate()?;
 
-        // Validate mapping source
-        if self.mapping_source.trim().is_empty() {
-            return Err(crate::ApiError::config(
-                "R2RML mapping source cannot be empty",
-            ));
+        // Validate mapping
+        match &self.mapping {
+            R2rmlMappingInput::Content(c) if c.trim().is_empty() => {
+                return Err(crate::ApiError::config(
+                    "R2RML mapping content cannot be empty",
+                ));
+            }
+            R2rmlMappingInput::Address(a) if a.trim().is_empty() => {
+                return Err(crate::ApiError::config(
+                    "R2RML mapping address cannot be empty",
+                ));
+            }
+            _ => {}
         }
 
         Ok(())

@@ -263,6 +263,16 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Check if this error represents a "not found" condition.
+    ///
+    /// Matches both `ApiError::NotFound` and `ApiError::Ledger(LedgerError::NotFound)`.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            ApiError::NotFound(_) | ApiError::Ledger(fluree_db_ledger::LedgerError::NotFound(_))
+        )
+    }
+
     /// Create a configuration error
     pub fn config(msg: impl Into<String>) -> Self {
         ApiError::Config(msg.into())

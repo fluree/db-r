@@ -18,6 +18,7 @@ use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
 use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
+use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
 
 use crate::dict::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
 use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
@@ -896,10 +897,90 @@ impl BinaryIndexStore {
     /// Resolve o_type to a datatype Sid (for materializing datatype IRIs in output).
     /// O(1) via the pre-built o_type index.
     pub fn resolve_datatype_sid(&self, o_type: u16) -> Option<Sid> {
-        let idx = self.o_type_index.get(&o_type)?;
-        let entry = &self.o_type_table[*idx];
-        let iri = entry.datatype_iri.as_deref()?;
-        Some(self.encode_iri(iri))
+        let ot = OType::from_u16(o_type);
+
+        // Customer-defined datatypes encode the DatatypeDictId directly in the payload.
+        // We can resolve it without any IRI parsing/encoding round-trip.
+        if ot.is_customer_datatype() {
+            let dt_id = ot.payload() as usize;
+            return self.dicts.dt_sids.get(dt_id).cloned();
+        }
+
+        // rdf:langString encodes the language tag in the payload (lang_id). The datatype
+        // itself is constant and must be rdf:langString (not tag-qualified).
+        if ot.is_lang_string() {
+            return Some(Sid::new(namespaces::RDF, rdf_names::LANG_STRING));
+        }
+
+        // Built-ins: construct SIDs directly in reserved namespace code space.
+        // This avoids relying on the FIR6 root's `o_type_table.datatype_iri` strings,
+        // which historically used compact forms like "xsd:string" (not full IRIs),
+        // and avoids an encode/decode round-trip in a hot path.
+        match ot {
+            OType::NULL => Some(Sid::new(namespaces::XSD, xsd_names::STRING)),
+            OType::XSD_BOOLEAN => Some(Sid::new(namespaces::XSD, xsd_names::BOOLEAN)),
+            OType::XSD_INTEGER => Some(Sid::new(namespaces::XSD, xsd_names::INTEGER)),
+            OType::XSD_LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            OType::XSD_INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            OType::XSD_SHORT => Some(Sid::new(namespaces::XSD, xsd_names::SHORT)),
+            OType::XSD_BYTE => Some(Sid::new(namespaces::XSD, xsd_names::BYTE)),
+            OType::XSD_UNSIGNED_LONG => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_LONG)),
+            OType::XSD_UNSIGNED_INT => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_INT)),
+            OType::XSD_UNSIGNED_SHORT => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_SHORT)),
+            OType::XSD_UNSIGNED_BYTE => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_BYTE)),
+            OType::XSD_NON_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_NEGATIVE_INTEGER))
+            }
+            OType::XSD_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::POSITIVE_INTEGER))
+            }
+            OType::XSD_NON_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_POSITIVE_INTEGER))
+            }
+            OType::XSD_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NEGATIVE_INTEGER))
+            }
+            OType::XSD_DOUBLE => Some(Sid::new(namespaces::XSD, xsd_names::DOUBLE)),
+            OType::XSD_FLOAT => Some(Sid::new(namespaces::XSD, xsd_names::FLOAT)),
+            OType::XSD_DECIMAL => Some(Sid::new(namespaces::XSD, xsd_names::DECIMAL)),
+            OType::XSD_DATE => Some(Sid::new(namespaces::XSD, xsd_names::DATE)),
+            OType::XSD_TIME => Some(Sid::new(namespaces::XSD, xsd_names::TIME)),
+            OType::XSD_DATE_TIME => Some(Sid::new(namespaces::XSD, xsd_names::DATE_TIME)),
+            OType::XSD_G_YEAR => Some(Sid::new(namespaces::XSD, xsd_names::G_YEAR)),
+            OType::XSD_G_YEAR_MONTH => Some(Sid::new(namespaces::XSD, xsd_names::G_YEAR_MONTH)),
+            OType::XSD_G_MONTH => Some(Sid::new(namespaces::XSD, xsd_names::G_MONTH)),
+            OType::XSD_G_DAY => Some(Sid::new(namespaces::XSD, xsd_names::G_DAY)),
+            OType::XSD_G_MONTH_DAY => Some(Sid::new(namespaces::XSD, xsd_names::G_MONTH_DAY)),
+            OType::XSD_YEAR_MONTH_DURATION => {
+                Some(Sid::new(namespaces::XSD, xsd_names::YEAR_MONTH_DURATION))
+            }
+            OType::XSD_DAY_TIME_DURATION => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DAY_TIME_DURATION))
+            }
+            OType::XSD_DURATION => Some(Sid::new(namespaces::XSD, xsd_names::DURATION)),
+
+            // Dict/arena-backed built-ins
+            OType::XSD_STRING => Some(Sid::new(namespaces::XSD, xsd_names::STRING)),
+            OType::XSD_ANY_URI => Some(Sid::new(namespaces::XSD, xsd_names::ANY_URI)),
+            OType::XSD_NORMALIZED_STRING => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NORMALIZED_STRING))
+            }
+            OType::XSD_TOKEN => Some(Sid::new(namespaces::XSD, xsd_names::TOKEN)),
+            OType::XSD_LANGUAGE => Some(Sid::new(namespaces::XSD, xsd_names::LANGUAGE)),
+            OType::XSD_BASE64_BINARY => Some(Sid::new(namespaces::XSD, xsd_names::BASE64_BINARY)),
+            OType::XSD_HEX_BINARY => Some(Sid::new(namespaces::XSD, xsd_names::HEX_BINARY)),
+            OType::IRI_REF | OType::BLANK_NODE => {
+                Some(Sid::new(namespaces::JSON_LD, jsonld_names::ID))
+            }
+            OType::RDF_JSON => Some(Sid::new(namespaces::RDF, rdf_names::JSON)),
+            OType::VECTOR => Some(Sid::new(namespaces::FLUREE_DB, "embeddingVector")),
+            OType::FULLTEXT => Some(Sid::new(namespaces::FLUREE_DB, "fullText")),
+            OType::GEO_POINT => Some(Sid::new(namespaces::OGC_GEO, geo_names::WKT_LITERAL)),
+
+            // Types without a stable datatype (or not representable as typed literals)
+            // return None so callers can either skip constraints or use a safe fallback.
+            _ => None,
+        }
     }
 
     /// Look up an o_type table entry by o_type value. O(1).

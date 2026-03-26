@@ -4,6 +4,8 @@ mod admin;
 mod admin_auth;
 mod commits;
 mod events;
+#[cfg(feature = "iceberg")]
+mod iceberg;
 mod ledger;
 mod nameservice_refs;
 mod pack;
@@ -35,7 +37,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/drop", post(ledger::drop))
         .route("/branch", post(ledger::create_branch))
         .route("/drop-branch", post(ledger::drop_branch))
-        .route("/rebase", post(ledger::rebase))
+        .route("/rebase", post(ledger::rebase));
+
+    #[cfg(feature = "iceberg")]
+    let v1_admin_protected_routes =
+        v1_admin_protected_routes.route("/iceberg/map", post(iceberg::iceberg_map));
+
+    let v1_admin_protected_routes = v1_admin_protected_routes
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth::require_admin_token,
@@ -47,6 +55,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/stats", get(admin::stats))
         .route("/whoami", get(admin::whoami))
         // Ledger management (read-only)
+        .route("/ledgers", get(ledger::list_ledgers))
         .route("/info/*ledger", get(ledger::info_ledger_tail))
         .route("/exists/*ledger", get(ledger::exists_ledger_tail))
         .route("/branch/*ledger", get(ledger::list_branches))

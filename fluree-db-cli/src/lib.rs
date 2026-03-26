@@ -359,6 +359,15 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::memory::run(action, &fluree_dir).await
         }
 
+        Commands::Iceberg { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            match action {
+                cli::IcebergAction::Map(args) => {
+                    commands::iceberg::run_iceberg_map(*args, &fluree_dir, direct).await
+                }
+            }
+        }
+
         Commands::Mcp { action } => {
             // IDEs may spawn `fluree mcp serve` from a cwd that is not inside a
             // project with a local `.fluree/` directory. In that case, fall back
