@@ -466,17 +466,34 @@ where
         );
 
         // Cache miss - load the mapping content
-        let mapping_bytes = self
-            .fluree
-            .storage()
-            .read_bytes(mapping_source)
-            .await
-            .map_err(|e| {
-                QueryError::InvalidQuery(format!(
-                    "Failed to load R2RML mapping from '{}': {}",
-                    mapping_source, e
-                ))
-            })?;
+        let storage = self.fluree.storage();
+        tracing::info!(
+            graph_source_id = %graph_source_id,
+            mapping_source = %mapping_source,
+            storage_method = %storage.storage_method(),
+            "[DIAG] compiled_mapping: loading mapping file from storage"
+        );
+        let mapping_bytes = storage.read_bytes(mapping_source).await.map_err(|e| {
+            tracing::info!(
+                graph_source_id = %graph_source_id,
+                mapping_source = %mapping_source,
+                storage_method = %storage.storage_method(),
+                error = %e,
+                "[DIAG] compiled_mapping: FAILED to load mapping file"
+            );
+            QueryError::InvalidQuery(format!(
+                "Failed to load R2RML mapping from '{}' (storage: {}): {}",
+                mapping_source,
+                storage.storage_method(),
+                e
+            ))
+        })?;
+        tracing::info!(
+            graph_source_id = %graph_source_id,
+            mapping_source = %mapping_source,
+            bytes = mapping_bytes.len(),
+            "[DIAG] compiled_mapping: mapping file loaded successfully"
+        );
 
         let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
             QueryError::InvalidQuery(format!(
