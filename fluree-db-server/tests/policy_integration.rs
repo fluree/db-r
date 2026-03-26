@@ -152,7 +152,7 @@ async fn setup_policy_ledger(app: axum::Router, ledger: &str) -> axum::Router {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/transact?ledger={}", ledger))
+                .uri(format!("/v1/fluree/insert/{}", ledger))
                 .header("content-type", "application/json")
                 .body(Body::from(docs_tx.to_string()))
                 .unwrap(),
@@ -229,7 +229,7 @@ async fn setup_policy_ledger(app: axum::Router, ledger: &str) -> axum::Router {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/transact?ledger={}", ledger))
+                .uri(format!("/v1/fluree/insert/{}", ledger))
                 .header("content-type", "application/json")
                 .body(Body::from(policy_tx.to_string()))
                 .unwrap(),
@@ -483,7 +483,7 @@ async fn property_level_deny_hides_ex_content_field() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/fluree/transact?ledger=policy6:main")
+                .uri("/v1/fluree/insert/policy6:main")
                 .header("content-type", "application/json")
                 .body(Body::from(deny_tx.to_string()))
                 .unwrap(),
