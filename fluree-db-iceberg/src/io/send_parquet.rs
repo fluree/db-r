@@ -394,6 +394,14 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
     async fn read_file_for_task(&self, path: &str, task: &FileScanTask) -> Result<Bytes> {
         let file_size = task.data_file.file_size_in_bytes as u64;
 
+        // For small files (< 1MB), read the entire file to avoid sparse buffer issues
+        // where the row iterator may need column chunks not included in the projection.
+        if file_size < 1_024 * 1_024 {
+            tracing::debug!(path, file_size, "Reading entire small Parquet file");
+            let data = self.storage.read(path).await?;
+            return Ok(Bytes::from(data));
+        }
+
         // Get metadata (may be cached)
         let metadata = self.read_metadata(path).await?;
 
