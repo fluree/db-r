@@ -19,18 +19,20 @@
 //! }
 //! ```
 
-use crate::block_fetch;
+use crate::dataset::QueryConnectionOptions;
 use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
-use crate::{ApiError, NameService, Result, Storage};
+use crate::{policy_builder, ApiError, NameService, Result, Storage};
 use fluree_db_core::storage::content_store_for;
-use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider};
+use fluree_db_core::{ContentId, ContentStore, FlakeValue, NoOverlay, OverlayProvider, Tracker};
 use fluree_db_novelty::commit_v2::read_commit;
 use fluree_db_novelty::Commit;
+use fluree_db_query::QueryPolicyEnforcer;
 use fluree_graph_json_ld::ParsedContext;
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ============================================================================
 // Response types
@@ -316,18 +318,39 @@ where
             ApiError::internal(format!("Failed to decode commit {}: {}", commit_id, e))
         })?;
 
-        // 6. Apply policy filtering (if identity or policy_class is set)
+        // 6. Apply policy filtering (if identity or policy_class is set).
+        //    Calls policy_builder and enforcer directly to preserve ApiError
+        //    variants (query vs internal) instead of losing them through
+        //    BlockFetchError's stringified intermediary.
         if self.identity.is_some() || self.policy_class.is_some() {
-            let (filtered, _applied) = block_fetch::apply_policy_filter(
+            let opts = QueryConnectionOptions {
+                identity: self.identity.clone(),
+                policy_class: self.policy_class.as_deref().map(|c| vec![c.to_string()]),
+                ..Default::default()
+            };
+            let overlay: &dyn OverlayProvider = &NoOverlay;
+            let policy_ctx = policy_builder::build_policy_context_from_opts(
                 &snapshot.snapshot,
+                overlay,
+                None,
                 commit.t,
-                commit.flakes,
-                self.identity.as_deref(),
-                self.policy_class.as_deref(),
+                &opts,
             )
-            .await
-            .map_err(|e| ApiError::internal(format!("Policy filtering failed: {e}")))?;
-            commit.flakes = filtered;
+            .await?;
+
+            if !policy_ctx.wrapper().is_root() {
+                let enforcer = QueryPolicyEnforcer::new(Arc::new(policy_ctx));
+                let tracker = Tracker::disabled();
+                commit.flakes = enforcer
+                    .filter_flakes_for_graph(
+                        &snapshot.snapshot,
+                        overlay,
+                        commit.t,
+                        &tracker,
+                        commit.flakes,
+                    )
+                    .await?;
+            }
         }
 
         // 7. Build the response

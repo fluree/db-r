@@ -122,8 +122,9 @@ async fn show_local(
         }
 
         // Extract identity and policy class for flake-level filtering.
-        // This mirrors the query endpoint's auth behavior: identity comes
-        // from the bearer token, policy_class from server config.
+        // Identity comes from the bearer token; policy_class from server
+        // config. Unlike the query endpoints, show does not accept
+        // per-request policy overrides (no signed body or header injection).
         let identity = bearer.0.as_ref().and_then(|p| p.identity.clone());
         let policy_class = data_auth.default_policy_class.as_deref();
 

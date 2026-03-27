@@ -32,7 +32,9 @@ The commit identifier can be:
 
 ## Policy Filtering
 
-When executed against a remote server (`--remote`), the returned flakes are filtered according to the caller's data-auth identity and the server's default policy class — matching the same policy semantics as `fluree query`. Flakes the caller is not permitted to read are silently omitted, and the `asserts`/`retracts` counts reflect only the visible flakes.
+When executed against a remote server (`--remote`), the returned flakes are filtered by the server's data-auth policy. The identity is derived from the Bearer token and the policy class from the server's `default_policy_class` configuration. Flakes the caller is not permitted to read are silently omitted, and the `asserts`/`retracts` counts reflect only the visible flakes.
+
+Unlike the query endpoints, show does not support per-request policy overrides via headers or request body — it uses only the Bearer token identity and server-configured default policy class.
 
 When executed locally (no `--remote`, or with `--direct`), `fluree show` operates with full local-admin access and no policy filtering is applied. This is consistent with other local CLI operations that read directly from storage.
 

@@ -11,7 +11,9 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_novelty::Novelty;
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB};
 use serde_json::json;
-use support::{genesis_ledger, start_background_indexer_local, trigger_index_and_wait, MemoryFluree};
+use support::{
+    genesis_ledger, start_background_indexer_local, trigger_index_and_wait, MemoryFluree,
+};
 
 async fn seed_two_commits(
     fluree: &MemoryFluree,
@@ -66,8 +68,13 @@ async fn txn_meta_commit_flakes_for_t(
 }
 
 async fn assert_txn_meta_lookup_contains_commit(ledger: &LedgerState, target_t: i64) {
-    let flakes = txn_meta_commit_flakes_for_t(&ledger.snapshot, ledger.novelty.as_ref(), target_t, ledger.t())
-        .await;
+    let flakes = txn_meta_commit_flakes_for_t(
+        &ledger.snapshot,
+        ledger.novelty.as_ref(),
+        target_t,
+        ledger.t(),
+    )
+    .await;
 
     assert!(
         flakes.iter().any(|flake| {

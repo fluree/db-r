@@ -1453,32 +1453,10 @@ impl Operator for BinaryScanOperator {
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
 
-            let encoded = match (dt_sid, lang) {
-                (Some(dt_sid), lang) => {
-                    value_to_otype_okey(bound_o, dt_sid, lang, store_ref, dict_novelty)
-                }
-                (None, None) => {
-                    // Without a datatype constraint, we can only safely encode non-string
-                    // values. String values are ambiguous — could be xsd:string or
-                    // rdf:langString — so skip them to avoid type mismatch.
-                    match bound_o {
-                        FlakeValue::String(_) => Err(std::io::Error::other(
-                            "string without dtc: type ambiguous (could be langString)",
-                        )),
-                        _ => value_to_otype_okey_simple(bound_o, store_ref)
-                            .map_err(|e| std::io::Error::other(e.to_string())),
-                    }
-                }
-                (None, Some(_lang)) => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "lang tag requires datatype constraint",
-                )),
-            };
-
-            match encoded {
-                Ok((ot, key)) => {
-                    filter.o_type = Some(ot.as_u16());
-                    filter.o_key = Some(key);
+            match encode_bound_object_prefilter(bound_o, dt_sid, lang, store_ref, dict_novelty) {
+                Ok(prefilter) => {
+                    filter.o_type = prefilter.o_type.map(OType::as_u16);
+                    filter.o_key = Some(prefilter.o_key);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Novelty may contain the value, but base index can't; avoid wide base scan.
@@ -2128,6 +2106,74 @@ fn value_to_otype_okey(
             std::io::ErrorKind::Unsupported,
             format!("unsupported FlakeValue variant for V3 overlay: {:?}", val),
         )),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EncodedObjectPrefilter {
+    pub o_type: Option<OType>,
+    pub o_key: u64,
+}
+
+/// Build the narrowest safe binary prefilter for a bound object.
+///
+/// When the query does not specify a numeric datatype, we intentionally leave
+/// `o_type` unset and rely on post-decode equality checks. This preserves the
+/// broader integer/float family semantics instead of forcing `Long` through
+/// `xsd:integer` on the binary path.
+pub(crate) fn encode_bound_object_prefilter(
+    val: &FlakeValue,
+    dt_sid: Option<&Sid>,
+    lang: Option<&str>,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<EncodedObjectPrefilter> {
+    use fluree_db_core::value_id::ObjKey;
+
+    match (dt_sid, lang) {
+        (Some(dt_sid), lang) => {
+            let (ot, key) = value_to_otype_okey(val, dt_sid, lang, store, dict_novelty)?;
+            Ok(EncodedObjectPrefilter {
+                o_type: Some(ot),
+                o_key: key,
+            })
+        }
+        (None, Some(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "lang tag requires datatype constraint",
+        )),
+        (None, None) => match val {
+            // Without a datatype constraint, plain strings are ambiguous:
+            // could be xsd:string or rdf:langString.
+            FlakeValue::String(_) => Err(std::io::Error::other(
+                "string without dtc: type ambiguous (could be langString)",
+            )),
+            // Untyped numerics should not pre-commit to a specific numeric OType.
+            FlakeValue::Long(n) => Ok(EncodedObjectPrefilter {
+                o_type: None,
+                o_key: ObjKey::encode_i64(*n).as_u64(),
+            }),
+            FlakeValue::Double(d) => {
+                if d.is_finite() {
+                    ObjKey::encode_f64(*d)
+                        .map(|key| EncodedObjectPrefilter {
+                            o_type: None,
+                            o_key: key.as_u64(),
+                        })
+                        .map_err(|_| std::io::Error::other("cannot encode f64 for V6 index"))
+                } else {
+                    Err(std::io::Error::other("non-finite double in bound object"))
+                }
+            }
+            _ => {
+                let (ot, key) = value_to_otype_okey_simple(val, store)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(EncodedObjectPrefilter {
+                    o_type: Some(ot),
+                    o_key: key,
+                })
+            }
+        },
     }
 }
 
