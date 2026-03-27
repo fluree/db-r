@@ -374,26 +374,12 @@ fn fetch_and_load(
 ) -> io::Result<LazyLoaded> {
     // Fast paths: check if something appeared since construction.
     if let Some(path) = ctx.cs.resolve_local_path(pack_cid) {
-        tracing::info!(
-            cid = %pack_cid,
-            path = %path.display(),
-            first_id = expected_first_id,
-            last_id = expected_last_id,
-            "[DIAG] forward pack became locally available before lazy fetch"
-        );
         let mmap = mmap_file(&path)?;
         let meta = parse_pack_meta(mmap.as_ref())?;
         validate_lazy_meta(&meta, expected_first_id, expected_last_id, ctx)?;
         return Ok(LazyLoaded { meta, mmap });
     }
     if cache_path.exists() {
-        tracing::info!(
-            cid = %pack_cid,
-            cache_path = %cache_path.display(),
-            first_id = expected_first_id,
-            last_id = expected_last_id,
-            "[DIAG] using cached forward pack before remote lazy fetch"
-        );
         let mmap = mmap_file(cache_path)?;
         let meta = parse_pack_meta(mmap.as_ref())?;
         validate_lazy_meta(&meta, expected_first_id, expected_last_id, ctx)?;
@@ -407,35 +393,20 @@ fn fetch_and_load(
         .map_err(|_| io::Error::other("lazy pack fetch requires a Tokio runtime"))?;
     let cs = Arc::clone(&ctx.cs);
     let cid = pack_cid.clone();
-    tracing::info!(
-        cid = %pack_cid,
-        cache_path = %cache_path.display(),
-        first_id = expected_first_id,
-        last_id = expected_last_id,
-        "[DIAG] starting remote lazy fetch for forward pack"
-    );
     let bytes = std::thread::spawn(move || handle.block_on(cs.get(&cid)))
         .join()
         .map_err(|_| io::Error::other("lazy pack fetch thread panicked"))?
         .map_err(|e| {
-            tracing::info!(
+            tracing::debug!(
                 cid = %pack_cid,
                 cache_path = %cache_path.display(),
                 first_id = expected_first_id,
                 last_id = expected_last_id,
                 error = %e,
-                "[DIAG] remote lazy fetch for forward pack failed"
+                "remote lazy fetch for forward pack failed"
             );
             io::Error::other(format!("lazy pack fetch: {e}"))
         })?;
-    tracing::info!(
-        cid = %pack_cid,
-        bytes = bytes.len(),
-        cache_path = %cache_path.display(),
-        first_id = expected_first_id,
-        last_id = expected_last_id,
-        "[DIAG] remote lazy fetch for forward pack succeeded"
-    );
 
     // Write to cache, then mmap the cache file (no heap duplication).
     atomic_write_to_cache(cache_path, &bytes)?;
@@ -444,15 +415,6 @@ fn fetch_and_load(
     let mmap = mmap_file(cache_path)?;
     let meta = parse_pack_meta(mmap.as_ref())?;
     validate_lazy_meta(&meta, expected_first_id, expected_last_id, ctx)?;
-    tracing::info!(
-        cid = %pack_cid,
-        cache_path = %cache_path.display(),
-        first_id = meta.first_id,
-        last_id = meta.last_id,
-        kind = meta.kind,
-        ns_code = meta.ns_code,
-        "[DIAG] forward pack loaded and validated after remote fetch"
-    );
     Ok(LazyLoaded { meta, mmap })
 }
 

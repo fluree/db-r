@@ -639,11 +639,11 @@ impl BinaryIndexStore {
             }
             DecodeKind::IriRef => {
                 let iri = self.resolve_subject_iri(o_key).map_err(|e| {
-                    tracing::info!(
+                    tracing::debug!(
                         g_id,
                         o_key,
                         error = %e,
-                        "[DIAG] binary index failed to resolve IRI ref subject"
+                        "binary index failed to resolve IRI ref subject"
                     );
                     e
                 })?;
@@ -651,11 +651,11 @@ impl BinaryIndexStore {
             }
             DecodeKind::StringDict => {
                 let s = self.resolve_string_value(o_key as u32).map_err(|e| {
-                    tracing::info!(
+                    tracing::debug!(
                         g_id,
                         str_id = o_key as u32,
                         error = %e,
-                        "[DIAG] binary index failed to resolve string dictionary value"
+                        "binary index failed to resolve string dictionary value"
                     );
                     e
                 })?;
@@ -666,11 +666,11 @@ impl BinaryIndexStore {
                 // stored in the string dictionary (same as ObjKind::JSON_ID).
                 // A dedicated JSON arena may be introduced later.
                 let json_str = self.resolve_string_value(o_key as u32).map_err(|e| {
-                    tracing::info!(
+                    tracing::debug!(
                         g_id,
                         str_id = o_key as u32,
                         error = %e,
-                        "[DIAG] binary index failed to resolve JSON dictionary value"
+                        "binary index failed to resolve JSON dictionary value"
                     );
                     e
                 })?;
@@ -874,10 +874,10 @@ impl BinaryIndexStore {
                 )
             });
         if let Err(err) = &result {
-            tracing::info!(
+            tracing::debug!(
                 str_id,
                 error = %err,
-                "[DIAG] resolve_string_value failed"
+                "resolve_string_value failed"
             );
         }
         result
@@ -1579,7 +1579,7 @@ impl BinaryGraphView {
             .store
             .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id);
         if let Err(err) = &result {
-            tracing::info!(
+            tracing::debug!(
                 g_id = self.g_id,
                 o_kind,
                 o_key,
@@ -1589,7 +1589,7 @@ impl BinaryGraphView {
                 has_dict_novelty = self.dict_novelty.is_some(),
                 novelty_initialized,
                 error = %err,
-                "[DIAG] BinaryGraphView decode_value_from_kind failed"
+                "BinaryGraphView decode_value_from_kind failed"
             );
         }
         result
@@ -1601,11 +1601,11 @@ impl BinaryGraphView {
             if dn.is_initialized() {
                 if let Some(result) = self.resolve_novel_subject_iri(dn, s_id) {
                     if let Err(err) = &result {
-                        tracing::info!(
+                        tracing::debug!(
                             g_id = self.g_id,
                             s_id,
                             error = %err,
-                            "[DIAG] BinaryGraphView novelty subject lookup failed"
+                            "BinaryGraphView novelty subject lookup failed"
                         );
                     }
                     return result;
@@ -1614,12 +1614,12 @@ impl BinaryGraphView {
         }
         let result = self.store.resolve_subject_iri(s_id);
         if let Err(err) = &result {
-            tracing::info!(
+            tracing::debug!(
                 g_id = self.g_id,
                 s_id,
                 has_dict_novelty = self.dict_novelty.is_some(),
                 error = %err,
-                "[DIAG] BinaryGraphView persisted subject lookup failed"
+                "BinaryGraphView persisted subject lookup failed"
             );
         }
         result

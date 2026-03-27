@@ -558,14 +558,6 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
-        tracing::info!(
-            default_sources = spec.default_graphs.len(),
-            named_sources = spec.named_graphs.len(),
-            resolved_default_views = dataset.default.len(),
-            resolved_named_views = dataset.named.len(),
-            "[DIAG] SPARQL tracked connection query resolved dataset"
-        );
-
         self.query_dataset_tracked_with_r2rml(
             &dataset,
             sparql,

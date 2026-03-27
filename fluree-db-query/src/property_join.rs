@@ -314,10 +314,10 @@ impl PropertyJoinOperator {
                 match ctx.resolve_subject_iri(*s_id) {
                     Some(Ok(iri)) => Some(SubjectKey::Iri(Arc::from(iri))),
                     Some(Err(e)) => {
-                        tracing::info!(
+                        tracing::debug!(
                             s_id,
                             error = %e,
-                            "[DIAG] property join failed to resolve encoded subject"
+                            "property join failed to resolve encoded subject"
                         );
                         return Err(crate::error::QueryError::dictionary_lookup(format!(
                             "property join subject key: resolve subject IRI for s_id={s_id}: {e}"

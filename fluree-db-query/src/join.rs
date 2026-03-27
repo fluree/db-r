@@ -504,10 +504,10 @@ impl NestedLoopJoinOperator {
                             // Resolve encoded s_id to IRI (novelty-aware via BinaryGraphView)
                             if let Some(gv) = gv {
                                 let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         s_id,
                                         error = %e,
-                                        "[DIAG] join failed to resolve encoded subject binding"
+                                        "join failed to resolve encoded subject binding"
                                     );
                                     QueryError::dictionary_lookup(format!(
                                         "join subject binding: resolve subject IRI for s_id={s_id}: {e}"
@@ -545,10 +545,10 @@ impl NestedLoopJoinOperator {
                             // be used to bind a predicate position. Resolve via subject dict.
                             if let Some(gv) = gv {
                                 let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         s_id,
                                         error = %e,
-                                        "[DIAG] join failed to resolve encoded predicate binding via subject dictionary"
+                                        "join failed to resolve encoded predicate binding via subject dictionary"
                                     );
                                     QueryError::dictionary_lookup(format!(
                                         "join predicate binding via subject lookup: s_id={s_id}: {e}"
@@ -600,14 +600,14 @@ impl NestedLoopJoinOperator {
                                 let val = gv
                                     .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                                     .map_err(|e| {
-                                        tracing::info!(
+                                        tracing::debug!(
                                             o_kind,
                                             o_key,
                                             p_id,
                                             dt_id,
                                             lang_id,
                                             error = %e,
-                                            "[DIAG] join failed to decode encoded object binding"
+                                            "join failed to decode encoded object binding"
                                         );
                                         QueryError::dictionary_lookup(format!(
                                             "join object binding decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
@@ -622,10 +622,10 @@ impl NestedLoopJoinOperator {
                             // Resolve encoded s_id to IRI (novelty-aware)
                             if let Some(gv) = gv {
                                 let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
-                                    tracing::info!(
+                                    tracing::debug!(
                                         s_id,
                                         error = %e,
-                                        "[DIAG] join failed to resolve encoded object subject binding"
+                                        "join failed to resolve encoded object subject binding"
                                     );
                                     QueryError::dictionary_lookup(format!(
                                         "join object subject lookup: s_id={s_id}: {e}"

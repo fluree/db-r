@@ -253,14 +253,14 @@ impl Bm25SearchOperator {
                         let val = gv
                             .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             .map_err(|e| {
-                                tracing::info!(
+                                tracing::debug!(
                                     o_kind,
                                     o_key,
                                     p_id,
                                     dt_id,
                                     lang_id,
                                     error = %e,
-                                    "[DIAG] BM25 failed to decode encoded literal target"
+                                    "BM25 failed to decode encoded literal target"
                                 );
                                 crate::error::QueryError::dictionary_lookup(format!(
                                     "BM25 target decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
@@ -292,10 +292,10 @@ impl Bm25SearchOperator {
                     match ctx.resolve_subject_iri(*s_id) {
                         Some(Ok(iri)) => Ok(Some(iri)),
                         Some(Err(e)) => {
-                            tracing::info!(
+                            tracing::debug!(
                                 s_id,
                                 error = %e,
-                                "[DIAG] BM25 failed to resolve encoded subject target"
+                                "BM25 failed to resolve encoded subject target"
                             );
                             Err(crate::error::QueryError::dictionary_lookup(format!(
                                 "BM25 target subject lookup: s_id={s_id}: {e}"

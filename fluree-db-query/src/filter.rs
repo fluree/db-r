@@ -21,7 +21,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::execute::build_where_operators_seeded;
-use crate::ir::{Expression, FilterValue, Function, Pattern};
+use crate::ir::{Expression, FilterValue, Pattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::{EmptyOperator, SeedOperator};
 use crate::triple::Ref;
@@ -36,25 +36,6 @@ use crate::fast_path_common::{
 };
 use fluree_db_core::Sid;
 
-fn expr_has_string_function(expr: &Expression) -> bool {
-    match expr {
-        Expression::Call { func, args } => {
-            matches!(
-                func,
-                Function::Contains
-                    | Function::Regex
-                    | Function::StrStarts
-                    | Function::Strlen
-                    | Function::Lcase
-                    | Function::Ucase
-                    | Function::Str
-                    | Function::StrEnds
-            ) || args.iter().any(expr_has_string_function)
-        }
-        Expression::Exists { .. } | Expression::Var(_) | Expression::Const(_) => false,
-    }
-}
-
 /// Filter rows from a batch using two-valued logic.
 ///
 /// Evaluates `expr` for each row in `batch`. Rows where the expression evaluates
@@ -68,7 +49,6 @@ pub fn filter_batch(
     schema: &Arc<[VarId]>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Option<Batch>> {
-    let has_string_fn = expr_has_string_function(expr);
     let mut keep_indices: Vec<usize> = Vec::new();
     for row_idx in 0..batch.len() {
         let Some(row) = batch.row_view(row_idx) else {
@@ -80,12 +60,6 @@ pub fn filter_batch(
     }
 
     if keep_indices.is_empty() {
-        if has_string_fn {
-            tracing::info!(
-                input_rows = batch.len(),
-                "[DIAG] filter batch dropped all rows for string-function expression"
-            );
-        }
         return Ok(None);
     }
 
@@ -525,13 +499,6 @@ impl Operator for FilterOperator {
         self.child.open(ctx).await?;
         if self.has_exists {
             self.exists_semijoin = build_exists_semijoin_cache(&self.expr, &self.schema, ctx)?;
-        }
-        if expr_has_string_function(&self.expr) {
-            tracing::info!(
-                has_exists = self.has_exists,
-                schema_width = self.schema.len(),
-                "[DIAG] opened FilterOperator with string-function expression"
-            );
         }
         self.state = OperatorState::Open;
         Ok(())
