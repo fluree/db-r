@@ -41,6 +41,7 @@ use lru::LruCache;
 use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Builder for correlated optional operators
 ///
@@ -813,7 +814,7 @@ impl Operator for OptionalOperator {
             pending_entries = self.pending_output.len(),
             has_required_batch = self.current_required_batch.is_some(),
             required_schema_cols = self.required_schema.len(),
-            optional_only_vars = self.optional_only_vars.len(),
+            optional_only_vars = self.optional_builder.optional_only_vars().len(),
             rows_added = tracing::field::Empty,
             built_optionals = tracing::field::Empty,
             cache_hits = tracing::field::Empty,
