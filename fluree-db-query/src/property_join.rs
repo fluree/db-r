@@ -1,7 +1,8 @@
 //! Property-join operator for same-subject multi-predicate patterns
 //!
 //! The `PropertyJoinOperator` optimizes queries where multiple triple patterns
-//! share the same subject variable and have bound predicates with variable objects.
+//! share the same subject variable and have bound predicates, with either variable
+//! objects or bound existence checks.
 //!
 //! # Example Pattern
 //!
@@ -70,6 +71,7 @@ fn make_property_join_scan(
 ///
 /// Optimizes queries of the form:
 /// ```text
+/// ?s rdf:type :Deal
 /// ?s :pred1 ?obj1
 /// ?s :pred2 ?obj2
 /// ...
@@ -86,11 +88,8 @@ fn make_property_join_scan(
 pub struct PropertyJoinOperator {
     /// The shared subject variable
     subject_var: VarId,
-    /// Predicates and their corresponding object variables
-    /// Each entry is (predicate_ref, object_var, optional datatype constraint, emit_object).
-    /// predicate_ref can be Ref::Sid or Ref::Iri depending on how the query was lowered.
-    /// emit_object is false for existence-only (semijoin) predicates.
-    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>, bool)>,
+    /// Predicates and their object requirements.
+    predicates: Vec<PropertyJoinPredicate>,
     /// Output schema: [subject_var, obj_var_1, obj_var_2, ...]
     output_schema: Arc<[VarId]>,
     /// Operator state
@@ -112,6 +111,22 @@ pub struct PropertyJoinOperator {
     /// For each predicate index, the position in `subject_values`'s values vec if emitted.
     /// Existence-only predicates are `None`.
     emit_positions: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Debug)]
+enum PropertyJoinObject {
+    /// Variable object that may or may not be emitted.
+    Var(VarId),
+    /// Bound object used as an existence constraint (for example `?s rdf:type :Class`).
+    Bound(Term),
+}
+
+#[derive(Clone, Debug)]
+struct PropertyJoinPredicate {
+    pred_ref: Ref,
+    object: PropertyJoinObject,
+    dtc: Option<DatatypeConstraint>,
+    emit_object: bool,
 }
 
 /// Join-safe subject key for PropertyJoinOperator.
@@ -209,8 +224,10 @@ impl PropertyJoinOperator {
             }
         };
 
-        // Extract (predicate_ref, object_var, dt, emit_object) tuples.
-        // Predicate can be Ref::Sid or Ref::Iri depending on lowering
+        // Extract predicate/object requirements. Predicates can be Ref::Sid or Ref::Iri
+        // depending on how the query was lowered. Bound objects are kept as existence-only
+        // constraints so same-subject stars like `?s rdf:type :Class ; :name ?name` can still
+        // use the property-join path.
         let mut predicates = Vec::with_capacity(patterns.len());
         for p in patterns {
             let pred_ref = match &p.p {
@@ -221,32 +238,40 @@ impl PropertyJoinOperator {
                     ))
                 }
             };
-            let obj_var = match &p.o {
-                Term::Var(v) => *v,
-                _ => {
-                    return Err(QueryError::Internal(
-                        "Property-join requires variable objects".into(),
-                    ))
+            let (object, emit_object) = match &p.o {
+                Term::Var(v) => {
+                    let emit = needed_vars.is_none_or(|n| n.contains(v));
+                    (PropertyJoinObject::Var(*v), emit)
                 }
+                _ => (PropertyJoinObject::Bound(p.o.clone()), false),
             };
-            let emit_object = needed_vars.is_none_or(|n| n.contains(&obj_var));
-            predicates.push((pred_ref, obj_var, p.dtc.clone(), emit_object));
+            predicates.push(PropertyJoinPredicate {
+                pred_ref,
+                object,
+                dtc: p.dtc.clone(),
+                emit_object,
+            });
         }
 
         // Build output schema: [subject_var, obj_var_1, obj_var_2, ...] but only for emitted vars.
         let mut schema_vec = vec![subject_var];
-        for (_, obj_var, _, emit) in &predicates {
-            if *emit {
+        for predicate in &predicates {
+            if predicate.emit_object {
+                let PropertyJoinObject::Var(obj_var) = &predicate.object else {
+                    return Err(QueryError::Internal(
+                        "property-join cannot emit a bound object".into(),
+                    ));
+                };
                 schema_vec.push(*obj_var);
-            }
+            };
         }
         let output_schema: Arc<[VarId]> = Arc::from(schema_vec.into_boxed_slice());
 
         let emit_positions = {
             let mut out = Vec::with_capacity(predicates.len());
             let mut next = 0usize;
-            for (_, _ov, _dt, emit) in &predicates {
-                if *emit {
+            for predicate in &predicates {
+                if predicate.emit_object {
                     out.push(Some(next));
                     next += 1;
                 } else {
@@ -456,7 +481,9 @@ impl Operator for PropertyJoinOperator {
                 .predicates
                 .iter()
                 .enumerate()
-                .find(|(_idx, (_p, obj_var, _dt, _emit))| self.object_bounds.contains_key(obj_var))
+                .find(|(_idx, predicate)| {
+                    matches!(&predicate.object, PropertyJoinObject::Var(obj_var) if self.object_bounds.contains_key(obj_var))
+                })
                 .map(|(idx, _)| idx);
             tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
 
@@ -473,7 +500,7 @@ impl Operator for PropertyJoinOperator {
             let emit_count = self.emit_positions.iter().flatten().count();
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, dtc, _emit) = &self.predicates[pred_idx];
+                let predicate = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
@@ -482,11 +509,11 @@ impl Operator for PropertyJoinOperator {
                     && driver_subject_ids.is_some()
                     && !ctx.is_multi_ledger()
                     && ctx.binary_store.is_some()
-                    && dtc.is_none();
+                    && predicate.dtc.is_none();
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
-                    let pred_sid = match pred_term {
+                    let pred_sid = match &predicate.pred_ref {
                         Ref::Sid(s) => Some(s.clone()),
                         Ref::Iri(iri) => Some(store.encode_iri(iri)),
                         Ref::Var(_) => None,
@@ -546,12 +573,29 @@ impl Operator for PropertyJoinOperator {
                                 let left_schema: Arc<[VarId]> =
                                     Arc::from(vec![self.subject_var].into_boxed_slice());
 
-                                // Probe: ?s <pred> ?o
+                                // Probe: ?s <pred> ?o / ?s <pred> <const>
                                 let right_pattern = TriplePattern::new(
                                     Ref::Var(self.subject_var),
                                     Ref::Sid(pred_sid.clone()),
-                                    Term::Var(TEMP_OBJECT_VAR),
+                                    match &predicate.object {
+                                        PropertyJoinObject::Var(_) => Term::Var(TEMP_OBJECT_VAR),
+                                        PropertyJoinObject::Bound(term) => term.clone(),
+                                    },
                                 );
+                                let emit_obj = self.emit_positions[pred_idx].is_some();
+                                let right_emit = if emit_obj {
+                                    EmitMask {
+                                        s: true,
+                                        p: false,
+                                        o: true,
+                                    }
+                                } else {
+                                    EmitMask {
+                                        s: true,
+                                        p: false,
+                                        o: false,
+                                    }
+                                };
 
                                 let mut join = NestedLoopJoinOperator::new(
                                     left,
@@ -559,27 +603,41 @@ impl Operator for PropertyJoinOperator {
                                     right_pattern,
                                     None, // bounds already applied in driver; keep probe unconstrained
                                     Vec::new(),
-                                    EmitMask::ALL,
+                                    right_emit,
                                 );
                                 join.open(ctx).await?;
                                 while let Some(batch) = join.next_batch(ctx).await? {
                                     let subject_col = batch.column_by_idx(0);
                                     let object_col = batch.column_by_idx(1);
-                                    if let (Some(subjects), Some(objects)) =
-                                        (subject_col, object_col)
-                                    {
+                                    if let Some(subjects) = subject_col {
                                         scan_rows_total += batch.len() as u64;
-                                        for (subject, object) in subjects.iter().zip(objects.iter())
-                                        {
-                                            if let Some(key) = Self::subject_key(ctx, subject)? {
-                                                if let Some(entry) =
-                                                    all_subject_values.get_mut(&key)
+                                        if emit_obj {
+                                            if let Some(objects) = object_col {
+                                                for (subject, object) in
+                                                    subjects.iter().zip(objects.iter())
                                                 {
-                                                    entry.1 |= 1u64 << pred_idx;
-                                                    if let Some(epos) =
-                                                        self.emit_positions[pred_idx]
+                                                    if let Some(key) =
+                                                        Self::subject_key(ctx, subject)?
                                                     {
-                                                        entry.2[epos].push(object.clone());
+                                                        if let Some(entry) =
+                                                            all_subject_values.get_mut(&key)
+                                                        {
+                                                            entry.1 |= 1u64 << pred_idx;
+                                                            if let Some(epos) =
+                                                                self.emit_positions[pred_idx]
+                                                            {
+                                                                entry.2[epos].push(object.clone());
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            for subject in subjects.iter() {
+                                                if let Some(key) = Self::subject_key(ctx, subject)? {
+                                                    if let Some(entry) = all_subject_values.get_mut(&key)
+                                                    {
+                                                        entry.1 |= 1u64 << pred_idx;
                                                     }
                                                 }
                                             }
@@ -596,20 +654,26 @@ impl Operator for PropertyJoinOperator {
                 }
 
                 // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
-                // pred_term is already a Ref (Sid or Iri) so use it directly
+                // pred_ref is already a Ref (Sid or Iri) so use it directly.
+                let (object, bounds) = match &predicate.object {
+                    PropertyJoinObject::Var(obj_var) => (
+                        Term::Var(TEMP_OBJECT_VAR),
+                        self.object_bounds.get(obj_var).cloned(),
+                    ),
+                    PropertyJoinObject::Bound(term) => (term.clone(), None),
+                };
                 let pattern = TriplePattern {
                     s: Ref::Var(self.subject_var),
-                    p: pred_term.clone(),
-                    o: Term::Var(TEMP_OBJECT_VAR),
-                    dtc: dtc.clone(),
+                    p: predicate.pred_ref.clone(),
+                    o: object,
+                    dtc: predicate.dtc.clone(),
                 };
 
                 // Create scan with optional bounds pushdown for this object variable.
                 //
                 // `ScanOperator` selects between binary cursor and range fallback
                 // at open() time based on the execution context.
-                let bounds = self.object_bounds.get(obj_var).cloned();
-                let emit = if self.predicates[pred_idx].3 {
+                let emit = if predicate.emit_object {
                     // Subject + object (no predicate column) for emitted predicates.
                     EmitMask {
                         s: true,
@@ -690,8 +754,10 @@ impl Operator for PropertyJoinOperator {
 
                 scan.close();
 
-                // After the first scan (driver), capture the subject IDs for batched probing.
-                if order_pos == 0 && driver_pred_idx.is_some() && ctx.binary_store.is_some() {
+                // After the first scan, capture subject IDs for batched probing when the
+                // subject keys stayed as encoded IDs. This lets a selective exact scan like
+                // `?s rdf:type :Deal` drive later subject-bound probes.
+                if order_pos == 0 && ctx.binary_store.is_some() {
                     let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
                     for k in all_subject_values.keys() {
                         if let SubjectKey::Id(s_id) = k {
@@ -806,6 +872,26 @@ mod tests {
         ]
     }
 
+    fn make_property_join_patterns_with_bound_object() -> Vec<TriplePattern> {
+        vec![
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "type")),
+                Term::Sid(Sid::new(100, "Deal")),
+            ),
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "name")),
+                Term::Var(VarId(1)),
+            ),
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(101, "stage")),
+                Term::Var(VarId(2)),
+            ),
+        ]
+    }
+
     #[test]
     fn test_property_join_creation() {
         let patterns = make_property_join_patterns();
@@ -825,6 +911,15 @@ mod tests {
         assert_eq!(schema[0], VarId(0)); // subject
         assert_eq!(schema[1], VarId(1)); // name object
         assert_eq!(schema[2], VarId(2)); // age object
+    }
+
+    #[test]
+    fn test_property_join_schema_with_bound_object_predicate() {
+        let patterns = make_property_join_patterns_with_bound_object();
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
+
+        let schema = op.output_schema();
+        assert_eq!(&schema[..], &[VarId(0), VarId(1), VarId(2)]);
     }
 
     #[test]

@@ -1163,8 +1163,9 @@ pub fn build_where_operators_seeded_with_needed(
                         property_join_subject_is_var = pj_analysis.subject_is_var,
                         property_join_same_subject = pj_analysis.same_subject,
                         property_join_predicates_bound = pj_analysis.predicates_bound,
-                        property_join_objects_all_vars = pj_analysis.objects_all_vars,
-                        property_join_objects_distinct = pj_analysis.objects_distinct,
+                        property_join_object_modes_supported = pj_analysis.object_modes_supported,
+                        property_join_object_vars_distinct = pj_analysis.object_vars_distinct,
+                        property_join_has_bound_objects = pj_analysis.has_bound_objects,
                         property_join_predicates_distinct = pj_analysis.predicates_distinct,
                         chosen_strategy = if can_property_join {
                             "property_join"

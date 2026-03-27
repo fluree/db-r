@@ -207,8 +207,9 @@ pub struct PropertyJoinAnalysis {
     pub subject_is_var: bool,
     pub same_subject: bool,
     pub predicates_bound: bool,
-    pub objects_all_vars: bool,
-    pub objects_distinct: bool,
+    pub object_modes_supported: bool,
+    pub object_vars_distinct: bool,
+    pub has_bound_objects: bool,
     pub predicates_distinct: bool,
 }
 
@@ -219,8 +220,8 @@ impl PropertyJoinAnalysis {
             && self.subject_is_var
             && self.same_subject
             && self.predicates_bound
-            && self.objects_all_vars
-            && self.objects_distinct
+            && self.object_modes_supported
+            && self.object_vars_distinct
             && self.predicates_distinct
     }
 }
@@ -239,8 +240,9 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
                 subject_is_var: false,
                 same_subject: false,
                 predicates_bound: patterns.iter().all(|p| p.p_bound()),
-                objects_all_vars: false,
-                objects_distinct: false,
+                object_modes_supported: false,
+                object_vars_distinct: false,
+                has_bound_objects: false,
                 predicates_distinct: false,
             };
         }
@@ -254,18 +256,23 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
     let predicates_bound = patterns.iter().all(|p| p.p_bound());
 
     let mut obj_vars: HashSet<VarId> = HashSet::new();
-    let mut objects_all_vars = true;
-    let mut objects_distinct = true;
+    let mut object_modes_supported = true;
+    let mut object_vars_distinct = true;
+    let mut has_bound_objects = false;
     for p in patterns {
         match &p.o {
             Term::Var(v) => {
                 if *v == first_s || !obj_vars.insert(*v) {
-                    objects_distinct = false;
+                    object_vars_distinct = false;
                 }
             }
+            Term::Sid(_) | Term::Iri(_) | Term::Value(_) => {
+                has_bound_objects = true;
+            }
+            #[allow(unreachable_patterns)]
             _ => {
-                objects_all_vars = false;
-                objects_distinct = false;
+                object_modes_supported = false;
+                object_vars_distinct = false;
             }
         }
     }
@@ -285,8 +292,9 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
         subject_is_var: true,
         same_subject,
         predicates_bound,
-        objects_all_vars,
-        objects_distinct,
+        object_modes_supported,
+        object_vars_distinct,
+        has_bound_objects,
         predicates_distinct,
     }
 }
@@ -1507,6 +1515,14 @@ mod tests {
         let p1 = make_pattern(VarId(0), "name", VarId(1));
         let p2 = make_pattern(VarId(0), "age", VarId(2));
         assert!(is_property_join(&[p1.clone(), p2.clone()]));
+
+        // Bound-object existence predicates are allowed when the star still shares one subject.
+        let p2_bound = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "type")),
+            Term::Sid(Sid::new(100, "Deal")),
+        );
+        assert!(is_property_join(&[p1.clone(), p2_bound]));
 
         // Not property join: different subjects
         let p3 = make_pattern(VarId(3), "type", VarId(4));
