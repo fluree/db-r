@@ -235,6 +235,8 @@ pub struct NestedLoopJoinOperator {
     inline_ops: Vec<InlineOperator>,
     /// Variables required by downstream operators; if set, output is trimmed.
     out_schema: Option<Arc<[VarId]>>,
+    /// Emit the runtime path decision once per open().
+    logged_runtime_mode: bool,
 }
 
 impl NestedLoopJoinOperator {
@@ -428,6 +430,7 @@ impl NestedLoopJoinOperator {
             current_left_batch_stored_idx: None,
             inline_ops,
             out_schema: None,
+            logged_runtime_mode: false,
         }
     }
 
@@ -760,6 +763,22 @@ impl Operator for NestedLoopJoinOperator {
         self.pending_right_row = 0;
         self.current_left_batch = None;
         self.current_left_row = 0;
+        self.logged_runtime_mode = false;
+
+        tracing::debug!(
+            left_schema_cols = self.left_schema.len(),
+            right_new_vars = self.right_new_vars.len(),
+            bind_instructions = self.bind_instructions.len(),
+            unify_instructions = self.unify_instructions.len(),
+            has_object_bounds = self.object_bounds.is_some(),
+            right_subject_is_var = matches!(&self.right_pattern.s, Ref::Var(_)),
+            right_predicate_is_fixed = self.right_pattern.p.is_sid(),
+            right_object_is_var = matches!(&self.right_pattern.o, Term::Var(_)),
+            right_has_dtc = self.right_pattern.dtc.is_some(),
+            batched_eligible = self.batched_eligible,
+            batched_object_eligible = self.batched_object_eligible,
+            "opened nested loop join"
+        );
 
         self.state = OperatorState::Open;
         Ok(())
@@ -786,6 +805,23 @@ impl Operator for NestedLoopJoinOperator {
                 ActiveGraphs::Single => true,
                 ActiveGraphs::Many(graphs) => self.batched_eligible && graphs.len() == 1,
             };
+
+        if !self.logged_runtime_mode {
+            let (active_graph_mode, active_graph_count) = match ctx.active_graphs() {
+                ActiveGraphs::Single => ("single", 1usize),
+                ActiveGraphs::Many(graphs) => ("many", graphs.len()),
+            };
+            tracing::debug!(
+                use_batched,
+                batched_eligible = self.batched_eligible,
+                batched_object_eligible = self.batched_object_eligible,
+                has_binary_store = ctx.binary_store.is_some(),
+                active_graph_mode,
+                active_graph_count,
+                "nested loop join runtime path"
+            );
+            self.logged_runtime_mode = true;
+        }
 
         // Cache novelty-aware graph view once for the entire next_batch call
         // (avoids repeated Arc::clone + construction per-row).

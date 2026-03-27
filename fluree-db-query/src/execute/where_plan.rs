@@ -22,7 +22,7 @@ use crate::minus::MinusOperator;
 use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
-use crate::planner::{is_property_join, reorder_patterns};
+use crate::planner::{analyze_property_join, is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
@@ -1145,9 +1145,35 @@ pub fn build_where_operators_seeded_with_needed(
                     operator = Some(Box::new(EmptyOperator::new()));
                 }
 
-                let can_property_join = operator.is_none()
-                    && triples_for_exec.len() >= 2
-                    && is_property_join(&triples_for_exec);
+                let pj_analysis = analyze_property_join(&triples_for_exec);
+                let has_upstream_seed = operator.is_some();
+                let can_property_join = !has_upstream_seed && pj_analysis.eligible();
+
+                if triples_for_exec.len() >= 2 {
+                    tracing::debug!(
+                        block_start = start,
+                        triple_count = triples_for_exec.len(),
+                        has_upstream_seed,
+                        has_values = !block.values.is_empty(),
+                        has_object_bounds = !pushdown.object_bounds.is_empty(),
+                        has_bound_object_triples =
+                            triples_for_exec.iter().any(TriplePattern::o_bound),
+                        property_join_eligible = pj_analysis.eligible(),
+                        property_join_enough_patterns = pj_analysis.enough_patterns,
+                        property_join_subject_is_var = pj_analysis.subject_is_var,
+                        property_join_same_subject = pj_analysis.same_subject,
+                        property_join_predicates_bound = pj_analysis.predicates_bound,
+                        property_join_objects_all_vars = pj_analysis.objects_all_vars,
+                        property_join_objects_distinct = pj_analysis.objects_distinct,
+                        property_join_predicates_distinct = pj_analysis.predicates_distinct,
+                        chosen_strategy = if can_property_join {
+                            "property_join"
+                        } else {
+                            "sequential_join"
+                        },
+                        "planned inner join block"
+                    );
+                }
 
                 if can_property_join {
                     operator = build_property_join_block(

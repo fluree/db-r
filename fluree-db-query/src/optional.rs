@@ -542,6 +542,13 @@ impl OptionalBuilder for PlanTreeOptionalBuilder {
         // Create a seed operator from the required row
         let seed = SeedOperator::from_batch_row(required_batch, row);
 
+        tracing::debug!(
+            required_schema_cols = required_batch.schema().len(),
+            optional_pattern_count = self.inner_patterns.len(),
+            optional_only_vars = self.optional_only_vars.len(),
+            "planning correlated optional with seeded row"
+        );
+
         // Build the operator tree using build_where_operators_seeded
         // Propagate errors - planning failures should not be silently swallowed
         let op = crate::execute::build_where_operators_seeded(

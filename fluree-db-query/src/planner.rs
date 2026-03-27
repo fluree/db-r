@@ -201,19 +201,49 @@ pub(crate) fn estimate_triple_row_count(
     }
 }
 
-/// Detect property-join pattern
-///
-/// Same ?s var, multiple distinct specified predicates, object vars.
-/// Used by the planner to choose PropertyJoinOperator.
-pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
-    if patterns.len() < 2 {
-        return false;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyJoinAnalysis {
+    pub enough_patterns: bool,
+    pub subject_is_var: bool,
+    pub same_subject: bool,
+    pub predicates_bound: bool,
+    pub objects_all_vars: bool,
+    pub objects_distinct: bool,
+    pub predicates_distinct: bool,
+}
 
-    // All patterns share same subject var
-    let first_s = match &patterns[0].s {
-        Ref::Var(v) => *v,
-        _ => return false,
+impl PropertyJoinAnalysis {
+    #[inline]
+    pub fn eligible(self) -> bool {
+        self.enough_patterns
+            && self.subject_is_var
+            && self.same_subject
+            && self.predicates_bound
+            && self.objects_all_vars
+            && self.objects_distinct
+            && self.predicates_distinct
+    }
+}
+
+/// Analyze whether a block qualifies for `PropertyJoinOperator`.
+///
+/// This exposes the individual gating rules so debug instrumentation can report
+/// why a star-shaped block fell back to nested joins.
+pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis {
+    let enough_patterns = patterns.len() >= 2;
+    let first_s = match patterns.first().and_then(|p| p.s.as_var()) {
+        Some(v) => v,
+        None => {
+            return PropertyJoinAnalysis {
+                enough_patterns,
+                subject_is_var: false,
+                same_subject: false,
+                predicates_bound: patterns.iter().all(|p| p.p_bound()),
+                objects_all_vars: false,
+                objects_distinct: false,
+                predicates_distinct: false,
+            };
+        }
     };
 
     let same_subject = patterns.iter().all(|p| match &p.s {
@@ -221,22 +251,25 @@ pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
         _ => false,
     });
 
-    // All predicates are bound (not vars) - can be Ref::Sid or Ref::Iri
     let predicates_bound = patterns.iter().all(|p| p.p_bound());
 
-    // All objects are vars - not literal/SID constants, and must be distinct.
-    //
-    // PropertyJoinOperator produces one output column per predicate's object var.
-    // If object vars repeat (or equal the subject var), the shape is no longer a
-    // simple star and requires true join semantics (including object unification).
     let mut obj_vars: HashSet<VarId> = HashSet::new();
-    let objects_ok = patterns.iter().all(|p| match &p.o {
-        Term::Var(v) => *v != first_s && obj_vars.insert(*v),
-        _ => false,
-    });
+    let mut objects_all_vars = true;
+    let mut objects_distinct = true;
+    for p in patterns {
+        match &p.o {
+            Term::Var(v) => {
+                if *v == first_s || !obj_vars.insert(*v) {
+                    objects_distinct = false;
+                }
+            }
+            _ => {
+                objects_all_vars = false;
+                objects_distinct = false;
+            }
+        }
+    }
 
-    // Predicates are distinct (avoid weird duplicate shapes)
-    // Accept both Ref::Sid and Ref::Iri as distinct predicate keys
     let predicates: HashSet<String> = patterns
         .iter()
         .filter_map(|p| match &p.p {
@@ -247,7 +280,23 @@ pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
         .collect();
     let predicates_distinct = predicates.len() == patterns.len();
 
-    same_subject && predicates_bound && objects_ok && predicates_distinct
+    PropertyJoinAnalysis {
+        enough_patterns,
+        subject_is_var: true,
+        same_subject,
+        predicates_bound,
+        objects_all_vars,
+        objects_distinct,
+        predicates_distinct,
+    }
+}
+
+/// Detect property-join pattern
+///
+/// Same ?s var, multiple distinct specified predicates, object vars.
+/// Used by the planner to choose PropertyJoinOperator.
+pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
+    analyze_property_join(patterns).eligible()
 }
 
 /// Represents a range constraint extracted from a filter expression
