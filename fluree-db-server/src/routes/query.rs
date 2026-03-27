@@ -151,6 +151,20 @@ fn has_tracking_opts(query_json: &JsonValue) -> bool {
     false
 }
 
+/// Check if the query opts request identity-based policy enforcement.
+///
+/// Returns true when `opts.identity` or `opts.policy-class` is present.
+/// These fields trigger policy lookup in the connection execution path;
+/// the plain GraphDb path does not process them.
+fn has_policy_opts(query_json: &JsonValue) -> bool {
+    let Some(opts) = query_json.get("opts") else {
+        return false;
+    };
+    opts.get("identity").is_some()
+        || opts.get("policy-class").is_some()
+        || opts.get("policy").is_some()
+}
+
 /// Helper to extract ledger ID from request (for JSON-LD queries)
 fn get_ledger_id(
     path_ledger: Option<&str>,
@@ -941,6 +955,21 @@ async fn execute_query(
         if let Some(fmt) = delimited {
             return Err(ServerError::not_acceptable(format!(
                 "{} format not supported for dataset queries",
+                fmt.name().to_uppercase()
+            )));
+        }
+        return execute_dataset_query(state, ledger_id, query_json, &span)
+            .await
+            .map(IntoResponse::into_response);
+    }
+
+    // If identity-based policy enforcement is requested (opts.identity or opts.policy-class),
+    // route through the connection path which performs policy lookup and enforcement.
+    // The simple GraphDb path does not read opts.identity.
+    if has_policy_opts(query_json) {
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for identity-scoped queries",
                 fmt.name().to_uppercase()
             )));
         }

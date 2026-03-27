@@ -339,7 +339,7 @@ Each graph source can have its own policy, enabling fine-grained access control 
 - `policy-class`: Policy class IRI or array of IRIs
 - `policy`: Inline policy JSON
 - `policy-values`: Policy parameter values
-- `default-allow`: Boolean (default: false)
+- `default-allow`: Boolean (default: false). Governs access when no policies match. Ignored (forced false) if `identity` is specified but has no subject node in the ledger.
 
 **Example:**
 
