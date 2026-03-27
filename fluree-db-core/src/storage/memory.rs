@@ -236,3 +236,212 @@ impl ContentStore for MemoryContentStore {
         Ok(full[start..end].to_vec())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{decode_json, StorageContentStore};
+
+    #[tokio::test]
+    async fn test_memory_storage() {
+        let storage = MemoryStorage::new();
+        storage.insert("test/path", b"hello world".to_vec());
+
+        let bytes = storage.read_bytes("test/path").await.unwrap();
+        assert_eq!(bytes, b"hello world");
+
+        assert!(storage.exists("test/path").await.unwrap());
+        assert!(!storage.exists("nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_not_found() {
+        let storage = MemoryStorage::new();
+        let result = storage.read_bytes("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_json() {
+        let storage = MemoryStorage::new();
+
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct TestData {
+            name: String,
+            value: i32,
+        }
+
+        let data = TestData {
+            name: "test".to_string(),
+            value: 42,
+        };
+
+        storage.insert_json("test.json", &data).unwrap();
+
+        let bytes = storage.read_bytes("test.json").await.unwrap();
+        let parsed: TestData = decode_json(&bytes).unwrap();
+
+        assert_eq!(parsed, data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_write() {
+        let storage = MemoryStorage::new();
+
+        // Test StorageWrite trait
+        storage
+            .write_bytes("write/test", b"written data")
+            .await
+            .unwrap();
+
+        let bytes = storage.read_bytes("write/test").await.unwrap();
+        assert_eq!(bytes, b"written data");
+
+        // Test idempotency - writing same content again should succeed
+        storage
+            .write_bytes("write/test", b"overwritten")
+            .await
+            .unwrap();
+        let bytes = storage.read_bytes("write/test").await.unwrap();
+        assert_eq!(bytes, b"overwritten");
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_delete() {
+        let storage = MemoryStorage::new();
+        storage.insert("delete/test", b"data".to_vec());
+
+        assert!(storage.exists("delete/test").await.unwrap());
+        storage.delete("delete/test").await.unwrap();
+        assert!(!storage.exists("delete/test").await.unwrap());
+
+        // Idempotent: deleting non-existent is OK
+        storage.delete("delete/test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_list_prefix() {
+        let storage = MemoryStorage::new();
+        storage.insert("prefix/a", b"a".to_vec());
+        storage.insert("prefix/b", b"b".to_vec());
+        storage.insert("other/c", b"c".to_vec());
+
+        let mut results = storage.list_prefix("prefix/").await.unwrap();
+        results.sort();
+        assert_eq!(results, vec!["prefix/a", "prefix/b"]);
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_content_write_layout() {
+        let storage = MemoryStorage::new();
+        let bytes = br#"{"hello":"world"}"#;
+        let res = storage
+            .content_write_bytes(ContentKind::Commit, "mydb:main", bytes)
+            .await
+            .unwrap();
+
+        assert!(res.address.starts_with("fluree:memory://mydb/main/commit/"));
+        assert!(res.address.ends_with(".fcv2"));
+        assert_eq!(res.size_bytes, bytes.len());
+
+        let roundtrip = storage.read_bytes(&res.address).await.unwrap();
+        assert_eq!(roundtrip, bytes);
+    }
+
+    // ========================================================================
+    // ContentStore tests (CID-first)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_get() {
+        let store = MemoryContentStore::new();
+        let data = b"content store test";
+
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+        assert!(store.has(&id).await.unwrap());
+
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_not_found() {
+        let store = MemoryContentStore::new();
+        let fake_id = ContentId::new(ContentKind::Commit, b"nonexistent");
+        assert!(!store.has(&fake_id).await.unwrap());
+        assert!(store.get(&fake_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id() {
+        let store = MemoryContentStore::new();
+        let data = b"verified content";
+        let id = ContentId::new(ContentKind::Txn, data);
+
+        // Correct bytes should succeed
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id_rejects_mismatch() {
+        let store = MemoryContentStore::new();
+        let id = ContentId::new(ContentKind::Txn, b"original");
+
+        // Wrong bytes should be rejected
+        let result = store.put_with_id(&id, b"tampered").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("CID verification failed"));
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_roundtrip() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage.clone(), "mydb:main", "memory");
+
+        let data = b"bridge test data";
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+
+        // Should be retrievable via ContentStore
+        assert!(store.has(&id).await.unwrap());
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let data = b"bridge put_with_id test";
+        let id = ContentId::new(ContentKind::IndexRoot, data);
+
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id_rejects_mismatch() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let id = ContentId::new(ContentKind::IndexRoot, b"real data");
+        let result = store.put_with_id(&id, b"fake data").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_cid_matches_content_id_new() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "test:main", "memory");
+
+        let data = b"cid consistency check";
+        let id_from_store = store.put(ContentKind::Commit, data).await.unwrap();
+        let id_from_new = ContentId::new(ContentKind::Commit, data);
+
+        assert_eq!(id_from_store, id_from_new);
+    }
+}
