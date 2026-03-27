@@ -24,7 +24,7 @@ use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
 use crate::{policy_builder, ApiError, NameService, Result, Storage};
 use fluree_db_core::storage::content_store_for;
-use fluree_db_core::{ContentId, ContentStore, FlakeValue, NoOverlay, OverlayProvider, Tracker};
+use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider, Tracker};
 use fluree_db_novelty::commit_v2::read_commit;
 use fluree_db_novelty::Commit;
 use fluree_db_query::QueryPolicyEnforcer;
