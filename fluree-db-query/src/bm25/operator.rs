@@ -253,9 +253,18 @@ impl Bm25SearchOperator {
                         let val = gv
                             .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             .map_err(|e| {
-                                crate::error::QueryError::Internal(format!(
-                                    "decode EncodedLit for BM25: {}",
-                                    e
+                                tracing::info!(
+                                    o_kind,
+                                    o_key,
+                                    p_id,
+                                    dt_id,
+                                    lang_id,
+                                    error = %e,
+                                    "[DIAG] BM25 failed to decode encoded literal target"
+                                );
+                                crate::error::QueryError::dictionary_lookup(format!(
+                                    "BM25 target decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
+                                    o_kind, o_key, p_id, dt_id, lang_id, e
                                 ))
                             })?;
                         Ok(Some(val.to_string()))
@@ -282,7 +291,17 @@ impl Bm25SearchOperator {
                     // Novelty-aware: use graph_view() for subject resolution.
                     match ctx.resolve_subject_iri(*s_id) {
                         Some(Ok(iri)) => Ok(Some(iri)),
-                        Some(Err(_)) | None => Ok(None),
+                        Some(Err(e)) => {
+                            tracing::info!(
+                                s_id,
+                                error = %e,
+                                "[DIAG] BM25 failed to resolve encoded subject target"
+                            );
+                            Err(crate::error::QueryError::dictionary_lookup(format!(
+                                "BM25 target subject lookup: s_id={s_id}: {e}"
+                            )))
+                        }
+                        None => Ok(None),
                     }
                 }
                 Some(Binding::EncodedPid { p_id }) => {

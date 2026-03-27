@@ -157,7 +157,10 @@ async fn agent_json_truncation() {
     let row_count = obj["rowCount"].as_u64().unwrap() as usize;
     let rows = obj["rows"].as_array().unwrap();
     assert_eq!(rows.len(), row_count);
-    assert!(row_count < 3, "should have fewer than 3 rows due to truncation");
+    assert!(
+        row_count < 3,
+        "should have fewer than 3 rows due to truncation"
+    );
 }
 
 // ============================================================================

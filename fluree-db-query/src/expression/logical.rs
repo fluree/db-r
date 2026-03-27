@@ -73,13 +73,18 @@ pub fn eval_in<R: RowAccess>(
     let test_val = args[0].eval_to_comparable(row, ctx)?;
     match test_val {
         Some(tv) => {
-            let found = args[1..].iter().any(|v| {
-                v.eval_to_comparable(row, ctx)
-                    .ok()
-                    .flatten()
-                    .map(|cv| cv == tv)
-                    .unwrap_or(false)
-            });
+            let mut found = false;
+            for v in &args[1..] {
+                match v.eval_to_comparable(row, ctx) {
+                    Ok(Some(cv)) if cv == tv => {
+                        found = true;
+                        break;
+                    }
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(err) if err.can_demote_in_expression() => {}
+                    Err(err) => return Err(err),
+                }
+            }
             Ok(Some(ComparableValue::Bool(found)))
         }
         None => Ok(Some(ComparableValue::Bool(false))), // Unbound value -> not in list
@@ -102,13 +107,18 @@ pub fn eval_not_in<R: RowAccess>(
     let test_val = args[0].eval_to_comparable(row, ctx)?;
     match test_val {
         Some(tv) => {
-            let found = args[1..].iter().any(|v| {
-                v.eval_to_comparable(row, ctx)
-                    .ok()
-                    .flatten()
-                    .map(|cv| cv == tv)
-                    .unwrap_or(false)
-            });
+            let mut found = false;
+            for v in &args[1..] {
+                match v.eval_to_comparable(row, ctx) {
+                    Ok(Some(cv)) if cv == tv => {
+                        found = true;
+                        break;
+                    }
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(err) if err.can_demote_in_expression() => {}
+                    Err(err) => return Err(err),
+                }
+            }
             Ok(Some(ComparableValue::Bool(!found)))
         }
         None => Ok(Some(ComparableValue::Bool(true))), // Unbound value -> not in list (vacuously true)

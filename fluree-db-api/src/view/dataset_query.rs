@@ -565,6 +565,19 @@ where
             (None, None, None, None)
         };
 
+        tracing::info!(
+            primary_ledger = %primary.ledger_id,
+            default_graphs = dataset.default.len(),
+            named_graphs = dataset.named.len(),
+            is_single_ledger_dataset,
+            has_binary_store = binary_store.is_some(),
+            has_dict_novelty = dict_novelty.is_some(),
+            history_mode,
+            from_t = ?from_t,
+            to_t = to_t,
+            "[DIAG] dataset tracked execution configuration"
+        );
+
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
                 Some(tracker)

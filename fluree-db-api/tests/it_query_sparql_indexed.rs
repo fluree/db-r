@@ -18,7 +18,7 @@ use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::{
     assert_index_defaults, genesis_ledger_for_fluree, normalize_rows_array,
-    start_background_indexer_local, trigger_index_and_wait_outcome,
+    normalize_sparql_bindings, start_background_indexer_local, trigger_index_and_wait_outcome,
 };
 
 type MemoryFluree = fluree_db_api::Fluree<MemoryStorage, MemoryNameService>;
@@ -1114,6 +1114,202 @@ async fn indexed_novelty_only_string_object_returns_data() {
                 1,
                 "indexed string 'Alice' should still match; got: {jsonld:?}"
             );
+        })
+        .await;
+}
+
+/// Regression: SPARQL string functions must work on indexed strings and
+/// novelty-overlay strings after the binary index is attached.
+///
+/// Equality on encoded strings already has dedicated indexed coverage. This
+/// test specifically exercises function evaluation, which forces late decode /
+/// materialization of `Binding::EncodedLit` values.
+#[tokio::test]
+async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-string-functions:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:name": "Alice Adams"},
+                    {"@id": "ex:bob", "ex:name": "Bob Builder"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let overlay_insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:brian", "ex:name": "Brian Platz"}
+                ]
+            });
+            let result = fluree
+                .insert(ledger, &overlay_insert)
+                .await
+                .expect("overlay insert");
+            let _ledger = result.ledger;
+
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            let indexed_contains = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(CONTAINS(?name, "Alice"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(indexed_contains))
+                .await
+                .expect("indexed CONTAINS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Alice Adams")]]
+            );
+
+            let overlay_equality = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_equality))
+                .await
+                .expect("overlay equality query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_contains = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(CONTAINS(?name, "Brian"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_contains))
+                .await
+                .expect("overlay CONTAINS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_regex = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(REGEX(?name, "brian", "i"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_regex))
+                .await
+                .expect("overlay REGEX query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_strstarts = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(STRSTARTS(?name, "Brian"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_strstarts))
+                .await
+                .expect("overlay STRSTARTS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_strlen = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name (STRLEN(?name) AS ?len)
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_strlen))
+                .await
+                .expect("overlay STRLEN query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz"), json!(11)]]
+            );
+
+            let overlay_lcase = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (LCASE(?name) AS ?lower)
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_lcase))
+                .await
+                .expect("overlay LCASE query");
+            let sparql_json = result
+                .to_sparql_json(&view.snapshot)
+                .expect("to_sparql_json");
+            let bindings = normalize_sparql_bindings(&sparql_json);
+            assert_eq!(bindings.len(), 1, "LCASE should bind one row");
+            assert_eq!(bindings[0]["lower"]["value"], json!("brian platz"));
         })
         .await;
 }

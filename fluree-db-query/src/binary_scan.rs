@@ -135,6 +135,34 @@ fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
     })
 }
 
+#[inline]
+fn expr_has_string_function(expr: &Expression) -> bool {
+    match expr {
+        Expression::Call { func, args } => {
+            matches!(
+                func,
+                Function::Contains
+                    | Function::Regex
+                    | Function::StrStarts
+                    | Function::Strlen
+                    | Function::Lcase
+                    | Function::Ucase
+                    | Function::Str
+                    | Function::StrEnds
+            ) || args.iter().any(expr_has_string_function)
+        }
+        Expression::Exists { .. } | Expression::Var(_) | Expression::Const(_) => false,
+    }
+}
+
+#[inline]
+fn inline_ops_have_string_function(ops: &[InlineOperator]) -> bool {
+    ops.iter().any(|op| match op {
+        InlineOperator::Filter(expr) => expr_has_string_function(expr),
+        InlineOperator::Bind { expr, .. } => expr_has_string_function(expr),
+    })
+}
+
 // `translate_overlay_flakes` lives below, after BinaryScanOperator.
 
 /// Public type alias — `ScanOperator` is the sole scan implementation.
@@ -977,6 +1005,7 @@ impl BinaryScanOperator {
                 }
             };
 
+        let has_string_fn_inline = inline_ops_have_string_function(&self.inline_ops);
         for row in 0..batch.row_count {
             let s_id = batch.s_id.get(row);
             let p_id = batch.p_id.get_or(row, 0);
@@ -1113,7 +1142,9 @@ impl BinaryScanOperator {
                         }
                     }
                 } else {
-                    encode_object(o_type, o_key, p_id, t_enc, o_i).unwrap_or_else(|| {
+                    if let Some(encoded) = encode_object(o_type, o_key, p_id, t_enc, o_i) {
+                        encoded
+                    } else {
                         // Fallback: decode if we don't have a safe encoded representation.
                         // This preserves correctness for uncommon/custom OTypes.
                         match decode_value(o_type, o_key, p_id) {
@@ -1136,9 +1167,14 @@ impl BinaryScanOperator {
                                     p_id: Some(p_id),
                                 }
                             }
-                            Err(_) => Binding::Unbound,
+                            Err(e) => {
+                                return Err(QueryError::dictionary_lookup(format!(
+                                    "binary scan object decode fallback failed: o_type={}, o_key={}, p_id={}: {}",
+                                    o_type, o_key, p_id, e
+                                )));
+                            }
                         }
-                    })
+                    }
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
@@ -1155,6 +1191,15 @@ impl BinaryScanOperator {
                 columns[i].push(binding);
             }
             produced += 1;
+        }
+
+        if has_string_fn_inline && batch.row_count > 0 && produced == 0 {
+            tracing::info!(
+                input_rows = batch.row_count,
+                encoded_prefilters = self.encoded_pre_filters.len(),
+                remaining_inline_ops = self.inline_ops.len(),
+                "[DIAG] binary scan batch produced no rows with string-function inline ops"
+            );
         }
 
         Ok(produced)
@@ -1718,6 +1763,8 @@ impl Operator for BinaryScanOperator {
         self.state = OperatorState::Open;
 
         // Compile pre-filters that can run on encoded columns (no decoding).
+        let had_string_fn_inline = inline_ops_have_string_function(&self.inline_ops);
+        let original_inline_ops = self.inline_ops.len();
         let (encoded, pruned) = compile_encoded_pre_filters_and_prune_inline_ops(
             &self.inline_ops,
             &self.pattern,
@@ -1725,6 +1772,18 @@ impl Operator for BinaryScanOperator {
         );
         self.encoded_pre_filters = encoded;
         self.inline_ops = pruned;
+
+        if had_string_fn_inline {
+            tracing::info!(
+                g_id = self.g_id,
+                index = ?self.index,
+                original_inline_ops,
+                encoded_prefilters = self.encoded_pre_filters.len(),
+                remaining_inline_ops = self.inline_ops.len(),
+                pattern = ?self.pattern,
+                "[DIAG] BinaryScanOperator opened with string-function inline ops"
+            );
+        }
 
         tracing::debug!(
             index = ?self.index,

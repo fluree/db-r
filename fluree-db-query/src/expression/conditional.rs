@@ -36,7 +36,9 @@ pub fn eval_coalesce<R: RowAccess>(
     for arg in args {
         match arg.eval_to_comparable(row, ctx) {
             Ok(Some(val)) => return Ok(Some(val)),
-            Ok(None) | Err(_) => continue,
+            Ok(None) => continue,
+            Err(err) if err.can_demote_in_expression() => continue,
+            Err(err) => return Err(err),
         }
     }
     Ok(None)

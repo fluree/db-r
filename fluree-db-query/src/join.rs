@@ -484,7 +484,7 @@ impl NestedLoopJoinOperator {
         left_batch: &Batch,
         left_row: usize,
         gv: Option<&BinaryGraphView>,
-    ) -> TriplePattern {
+    ) -> Result<TriplePattern> {
         let mut pattern = self.right_pattern.clone();
 
         for instr in &self.bind_instructions {
@@ -503,9 +503,17 @@ impl NestedLoopJoinOperator {
                         Binding::EncodedSid { s_id } => {
                             // Resolve encoded s_id to IRI (novelty-aware via BinaryGraphView)
                             if let Some(gv) = gv {
-                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
-                                    pattern.s = Ref::Iri(Arc::from(iri));
-                                }
+                                let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
+                                    tracing::info!(
+                                        s_id,
+                                        error = %e,
+                                        "[DIAG] join failed to resolve encoded subject binding"
+                                    );
+                                    QueryError::dictionary_lookup(format!(
+                                        "join subject binding: resolve subject IRI for s_id={s_id}: {e}"
+                                    ))
+                                })?;
+                                pattern.s = Ref::Iri(Arc::from(iri));
                             }
                             // Otherwise leave as variable
                         }
@@ -536,9 +544,17 @@ impl NestedLoopJoinOperator {
                             // Allow cross-position reuse: an IRI bound as a subject/object can
                             // be used to bind a predicate position. Resolve via subject dict.
                             if let Some(gv) = gv {
-                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
-                                    pattern.p = Ref::Iri(Arc::from(iri));
-                                }
+                                let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
+                                    tracing::info!(
+                                        s_id,
+                                        error = %e,
+                                        "[DIAG] join failed to resolve encoded predicate binding via subject dictionary"
+                                    );
+                                    QueryError::dictionary_lookup(format!(
+                                        "join predicate binding via subject lookup: s_id={s_id}: {e}"
+                                    ))
+                                })?;
+                                pattern.p = Ref::Iri(Arc::from(iri));
                             }
                             // Otherwise leave as variable
                         }
@@ -581,20 +597,41 @@ impl NestedLoopJoinOperator {
                             // — dt_id is a DatatypeDictId, NOT an o_type. p_id is needed for
                             // NUM_BIG per-predicate arena lookup.
                             if let Some(gv) = gv {
-                                if let Ok(val) = gv.decode_value_from_kind(
-                                    *o_kind, *o_key, *p_id, *dt_id, *lang_id,
-                                ) {
-                                    pattern.o = Term::Value(val);
-                                }
+                                let val = gv
+                                    .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
+                                    .map_err(|e| {
+                                        tracing::info!(
+                                            o_kind,
+                                            o_key,
+                                            p_id,
+                                            dt_id,
+                                            lang_id,
+                                            error = %e,
+                                            "[DIAG] join failed to decode encoded object binding"
+                                        );
+                                        QueryError::dictionary_lookup(format!(
+                                            "join object binding decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
+                                            o_kind, o_key, p_id, dt_id, lang_id, e
+                                        ))
+                                    })?;
+                                pattern.o = Term::Value(val);
                             }
                             // Otherwise leave as variable
                         }
                         Binding::EncodedSid { s_id } => {
                             // Resolve encoded s_id to IRI (novelty-aware)
                             if let Some(gv) = gv {
-                                if let Ok(iri) = gv.resolve_subject_iri(*s_id) {
-                                    pattern.o = Term::Iri(Arc::from(iri));
-                                }
+                                let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
+                                    tracing::info!(
+                                        s_id,
+                                        error = %e,
+                                        "[DIAG] join failed to resolve encoded object subject binding"
+                                    );
+                                    QueryError::dictionary_lookup(format!(
+                                        "join object subject lookup: s_id={s_id}: {e}"
+                                    ))
+                                })?;
+                                pattern.o = Term::Iri(Arc::from(iri));
                             }
                             // Otherwise leave as variable
                         }
@@ -620,7 +657,7 @@ impl NestedLoopJoinOperator {
             }
         }
 
-        pattern
+        Ok(pattern)
     }
 
     /// Check if left row bindings match right row bindings for shared vars
@@ -892,7 +929,7 @@ impl Operator for NestedLoopJoinOperator {
                         left_batch,
                         left_row,
                         cached_gv.as_ref(),
-                    );
+                    )?;
                     let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
                     let mut right_scan =
                         make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
@@ -912,7 +949,7 @@ impl Operator for NestedLoopJoinOperator {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
                 let bound_pattern =
-                    self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref());
+                    self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref())?;
                 let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
                 let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
                 right_scan.open(ctx).await?;
@@ -1079,7 +1116,7 @@ impl NestedLoopJoinOperator {
 
             let bound_pattern = {
                 let left_batch = &self.stored_left_batches[batch_idx];
-                self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref())
+                self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref())?
             };
             let left_batch = &self.stored_left_batches[batch_idx];
             let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;

@@ -163,11 +163,13 @@ impl Operator for BindOperator {
             for row_idx in 0..input_batch.len() {
                 let row_view = input_batch.row_view(row_idx).unwrap();
 
-                // Evaluate expression (errors become Unbound)
+                // Evaluate expression. Non-strict mode still propagates fatal
+                // execution issues such as dictionary lookup failures.
                 let computed = if ctx.strict_bind_errors {
                     self.expr.try_eval_to_binding(&row_view, Some(ctx))?
                 } else {
-                    self.expr.eval_to_binding(&row_view, Some(ctx))
+                    self.expr
+                        .try_eval_to_binding_non_strict(&row_view, Some(ctx))?
                 };
 
                 // Check clobber prevention if variable already exists
@@ -202,7 +204,7 @@ impl Operator for BindOperator {
                     } else {
                         filter_row[self.var_position] = computed.clone();
                     }
-                    if !passes_filters(&self.filters, &self.in_schema, &filter_row, Some(ctx)) {
+                    if !passes_filters(&self.filters, &self.in_schema, &filter_row, Some(ctx))? {
                         continue;
                     }
                 }

@@ -289,35 +289,52 @@ impl PropertyJoinOperator {
         }
     }
 
-    fn subject_key_multi(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
-        match subject {
+    fn subject_key_multi(
+        ctx: &ExecutionContext<'_>,
+        subject: &Binding,
+    ) -> Result<Option<SubjectKey>> {
+        Ok(match subject {
             Binding::IriMatch { iri, .. } => Some(SubjectKey::Iri(iri.clone())),
             Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
             Binding::Sid(sid) => {
                 // In dataset mode, use canonical IRI strings as join keys.
                 // Prefer decoding within the active ledger when available.
-                let iri = ctx
+                let Some(iri) = ctx
                     .active_ledger_id()
                     .and_then(|addr| ctx.decode_sid_in_ledger(sid, addr))
-                    .or_else(|| ctx.decode_sid(sid))?;
+                    .or_else(|| ctx.decode_sid(sid))
+                else {
+                    return Ok(None);
+                };
                 Some(SubjectKey::Iri(Arc::from(iri)))
             }
             Binding::EncodedSid { s_id } => {
                 // Resolve to canonical IRI for cross-ledger comparison.
                 // Novelty-aware via ctx.resolve_subject_iri().
-                ctx.resolve_subject_iri(*s_id)
-                    .and_then(|r| r.ok())
-                    .map(|iri| SubjectKey::Iri(Arc::from(iri)))
+                match ctx.resolve_subject_iri(*s_id) {
+                    Some(Ok(iri)) => Some(SubjectKey::Iri(Arc::from(iri))),
+                    Some(Err(e)) => {
+                        tracing::info!(
+                            s_id,
+                            error = %e,
+                            "[DIAG] property join failed to resolve encoded subject"
+                        );
+                        return Err(crate::error::QueryError::dictionary_lookup(format!(
+                            "property join subject key: resolve subject IRI for s_id={s_id}: {e}"
+                        )));
+                    }
+                    None => None,
+                }
             }
             _ => None,
-        }
+        })
     }
 
-    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
+    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Result<Option<SubjectKey>> {
         if ctx.is_multi_ledger() {
             Self::subject_key_multi(ctx, subject)
         } else {
-            Self::subject_key_single(subject)
+            Ok(Self::subject_key_single(subject))
         }
     }
 
@@ -554,7 +571,7 @@ impl Operator for PropertyJoinOperator {
                                         scan_rows_total += batch.len() as u64;
                                         for (subject, object) in subjects.iter().zip(objects.iter())
                                         {
-                                            if let Some(key) = Self::subject_key(ctx, subject) {
+                                            if let Some(key) = Self::subject_key(ctx, subject)? {
                                                 if let Some(entry) =
                                                     all_subject_values.get_mut(&key)
                                                 {
@@ -623,7 +640,7 @@ impl Operator for PropertyJoinOperator {
                         if emit_obj {
                             if let Some(objects) = object_col {
                                 for (subject, object) in subjects.iter().zip(objects.iter()) {
-                                    if let Some(key) = Self::subject_key(ctx, subject) {
+                                    if let Some(key) = Self::subject_key(ctx, subject)? {
                                         if order_pos > 0 && !all_subject_values.is_empty() {
                                             if let Some(entry) = all_subject_values.get_mut(&key) {
                                                 entry.1 |= 1u64 << pred_idx;
@@ -653,7 +670,7 @@ impl Operator for PropertyJoinOperator {
                             // Existence-only: only update presence bit for subjects already tracked,
                             // unless this is the first scan (map empty) where we can seed subjects.
                             for subject in subjects.iter() {
-                                if let Some(key) = Self::subject_key(ctx, subject) {
+                                if let Some(key) = Self::subject_key(ctx, subject)? {
                                     if order_pos > 0 && !all_subject_values.is_empty() {
                                         if let Some(entry) = all_subject_values.get_mut(&key) {
                                             entry.1 |= 1u64 << pred_idx;
