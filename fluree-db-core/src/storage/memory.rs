@@ -3,16 +3,18 @@
 //! Provides [`MemoryStorage`] (implements the low-level storage traits) and
 //! [`MemoryContentStore`] (a CID-based content store backed by a `HashMap`).
 
-use crate::error::Result;
-use crate::ContentWriteResult;
-use crate::StorageMethod;
-use crate::{
-    content_address, CasAction, CasOutcome, ContentAddressedWrite, ContentId, ContentKind,
-    ContentStore, StorageCas, StorageExtError, StorageExtResult, StorageRead, StorageWrite,
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use std::sync::Arc;
+
+use crate::error::Result;
+use crate::{
+    content_address, CasAction, CasOutcome, ContentAddressedWrite, ContentId, ContentKind,
+    ContentStore, ContentWriteResult, StorageCas, StorageExtError, StorageExtResult, StorageMethod,
+    StorageRead, StorageWrite,
+};
 
 /// Storage method for in-memory storage.
 pub const STORAGE_METHOD_MEMORY: &str = "memory";
@@ -23,7 +25,7 @@ pub const STORAGE_METHOD_MEMORY: &str = "memory";
 /// (via `Arc<RwLock<...>>`) to support both reading and writing.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
-    data: Arc<RwLock<std::collections::HashMap<String, Vec<u8>>>>,
+    data: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl Default for MemoryStorage {
@@ -176,7 +178,7 @@ impl StorageCas for MemoryStorage {
 /// This is the CID-first counterpart to [`MemoryStorage`].
 #[derive(Debug, Clone)]
 pub struct MemoryContentStore {
-    data: Arc<RwLock<std::collections::HashMap<ContentId, Vec<u8>>>>,
+    data: Arc<RwLock<HashMap<ContentId, Vec<u8>>>>,
 }
 
 impl Default for MemoryContentStore {

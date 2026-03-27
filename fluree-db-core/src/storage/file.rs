@@ -15,19 +15,13 @@ use std::path::PathBuf;
 /// Storage method for local filesystem storage.
 pub const STORAGE_METHOD_FILE: &str = "file";
 
-/// File-based storage for reading index files from disk (native targets only).
-///
-/// This implementation is intentionally behind the `native` feature because it
-/// depends on filesystem access and `tokio::fs`. WASM callers are expected to
-/// provide their own `StorageRead` implementation (e.g., fetch-based).
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+/// File-based storage backed by `tokio::fs`.
 #[derive(Debug, Clone)]
 pub struct FileStorage {
     /// Base directory for index files
     base_path: std::path::PathBuf,
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 impl FileStorage {
     /// Create a new file storage with the given base path
     ///
@@ -97,7 +91,6 @@ impl FileStorage {
     }
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl StorageRead for FileStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
@@ -272,7 +265,6 @@ impl StorageRead for FileStorage {
     }
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl StorageWrite for FileStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
@@ -310,14 +302,12 @@ impl StorageWrite for FileStorage {
     }
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 impl StorageMethod for FileStorage {
     fn storage_method(&self) -> &str {
         STORAGE_METHOD_FILE
     }
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl ContentAddressedWrite for FileStorage {
     async fn content_write_bytes_with_hash(
@@ -337,7 +327,6 @@ impl ContentAddressedWrite for FileStorage {
     }
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 impl FileStorage {
     /// Atomic file insert inside `spawn_blocking`.
     ///
@@ -477,13 +466,11 @@ impl FileStorage {
 ///
 /// The lock is released when this struct is dropped (the `_lock_file` field's
 /// `Drop` impl calls `flock(LOCK_UN)`).
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 struct LockedFile {
     path: PathBuf,
     _lock_file: std::fs::File,
 }
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl StorageCas for FileStorage {
     async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
