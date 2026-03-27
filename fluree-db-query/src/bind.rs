@@ -16,13 +16,33 @@ use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::expression::passes_filters;
-use crate::ir::Expression;
+use crate::ir::{Expression, Function};
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
+
+fn diag_string_function_name(expr: &Expression) -> Option<&'static str> {
+    match expr {
+        Expression::Call { func, .. } => match func {
+            Function::Str => Some("STR"),
+            Function::Lcase => Some("LCASE"),
+            Function::Ucase => Some("UCASE"),
+            Function::Strlen => Some("STRLEN"),
+            Function::Contains => Some("CONTAINS"),
+            Function::StrStarts => Some("STRSTARTS"),
+            Function::StrEnds => Some("STRENDS"),
+            Function::Regex => Some("REGEX"),
+            Function::Concat => Some("CONCAT"),
+            Function::StrBefore => Some("STRBEFORE"),
+            Function::StrAfter => Some("STRAFTER"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 /// BIND operator - evaluates expression and binds to variable
 ///
@@ -171,6 +191,20 @@ impl Operator for BindOperator {
                     self.expr
                         .try_eval_to_binding_non_strict(&row_view, Some(ctx))?
                 };
+                if matches!(computed, Binding::Unbound) {
+                    if let Some(name) = diag_string_function_name(&self.expr) {
+                        tracing::info!(
+                            function = name,
+                            row_idx,
+                            strict_bind_errors = ctx.strict_bind_errors,
+                            is_new_var = self.is_new_var,
+                            child_schema_width = child_num_cols,
+                            output_schema_width = num_output_cols,
+                            has_binary_store = ctx.binary_store.is_some(),
+                            "[DIAG] BindOperator produced Unbound for string expression"
+                        );
+                    }
+                }
 
                 // Check clobber prevention if variable already exists
                 let keep_row = if self.is_new_var {

@@ -16,6 +16,10 @@ use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
 use crate::parse::UnresolvedDatatypeConstraint;
 
+fn comparable_diag_type(value: &ComparableValue) -> &'static str {
+    value.type_name()
+}
+
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
 /// Handles both materialized (`Lit`) and binary-store (`EncodedLit`) bindings.
@@ -156,11 +160,20 @@ pub fn eval_strlen<R: RowAccess>(
                 };
                 Ok(Some(ComparableValue::Long(len as i64)))
             }
-            None => Err(QueryError::InvalidFilter(
-                "STRLEN requires a string argument".to_string(),
-            )),
+            None => {
+                tracing::info!(
+                    input_type = comparable_diag_type(&v),
+                    "[DIAG] STRLEN received non-string comparable value"
+                );
+                Err(QueryError::InvalidFilter(
+                    "STRLEN requires a string argument".to_string(),
+                ))
+            }
         },
-        None => Ok(None),
+        None => {
+            tracing::info!("[DIAG] STRLEN input evaluated to None");
+            Ok(None)
+        }
     }
 }
 
@@ -176,10 +189,22 @@ pub fn eval_contains<R: RowAccess>(
         (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => {
             Ok(Some(ComparableValue::Bool(h.contains(n.as_ref()))))
         }
-        (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
-            "CONTAINS requires string arguments".to_string(),
-        )),
+        (None, _) | (_, None) => {
+            tracing::info!("[DIAG] CONTAINS argument evaluated to None");
+            Ok(None)
+        }
+        (Some(h), Some(n)) => {
+            tracing::info!(
+                haystack_type = comparable_diag_type(&h),
+                haystack_has_str = h.as_str().is_some(),
+                needle_type = comparable_diag_type(&n),
+                needle_has_str = n.as_str().is_some(),
+                "[DIAG] CONTAINS received non-string comparable values"
+            );
+            Err(QueryError::InvalidFilter(
+                "CONTAINS requires string arguments".to_string(),
+            ))
+        }
     }
 }
 
@@ -249,10 +274,23 @@ pub fn eval_regex<R: RowAccess>(
             let re = build_regex_with_flags(&p, &flags)?;
             Ok(Some(ComparableValue::Bool(re.is_match(&t))))
         }
-        (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(
-            "REGEX requires string arguments".to_string(),
-        )),
+        (None, _) | (_, None) => {
+            tracing::info!("[DIAG] REGEX argument evaluated to None");
+            Ok(None)
+        }
+        (Some(t), Some(p)) => {
+            tracing::info!(
+                text_type = comparable_diag_type(&t),
+                text_has_str = t.as_str().is_some(),
+                pattern_type = comparable_diag_type(&p),
+                pattern_has_str = p.as_str().is_some(),
+                flags = %flags,
+                "[DIAG] REGEX received non-string comparable values"
+            );
+            Err(QueryError::InvalidFilter(
+                "REGEX requires string arguments".to_string(),
+            ))
+        }
     }
 }
 

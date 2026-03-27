@@ -9,11 +9,31 @@ use super::value::ComparableValue;
 use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FilterValue};
+use crate::ir::{Expression, FilterValue, Function};
 use crate::var_registry::VarId;
 use std::sync::Arc;
 
 impl Expression {
+    fn diag_string_function_name(&self) -> Option<&'static str> {
+        match self {
+            Expression::Call { func, .. } => match func {
+                Function::Str => Some("STR"),
+                Function::Lcase => Some("LCASE"),
+                Function::Ucase => Some("UCASE"),
+                Function::Strlen => Some("STRLEN"),
+                Function::Contains => Some("CONTAINS"),
+                Function::StrStarts => Some("STRSTARTS"),
+                Function::StrEnds => Some("STRENDS"),
+                Function::Regex => Some("REGEX"),
+                Function::Concat => Some("CONCAT"),
+                Function::StrBefore => Some("STRBEFORE"),
+                Function::StrAfter => Some("STRAFTER"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn decode_lookup_error(
         kind: &'static str,
         details: impl Into<String>,
@@ -95,6 +115,17 @@ impl Expression {
                     let Some(decoded) = ctx.and_then(|c| {
                         c.decode_encoded_value(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                     }) else {
+                        tracing::info!(
+                            var = %var.0,
+                            has_ctx = ctx.is_some(),
+                            has_binary_store = ctx.is_some_and(|c| c.binary_store.is_some()),
+                            o_kind,
+                            o_key,
+                            p_id,
+                            dt_id,
+                            lang_id,
+                            "[DIAG] encoded literal comparable evaluation returned None before decode"
+                        );
                         return Ok(None);
                     };
                     let val = decoded.map_err(|e| {
@@ -107,7 +138,20 @@ impl Expression {
                             e,
                         )
                     })?;
-                    Ok(ComparableValue::try_from(&val).ok())
+                    let comparable = ComparableValue::try_from(&val).ok();
+                    if comparable.is_none() {
+                        tracing::info!(
+                            var = %var.0,
+                            decoded = ?val,
+                            o_kind,
+                            o_key,
+                            p_id,
+                            dt_id,
+                            lang_id,
+                            "[DIAG] decoded encoded literal had no comparable representation"
+                        );
+                    }
+                    Ok(comparable)
                 }
                 Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
                 Some(Binding::IriMatch { iri, .. }) => {
@@ -221,6 +265,14 @@ impl Expression {
                 // This covers: unbound variables, type mismatches that
                 // return Ok(None) per W3C SPARQL §17.3, and functions
                 // like vector/fulltext that return None for undefined cases.
+                if let Some(name) = self.diag_string_function_name() {
+                    tracing::info!(
+                        function = name,
+                        has_ctx = ctx.is_some(),
+                        has_binary_store = ctx.is_some_and(|c| c.binary_store.is_some()),
+                        "[DIAG] string expression evaluated to None and became Unbound"
+                    );
+                }
                 return Ok(Binding::Unbound);
             }
             Err(err) => return Err(err),
