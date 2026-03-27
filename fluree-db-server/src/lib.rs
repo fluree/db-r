@@ -91,7 +91,11 @@ impl FlureeServer {
         // Pre-load all ledgers into the LRU cache so the first query
         // against each ledger doesn't pay the cold-start penalty (loading
         // the binary index root from CAS, deserializing dicts, etc.).
-        Self::preload_all_ledgers(&state).await;
+        if state.config.no_preload {
+            info!("Ledger preload disabled (--no-preload)");
+        } else {
+            Self::preload_all_ledgers(&state).await;
+        }
 
         let router = routes::build_router(state.clone());
 

@@ -61,6 +61,7 @@ pub struct ServerFileConfig {
     pub cors_enabled: Option<bool>,
     pub body_limit: Option<usize>,
     pub cache_max_mb: Option<usize>,
+    pub no_preload: Option<bool>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -469,6 +470,11 @@ pub fn apply_to_server_config(
     if is_default("cache_max_mb") {
         if let Some(v) = file.cache_max_mb {
             config.cache_max_mb = Some(v);
+        }
+    }
+    if is_default("no_preload") {
+        if let Some(v) = file.no_preload {
+            config.no_preload = v;
         }
     }
 

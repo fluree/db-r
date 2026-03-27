@@ -412,6 +412,15 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_CACHE_MAX_MB")]
     pub cache_max_mb: Option<usize>,
 
+    /// Skip ledger preload at startup.
+    ///
+    /// By default the server eagerly loads all ledgers into cache on startup to
+    /// avoid cold-start latency on the first query. In memory-constrained
+    /// environments (containers, Fargate) with many or large ledgers, this can
+    /// cause OOM. Use this flag to defer loading until the first query.
+    #[arg(long, env = "FLUREE_NO_PRELOAD")]
+    pub no_preload: bool,
+
     /// Request body size limit in bytes (default 50MB)
     #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
     pub body_limit: usize,
@@ -638,6 +647,7 @@ impl Default for ServerConfig {
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
             reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
             cache_max_mb: None,
+            no_preload: false,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,
             log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,
