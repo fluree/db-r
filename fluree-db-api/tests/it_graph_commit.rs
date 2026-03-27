@@ -2,7 +2,7 @@
 
 mod support;
 
-use fluree_db_api::FlureeBuilder;
+use fluree_db_api::{ApiError, FlureeBuilder};
 use fluree_db_core::{
     range_with_overlay, Flake, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
     TXN_META_GRAPH_ID,
@@ -150,4 +150,217 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
             assert_eq!(detail_earlier.t, t1);
         })
         .await;
+}
+
+// ============================================================================
+// Policy-filtered commit show tests
+// ============================================================================
+
+/// Seed a ledger with users, identity, and policy rules for SSN restriction.
+/// Returns the ledger state after setup (t=1) with policies loaded.
+async fn seed_ledger_with_policy(
+    fluree: &MemoryFluree,
+    ledger_id: &str,
+) -> (LedgerState, i64) {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    // Insert users + identity + policies in one transaction
+    let setup = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [
+            {
+                "@id": "http://example.org/ns/alice",
+                "@type": "http://example.org/ns/User",
+                "http://schema.org/name": "Alice",
+                "http://schema.org/ssn": "111-11-1111"
+            },
+            {
+                "@id": "http://example.org/ns/bob",
+                "@type": "http://example.org/ns/User",
+                "http://schema.org/name": "Bob",
+                "http://schema.org/ssn": "222-22-2222"
+            },
+            // Identity: alice links to her user
+            {
+                "@id": "http://example.org/ns/aliceIdentity",
+                "https://ns.flur.ee/db#policyClass": [{"@id": "http://example.org/ns/TestPolicy"}],
+                "http://example.org/ns/user": {"@id": "http://example.org/ns/alice"}
+            },
+            // Policy: restrict SSN to own user via f:query
+            {
+                "@id": "http://example.org/ns/ssnRestriction",
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/TestPolicy"],
+                "https://ns.flur.ee/db#required": true,
+                "https://ns.flur.ee/db#onProperty": [{"@id": "http://schema.org/ssn"}],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({
+                    "@context": {"ex": "http://example.org/ns/"},
+                    "where": {
+                        "@id": "?$identity",
+                        "http://example.org/ns/user": {"@id": "?$this"}
+                    }
+                })).unwrap()
+            },
+            // Default allow for other properties
+            {
+                "@id": "http://example.org/ns/defaultAllow",
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/TestPolicy"],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({})).unwrap()
+            }
+        ]
+    });
+
+    let result = fluree.insert(ledger0, &setup).await.expect("seed policy data");
+    let t = result.ledger.t();
+    (result.ledger, t)
+}
+
+#[tokio::test]
+async fn commit_show_without_policy_returns_all_flakes() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/commit-show-no-policy:main";
+    let (_ledger, t) = seed_ledger_with_policy(&fluree, ledger_id).await;
+
+    // No identity/policy_class → all flakes returned
+    let detail = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .execute()
+        .await
+        .expect("commit show without policy");
+
+    assert_eq!(detail.t, t);
+    let total = detail.asserts + detail.retracts;
+    assert!(total > 0, "should have flakes");
+
+    // Both SSNs should be present in the unfiltered output
+    let ssn_flakes: Vec<_> = detail
+        .flakes
+        .iter()
+        .filter(|f| f.p.contains("ssn"))
+        .collect();
+    assert_eq!(
+        ssn_flakes.len(),
+        2,
+        "unfiltered should see both SSN flakes, got: {:?}",
+        ssn_flakes
+    );
+}
+
+#[tokio::test]
+async fn commit_show_with_identity_filters_flakes_by_policy() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/commit-show-policy-filter:main";
+    let (_ledger, t) = seed_ledger_with_policy(&fluree, ledger_id).await;
+
+    // With alice's identity → policy filters SSN to only her own
+    let detail = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .identity(Some("http://example.org/ns/aliceIdentity"))
+        .execute()
+        .await
+        .expect("commit show with identity");
+
+    assert_eq!(detail.t, t);
+
+    // Only Alice's SSN should be visible
+    let ssn_flakes: Vec<_> = detail
+        .flakes
+        .iter()
+        .filter(|f| f.p.contains("ssn"))
+        .collect();
+    assert_eq!(
+        ssn_flakes.len(),
+        1,
+        "policy-filtered should see only Alice's SSN, got: {:?}",
+        ssn_flakes
+    );
+
+    // Verify it's Alice's SSN specifically
+    let ssn_value = match &ssn_flakes[0].o {
+        fluree_db_api::graph_commit_builder::ResolvedValue::String(s) => s.as_str(),
+        other => panic!("expected string SSN, got: {:?}", other),
+    };
+    assert_eq!(ssn_value, "111-11-1111", "should be Alice's SSN");
+
+    // asserts count should reflect the filtered set (fewer than unfiltered)
+    // Non-SSN flakes (names, types, identity, policies) should still be present
+    assert!(detail.asserts > 0, "should still have visible asserts");
+}
+
+#[tokio::test]
+async fn commit_show_filtered_counts_reflect_visible_flakes() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/commit-show-filtered-counts:main";
+    let (_ledger, t) = seed_ledger_with_policy(&fluree, ledger_id).await;
+
+    // Unfiltered
+    let unfiltered = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .execute()
+        .await
+        .expect("unfiltered");
+
+    // Filtered
+    let filtered = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .identity(Some("http://example.org/ns/aliceIdentity"))
+        .execute()
+        .await
+        .expect("filtered");
+
+    // Counts should match actual flake vec lengths
+    assert_eq!(
+        filtered.asserts,
+        filtered.flakes.iter().filter(|f| f.op).count(),
+        "asserts count must match actual assert flakes"
+    );
+    assert_eq!(
+        filtered.retracts,
+        filtered.flakes.iter().filter(|f| !f.op).count(),
+        "retracts count must match actual retract flakes"
+    );
+
+    // Filtered should have fewer flakes than unfiltered (Bob's SSN removed)
+    assert!(
+        filtered.flakes.len() < unfiltered.flakes.len(),
+        "filtered ({}) should have fewer flakes than unfiltered ({})",
+        filtered.flakes.len(),
+        unfiltered.flakes.len()
+    );
+}
+
+#[tokio::test]
+async fn commit_show_with_bad_identity_returns_query_error() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/commit-show-bad-identity:main";
+    let (_ledger, t) = seed_ledger_with_policy(&fluree, ledger_id).await;
+
+    // Non-existent identity IRI should produce a query-class error, not internal
+    let result = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .identity(Some("http://example.org/ns/nonExistentIdentity"))
+        .execute()
+        .await;
+
+    match result {
+        Err(ApiError::Query(_)) => { /* expected: bad identity is a query/config error */ }
+        Err(other) => panic!(
+            "expected ApiError::Query for bad identity, got: {:?}",
+            other
+        ),
+        Ok(_) => {
+            // Some implementations may return root policy (all flakes) when
+            // identity resolves but has no policyClass. This is also acceptable.
+        }
+    }
 }

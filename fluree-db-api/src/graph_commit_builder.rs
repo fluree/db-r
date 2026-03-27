@@ -328,11 +328,13 @@ where
                 policy_class: self.policy_class.as_deref().map(|c| vec![c.to_string()]),
                 ..Default::default()
             };
-            let overlay: &dyn OverlayProvider = &NoOverlay;
+            // Use the novelty overlay so policy rules in uncommitted
+            // transactions are visible to the policy builder.
+            let overlay: &dyn OverlayProvider = snapshot.novelty.as_ref();
             let policy_ctx = policy_builder::build_policy_context_from_opts(
                 &snapshot.snapshot,
                 overlay,
-                None,
+                Some(snapshot.novelty.as_ref()),
                 commit.t,
                 &opts,
             )
