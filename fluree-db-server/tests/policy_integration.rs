@@ -591,3 +591,55 @@ async fn property_level_deny_hides_ex_content_field() {
         rows_with_content
     );
 }
+
+/// A **known** identity subject (exists in the ledger) with no `f:policyClass` and
+/// `default-allow: true` should see all documents.
+///
+/// This validates the `FoundNoPolicies` path: the identity subject node is present in the
+/// ledger (so it is not `NotFound`), but it carries no policy class binding. With no
+/// restrictions and `default_allow = true`, access is granted to everything.
+///
+/// Contrast with `unknown_identity_denied_even_with_default_allow_true` which uses an
+/// identity that has NO subject node at all (`NotFound` → always fail-closed).
+#[tokio::test]
+async fn known_identity_no_policy_class_default_allow_true_allows_all() {
+    let (_tmp, state) = policy_test_state();
+    let app = setup_policy_ledger(build_router(state), "policy7:main").await;
+
+    // Insert a registered identity node that EXISTS in the ledger but has no f:policyClass.
+    let register_tx = serde_json::json!({
+        "@context": { "ex": "http://example.org/" },
+        "insert": { "@id": "http://example.org/registered-user", "ex:role": "guest" }
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/policy7:main")
+                .header("content-type", "application/json")
+                .body(Body::from(register_tx.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "insert registered-user node");
+
+    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+    let token = identity_token(
+        &signing_key,
+        "http://example.org/registered-user",
+        "policy7:main",
+    );
+
+    let (status, json) = query_docs(app, "policy7:main", Some(&token), true).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = names_from_results(&json);
+    assert_eq!(
+        names.len(),
+        3,
+        "known identity with no policyClass + default-allow:true must see all 3 docs; got: {:?}",
+        names
+    );
+}

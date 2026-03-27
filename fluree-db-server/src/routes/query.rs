@@ -160,7 +160,9 @@ fn has_policy_opts(query_json: &JsonValue) -> bool {
     let Some(opts) = query_json.get("opts") else {
         return false;
     };
-    opts.get("identity").is_some() || opts.get("policy-class").is_some()
+    opts.get("identity").is_some()
+        || opts.get("policy-class").is_some()
+        || opts.get("policy").is_some()
 }
 
 /// Helper to extract ledger ID from request (for JSON-LD queries)

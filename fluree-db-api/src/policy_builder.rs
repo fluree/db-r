@@ -373,28 +373,36 @@ async fn load_policies_by_identity(
     }
 
     if class_sids.is_empty() {
-        // No f:policyClass found. Determine whether the identity subject itself exists.
+        // No f:policyClass found. Determine whether the identity subject itself exists
+        // in any policy graph.
         //
-        // This single-flake SPOT seek is O(log n) and only runs when the policyClass
-        // lookup returns empty — the common path (identity with policyClass) never
-        // reaches this branch.
-        let db = GraphDbRef::new(snapshot, POLICY_GRAPHS[0], overlay, to_t);
-        let opts = RangeOptions::default().with_flake_limit(1);
-        let exists = db
-            .range_with_opts(
-                IndexType::Spot,
-                RangeTest::Eq,
-                RangeMatch::subject(identity_sid.clone()),
-                opts,
-            )
-            .await
-            .map_err(|e| ApiError::internal(format!("identity existence check failed: {e}")))?;
-
-        return Ok(if exists.is_empty() {
-            IdentityLookupResult::NotFound
-        } else {
-            IdentityLookupResult::FoundNoPolicies { identity_sid }
-        });
+        // We iterate POLICY_GRAPHS (rather than hard-coding [0]) for the same reason
+        // the policyClass lookup above iterates it: identity subjects are normally in
+        // graph 0 (the default graph, assigned when no @graph is specified in the
+        // transaction), but Fluree's JSON-LD transaction parser supports per-object
+        // @graph selectors, so a subject could land in a named graph if the caller
+        // explicitly specified one. If POLICY_GRAPHS is ever expanded to include named
+        // graphs, both lookups must cover the same set of graphs.
+        //
+        // Each seek is O(log n) with flake_limit=1; the loop runs once today since
+        // POLICY_GRAPHS = [0].
+        let range_opts = RangeOptions::default().with_flake_limit(1);
+        for g_id in POLICY_GRAPHS {
+            let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+            let exists = db
+                .range_with_opts(
+                    IndexType::Spot,
+                    RangeTest::Eq,
+                    RangeMatch::subject(identity_sid.clone()),
+                    range_opts.clone(),
+                )
+                .await
+                .map_err(|e| ApiError::internal(format!("identity existence check failed: {e}")))?;
+            if !exists.is_empty() {
+                return Ok(IdentityLookupResult::FoundNoPolicies { identity_sid });
+            }
+        }
+        return Ok(IdentityLookupResult::NotFound);
     }
 
     // Step 2: Load policies of those classes
