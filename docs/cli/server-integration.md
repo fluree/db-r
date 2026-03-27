@@ -4,7 +4,7 @@ This document is for implementers building a custom server (for example in `../s
 
 The CLI supports two broad categories of remote operations:
 
-- **Data API**: query/update/insert/upsert/info/exists (normal ledger operations).
+- **Data API**: query/update/insert/upsert/info/exists/show (normal ledger operations).
 - **Replication / sync**: clone/pull/fetch (content-addressed replication by CID, via pack + storage proxy).
 
 ## Base URL And Discovery
@@ -52,6 +52,19 @@ Fallbacks (strongly recommended):
 This is not storage-proxy replication; it is a transaction operation and should be authorized like normal transactions.
 
 The CLI sends an `Idempotency-Key` header derived from the pushed commit bytes so servers can safely replay a successful push result if the client retries after a timeout.
+
+### `fluree show --remote`
+
+- `GET {api_base_url}/show/*ledger?commit=<ref>`
+
+The `commit` query parameter accepts the same identifiers as the local `fluree show` command: `t:<N>` for transaction number, hex-digest prefix (min 6 chars), or full CID.
+
+**Response:** A JSON object with fields: `id`, `t`, `time`, `size`, `previous`, `signer`, `asserts`, `retracts`, `@context`, `flakes`. Each flake is a tuple: `[subject, predicate, object, datatype, operation]`.
+
+**Error responses:**
+- `400 Bad Request` — missing or invalid `commit` parameter
+- `404 Not Found` — ledger or commit not found
+- `501 Not Implemented` — proxy storage mode (no local index available for decoding)
 
 ### `fluree query`, `fluree insert`, `fluree upsert`, `fluree update`, `fluree track`, `fluree info`, `fluree exists`
 
@@ -365,5 +378,6 @@ fluree iceberg map my-gs \
 
 fluree list                    # should show mydb (Ledger) + my-gs (Iceberg)
 fluree info my-gs              # should show Iceberg config
+fluree show t:1 --remote origin  # should show decoded commit with resolved IRIs
 fluree drop my-gs --force      # should drop the graph source
 ```

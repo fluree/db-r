@@ -328,6 +328,60 @@ When `enabled` is `false` (external indexer mode), the caller should use `needed
 - `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
 - `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
 
+### GET /show/*ledger
+
+Fetch and decode a single commit's contents with resolved IRIs. This is the server-side equivalent of `fluree show` — it returns assertions, retractions, and flake tuples with IRIs compacted using the ledger's namespace prefix table.
+
+**URL:**
+
+```
+GET /show/<ledger...>?commit=<ref>
+```
+
+**Query Parameters:**
+
+- `commit` (required): Commit identifier — `t:<N>` for transaction number, hex-digest prefix (min 6 chars), or full CID
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (when data auth is enabled)
+```
+
+**Response Body (200 OK):**
+
+```json
+{
+  "id": "bagaybqabciq...",
+  "t": 5,
+  "time": "2026-03-12T16:58:18.395474217+00:00",
+  "size": 327,
+  "previous": "bagaybqabciq...",
+  "asserts": 1,
+  "retracts": 1,
+  "@context": {
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "schema": "http://schema.org/"
+  },
+  "flakes": [
+    ["urn:fsys:dataset:zoho3", "schema:dateModified", "2026-03-12T14:15:30Z", "xsd:string", false],
+    ["urn:fsys:dataset:zoho3", "schema:dateModified", "2026-03-12T16:58:16Z", "xsd:string", true]
+  ]
+}
+```
+
+Each flake is a tuple: `[subject, predicate, object, datatype, operation]`. Operation `true` = assert (added), `false` = retract (removed). When metadata is present (language tag, list index, or named graph), a 6th element is appended.
+
+**Responses:**
+
+- `200 OK`: Decoded commit returned
+- `400 Bad Request`: Missing or invalid `commit` parameter
+- `401 Unauthorized`: Bearer token required but missing
+- `404 Not Found`: Ledger or commit not found
+- `501 Not Implemented`: Proxy storage mode (no local index available)
+
+**Peer mode:** Forwards to the transactor.
+
 ### GET /commits/*ledger
 
 Export commit blobs from a ledger using stable cursors. Pages walk backward via `previous_ref` — O(limit) per page regardless of ledger size. Used by `fluree pull` and `fluree clone`.
@@ -1946,6 +2000,7 @@ This section summarizes the contract that third-party server implementations (e.
 | Endpoint | CLI commands |
 |----------|-------------|
 | `GET /info/{ledger}` | `info`, `push`, `pull`, `clone` |
+| `GET /show/{ledger}?commit=<ref>` | `show --remote` |
 | `POST /query/{ledger}` | `query` (JSON-LD and SPARQL) |
 | `POST /insert/{ledger}` | `insert` |
 | `POST /upsert/{ledger}` | `upsert` |

@@ -19,6 +19,7 @@ fluree show <COMMIT> [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--ledger <NAME>` | Ledger name (defaults to active ledger) |
+| `--remote <NAME>` | Execute against a remote server (by remote name, e.g., "origin") |
 
 ## Description
 
@@ -63,6 +64,12 @@ fluree show 3dd028
 
 # Show a commit from a specific ledger
 fluree show 0303b7 --ledger _system
+
+# Show a commit on a remote server
+fluree show t:5 --remote origin
+
+# Show by hex prefix on remote with explicit ledger
+fluree show 3dd028 --remote origin --ledger mydb
 
 # Pipe to jq for filtering
 fluree show 3dd028 | jq '.flakes[] | select(.[4] == true)'

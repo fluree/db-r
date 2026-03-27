@@ -11,6 +11,7 @@ mod nameservice_refs;
 mod pack;
 mod push;
 mod query;
+mod show;
 mod storage_proxy;
 mod stubs;
 mod transact;
@@ -81,6 +82,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/upsert/*ledger", post(transact::upsert_ledger_tail))
         // Commit-push endpoint (precomputed commits)
         .route("/push/*ledger", post(push::push_ledger_tail))
+        // Commit show endpoint (decoded commit with resolved IRIs)
+        .route("/show/*ledger", get(show::show_ledger_tail))
         // Commit export endpoint (paginated, replication-grade auth)
         .route("/commits/*ledger", get(commits::commits_ledger_tail))
         // Binary pack stream endpoint (efficient clone/pull)
