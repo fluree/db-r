@@ -6,8 +6,8 @@
 
 use crate::cli::TrackAction;
 use crate::config::{TomlSyncConfigStore, TrackedLedgerConfig};
+use crate::context::build_client_from_auth;
 use crate::error::{CliError, CliResult};
-use crate::remote_client::RemoteLedgerClient;
 use colored::Colorize;
 use comfy_table::{Cell, Table};
 use fluree_db_api::server_defaults::FlureeDir;
@@ -115,7 +115,7 @@ async fn run_add(
         }
     };
 
-    let client = RemoteLedgerClient::new(&base_url, remote.auth.token.clone());
+    let client = build_client_from_auth(&base_url, &remote.auth);
 
     // Check ledger exists on remote
     match client.ledger_exists(&effective_remote_alias).await {
@@ -250,7 +250,7 @@ async fn run_status(store: &TomlSyncConfigStore, ledger: Option<&str>) -> CliRes
             }
         };
 
-        let client = RemoteLedgerClient::new(&base_url, remote.auth.token.clone());
+        let client = build_client_from_auth(&base_url, &remote.auth);
 
         println!(
             "{} {} (via {})",

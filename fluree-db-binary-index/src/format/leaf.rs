@@ -478,7 +478,7 @@ pub struct LeafHeaderV3 {
 }
 
 /// Parsed V3 leaflet directory entry.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LeafletDirEntryV3 {
     pub row_count: u32,
     pub lead_group_count: u32,
@@ -542,6 +542,7 @@ pub fn decode_leaf_dir_v3(
 ///
 /// `payload_base` is the byte offset in the leaf blob where the concatenated
 /// leaflet column block payloads begin. Pass it to `load_leaflet_columns()`.
+#[derive(Debug, Clone)]
 pub struct DecodedLeafDirV3 {
     pub entries: Vec<LeafletDirEntryV3>,
     /// Byte offset in the leaf blob where payload data starts

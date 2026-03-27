@@ -109,13 +109,25 @@ impl fmt::Display for RemoteLedgerError {
 }
 
 impl RemoteLedgerClient {
-    /// Create a new remote ledger client.
+    /// Default HTTP request timeout (5 minutes).
+    ///
+    /// Long-running queries and transactions are expected; the server should
+    /// be the authority on when to time out. This client-side value is a
+    /// safety net, not a policy knob.
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// Create a new remote ledger client with the default 5-minute timeout.
     ///
     /// `base_url` is the Fluree API base (e.g., `http://localhost:8090/fluree`
     /// or `https://example.com/v1/fluree`). Trailing slashes are stripped.
     pub fn new(base_url: &str, auth_token: Option<String>) -> Self {
+        Self::with_timeout(base_url, auth_token, Self::DEFAULT_TIMEOUT)
+    }
+
+    /// Create a new remote ledger client with a custom timeout.
+    pub fn with_timeout(base_url: &str, auth_token: Option<String>, timeout: Duration) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(timeout)
             .build()
             .expect("Failed to build HTTP client");
 
