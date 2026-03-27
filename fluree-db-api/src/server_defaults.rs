@@ -260,6 +260,7 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # cors_enabled = {cors_enabled}
 # body_limit = {body_limit}              # 50 MB
 # cache_max_mb = 4096                    # global cache budget (MB); default: 50% of RAM
+# no_preload = false                     # skip ledger preload at startup (useful for containers)
 
 # [server.indexing]
 # enabled = {indexing_enabled}
@@ -367,6 +368,7 @@ pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> S
             "log_level": DEFAULT_LOG_LEVEL,
             "cors_enabled": DEFAULT_CORS_ENABLED,
             "body_limit": DEFAULT_BODY_LIMIT,
+            "no_preload": false,
             "indexing": {
                 "enabled": DEFAULT_INDEXING_ENABLED,
                 "reindex_min_bytes": DEFAULT_REINDEX_MIN_BYTES,

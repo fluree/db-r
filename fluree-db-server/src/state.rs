@@ -576,8 +576,9 @@ impl AppState {
             Self::create_file_fluree(&config)?
         };
 
-        // Default idle TTL of 5 minutes for ledger registry
-        let registry = Arc::new(LedgerRegistry::new(Duration::from_secs(300)));
+        // Default idle TTL of 30 minutes for ledger registry, matching
+        // LedgerManagerConfig::default() in fluree-db-api.
+        let registry = Arc::new(LedgerRegistry::new(Duration::from_secs(1800)));
 
         // Initialize peer mode state if in peer role
         let (peer_state, forwarding_client) = if config.server_role == ServerRole::Peer {

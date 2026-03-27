@@ -1171,3 +1171,25 @@ mem:fact-01kmgg192p7hnveqckgqxyakz7 a mem:Fact ;
     mem:artifactRef "fluree-db-iceberg/src/catalog/mod.rs" ;
     mem:createdAt "2026-03-24T17:59:43.446602+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kmr0dq62g1pvjskkz5k0n62t a mem:Fact ;
+    mem:content "fluree-db-server audit findings (2026-03-27):\n\n**FlureeInstance enum** (`state.rs:42`): `File(Arc<FileFluree>)` | `Proxy(Arc<ProxyFluree>)` where `FileFluree = Fluree<FileStorage, FileNameService>` and `ProxyFluree = Fluree<ProxyStorage, ProxyNameService>` (type aliases at state.rs:32-35).\n\n**Builder construction** (`state.rs:638-663`): Only passes `cache_max_mb` and `with_indexing_thresholds(min, max)` to FlureeBuilder. Does NOT pass: parallelism, novelty_thresholds, ledger_cache_config, encryption, S3/IPFS config, from_json_ld.\n\n**LedgerRegistry TTL** hardcoded to 5 minutes (`state.rs:580`) vs LedgerManagerConfig default of 30 minutes.\n\n**Preload** (`lib.rs:94-187`): Always preloads all ledgers on startup with no opt-out flag. Calls `ledger_cached()` + `preload_dict_leaves()` for each.\n\n**Cache detection** (`fluree-db-connection/src/cache.rs:20-47`): Uses `sysinfo::System::total_memory()` — reads host RAM, not cgroup limits. Causes OOM in containers (#114).\n\n**Config surface**: ~50 CLI flags covering listen addr, storage path, log level, CORS, body limit, cache MB, indexing thresholds, 3 auth scopes (data/events/admin), OIDC/JWKS, peer mode, storage proxy, MCP. Missing: parallelism, novelty thresholds, ledger cache TTL, encryption, S3, IPFS, query timeout, graceful shutdown timeout, no-preload.\n\n**Endpoints**: /health, /stats, /ledgers, /info, /exists, /branch, /create, /drop, /query, /explain, /insert, /upsert, /update, /commits, /pack, /push, /events (SSE), /storage/* (proxy), /nameservice/refs/*, /mcp, /iceberg/map. Missing: /ready, /metrics, BM25 lifecycle, bulk import, config inspection, maintenance mode toggle.\n\n**Open critical bugs**: #114 (OOM preload), #106 (policy bypass on JSON-LD queries), #28 (time-travel from 500), #112 (no BM25 endpoints), #111 (refresh_with_retry always t=0), #95 (select * empty for novelty-only entities)." ;
+    mem:tag "FlureeInstance" ;
+    mem:tag "audit" ;
+    mem:tag "builder" ;
+    mem:tag "cache" ;
+    mem:tag "configuration" ;
+    mem:tag "fluree-db-server" ;
+    mem:tag "gaps" ;
+    mem:tag "preload" ;
+    mem:tag "server" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-connection/src/cache.rs" ;
+    mem:artifactRef "fluree-db-server/src/config.rs" ;
+    mem:artifactRef "fluree-db-server/src/lib.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/mod.rs" ;
+    mem:artifactRef "fluree-db-server/src/state.rs" ;
+    mem:branch "main" ;
+    mem:createdAt "2026-03-27T16:00:49.347081+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
