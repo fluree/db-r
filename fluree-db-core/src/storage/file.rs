@@ -1,3 +1,9 @@
+//! Filesystem storage backend (requires the `native` feature).
+//!
+//! Provides [`FileStorage`], which stores ledger data on the local filesystem
+//! using `tokio::fs` for async I/O. This module is only compiled on non-WASM
+//! targets with the `native` feature enabled.
+
 use crate::error::Result;
 use crate::{
     content_address, CasAction, CasOutcome, ContentAddressedWrite, ContentKind, ContentWriteResult,
@@ -8,10 +14,6 @@ use std::path::PathBuf;
 
 /// Storage method for local filesystem storage.
 pub const STORAGE_METHOD_FILE: &str = "file";
-
-// ============================================================================
-// FileStorage Implementation (native only)
-// ============================================================================
 
 /// File-based storage for reading index files from disk (native targets only).
 ///

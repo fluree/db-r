@@ -1,4 +1,7 @@
-//! In memory storage
+//! In-memory storage backend
+//!
+//! Provides [`MemoryStorage`] (implements the low-level storage traits) and
+//! [`MemoryContentStore`] (a CID-based content store backed by a `HashMap`).
 
 use crate::error::Result;
 use crate::ContentWriteResult;
@@ -11,14 +14,13 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-/// Storage method for in-memory storage (testing).
+/// Storage method for in-memory storage.
 pub const STORAGE_METHOD_MEMORY: &str = "memory";
 
 /// Simple in-memory storage
 ///
 /// This implementation stores data in a HashMap with interior mutability
 /// (via `Arc<RwLock<...>>`) to support both reading and writing.
-/// Useful for unit tests and in-memory ledger operations.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
     data: Arc<RwLock<std::collections::HashMap<String, Vec<u8>>>>,

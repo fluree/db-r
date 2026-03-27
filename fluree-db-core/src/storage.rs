@@ -1,52 +1,13 @@
-//! Storage traits for reading and writing index data
+//! Storage traits and content-addressing utilities.
 //!
-//! This module defines storage traits that apps must implement to provide
-//! access to index files. The traits are runtime-agnostic and use
-//! `async_trait` for async support.
+//! This module defines the runtime-agnostic storage traits that backends must
+//! implement, the content-addressed [`ContentStore`] abstraction built on top
+//! of them, and shared helpers for address generation and hashing.
 //!
-//! ## Traits
+//! ## Submodules
 //!
-//! - `StorageRead`: Read-only access to stored data (read, exists, list)
-//! - `StorageWrite`: Mutating operations (write, delete)
-//! - `ContentAddressedWrite`: Content-addressed writes (extends StorageWrite)
-//! - `Storage`: Marker trait combining all capabilities
-//!
-//! ## Implementations
-//!
-//! Apps provide their own implementations:
-//! - `fluree-db-native`: FileStorage (tokio::fs)
-//! - `fluree-db-wasm`: Custom implementations (browser fetch API)
-//!
-//! ## Example
-//!
-//! ```ignore
-//! use fluree_db_core::{StorageRead, StorageWrite, ContentAddressedWrite};
-//!
-//! struct MyStorage { /* ... */ }
-//!
-//! #[async_trait]
-//! impl StorageRead for MyStorage {
-//!     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
-//!         // Your implementation
-//!     }
-//!     async fn exists(&self, address: &str) -> Result<bool> {
-//!         // Your implementation
-//!     }
-//!     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-//!         // Your implementation
-//!     }
-//! }
-//!
-//! #[async_trait]
-//! impl StorageWrite for MyStorage {
-//!     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
-//!         // Your implementation
-//!     }
-//!     async fn delete(&self, address: &str) -> Result<()> {
-//!         // Your implementation
-//!     }
-//! }
-//! ```
+//! - [`memory`]: In-memory backend ([`MemoryStorage`], [`MemoryContentStore`])
+//! - [`file`]: Filesystem backend behind the `native` feature ([`FileStorage`])
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod file;
@@ -661,11 +622,7 @@ pub fn content_address(method: &str, kind: ContentKind, ledger_id: &str, hash_he
     format!("fluree:{}://{}", method, path)
 }
 
-/// Extract the content hash (filename stem) from a CAS address.
-///
-/// Decode JSON from bytes
-///
-/// Helper function for storage implementations.
+/// Decode JSON from bytes.
 pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     Ok(serde_json::from_slice(bytes)?)
 }
