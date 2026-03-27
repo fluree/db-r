@@ -1112,38 +1112,35 @@ impl BinaryScanOperator {
                             }
                         }
                     }
+                } else if let Some(encoded) = encode_object(o_type, o_key, p_id, t_enc, o_i) {
+                    encoded
                 } else {
-                    if let Some(encoded) = encode_object(o_type, o_key, p_id, t_enc, o_i) {
-                        encoded
-                    } else {
-                        // Fallback: decode if we don't have a safe encoded representation.
-                        // This preserves correctness for uncommon/custom OTypes.
-                        match decode_value(o_type, o_key, p_id) {
-                            Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
-                            Ok(val) => {
-                                let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from)
-                                {
-                                    Some(lang) => DatatypeConstraint::LangTag(lang),
-                                    None => DatatypeConstraint::Explicit(
-                                        self.store()
-                                            .resolve_datatype_sid(o_type)
-                                            .unwrap_or_else(|| Sid::new(0, "")),
-                                    ),
-                                };
-                                Binding::Lit {
-                                    val,
-                                    dtc,
-                                    t: t_opt,
-                                    op: None,
-                                    p_id: Some(p_id),
-                                }
+                    // Fallback: decode if we don't have a safe encoded representation.
+                    // This preserves correctness for uncommon/custom OTypes.
+                    match decode_value(o_type, o_key, p_id) {
+                        Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
+                        Ok(val) => {
+                            let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from) {
+                                Some(lang) => DatatypeConstraint::LangTag(lang),
+                                None => DatatypeConstraint::Explicit(
+                                    self.store()
+                                        .resolve_datatype_sid(o_type)
+                                        .unwrap_or_else(|| Sid::new(0, "")),
+                                ),
+                            };
+                            Binding::Lit {
+                                val,
+                                dtc,
+                                t: t_opt,
+                                op: None,
+                                p_id: Some(p_id),
                             }
-                            Err(e) => {
-                                return Err(QueryError::dictionary_lookup(format!(
-                                    "binary scan object decode fallback failed: o_type={}, o_key={}, p_id={}: {}",
-                                    o_type, o_key, p_id, e
-                                )));
-                            }
+                        }
+                        Err(e) => {
+                            return Err(QueryError::dictionary_lookup(format!(
+                                "binary scan object decode fallback failed: o_type={}, o_key={}, p_id={}: {}",
+                                o_type, o_key, p_id, e
+                            )));
                         }
                     }
                 };
