@@ -32,6 +32,8 @@ use crate::format::run_record::RunSortOrder;
 
 use super::leaflet_cache::LeafletCache;
 
+const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
+
 // ============================================================================
 // Shared dictionary / CAS utilities
 // ============================================================================
@@ -247,6 +249,11 @@ pub struct BinaryIndexStore {
     /// This avoids re-fetching the same header+directory ranges when repeated
     /// scans reopen the same remote leaf within a query/session.
     remote_leaf_metadata: RwLock<HashMap<ContentId, DecodedLeafDirV3>>,
+    /// Remote leaf open counts keyed by leaf CID.
+    ///
+    /// Once a remote leaf is touched repeatedly, we promote it to the local
+    /// disk cache so subsequent opens use `FullBlobLeafHandle`.
+    remote_leaf_open_counts: RwLock<HashMap<ContentId, usize>>,
     max_t: i64,
     base_t: i64,
     language_tags: Vec<String>,
@@ -370,6 +377,7 @@ impl BinaryIndexStore {
             cache_dir: cache_dir.to_path_buf(),
             leaflet_cache,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
             max_t: root.index_t,
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
@@ -412,6 +420,13 @@ impl BinaryIndexStore {
 
     pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
         self.leaflet_cache.as_ref()
+    }
+
+    fn note_remote_leaf_open(&self, leaf_cid: &ContentId) -> usize {
+        let mut counts = self.remote_leaf_open_counts.write();
+        let count = counts.entry(leaf_cid.clone()).or_insert(0);
+        *count += 1;
+        *count
     }
 
     /// Fetch leaf bytes by CID: local path first, then CAS with caching.
@@ -495,6 +510,7 @@ impl BinaryIndexStore {
         // Fast path 1: local filesystem — full read is optimal (OS page cache).
         if let Some(local_path) = cs.resolve_local_path(leaf_cid) {
             span.record("source", "local_path");
+            tracing::debug!(leaf = %leaf_cid, need_replay, source = "local_path", "binary leaf open");
             let bytes = std::fs::read(local_path)?;
             let sidecar = if need_replay {
                 self.fetch_sidecar_bytes_sync(sidecar_cid)?
@@ -508,6 +524,7 @@ impl BinaryIndexStore {
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
         if cache_path.exists() {
             span.record("source", "disk_cache");
+            tracing::debug!(leaf = %leaf_cid, need_replay, source = "disk_cache", "binary leaf open");
             let bytes = std::fs::read(&cache_path)?;
             let sidecar = if need_replay {
                 self.fetch_sidecar_bytes_sync(sidecar_cid)?
@@ -517,8 +534,36 @@ impl BinaryIndexStore {
             return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
         }
 
+        let touch_count = self.note_remote_leaf_open(leaf_cid);
+
         if let Some(dir) = self.remote_leaf_metadata.read().get(leaf_cid).cloned() {
+            if touch_count >= HOT_REMOTE_LEAF_PROMOTION_TOUCHES {
+                span.record("source", "remote_promote_disk");
+                tracing::debug!(
+                    leaf = %leaf_cid,
+                    need_replay,
+                    source = "remote_promote_disk",
+                    touch_count,
+                    "promoting hot remote leaf to disk cache"
+                );
+                let bytes = self.get_leaf_bytes_sync(leaf_cid)?;
+                let sidecar = if need_replay {
+                    self.fetch_sidecar_bytes_sync(sidecar_cid)?
+                } else {
+                    None
+                };
+                return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+            }
             span.record("source", "remote_meta_cache");
+            tracing::debug!(
+                leaf = %leaf_cid,
+                need_replay,
+                source = "remote_meta_cache",
+                touch_count,
+                leaflets = dir.entries.len(),
+                payload_base = dir.payload_base,
+                "binary leaf open"
+            );
             let sc_cid = if need_replay {
                 sidecar_cid.cloned()
             } else {
@@ -539,6 +584,13 @@ impl BinaryIndexStore {
 
         // Slow path: remote — use range reads for column-selective access.
         span.record("source", "remote_range");
+        tracing::debug!(
+            leaf = %leaf_cid,
+            need_replay,
+            source = "remote_range",
+            touch_count,
+            "binary leaf open"
+        );
         let fetcher = Arc::new(ContentStoreRangeFetcher::new(
             Arc::clone(cs),
             self.cache_dir.clone(),
@@ -2120,6 +2172,8 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
         span.record("source", "remote_cas");
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
+        let range_start = range.start;
+        let range_len = range.end.saturating_sub(range.start);
         let timeout = cas_sync_timeout();
         let bytes = run_sync_on_runtime(async move {
             let fut = cs.get_range(&cid, range.clone());
@@ -2141,6 +2195,14 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
             }
         })?;
         span.record("bytes_read", bytes.len() as u64);
+        tracing::debug!(
+            leaf = %id,
+            range_start,
+            range_len,
+            bytes_read = bytes.len(),
+            source = "remote_cas",
+            "binary remote range fetch"
+        );
         Ok(bytes)
     }
 }
@@ -2162,6 +2224,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct CountingContentStore {
         inner: MemoryContentStore,
+        get_calls: Arc<AtomicUsize>,
         range_calls: Arc<AtomicUsize>,
     }
 
@@ -2169,8 +2232,13 @@ mod tests {
         fn new() -> Self {
             Self {
                 inner: MemoryContentStore::new(),
+                get_calls: Arc::new(AtomicUsize::new(0)),
                 range_calls: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        fn get_calls(&self) -> usize {
+            self.get_calls.load(AtomicOrdering::Relaxed)
         }
 
         fn range_calls(&self) -> usize {
@@ -2185,6 +2253,7 @@ mod tests {
         }
 
         async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            self.get_calls.fetch_add(1, AtomicOrdering::Relaxed);
             self.inner.get(id).await
         }
 
@@ -2243,6 +2312,7 @@ mod tests {
             cache_dir,
             leaflet_cache: None,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
             max_t: 1,
             base_t: 0,
             language_tags: Vec::new(),
@@ -2311,6 +2381,31 @@ mod tests {
         assert_eq!(
             second_range_calls, first_range_calls,
             "cached remote metadata should avoid extra range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "hot remote leaf should be promoted to full local cache on second open"
+        );
+        assert!(
+            cache_dir.join(leaf_cid.to_string()).exists(),
+            "promoted remote leaf should be written to disk cache"
+        );
+        drop(handle);
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("third remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        assert_eq!(
+            store.range_calls(),
+            second_range_calls,
+            "once promoted, repeated opens should not perform remote range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "once promoted, repeated opens should not refetch the full blob"
         );
 
         let _ = std::fs::remove_dir_all(cache_dir);

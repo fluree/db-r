@@ -2359,6 +2359,7 @@ dependencies = [
 name = "fluree-db-binary-index"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bigdecimal 0.4.10",
  "chrono",
  "fluree-db-core",
