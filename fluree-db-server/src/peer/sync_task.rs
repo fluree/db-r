@@ -306,17 +306,6 @@ impl PeerSyncTask {
             return;
         };
 
-        let before_t = mgr.current_t(&record.ledger_id).await;
-        tracing::info!(
-            ledger_id = %record.ledger_id,
-            before_cached_t = ?before_t,
-            ns_commit_t = record.commit_t,
-            ns_index_t = record.index_t,
-            ns_commit_head_id = ?record.commit_head_id,
-            ns_index_head_id = ?record.index_head_id,
-            "[DIAG][commit-t] peer sync refresh_cached_ledger ingress"
-        );
-
         match mgr
             .notify(NsNotify {
                 ledger_id: record.ledger_id.clone(),
@@ -326,23 +315,9 @@ impl PeerSyncTask {
         {
             Ok(NotifyResult::NotLoaded) => {
                 // Not cached — do not cold-load on events
-                tracing::info!(
-                    ledger_id = %record.ledger_id,
-                    ns_commit_t = record.commit_t,
-                    ns_index_t = record.index_t,
-                    "[DIAG][commit-t] peer sync notify returned NotLoaded"
-                );
             }
             Ok(NotifyResult::Current) => {
                 // Already up to date
-                let after_t = mgr.current_t(&record.ledger_id).await;
-                tracing::info!(
-                    ledger_id = %record.ledger_id,
-                    after_cached_t = ?after_t,
-                    ns_commit_t = record.commit_t,
-                    ns_index_t = record.index_t,
-                    "[DIAG][commit-t] peer sync notify returned Current"
-                );
             }
             Ok(
                 result @ (NotifyResult::Reloaded
@@ -350,11 +325,11 @@ impl PeerSyncTask {
                 | NotifyResult::CommitsApplied { .. }),
             ) => {
                 let after_t = mgr.current_t(&record.ledger_id).await;
-                tracing::info!(
+                tracing::debug!(
                     alias = %record.ledger_id,
                     after_cached_t = ?after_t,
                     ?result,
-                    "[DIAG][commit-t] refreshed cached ledger from SSE update"
+                    "refreshed cached ledger from SSE update"
                 );
             }
             Err(e) => {

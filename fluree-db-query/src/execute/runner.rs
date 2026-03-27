@@ -607,10 +607,12 @@ pub async fn execute_prepared<'a, 'b>(
                 r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
             }
         }
-        for (_iri, graph_ref) in dataset.named_graphs_iter() {
+        for (iri, graph_ref) in dataset.named_graphs_iter() {
             let is_r2rml = r2rml_provider.has_r2rml_mapping(&graph_ref.ledger_id).await;
             if is_r2rml {
-                r2rml_ids.insert(Arc::clone(&graph_ref.ledger_id));
+                // Insert the graph IRI (not ledger_id) since graph.rs
+                // checks r2rml_graph_ids against the GRAPH pattern IRI.
+                r2rml_ids.insert(Arc::clone(iri));
             }
         }
         ctx.r2rml_graph_ids = r2rml_ids;

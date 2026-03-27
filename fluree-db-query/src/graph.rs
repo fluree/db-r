@@ -137,8 +137,17 @@ impl GraphOperator {
         // Switch to the named graph context
         let graph_ctx = ctx.with_active_graph(graph_iri.clone());
 
-        // Check if this graph is backed by an R2RML mapping (precomputed in runner.rs)
-        let is_r2rml_gs = ctx.r2rml_graph_ids.contains(graph_iri.as_ref());
+        // Check if this graph is backed by an R2RML mapping.
+        // Prefer the precomputed set (populated in runner.rs for dataset queries),
+        // but fall back to asking the provider dynamically for the no-dataset
+        // single-source path where the GRAPH IRI may differ from the ledger_id.
+        let is_r2rml_gs = if ctx.r2rml_graph_ids.contains(graph_iri.as_ref()) {
+            true
+        } else if let Some(provider) = ctx.r2rml_provider {
+            provider.has_r2rml_mapping(&graph_iri).await
+        } else {
+            false
+        };
 
         // Determine which patterns to use (rewritten for R2RML or original)
         let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_gs {
@@ -308,8 +317,14 @@ impl Operator for GraphOperator {
                             }
                             // else: graph not found → no output for this row
                         } else {
-                            // No dataset - check if this is an R2RML graph source first (precomputed)
-                            let is_r2rml_gs = ctx.r2rml_graph_ids.contains(iri.as_ref());
+                            // No dataset — check R2RML precomputed set, then provider fallback
+                            let is_r2rml_gs = if ctx.r2rml_graph_ids.contains(iri.as_ref()) {
+                                true
+                            } else if let Some(provider) = ctx.r2rml_provider {
+                                provider.has_r2rml_mapping(iri).await
+                            } else {
+                                false
+                            };
 
                             // Execute if R2RML graph source or if graph name matches db's alias
                             if is_r2rml_gs || iri.as_ref() == ctx.snapshot.ledger_id {
@@ -343,9 +358,15 @@ impl Operator for GraphOperator {
                                     }
                                     // else: graph not found → no output
                                 } else {
-                                    // No dataset - check if this is an R2RML graph source first (precomputed)
+                                    // No dataset — check R2RML precomputed set, then provider fallback
                                     let is_r2rml_gs =
-                                        ctx.r2rml_graph_ids.contains(bound_iri.as_ref());
+                                        if ctx.r2rml_graph_ids.contains(bound_iri.as_ref()) {
+                                            true
+                                        } else if let Some(provider) = ctx.r2rml_provider {
+                                            provider.has_r2rml_mapping(&bound_iri).await
+                                        } else {
+                                            false
+                                        };
 
                                     // Execute if R2RML graph source or alias match
                                     if is_r2rml_gs || bound_iri.as_ref() == ctx.snapshot.ledger_id {

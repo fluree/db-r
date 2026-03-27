@@ -158,10 +158,7 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
 
 /// Seed a ledger with users, identity, and policy rules for SSN restriction.
 /// Returns the ledger state after setup (t=1) with policies loaded.
-async fn seed_ledger_with_policy(
-    fluree: &MemoryFluree,
-    ledger_id: &str,
-) -> (LedgerState, i64) {
+async fn seed_ledger_with_policy(fluree: &MemoryFluree, ledger_id: &str) -> (LedgerState, i64) {
     let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Insert users + identity + policies in one transaction
@@ -215,7 +212,10 @@ async fn seed_ledger_with_policy(
         ]
     });
 
-    let result = fluree.insert(ledger0, &setup).await.expect("seed policy data");
+    let result = fluree
+        .insert(ledger0, &setup)
+        .await
+        .expect("seed policy data");
     let t = result.ledger.t();
     (result.ledger, t)
 }

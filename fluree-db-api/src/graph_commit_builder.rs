@@ -253,19 +253,6 @@ where
             .ledger_cached(&self.graph.ledger_id)
             .await?;
         let snapshot = handle.snapshot().await;
-        tracing::info!(
-            ledger_id = %self.graph.ledger_id,
-            cached_t = snapshot.t,
-            snapshot_t = snapshot.snapshot.t,
-            novelty_t = snapshot.novelty.t,
-            novelty_flakes = snapshot.novelty.len(),
-            dict_initialized = snapshot.dict_novelty.is_initialized(),
-            has_range_provider = snapshot.snapshot.range_provider.is_some(),
-            has_binary_store = snapshot.binary_store.is_some(),
-            head_commit_id = ?snapshot.head_commit_id,
-            head_index_id = ?snapshot.head_index_id,
-            "[DIAG][commit-t] graph commit builder loaded cached snapshot"
-        );
         let namespace_codes = snapshot.snapshot.namespaces();
 
         // 2. Resolve commit reference to a full CID
@@ -503,53 +490,6 @@ async fn resolve_t_to_commit_id(
     let predicate = Sid::new(FLUREE_DB, fluree_vocab::db::T);
     let range_match = RangeMatch::predicate_object(predicate, FlakeValue::Long(target_t));
 
-    tracing::info!(
-        ledger_id = %snapshot.ledger_id,
-        target_t,
-        current_t,
-        snapshot_t = snapshot.t,
-        novelty_t = overlay.t,
-        novelty_flakes = overlay.len(),
-        has_range_provider = snapshot.range_provider.is_some(),
-        "[DIAG][commit-t] resolve_t_to_commit_id start"
-    );
-
-    let mut overlay_db_t_total = 0usize;
-    let mut overlay_target_total = 0usize;
-    let mut overlay_samples: Vec<String> = Vec::new();
-    overlay.for_each_overlay_flake(
-        TXN_META_GRAPH_ID,
-        IndexType::Post,
-        None,
-        None,
-        true,
-        current_t,
-        &mut |flake| {
-            if flake.p.namespace_code != FLUREE_DB || flake.p.name.as_ref() != fluree_vocab::db::T {
-                return;
-            }
-            overlay_db_t_total += 1;
-            if flake.o == FlakeValue::Long(target_t) {
-                overlay_target_total += 1;
-            }
-            if overlay_samples.len() < 8 {
-                overlay_samples.push(format!(
-                    "s={} p={} o={:?} dt={} t={} op={}",
-                    flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
-                ));
-            }
-        },
-    );
-    tracing::info!(
-        ledger_id = %snapshot.ledger_id,
-        target_t,
-        current_t,
-        overlay_db_t_total,
-        overlay_target_total,
-        overlay_samples = ?overlay_samples,
-        "[DIAG][commit-t] raw overlay txn-meta db:t probe"
-    );
-
     let opts = RangeOptions::default()
         .with_to_t(current_t)
         .with_flake_limit(16);
@@ -565,25 +505,6 @@ async fn resolve_t_to_commit_id(
     )
     .await?;
 
-    let range_samples: Vec<String> = flakes
-        .iter()
-        .take(8)
-        .map(|flake| {
-            format!(
-                "s={} p={} o={:?} dt={} t={} op={}",
-                flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
-            )
-        })
-        .collect();
-    tracing::info!(
-        ledger_id = %snapshot.ledger_id,
-        target_t,
-        current_t,
-        returned_flakes = flakes.len(),
-        range_samples = ?range_samples,
-        "[DIAG][commit-t] resolve_t_to_commit_id range_with_overlay result"
-    );
-
     // Find the flake with our exact predicate and object value
     for flake in &flakes {
         if flake.p.namespace_code != FLUREE_DB || flake.p.name.as_ref() != fluree_vocab::db::T {
@@ -596,15 +517,6 @@ async fn resolve_t_to_commit_id(
         if flake.s.namespace_code != FLUREE_COMMIT {
             continue;
         }
-        tracing::info!(
-            ledger_id = %snapshot.ledger_id,
-            target_t,
-            found_subject = %flake.s,
-            found_object = ?flake.o,
-            found_dt = %flake.dt,
-            found_flake_t = flake.t,
-            "[DIAG][commit-t] resolve_t_to_commit_id matched commit flake"
-        );
         let hex = flake.s.name.as_ref();
         let digest: [u8; 32] = hex::decode(hex)
             .map_err(|e| ApiError::internal(format!("Invalid hex digest: {}", e)))?
@@ -615,37 +527,6 @@ async fn resolve_t_to_commit_id(
             &digest,
         ));
     }
-
-    let predicate_only_flakes = range_with_overlay(
-        snapshot,
-        TXN_META_GRAPH_ID,
-        overlay,
-        IndexType::Post,
-        RangeTest::Eq,
-        RangeMatch::predicate(Sid::new(FLUREE_DB, fluree_vocab::db::T)),
-        RangeOptions::default()
-            .with_to_t(current_t)
-            .with_flake_limit(16),
-    )
-    .await?;
-    let predicate_only_samples: Vec<String> = predicate_only_flakes
-        .iter()
-        .take(8)
-        .map(|flake| {
-            format!(
-                "s={} p={} o={:?} dt={} t={} op={}",
-                flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
-            )
-        })
-        .collect();
-    tracing::info!(
-        ledger_id = %snapshot.ledger_id,
-        target_t,
-        current_t,
-        predicate_only_flakes = predicate_only_flakes.len(),
-        predicate_only_samples = ?predicate_only_samples,
-        "[DIAG][commit-t] resolve_t_to_commit_id miss follow-up predicate-only probe"
-    );
 
     Err(ApiError::NotFound(format!(
         "No commit found for t={}",
