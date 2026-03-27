@@ -2889,6 +2889,12 @@ where
         ledger_id: &str,
         opts: RefreshOpts,
     ) -> Result<Option<RefreshResult>> {
+        tracing::info!(
+            ledger_id = %ledger_id,
+            min_t = ?opts.min_t,
+            has_manager = self.ledger_manager.is_some(),
+            "[DIAG][commit-t] refresh requested"
+        );
         // Step A: Check if caching is enabled
         let mgr = match &self.ledger_manager {
             Some(mgr) => mgr,
@@ -2904,6 +2910,12 @@ where
         // Fast path: if min_t is set, check current cached t before hitting NS
         if let Some(min_t) = opts.min_t {
             if let Some(current_t) = mgr.current_t(ledger_id).await {
+                tracing::info!(
+                    ledger_id = %ledger_id,
+                    min_t,
+                    current_t,
+                    "[DIAG][commit-t] refresh fast-path current_t check"
+                );
                 if current_t >= min_t {
                     return Ok(Some(RefreshResult {
                         t: current_t,
@@ -2919,6 +2931,15 @@ where
             Some(record) => record,
             None => return Ok(None), // Ledger doesn't exist in nameservice
         };
+        tracing::info!(
+            ledger_id = %ledger_id,
+            canonical_alias = %ns_record.ledger_id,
+            ns_commit_t = ns_record.commit_t,
+            ns_index_t = ns_record.index_t,
+            ns_commit_head_id = ?ns_record.commit_head_id,
+            ns_index_head_id = ?ns_record.index_head_id,
+            "[DIAG][commit-t] refresh nameservice lookup result"
+        );
 
         // Step C: Use NsRecord.ledger_id as the cache key
         // The ledger_id field contains the canonical form (e.g., "testdb:main")
@@ -2935,6 +2956,14 @@ where
 
         // Step E: Read resulting t from the cached state
         let t = mgr.current_t(&canonical_alias).await.unwrap_or(0);
+        tracing::info!(
+            ledger_id = %ledger_id,
+            canonical_alias = %canonical_alias,
+            resulting_t = t,
+            ?action,
+            min_t = ?opts.min_t,
+            "[DIAG][commit-t] refresh completed notify"
+        );
 
         // Step F: Enforce min_t if requested
         if let Some(min_t) = opts.min_t {

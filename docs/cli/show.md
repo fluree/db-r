@@ -30,6 +30,12 @@ The commit identifier can be:
 - An **abbreviated hex digest** (minimum 6 characters) as shown in the storage directory or obtained from the txn-meta graph
 - A **full CID string** (e.g., `bagaybqabciq...`)
 
+## Policy Filtering
+
+When executed against a remote server (`--remote`), the returned flakes are filtered according to the caller's data-auth identity and the server's default policy class — matching the same policy semantics as `fluree query`. Flakes the caller is not permitted to read are silently omitted, and the `asserts`/`retracts` counts reflect only the visible flakes.
+
+When executed locally (no `--remote`, or with `--direct`), `fluree show` operates with full local-admin access and no policy filtering is applied. This is consistent with other local CLI operations that read directly from storage.
+
 ## Output Format
 
 The output is a JSON object containing:

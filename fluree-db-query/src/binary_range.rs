@@ -14,8 +14,9 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
     Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions,
-    RangeProvider, RangeTest, Sid,
+    RangeProvider, RangeTest, Sid, TXN_META_GRAPH_ID,
 };
+use fluree_vocab::{db, namespaces::FLUREE_DB};
 
 use crate::binary_scan::index_type_to_sort_order;
 
@@ -103,6 +104,28 @@ fn resolve_or_novelty<T>(
         None if dict_novelty.is_initialized() => novelty_lookup(),
         None => None,
     }
+}
+
+fn is_commit_t_diag_lookup(g_id: GraphId, index: IndexType, match_val: &RangeMatch) -> bool {
+    g_id == TXN_META_GRAPH_ID
+        && index == IndexType::Post
+        && match_val
+            .p
+            .as_ref()
+            .is_some_and(|sid| sid.namespace_code == FLUREE_DB && sid.name.as_ref() == db::T)
+}
+
+fn diag_flake_samples(flakes: &[Flake], limit: usize) -> Vec<String> {
+    flakes
+        .iter()
+        .take(limit)
+        .map(|flake| {
+            format!(
+                "s={} p={} o={:?} dt={} t={} op={}",
+                flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
+            )
+        })
+        .collect()
 }
 
 /// V3 range provider: wraps `BinaryIndexStore` to serve `range_with_overlay()` callers.
@@ -220,6 +243,25 @@ fn binary_range_eq_v3(
     let order = index_type_to_sort_order(index);
     let view =
         BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
+    let diag_commit_t = is_commit_t_diag_lookup(g_id, index, match_val);
+
+    if diag_commit_t {
+        tracing::info!(
+            g_id,
+            ?index,
+            match_subject = ?match_val.s,
+            match_predicate = ?match_val.p,
+            match_object = ?match_val.o,
+            match_datatype = ?match_val.dt,
+            to_t = ?opts.to_t,
+            limit = ?opts.flake_limit.or(opts.limit),
+            offset = ?opts.offset,
+            has_object_bounds = opts.object_bounds.is_some(),
+            store_max_t = store.max_t(),
+            dict_initialized = dict_novelty.is_initialized(),
+            "[DIAG][commit-t] binary_range_eq_v3 start"
+        );
+    }
 
     // Build filter from bound match components.
     let mut filter = BinaryFilter::default();
@@ -247,6 +289,13 @@ fn binary_range_eq_v3(
             None => {
                 // Unknown predicate in persisted dict: base scan cannot match.
                 // Overlay may still contain this predicate (novelty), so return overlay-only.
+                if diag_commit_t {
+                    tracing::info!(
+                        g_id,
+                        predicate = %p_sid,
+                        "[DIAG][commit-t] binary_range_eq_v3 predicate missing from persisted dict; using overlay-only path"
+                    );
+                }
                 return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
             }
         }
@@ -316,11 +365,31 @@ fn binary_range_eq_v3(
         }
     }
 
+    if diag_commit_t {
+        tracing::info!(
+            g_id,
+            ?index,
+            filter_s_id = ?filter.s_id,
+            filter_p_id = ?filter.p_id,
+            filter_o_type = ?filter.o_type,
+            filter_o_key = ?filter.o_key,
+            filter_o_i = ?filter.o_i,
+            "[DIAG][commit-t] binary_range_eq_v3 built filter"
+        );
+    }
+
     // Get branch manifest.
     let branch = match store.branch_for_order(g_id, order) {
         Some(b) => Arc::new(b.clone()),
         None => {
             // No branch for this order — return overlay-only results if any.
+            if diag_commit_t {
+                tracing::info!(
+                    g_id,
+                    ?index,
+                    "[DIAG][commit-t] binary_range_eq_v3 no branch manifest; using overlay-only path"
+                );
+            }
             return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
         }
     };
@@ -387,6 +456,17 @@ fn binary_range_eq_v3(
         |_| true,
         "V3 range",
     );
+
+    if diag_commit_t {
+        tracing::info!(
+            g_id,
+            ?index,
+            translated_overlay_ops = ops.len(),
+            untranslated_overlay_flakes = untranslated.len(),
+            untranslated_samples = ?diag_flake_samples(&untranslated, 8),
+            "[DIAG][commit-t] binary_range_eq_v3 overlay translation result"
+        );
+    }
 
     if !ops.is_empty() {
         fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, order);
@@ -478,6 +558,15 @@ fn binary_range_eq_v3(
     }
 
     if !has_untranslated {
+        if diag_commit_t {
+            tracing::info!(
+                g_id,
+                ?index,
+                returned_flakes = flakes.len(),
+                returned_samples = ?diag_flake_samples(&flakes, 8),
+                "[DIAG][commit-t] binary_range_eq_v3 returning translated result set"
+            );
+        }
         return Ok(flakes);
     }
 
@@ -495,6 +584,16 @@ fn binary_range_eq_v3(
     }
     if resolved.len() > limit {
         resolved.truncate(limit);
+    }
+
+    if diag_commit_t {
+        tracing::info!(
+            g_id,
+            ?index,
+            returned_flakes = resolved.len(),
+            returned_samples = ?diag_flake_samples(&resolved, 8),
+            "[DIAG][commit-t] binary_range_eq_v3 returning fallback-resolved result set"
+        );
     }
 
     Ok(resolved)
@@ -1198,6 +1297,7 @@ fn overlay_only_flakes(
     opts: &RangeOptions,
     overlay: &dyn OverlayProvider,
 ) -> std::io::Result<Vec<fluree_db_core::Flake>> {
+    let diag_commit_t = is_commit_t_diag_lookup(g_id, index, match_val);
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
@@ -1259,6 +1359,17 @@ fn overlay_only_flakes(
             collected += 1;
         },
     );
+
+    if diag_commit_t {
+        tracing::info!(
+            g_id,
+            ?index,
+            effective_to_t,
+            returned_flakes = flakes.len(),
+            returned_samples = ?diag_flake_samples(&flakes, 8),
+            "[DIAG][commit-t] overlay_only_flakes result"
+        );
+    }
 
     Ok(flakes)
 }

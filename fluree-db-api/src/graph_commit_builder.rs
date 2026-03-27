@@ -19,11 +19,12 @@
 //! }
 //! ```
 
+use crate::block_fetch;
 use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
 use crate::{ApiError, NameService, Result, Storage};
 use fluree_db_core::storage::content_store_for;
-use fluree_db_core::{ContentId, ContentStore, FlakeValue};
+use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider};
 use fluree_db_novelty::commit_v2::read_commit;
 use fluree_db_novelty::Commit;
 use fluree_graph_json_ld::ParsedContext;
@@ -172,6 +173,10 @@ pub struct CommitBuilder<'a, 'g, S: Storage + 'static, N> {
     graph: &'g Graph<'a, S, N>,
     commit_ref: CommitRef,
     user_context: Option<ParsedContext>,
+    /// Authenticated identity IRI for policy filtering.
+    identity: Option<String>,
+    /// Default policy class for policy filtering.
+    policy_class: Option<String>,
 }
 
 impl<'a, 'g, S, N> CommitBuilder<'a, 'g, S, N>
@@ -184,6 +189,8 @@ where
             graph,
             commit_ref: CommitRef::Exact(commit_id),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -192,6 +199,8 @@ where
             graph,
             commit_ref: CommitRef::Prefix(prefix),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -200,6 +209,8 @@ where
             graph,
             commit_ref: CommitRef::T(t),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -212,6 +223,25 @@ where
         self
     }
 
+    /// Set the authenticated identity for policy-based flake filtering.
+    ///
+    /// When set (along with an optional policy class), the returned flakes
+    /// are filtered according to the ledger's policy rules — only flakes
+    /// the identity is permitted to read are included.
+    ///
+    /// When neither identity nor policy class is set, all flakes are returned
+    /// (equivalent to root/admin access).
+    pub fn identity(mut self, identity: Option<&str>) -> Self {
+        self.identity = identity.map(|s| s.to_string());
+        self
+    }
+
+    /// Set the default policy class for policy-based flake filtering.
+    pub fn policy_class(mut self, policy_class: Option<&str>) -> Self {
+        self.policy_class = policy_class.map(|s| s.to_string());
+        self
+    }
+
     /// Execute: fetch the commit blob, decode it, resolve IRIs, return detail.
     pub async fn execute(self) -> Result<CommitDetail> {
         // 1. Load the ledger to get namespace_codes for IRI resolution
@@ -221,6 +251,19 @@ where
             .ledger_cached(&self.graph.ledger_id)
             .await?;
         let snapshot = handle.snapshot().await;
+        tracing::info!(
+            ledger_id = %self.graph.ledger_id,
+            cached_t = snapshot.t,
+            snapshot_t = snapshot.snapshot.t,
+            novelty_t = snapshot.novelty.t,
+            novelty_flakes = snapshot.novelty.len(),
+            dict_initialized = snapshot.dict_novelty.is_initialized(),
+            has_range_provider = snapshot.snapshot.range_provider.is_some(),
+            has_binary_store = snapshot.binary_store.is_some(),
+            head_commit_id = ?snapshot.head_commit_id,
+            head_index_id = ?snapshot.head_index_id,
+            "[DIAG][commit-t] graph commit builder loaded cached snapshot"
+        );
         let namespace_codes = snapshot.snapshot.namespaces();
 
         // 2. Resolve commit reference to a full CID
@@ -269,11 +312,25 @@ where
         let blob_size = blob.len();
 
         // 5. Decode the commit
-        let commit = read_commit(&blob).map_err(|e| {
+        let mut commit = read_commit(&blob).map_err(|e| {
             ApiError::internal(format!("Failed to decode commit {}: {}", commit_id, e))
         })?;
 
-        // 6. Build the response
+        // 6. Apply policy filtering (if identity or policy_class is set)
+        if self.identity.is_some() || self.policy_class.is_some() {
+            let (filtered, _applied) = block_fetch::apply_policy_filter(
+                &snapshot.snapshot,
+                commit.t,
+                commit.flakes,
+                self.identity.as_deref(),
+                self.policy_class.as_deref(),
+            )
+            .await
+            .map_err(|e| ApiError::internal(format!("Policy filtering failed: {e}")))?;
+            commit.flakes = filtered;
+        }
+
+        // 7. Build the response
         build_commit_detail(&commit, &commit_id, blob_size, &compactor)
     }
 }
@@ -421,6 +478,53 @@ async fn resolve_t_to_commit_id(
     let predicate = Sid::new(FLUREE_DB, fluree_vocab::db::T);
     let range_match = RangeMatch::predicate_object(predicate, FlakeValue::Long(target_t));
 
+    tracing::info!(
+        ledger_id = %snapshot.ledger_id,
+        target_t,
+        current_t,
+        snapshot_t = snapshot.t,
+        novelty_t = overlay.t,
+        novelty_flakes = overlay.len(),
+        has_range_provider = snapshot.range_provider.is_some(),
+        "[DIAG][commit-t] resolve_t_to_commit_id start"
+    );
+
+    let mut overlay_db_t_total = 0usize;
+    let mut overlay_target_total = 0usize;
+    let mut overlay_samples: Vec<String> = Vec::new();
+    overlay.for_each_overlay_flake(
+        TXN_META_GRAPH_ID,
+        IndexType::Post,
+        None,
+        None,
+        true,
+        current_t,
+        &mut |flake| {
+            if flake.p.namespace_code != FLUREE_DB || flake.p.name.as_ref() != fluree_vocab::db::T {
+                return;
+            }
+            overlay_db_t_total += 1;
+            if flake.o == FlakeValue::Long(target_t) {
+                overlay_target_total += 1;
+            }
+            if overlay_samples.len() < 8 {
+                overlay_samples.push(format!(
+                    "s={} p={} o={:?} dt={} t={} op={}",
+                    flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
+                ));
+            }
+        },
+    );
+    tracing::info!(
+        ledger_id = %snapshot.ledger_id,
+        target_t,
+        current_t,
+        overlay_db_t_total,
+        overlay_target_total,
+        overlay_samples = ?overlay_samples,
+        "[DIAG][commit-t] raw overlay txn-meta db:t probe"
+    );
+
     let opts = RangeOptions::default()
         .with_to_t(current_t)
         .with_flake_limit(16);
@@ -436,6 +540,25 @@ async fn resolve_t_to_commit_id(
     )
     .await?;
 
+    let range_samples: Vec<String> = flakes
+        .iter()
+        .take(8)
+        .map(|flake| {
+            format!(
+                "s={} p={} o={:?} dt={} t={} op={}",
+                flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
+            )
+        })
+        .collect();
+    tracing::info!(
+        ledger_id = %snapshot.ledger_id,
+        target_t,
+        current_t,
+        returned_flakes = flakes.len(),
+        range_samples = ?range_samples,
+        "[DIAG][commit-t] resolve_t_to_commit_id range_with_overlay result"
+    );
+
     // Find the flake with our exact predicate and object value
     for flake in &flakes {
         if flake.p.namespace_code != FLUREE_DB || flake.p.name.as_ref() != fluree_vocab::db::T {
@@ -448,6 +571,15 @@ async fn resolve_t_to_commit_id(
         if flake.s.namespace_code != FLUREE_COMMIT {
             continue;
         }
+        tracing::info!(
+            ledger_id = %snapshot.ledger_id,
+            target_t,
+            found_subject = %flake.s,
+            found_object = ?flake.o,
+            found_dt = %flake.dt,
+            found_flake_t = flake.t,
+            "[DIAG][commit-t] resolve_t_to_commit_id matched commit flake"
+        );
         let hex = flake.s.name.as_ref();
         let digest: [u8; 32] = hex::decode(hex)
             .map_err(|e| ApiError::internal(format!("Invalid hex digest: {}", e)))?
@@ -458,6 +590,37 @@ async fn resolve_t_to_commit_id(
             &digest,
         ));
     }
+
+    let predicate_only_flakes = range_with_overlay(
+        snapshot,
+        TXN_META_GRAPH_ID,
+        overlay,
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate(Sid::new(FLUREE_DB, fluree_vocab::db::T)),
+        RangeOptions::default()
+            .with_to_t(current_t)
+            .with_flake_limit(16),
+    )
+    .await?;
+    let predicate_only_samples: Vec<String> = predicate_only_flakes
+        .iter()
+        .take(8)
+        .map(|flake| {
+            format!(
+                "s={} p={} o={:?} dt={} t={} op={}",
+                flake.s, flake.p, flake.o, flake.dt, flake.t, flake.op
+            )
+        })
+        .collect();
+    tracing::info!(
+        ledger_id = %snapshot.ledger_id,
+        target_t,
+        current_t,
+        predicate_only_flakes = predicate_only_flakes.len(),
+        predicate_only_samples = ?predicate_only_samples,
+        "[DIAG][commit-t] resolve_t_to_commit_id miss follow-up predicate-only probe"
+    );
 
     Err(ApiError::NotFound(format!(
         "No commit found for t={}",

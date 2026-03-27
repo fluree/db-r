@@ -1,7 +1,8 @@
 //! Commit show endpoint: `GET /v1/fluree/show/*ledger`.
 //!
 //! Returns a decoded commit with resolved IRIs — the server-side equivalent
-//! of `fluree show`.
+//! of `fluree show`. Flakes are filtered by the caller's policy identity,
+//! matching the same auth semantics as the query endpoints.
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -107,7 +108,7 @@ async fn show_local(
             }
         };
 
-        // Enforce data auth
+        // Enforce data auth (same pattern as query endpoints)
         let data_auth = state.config.data_auth();
         if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
             set_span_error_code(&span, "error:Unauthorized");
@@ -119,6 +120,12 @@ async fn show_local(
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }
+
+        // Extract identity and policy class for flake-level filtering.
+        // This mirrors the query endpoint's auth behavior: identity comes
+        // from the bearer token, policy_class from server config.
+        let identity = bearer.0.as_ref().and_then(|p| p.identity.clone());
+        let policy_class = data_auth.default_policy_class.as_deref();
 
         // Proxy storage mode cannot decode commits (no local index).
         if state.config.is_proxy_storage_mode() {
@@ -138,6 +145,8 @@ async fn show_local(
             fluree
                 .graph(&alias)
                 .commit_t(t)
+                .identity(identity.as_deref())
+                .policy_class(policy_class)
                 .execute()
                 .await
                 .map_err(ServerError::Api)?
@@ -145,6 +154,8 @@ async fn show_local(
             fluree
                 .graph(&alias)
                 .commit_prefix(commit_ref)
+                .identity(identity.as_deref())
+                .policy_class(policy_class)
                 .execute()
                 .await
                 .map_err(ServerError::Api)?

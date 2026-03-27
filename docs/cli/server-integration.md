@@ -59,6 +59,8 @@ The CLI sends an `Idempotency-Key` header derived from the pushed commit bytes s
 
 The `commit` query parameter accepts the same identifiers as the local `fluree show` command: `t:<N>` for transaction number, hex-digest prefix (min 6 chars), or full CID.
 
+**Policy filtering:** The returned flakes are filtered using the same identity and policy-class semantics as the query endpoints. The identity is extracted from the Bearer token; the default policy class comes from server configuration. When no identity or policy class is present, all flakes are returned (root/admin access). Flakes the caller cannot read are silently omitted — the `asserts` and `retracts` counts reflect only the visible flakes.
+
 **Response:** A JSON object with fields: `id`, `t`, `time`, `size`, `previous`, `signer`, `asserts`, `retracts`, `@context`, `flakes`. Each flake is a tuple: `[subject, predicate, object, datatype, operation]`.
 
 **Error responses:**

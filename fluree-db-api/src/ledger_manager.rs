@@ -260,6 +260,21 @@ impl LedgerHandle {
         let binary_store = self.inner.binary_store.lock().await.clone();
         let mut snap = CachedLedgerState::from_state(&state);
         snap.binary_store = binary_store;
+        tracing::info!(
+            ledger_id = %self.inner.ledger_id,
+            cached_t = snap.t,
+            snapshot_t = snap.snapshot.t,
+            novelty_t = snap.novelty.t,
+            novelty_flakes = snap.novelty.len(),
+            dict_initialized = snap.dict_novelty.is_initialized(),
+            has_range_provider = snap.snapshot.range_provider.is_some(),
+            has_binary_store = snap.binary_store.is_some(),
+            head_commit_id = ?snap.head_commit_id,
+            head_index_id = ?snap.head_index_id,
+            ns_commit_t = snap.ns_record.as_ref().map(|r| r.commit_t),
+            ns_index_t = snap.ns_record.as_ref().map(|r| r.index_t),
+            "[DIAG][commit-t] ledger handle snapshot assembled"
+        );
         debug_assert!(
             snap.snapshot.range_provider.is_some() == snap.binary_store.is_some(),
             "range_provider and binary_store must be coherent"
@@ -416,6 +431,21 @@ impl LedgerHandle {
             let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
             state.binary_store = Some(TypeErasedStore(te_store));
             *self.inner.binary_store.lock().await = Some(arc_store);
+
+            tracing::info!(
+                ledger_id = %self.inner.ledger_id,
+                applied_index_id = %index_id,
+                snapshot_t = state.snapshot.t,
+                cached_t = state.t(),
+                novelty_t = state.novelty.t,
+                novelty_flakes = state.novelty.len(),
+                dict_initialized = state.dict_novelty.is_initialized(),
+                head_commit_id = ?state.head_commit_id,
+                head_index_id = ?state.head_index_id,
+                has_range_provider = state.snapshot.range_provider.is_some(),
+                has_binary_store = state.binary_store.is_some(),
+                "[DIAG][commit-t] ledger handle apply_index_v2 updated cached state"
+            );
         }
 
         Ok(())
@@ -1313,6 +1343,19 @@ where
         // Plan the update action
         let plan = UpdatePlan::plan(local_t, local_index_t, local_index_id.as_ref(), &ns_record);
 
+        tracing::info!(
+            ledger_id = %input.ledger_id,
+            local_t,
+            local_index_t,
+            local_index_id = ?local_index_id,
+            ns_commit_t = ns_record.commit_t,
+            ns_index_t = ns_record.index_t,
+            ns_commit_head_id = ?ns_record.commit_head_id,
+            ns_index_head_id = ?ns_record.index_head_id,
+            ?plan,
+            "[DIAG][commit-t] ledger manager notify planning"
+        );
+
         tracing::debug!(
             alias = %input.ledger_id,
             local_t = local_t,
@@ -1410,11 +1453,38 @@ where
                         self.reload(&input.ledger_id).await?;
                         return Ok(NotifyResult::Reloaded);
                     }
+                    tracing::info!(
+                        ledger_id = %input.ledger_id,
+                        local_t,
+                        current_t,
+                        commits_loaded = gap,
+                        pre_snapshot_t = write_guard.state().snapshot.t,
+                        pre_novelty_t = write_guard.state().novelty.t,
+                        pre_novelty_flakes = write_guard.state().novelty.len(),
+                        pre_dict_initialized = write_guard.state().dict_novelty.is_initialized(),
+                        pre_head_commit_id = ?write_guard.state().head_commit_id,
+                        pre_head_index_id = ?write_guard.state().head_index_id,
+                        "[DIAG][commit-t] notify commit catch-up applying commits"
+                    );
                     for commit in commits {
+                        let commit_id = commit.id.clone();
+                        let commit_t = commit.t;
                         write_guard
                             .state_mut()
                             .apply_single_commit(commit, &ledger_id_canonical)
                             .map_err(|e| ApiError::internal(format!("apply commit: {e}")))?;
+                        tracing::info!(
+                            ledger_id = %input.ledger_id,
+                            applied_commit_t = commit_t,
+                            applied_commit_id = ?commit_id,
+                            post_cached_t = write_guard.state().t(),
+                            post_snapshot_t = write_guard.state().snapshot.t,
+                            post_novelty_t = write_guard.state().novelty.t,
+                            post_novelty_flakes = write_guard.state().novelty.len(),
+                            post_dict_initialized = write_guard.state().dict_novelty.is_initialized(),
+                            post_head_commit_id = ?write_guard.state().head_commit_id,
+                            "[DIAG][commit-t] notify commit catch-up applied single commit"
+                        );
                     }
 
                     // If a binary range provider is attached, refresh it to point at the
@@ -1429,6 +1499,19 @@ where
                                 Some(Arc::new(BinaryRangeProvider::new(store, dn)));
                         }
                     }
+                    tracing::info!(
+                        ledger_id = %input.ledger_id,
+                        post_cached_t = write_guard.state().t(),
+                        post_snapshot_t = write_guard.state().snapshot.t,
+                        post_novelty_t = write_guard.state().novelty.t,
+                        post_novelty_flakes = write_guard.state().novelty.len(),
+                        post_dict_initialized = write_guard.state().dict_novelty.is_initialized(),
+                        post_has_range_provider = write_guard.state().snapshot.range_provider.is_some(),
+                        post_has_binary_store = write_guard.state().binary_store.is_some(),
+                        post_head_commit_id = ?write_guard.state().head_commit_id,
+                        post_head_index_id = ?write_guard.state().head_index_id,
+                        "[DIAG][commit-t] notify commit catch-up finished applying state"
+                    );
                 }
 
                 // Apply index update if present (after commits so novelty has latest flakes)

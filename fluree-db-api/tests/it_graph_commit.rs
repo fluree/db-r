@@ -3,6 +3,13 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
+use fluree_db_core::{
+    range_with_overlay, Flake, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
+    TXN_META_GRAPH_ID,
+};
+use fluree_db_ledger::LedgerState;
+use fluree_db_novelty::Novelty;
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB};
 use serde_json::json;
 use support::{genesis_ledger, start_background_indexer_local, trigger_index_and_wait, MemoryFluree};
 
@@ -33,12 +40,54 @@ async fn seed_two_commits(
     (ledger2, t1, t2)
 }
 
+async fn txn_meta_commit_flakes_for_t(
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    overlay: &Novelty,
+    target_t: i64,
+    current_t: i64,
+) -> Vec<Flake> {
+    let predicate = Sid::new(FLUREE_DB, fluree_vocab::db::T);
+    let range_match = RangeMatch::predicate_object(predicate, FlakeValue::Long(target_t));
+    let opts = RangeOptions::default()
+        .with_to_t(current_t)
+        .with_flake_limit(16);
+
+    range_with_overlay(
+        snapshot,
+        TXN_META_GRAPH_ID,
+        overlay,
+        IndexType::Post,
+        RangeTest::Eq,
+        range_match,
+        opts,
+    )
+    .await
+    .expect("txn-meta POST lookup by db:t")
+}
+
+async fn assert_txn_meta_lookup_contains_commit(ledger: &LedgerState, target_t: i64) {
+    let flakes = txn_meta_commit_flakes_for_t(&ledger.snapshot, ledger.novelty.as_ref(), target_t, ledger.t())
+        .await;
+
+    assert!(
+        flakes.iter().any(|flake| {
+            flake.p.namespace_code == FLUREE_DB
+                && flake.p.name.as_ref() == fluree_vocab::db::T
+                && flake.o == FlakeValue::Long(target_t)
+                && flake.s.namespace_code == FLUREE_COMMIT
+        }),
+        "expected txn-meta POST lookup to return commit metadata for t={target_t}, got: {flakes:?}"
+    );
+}
+
 #[tokio::test]
 async fn commit_t_resolves_latest_unindexed_commit_from_novelty() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/graph-commit-t-novelty:main";
 
-    let (_ledger, _t1, t2) = seed_two_commits(&fluree, ledger_id).await;
+    let (ledger, _t1, t2) = seed_two_commits(&fluree, ledger_id).await;
+
+    assert_txn_meta_lookup_contains_commit(&ledger, t2).await;
 
     let detail = fluree
         .graph(ledger_id)
@@ -71,6 +120,11 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
             let (_ledger, t1, t2) = seed_two_commits(&fluree, ledger_id).await;
 
             trigger_index_and_wait(&handle, ledger_id, t2).await;
+
+            let indexed = fluree.ledger(ledger_id).await.expect("load indexed ledger");
+
+            assert_txn_meta_lookup_contains_commit(&indexed, t2).await;
+            assert_txn_meta_lookup_contains_commit(&indexed, t1).await;
 
             let detail_latest = fluree
                 .graph(ledger_id)

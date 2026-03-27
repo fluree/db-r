@@ -372,6 +372,8 @@ Authorization: Bearer <token>   (when data auth is enabled)
 
 Each flake is a tuple: `[subject, predicate, object, datatype, operation]`. Operation `true` = assert (added), `false` = retract (removed). When metadata is present (language tag, list index, or named graph), a 6th element is appended.
 
+**Policy filtering:** Flakes are filtered using the same identity and policy-class semantics as the query endpoints. The identity is extracted from the Bearer token; the default policy class comes from server configuration. When no identity or policy class is present, all flakes are returned (root/admin access). Flakes the caller cannot read are silently omitted — the `asserts` and `retracts` counts reflect only the visible flakes.
+
 **Responses:**
 
 - `200 OK`: Decoded commit returned
