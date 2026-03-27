@@ -581,14 +581,31 @@ pub fn fetch_header_and_directory(
     fetcher: &dyn RangeReadFetcher,
     leaf_cid: &ContentId,
 ) -> io::Result<(DecodedLeafDirV3, u64)> {
+    let span = tracing::debug_span!(
+        "binary_fetch_header_dir",
+        leaf = %leaf_cid,
+        fetch_count = tracing::field::Empty,
+        total_bytes = tracing::field::Empty,
+        leaflet_count = tracing::field::Empty,
+        payload_base = tracing::field::Empty
+    );
+    let _guard = span.enter();
+    let mut fetch_count = 0u64;
+    let mut total_bytes = 0u64;
+
     // Step 1: fetch header to learn leaflet_count.
     let header_bytes = fetcher.fetch_range(leaf_cid, 0..LEAF_V3_HEADER_SIZE as u64)?;
+    fetch_count += 1;
+    total_bytes += header_bytes.len() as u64;
     let header = decode_leaf_header_v3(&header_bytes)?;
+    span.record("leaflet_count", header.leaflet_count as u64);
 
     // Step 2: estimate total header+directory size and fetch.
     let estimated_dir_size = header.leaflet_count as u64 * 120;
     let estimated_total = LEAF_V3_HEADER_SIZE as u64 + estimated_dir_size;
     let full_header_dir = fetcher.fetch_range(leaf_cid, 0..estimated_total)?;
+    fetch_count += 1;
+    total_bytes += full_header_dir.len() as u64;
 
     // Step 3: try to parse directory. If we fetched enough, this succeeds.
     // On failure, double the estimate up to 3 times (covers up to ~960 bytes
@@ -604,12 +621,17 @@ pub fn fetch_header_and_directory(
                 // Directory was larger than estimated — double and retry.
                 let next_size = (buf.len() as u64) * 2;
                 buf = fetcher.fetch_range(leaf_cid, 0..next_size)?;
+                fetch_count += 1;
+                total_bytes += buf.len() as u64;
             }
         }
     }
     // Final attempt after tripling the budget.
     let dir = decode_leaf_dir_v3_with_base(&buf, &header)?;
     let payload_base = dir.payload_base as u64;
+    span.record("fetch_count", fetch_count);
+    span.record("total_bytes", total_bytes);
+    span.record("payload_base", payload_base);
     Ok((dir, payload_base))
 }
 
