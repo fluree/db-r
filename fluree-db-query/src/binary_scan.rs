@@ -1453,10 +1453,32 @@ impl Operator for BinaryScanOperator {
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
 
-            match encode_bound_object_prefilter(bound_o, dt_sid, lang, store_ref, dict_novelty) {
-                Ok(prefilter) => {
-                    filter.o_type = prefilter.o_type.map(OType::as_u16);
-                    filter.o_key = Some(prefilter.o_key);
+            let encoded = match (dt_sid, lang) {
+                (Some(dt_sid), lang) => {
+                    value_to_otype_okey(bound_o, dt_sid, lang, store_ref, dict_novelty)
+                }
+                (None, None) => {
+                    // Without a datatype constraint, we can only safely encode non-string
+                    // values. String values are ambiguous — could be xsd:string or
+                    // rdf:langString — so skip them to avoid type mismatch.
+                    match bound_o {
+                        FlakeValue::String(_) => Err(std::io::Error::other(
+                            "string without dtc: type ambiguous (could be langString)",
+                        )),
+                        _ => value_to_otype_okey_simple(bound_o, store_ref)
+                            .map_err(|e| std::io::Error::other(e.to_string())),
+                    }
+                }
+                (None, Some(_lang)) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "lang tag requires datatype constraint",
+                )),
+            };
+
+            match encoded {
+                Ok((ot, key)) => {
+                    filter.o_type = Some(ot.as_u16());
+                    filter.o_key = Some(key);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Novelty may contain the value, but base index can't; avoid wide base scan.
