@@ -442,10 +442,23 @@ impl<'a> ExecutionContext<'a> {
 
     /// Check if we're in multi-ledger (dataset) mode
     ///
-    /// Returns true if a dataset is attached, meaning cross-ledger joins may occur
-    /// and IriMatch bindings should be used instead of plain Sid bindings.
+    /// Returns true only when the currently active query scope spans more than one
+    /// ledger. A dataset wrapper alone is not enough: single-ledger `FROM` queries
+    /// still need binary-store-backed late materialization and should behave like
+    /// normal single-ledger execution.
     pub fn is_multi_ledger(&self) -> bool {
-        self.dataset.is_some()
+        match self.active_graphs() {
+            ActiveGraphs::Single => false,
+            ActiveGraphs::Many(graphs) => {
+                let Some(first) = graphs.first() else {
+                    return false;
+                };
+                graphs
+                    .iter()
+                    .skip(1)
+                    .any(|graph| graph.ledger_id.as_ref() != first.ledger_id.as_ref())
+            }
+        }
     }
 
     /// Decode a SID to an IRI using a specific ledger's namespace table
