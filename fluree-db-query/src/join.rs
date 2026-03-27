@@ -1029,79 +1029,103 @@ impl NestedLoopJoinOperator {
 
     /// Build output batch from pending results
     async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
-        let batch_size = ctx.batch_size;
-        let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
-            .map(|_| Vec::with_capacity(batch_size))
-            .collect();
+        let span = tracing::debug_span!(
+            "join_build_output_batch",
+            pending_batches = self.pending_output.len(),
+            pending_right_row = self.pending_right_row,
+            batch_size = ctx.batch_size,
+            rows_added = tracing::field::Empty,
+            rows_examined = tracing::field::Empty
+        );
 
-        let mut rows_added = 0;
+        async {
+            let batch_size = ctx.batch_size;
+            let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
+                .map(|_| Vec::with_capacity(batch_size))
+                .collect();
 
-        while rows_added < batch_size && !self.pending_output.is_empty() {
-            let (batch_ref, left_row, right_batch) = self.pending_output.front().unwrap();
-            let left_row = *left_row;
-            let right_batch_len = right_batch.len();
+            let mut rows_added = 0;
+            let mut rows_examined = 0usize;
 
-            let left_batch = match self.resolve_left_batch(batch_ref) {
-                Some(b) => b,
-                None => {
-                    self.pending_output.pop_front();
-                    self.pending_right_row = 0;
-                    continue;
-                }
-            };
+            while rows_added < batch_size && !self.pending_output.is_empty() {
+                let (batch_ref, left_row, right_batch) = self.pending_output.front().unwrap();
+                let left_row = *left_row;
+                let right_batch_len = right_batch.len();
 
-            // Process rows from this right batch, starting from where we left off
-            let mut right_row = self.pending_right_row;
-            while right_row < right_batch_len && rows_added < batch_size {
-                // Unification check: shared vars must match
-                if self.unify_check(left_batch, left_row, right_batch, right_row) {
-                    // Combine and add to output
-                    let mut combined =
-                        self.combine_rows(left_batch, left_row, right_batch, right_row);
-
-                    // Inline operators on the combined row
-                    if !apply_inline(
-                        &self.inline_ops,
-                        &self.combined_schema,
-                        &mut combined,
-                        Some(ctx),
-                    )? {
-                        right_row += 1;
+                let left_batch = match self.resolve_left_batch(batch_ref) {
+                    Some(b) => b,
+                    None => {
+                        self.pending_output.pop_front();
+                        self.pending_right_row = 0;
                         continue;
                     }
+                };
 
-                    for (col, val) in combined.into_iter().enumerate() {
-                        output_columns[col].push(val);
+                // Process rows from this right batch, starting from where we left off
+                let mut right_row = self.pending_right_row;
+                while right_row < right_batch_len && rows_added < batch_size {
+                    rows_examined += 1;
+                    // Unification check: shared vars must match
+                    if self.unify_check(left_batch, left_row, right_batch, right_row) {
+                        // Combine and add to output
+                        let mut combined =
+                            self.combine_rows(left_batch, left_row, right_batch, right_row);
+
+                        // Inline operators on the combined row
+                        if !apply_inline(
+                            &self.inline_ops,
+                            &self.combined_schema,
+                            &mut combined,
+                            Some(ctx),
+                        )? {
+                            right_row += 1;
+                            continue;
+                        }
+
+                        for (col, val) in combined.into_iter().enumerate() {
+                            output_columns[col].push(val);
+                        }
+                        rows_added += 1;
                     }
-                    rows_added += 1;
+                    right_row += 1;
                 }
-                right_row += 1;
+
+                // Check if we've fully processed this right batch
+                if right_row >= right_batch_len {
+                    // Fully processed - remove and reset
+                    self.pending_output.pop_front();
+                    self.pending_right_row = 0;
+                } else {
+                    // Partially processed - save our position for next call
+                    self.pending_right_row = right_row;
+                }
             }
 
-            // Check if we've fully processed this right batch
-            if right_row >= right_batch_len {
-                // Fully processed - remove and reset
-                self.pending_output.pop_front();
-                self.pending_right_row = 0;
-            } else {
-                // Partially processed - save our position for next call
-                self.pending_right_row = right_row;
+            if rows_added == 0 {
+                let span = tracing::Span::current();
+                span.record("rows_added", 0);
+                span.record("rows_examined", rows_examined);
+                return Ok(None);
             }
-        }
 
-        if rows_added == 0 {
-            return Ok(None);
-        }
+            // Special-case: empty schema batches still need a correct row count.
+            if self.combined_schema.is_empty() {
+                let span = tracing::Span::current();
+                span.record("rows_added", rows_added);
+                span.record("rows_examined", rows_examined);
+                return Ok(Some(Batch::empty_schema_with_len(rows_added)));
+            }
 
-        // Special-case: empty schema batches still need a correct row count.
-        if self.combined_schema.is_empty() {
-            return Ok(Some(Batch::empty_schema_with_len(rows_added)));
+            let span = tracing::Span::current();
+            span.record("rows_added", rows_added);
+            span.record("rows_examined", rows_examined);
+            Ok(Some(Batch::new(
+                self.combined_schema.clone(),
+                output_columns,
+            )?))
         }
-
-        Ok(Some(Batch::new(
-            self.combined_schema.clone(),
-            output_columns,
-        )?))
+        .instrument(span)
+        .await
     }
 
     /// Ensure the current left batch is stored in `stored_left_batches` and

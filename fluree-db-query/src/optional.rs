@@ -807,232 +807,271 @@ impl Operator for OptionalOperator {
             return Ok(None);
         }
 
-        let batch_size = ctx.batch_size;
-        let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
-            .map(|_| Vec::with_capacity(batch_size))
-            .collect();
-        let mut rows_added = 0;
+        let span = tracing::debug_span!(
+            "optional_next_batch",
+            batch_size = ctx.batch_size,
+            pending_entries = self.pending_output.len(),
+            has_required_batch = self.current_required_batch.is_some(),
+            required_schema_cols = self.required_schema.len(),
+            optional_only_vars = self.optional_only_vars.len(),
+            rows_added = tracing::field::Empty,
+            built_optionals = tracing::field::Empty,
+            cache_hits = tracing::field::Empty,
+            optional_result_batches = tracing::field::Empty
+        );
 
-        // Process until we have a full batch or exhaust input
-        loop {
-            // First, check if we have pending output from previous iterations
-            if !self.pending_output.is_empty() {
-                let required_batch = match &self.current_required_batch {
-                    Some(b) => b,
-                    None => {
-                        // Shouldn't happen - pending_output implies we have a batch
-                        self.pending_output.clear();
-                        continue;
-                    }
-                };
+        async {
+            let batch_size = ctx.batch_size;
+            let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
+                .map(|_| Vec::with_capacity(batch_size))
+                .collect();
+            let mut rows_added = 0;
+            let mut built_optionals = 0usize;
+            let mut cache_hits = 0usize;
+            let mut optional_result_batches = 0usize;
 
-                while rows_added < batch_size && !self.pending_output.is_empty() {
-                    // Extract info we need without holding mutable borrow
-                    let (required_row, is_empty, num_batches) = {
-                        let pending = self.pending_output.front().unwrap();
-                        (
-                            pending.required_row,
-                            pending.optional_batches.is_empty(),
-                            pending.optional_batches.len(),
-                        )
+            // Process until we have a full batch or exhaust input
+            loop {
+                // First, check if we have pending output from previous iterations
+                if !self.pending_output.is_empty() {
+                    let required_batch = match &self.current_required_batch {
+                        Some(b) => b,
+                        None => {
+                            // Shouldn't happen - pending_output implies we have a batch
+                            self.pending_output.clear();
+                            continue;
+                        }
                     };
 
-                    if is_empty {
-                        // No matches - emit row with Poisoned for optional-only vars
-                        let row = self.create_poisoned_row(required_batch, required_row);
-                        for (col, val) in row.into_iter().enumerate() {
-                            output_columns[col].push(val);
-                        }
-                        rows_added += 1;
-                        self.pending_output.pop_front();
-                    } else {
-                        // Has matches - emit combined rows with progress tracking
-                        let mut fully_processed = false;
+                    while rows_added < batch_size && !self.pending_output.is_empty() {
+                        // Extract info we need without holding mutable borrow
+                        let (required_row, is_empty, num_batches) = {
+                            let pending = self.pending_output.front().unwrap();
+                            (
+                                pending.required_row,
+                                pending.optional_batches.is_empty(),
+                                pending.optional_batches.len(),
+                            )
+                        };
 
-                        loop {
-                            // Get current progress
-                            let (batch_idx, row_idx) = {
-                                let pending = self.pending_output.front().unwrap();
-                                (pending.batch_idx, pending.row_idx)
-                            };
-
-                            if batch_idx >= num_batches {
-                                fully_processed = true;
-                                break;
-                            }
-
-                            // Get the optional batch
-                            let optional_batch =
-                                &self.pending_output.front().unwrap().optional_batches[batch_idx];
-                            let batch_len = optional_batch.len();
-
-                            if row_idx >= batch_len {
-                                // Move to next batch
-                                let pending = self.pending_output.front_mut().unwrap();
-                                pending.batch_idx += 1;
-                                pending.row_idx = 0;
-                                continue;
-                            }
-
-                            if rows_added >= batch_size {
-                                // Hit batch limit - return what we have, resume later
-                                break;
-                            }
-
-                            // Get current opt_row and advance
-                            let opt_row = {
-                                let pending = self.pending_output.front_mut().unwrap();
-                                let r = pending.row_idx;
-                                pending.row_idx += 1;
-                                r
-                            };
-
-                            // Unification check
-                            if !self.unify_check(
-                                required_batch,
-                                required_row,
-                                &self.pending_output.front().unwrap().optional_batches[batch_idx],
-                                opt_row,
-                            ) {
-                                continue;
-                            }
-
-                            self.pending_output.front_mut().unwrap().matched = true;
-                            let row = self.combine_rows(
-                                required_batch,
-                                required_row,
-                                &self.pending_output.front().unwrap().optional_batches[batch_idx],
-                                opt_row,
-                            );
+                        if is_empty {
+                            // No matches - emit row with Poisoned for optional-only vars
+                            let row = self.create_poisoned_row(required_batch, required_row);
                             for (col, val) in row.into_iter().enumerate() {
                                 output_columns[col].push(val);
                             }
                             rows_added += 1;
-                        }
-
-                        if fully_processed {
-                            let needs_poisoned = self
-                                .pending_output
-                                .front()
-                                .is_some_and(|pending| !pending.matched);
-                            if needs_poisoned {
-                                let pending = self.pending_output.front_mut().unwrap();
-                                pending.optional_batches.clear();
-                                pending.batch_idx = 0;
-                                pending.row_idx = 0;
-                                continue;
-                            }
                             self.pending_output.pop_front();
                         } else {
-                            // Not fully processed - we hit batch_size limit
-                            // Keep this entry for next call
+                            // Has matches - emit combined rows with progress tracking
+                            let mut fully_processed = false;
+
+                            loop {
+                                // Get current progress
+                                let (batch_idx, row_idx) = {
+                                    let pending = self.pending_output.front().unwrap();
+                                    (pending.batch_idx, pending.row_idx)
+                                };
+
+                                if batch_idx >= num_batches {
+                                    fully_processed = true;
+                                    break;
+                                }
+
+                                // Get the optional batch
+                                let optional_batch =
+                                    &self.pending_output.front().unwrap().optional_batches
+                                        [batch_idx];
+                                let batch_len = optional_batch.len();
+
+                                if row_idx >= batch_len {
+                                    // Move to next batch
+                                    let pending = self.pending_output.front_mut().unwrap();
+                                    pending.batch_idx += 1;
+                                    pending.row_idx = 0;
+                                    continue;
+                                }
+
+                                if rows_added >= batch_size {
+                                    // Hit batch limit - return what we have, resume later
+                                    break;
+                                }
+
+                                // Get current opt_row and advance
+                                let opt_row = {
+                                    let pending = self.pending_output.front_mut().unwrap();
+                                    let r = pending.row_idx;
+                                    pending.row_idx += 1;
+                                    r
+                                };
+
+                                // Unification check
+                                if !self.unify_check(
+                                    required_batch,
+                                    required_row,
+                                    &self.pending_output.front().unwrap().optional_batches
+                                        [batch_idx],
+                                    opt_row,
+                                ) {
+                                    continue;
+                                }
+
+                                self.pending_output.front_mut().unwrap().matched = true;
+                                let row = self.combine_rows(
+                                    required_batch,
+                                    required_row,
+                                    &self.pending_output.front().unwrap().optional_batches
+                                        [batch_idx],
+                                    opt_row,
+                                );
+                                for (col, val) in row.into_iter().enumerate() {
+                                    output_columns[col].push(val);
+                                }
+                                rows_added += 1;
+                            }
+
+                            if fully_processed {
+                                let needs_poisoned = self
+                                    .pending_output
+                                    .front()
+                                    .is_some_and(|pending| !pending.matched);
+                                if needs_poisoned {
+                                    let pending = self.pending_output.front_mut().unwrap();
+                                    pending.optional_batches.clear();
+                                    pending.batch_idx = 0;
+                                    pending.row_idx = 0;
+                                    continue;
+                                }
+                                self.pending_output.pop_front();
+                            } else {
+                                // Not fully processed - we hit batch_size limit
+                                // Keep this entry for next call
+                                break;
+                            }
+                        }
+                    }
+
+                    if rows_added > 0
+                        && (rows_added >= batch_size || self.pending_output.is_empty())
+                    {
+                        break;
+                    }
+                }
+
+                // Need to process more required rows
+                // First, ensure we have a required batch
+                if self.current_required_batch.is_none() {
+                    match self.required.next_batch(ctx).await? {
+                        Some(batch) => {
+                            self.current_required_batch = Some(batch);
+                            self.current_required_row = 0;
+                        }
+                        None => {
+                            // Required exhausted
+                            self.state = OperatorState::Exhausted;
                             break;
                         }
                     }
                 }
 
-                if rows_added > 0 && (rows_added >= batch_size || self.pending_output.is_empty()) {
-                    break;
-                }
-            }
+                let required_batch = self.current_required_batch.as_ref().unwrap();
 
-            // Need to process more required rows
-            // First, ensure we have a required batch
-            if self.current_required_batch.is_none() {
-                match self.required.next_batch(ctx).await? {
-                    Some(batch) => {
-                        self.current_required_batch = Some(batch);
-                        self.current_required_row = 0;
+                // Process current required row
+                if self.current_required_row < required_batch.len() {
+                    let required_row = self.current_required_row;
+                    self.current_required_row += 1;
+
+                    // Build optional operator for this row (propagate errors)
+                    let cache_key =
+                        self.optional_builder
+                            .cache_key(required_batch, required_row, ctx)?;
+
+                    if let Some(key) = cache_key.as_ref() {
+                        if let Some(cached) = self.result_cache.get(key) {
+                            cache_hits += 1;
+                            optional_result_batches += cached.len();
+                            self.pending_output.push_back(PendingOptionalMatch {
+                                required_row,
+                                optional_batches: (**cached).clone(),
+                                batch_idx: 0,
+                                row_idx: 0,
+                                matched: false,
+                            });
+                            continue;
+                        }
                     }
-                    None => {
-                        // Required exhausted
-                        self.state = OperatorState::Exhausted;
-                        break;
-                    }
-                }
-            }
 
-            let required_batch = self.current_required_batch.as_ref().unwrap();
+                    match self
+                        .optional_builder
+                        .build(required_batch, required_row, ctx)?
+                    {
+                        None => {
+                            // Builder returned None (e.g., poisoned correlation var)
+                            // Emit with Poisoned for optional-only vars
+                            self.pending_output.push_back(PendingOptionalMatch {
+                                required_row,
+                                optional_batches: Vec::new(),
+                                batch_idx: 0,
+                                row_idx: 0,
+                                matched: false,
+                            });
+                        }
+                        Some(mut optional_op) => {
+                            built_optionals += 1;
+                            // Execute optional operator
+                            optional_op.open(ctx).await?;
 
-            // Process current required row
-            if self.current_required_row < required_batch.len() {
-                let required_row = self.current_required_row;
-                self.current_required_row += 1;
-
-                // Build optional operator for this row (propagate errors)
-                let cache_key =
-                    self.optional_builder
-                        .cache_key(required_batch, required_row, ctx)?;
-
-                if let Some(key) = cache_key.as_ref() {
-                    if let Some(cached) = self.result_cache.get(key) {
-                        self.pending_output.push_back(PendingOptionalMatch {
-                            required_row,
-                            optional_batches: (**cached).clone(),
-                            batch_idx: 0,
-                            row_idx: 0,
-                            matched: false,
-                        });
-                        continue;
-                    }
-                }
-
-                match self
-                    .optional_builder
-                    .build(required_batch, required_row, ctx)?
-                {
-                    None => {
-                        // Builder returned None (e.g., poisoned correlation var)
-                        // Emit with Poisoned for optional-only vars
-                        self.pending_output.push_back(PendingOptionalMatch {
-                            required_row,
-                            optional_batches: Vec::new(),
-                            batch_idx: 0,
-                            row_idx: 0,
-                            matched: false,
-                        });
-                    }
-                    Some(mut optional_op) => {
-                        // Execute optional operator
-                        optional_op.open(ctx).await?;
-
-                        // Collect all optional results
-                        let mut optional_batches = Vec::new();
-                        while let Some(opt_batch) = optional_op.next_batch(ctx).await? {
-                            if !opt_batch.is_empty() {
-                                optional_batches.push(opt_batch);
+                            // Collect all optional results
+                            let mut optional_batches = Vec::new();
+                            while let Some(opt_batch) = optional_op.next_batch(ctx).await? {
+                                if !opt_batch.is_empty() {
+                                    optional_batches.push(opt_batch);
+                                }
                             }
+                            optional_result_batches += optional_batches.len();
+
+                            optional_op.close();
+
+                            if let Some(key) = cache_key {
+                                self.result_cache
+                                    .put(key, Arc::new(optional_batches.clone()));
+                            }
+
+                            // Add to pending output with progress cursor at start
+                            self.pending_output.push_back(PendingOptionalMatch {
+                                required_row,
+                                optional_batches,
+                                batch_idx: 0,
+                                row_idx: 0,
+                                matched: false,
+                            });
                         }
-
-                        optional_op.close();
-
-                        if let Some(key) = cache_key {
-                            self.result_cache
-                                .put(key, Arc::new(optional_batches.clone()));
-                        }
-
-                        // Add to pending output with progress cursor at start
-                        self.pending_output.push_back(PendingOptionalMatch {
-                            required_row,
-                            optional_batches,
-                            batch_idx: 0,
-                            row_idx: 0,
-                            matched: false,
-                        });
                     }
+                } else {
+                    // Exhausted current required batch, get next
+                    self.current_required_batch = None;
                 }
-            } else {
-                // Exhausted current required batch, get next
-                self.current_required_batch = None;
             }
-        }
 
-        if rows_added == 0 {
-            return Ok(None);
-        }
+            if rows_added == 0 {
+                let span = tracing::Span::current();
+                span.record("rows_added", 0);
+                span.record("built_optionals", built_optionals);
+                span.record("cache_hits", cache_hits);
+                span.record("optional_result_batches", optional_result_batches);
+                return Ok(None);
+            }
 
-        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(trim_batch(&self.out_schema, batch))
+            let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
+            let span = tracing::Span::current();
+            span.record("rows_added", rows_added);
+            span.record("built_optionals", built_optionals);
+            span.record("cache_hits", cache_hits);
+            span.record("optional_result_batches", optional_result_batches);
+            Ok(trim_batch(&self.out_schema, batch))
+        }
+        .instrument(span)
+        .await
     }
 
     fn close(&mut self) {
