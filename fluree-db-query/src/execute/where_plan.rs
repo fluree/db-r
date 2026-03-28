@@ -308,6 +308,50 @@ pub struct InnerJoinBlock {
     pub filters: Vec<FilterPattern>,
 }
 
+/// Minimum weighted star width required before choosing the property-join path.
+///
+/// Required triples count as 1.0 each. Adjacent same-subject OPTIONAL triples
+/// count partially because they still represent future subject-correlated work,
+/// but they do not shrink the required-side candidate set.
+const PROPERTY_JOIN_MIN_WIDTH_SCORE: f32 = 3.0;
+const OPTIONAL_STAR_WIDTH_WEIGHT: f32 = 0.5;
+
+fn optional_star_width_bonus(inner_patterns: &[Pattern], subject_var: VarId) -> f32 {
+    let mut triple_count = 0usize;
+    for pattern in inner_patterns {
+        match pattern {
+            Pattern::Triple(tp) if tp.s.as_var() == Some(subject_var) && tp.p_bound() => {
+                triple_count += 1;
+            }
+            Pattern::Filter(_) | Pattern::Bind { .. } | Pattern::Values { .. } => {}
+            _ => return 0.0,
+        }
+    }
+    OPTIONAL_STAR_WIDTH_WEIGHT * triple_count as f32
+}
+
+fn property_join_width_score(
+    required_triples: &[TriplePattern],
+    trailing_patterns: &[Pattern],
+) -> (f32, f32) {
+    let required_score = required_triples.len() as f32;
+    let Some(subject_var) = required_triples.first().and_then(|tp| tp.s.as_var()) else {
+        return (required_score, 0.0);
+    };
+
+    let mut optional_bonus = 0.0;
+    for pattern in trailing_patterns {
+        match pattern {
+            Pattern::Optional(inner_patterns) => {
+                optional_bonus += optional_star_width_bonus(inner_patterns, subject_var);
+            }
+            _ => break,
+        }
+    }
+
+    (required_score + optional_bonus, optional_bonus)
+}
+
 /// Require a child operator, returning an error if None.
 #[inline]
 fn require_child(operator: Option<BoxedOperator>, pattern_name: &str) -> Result<BoxedOperator> {
@@ -1146,8 +1190,14 @@ pub fn build_where_operators_seeded_with_needed(
                 }
 
                 let pj_analysis = analyze_property_join(&triples_for_exec);
+                let (property_join_width_score, property_join_optional_bonus) =
+                    property_join_width_score(&triples_for_exec, &patterns[block.end_index..]);
                 let has_upstream_seed = operator.is_some();
-                let can_property_join = !has_upstream_seed && pj_analysis.eligible();
+                let property_join_meets_width_threshold =
+                    property_join_width_score > PROPERTY_JOIN_MIN_WIDTH_SCORE;
+                let can_property_join = !has_upstream_seed
+                    && pj_analysis.eligible()
+                    && property_join_meets_width_threshold;
 
                 if triples_for_exec.len() >= 2 {
                     tracing::debug!(
@@ -1167,6 +1217,9 @@ pub fn build_where_operators_seeded_with_needed(
                         property_join_object_vars_distinct = pj_analysis.object_vars_distinct,
                         property_join_has_bound_objects = pj_analysis.has_bound_objects,
                         property_join_predicates_distinct = pj_analysis.predicates_distinct,
+                        property_join_width_score,
+                        property_join_optional_bonus,
+                        property_join_meets_width_threshold,
                         chosen_strategy = if can_property_join {
                             "property_join"
                         } else {
@@ -2370,6 +2423,50 @@ mod tests {
             schema.contains(&VarId(3)),
             "email var from OPTIONAL present"
         );
+    }
+
+    #[test]
+    fn test_property_join_width_score_counts_same_subject_optionals_partially() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+            make_pattern(s, "stage", VarId(3)),
+        ];
+        let trailing = vec![
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                s,
+                "probability",
+                VarId(4),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "closedAt", VarId(5)))]),
+        ];
+
+        let (score, optional_bonus) = property_join_width_score(&required, &trailing);
+        assert_eq!(optional_bonus, 1.0);
+        assert_eq!(score, 4.0);
+        assert!(score > PROPERTY_JOIN_MIN_WIDTH_SCORE);
+    }
+
+    #[test]
+    fn test_property_join_width_score_ignores_non_star_optional_shapes() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+        ];
+        let trailing = vec![Pattern::Optional(vec![Pattern::Triple(
+            TriplePattern::new(
+                Ref::Var(VarId(9)),
+                Ref::Sid(Sid::new(100, "other")),
+                Term::Var(VarId(10)),
+            ),
+        )])];
+
+        let (score, optional_bonus) = property_join_width_score(&required, &trailing);
+        assert_eq!(optional_bonus, 0.0);
+        assert_eq!(score, 2.0);
+        assert!(score <= PROPERTY_JOIN_MIN_WIDTH_SCORE);
     }
 
     #[test]

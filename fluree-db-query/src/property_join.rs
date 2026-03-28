@@ -29,7 +29,8 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::try_normalize_pred_sid;
 use crate::join::{
-    batched_subject_probe_binary, make_dict_overlay, BatchedSubjectProbeMatch, SubjectProbeParams,
+    batched_subject_probe_binary, batched_subject_star_spot, make_dict_overlay,
+    BatchedSpotStarMatch, BatchedSubjectProbeMatch, SpotStarPredicateParams, SubjectProbeParams,
 };
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
@@ -242,6 +243,29 @@ impl PropertyJoinOperator {
         Ok(())
     }
 
+    fn ingest_spot_star_match(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        all_subject_values: &mut FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+        spot_match: BatchedSpotStarMatch,
+    ) -> Result<()> {
+        let subject = Binding::EncodedSid {
+            s_id: spot_match.subject_id,
+        };
+        if let Some(key) = Self::subject_key(ctx, &subject)? {
+            if let Some(entry) = all_subject_values.get_mut(&key) {
+                entry.1 |= 1u64 << spot_match.predicate_idx;
+                if let (Some(epos), Some(object)) = (
+                    self.emit_positions[spot_match.predicate_idx],
+                    spot_match.object,
+                ) {
+                    entry.2[epos].push(object);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn capture_driver_subject_ids(
         &self,
         ctx: &ExecutionContext<'_>,
@@ -261,6 +285,21 @@ impl PropertyJoinOperator {
             }
         }
         (!ids.is_empty()).then_some(ids)
+    }
+
+    fn can_spot_walk_remaining(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        driver_subject_ids: &Option<Vec<u64>>,
+        remaining_predicates: &[usize],
+    ) -> bool {
+        driver_subject_ids.is_some()
+            && !ctx.is_multi_ledger()
+            && ctx.binary_store.is_some()
+            && !remaining_predicates.is_empty()
+            && remaining_predicates
+                .iter()
+                .all(|&idx| self.predicates[idx].dtc.is_none())
     }
 
     /// Create a new property-join operator from patterns
@@ -573,6 +612,7 @@ impl Operator for PropertyJoinOperator {
 
             let mut driver_subject_ids: Option<Vec<u64>> = None;
             let mut used_batched_probe = false;
+            let mut used_spot_star_walk = false;
             let mut probe_chunks: u64 = 0;
             let mut probe_subjects_total: u64 = 0;
             let mut scan_rows_total: u64 = 0;
@@ -770,6 +810,51 @@ impl Operator for PropertyJoinOperator {
                 // `?s rdf:type :Deal` drive later subject-bound probes.
                 driver_subject_ids =
                     self.capture_driver_subject_ids(ctx, order_pos, &all_subject_values);
+
+                if order_pos == 0 {
+                    let remaining_predicates = &scan_order[1..];
+                    if self.can_spot_walk_remaining(ctx, &driver_subject_ids, remaining_predicates)
+                    {
+                        let store = ctx.binary_store.as_ref().unwrap();
+                        let dict_overlay = make_dict_overlay(ctx, store);
+                        let spot_predicates: Vec<_> = remaining_predicates
+                            .iter()
+                            .filter_map(|&idx| {
+                                let predicate = &self.predicates[idx];
+                                let pred_sid = try_normalize_pred_sid(store, &predicate.pred_ref)?;
+                                Some(SpotStarPredicateParams {
+                                    predicate_idx: idx,
+                                    pred_sid,
+                                    object_bounds: self.predicate_bounds(predicate),
+                                    bound_object: Self::predicate_bound_object(predicate),
+                                    emit_object: self.emit_positions[idx].is_some(),
+                                })
+                            })
+                            .collect();
+
+                        if spot_predicates.len() == remaining_predicates.len()
+                            && !spot_predicates.is_empty()
+                        {
+                            used_spot_star_walk = true;
+                            let spot_matches = batched_subject_star_spot(
+                                ctx,
+                                store,
+                                driver_subject_ids.as_ref().unwrap(),
+                                &spot_predicates,
+                                dict_overlay.as_ref(),
+                            )?;
+                            scan_rows_total += spot_matches.len() as u64;
+                            for spot_match in spot_matches {
+                                self.ingest_spot_star_match(
+                                    ctx,
+                                    &mut all_subject_values,
+                                    spot_match,
+                                )?;
+                            }
+                            break;
+                        }
+                    }
+                }
             }
 
             // Filter to only subjects that have values for ALL predicates
@@ -788,6 +873,7 @@ impl Operator for PropertyJoinOperator {
             tracing::debug!(
                 subjects = self.pending_subjects.len(),
                 used_batched_probe,
+                used_spot_star_walk,
                 probe_chunks,
                 probe_subjects_total,
                 scan_rows_total,

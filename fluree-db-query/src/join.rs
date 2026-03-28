@@ -31,6 +31,21 @@ pub(crate) struct BatchedSubjectProbeMatch {
     pub object: Option<Binding>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct BatchedSpotStarMatch {
+    pub subject_id: u64,
+    pub predicate_idx: usize,
+    pub object: Option<Binding>,
+}
+
+pub(crate) struct SpotStarPredicateParams<'a> {
+    pub predicate_idx: usize,
+    pub pred_sid: Sid,
+    pub object_bounds: Option<&'a ObjectBounds>,
+    pub bound_object: Option<&'a Term>,
+    pub emit_object: bool,
+}
+
 pub(crate) fn make_dict_overlay(
     ctx: &ExecutionContext<'_>,
     store: &Arc<BinaryIndexStore>,
@@ -2430,6 +2445,228 @@ pub(crate) fn batched_subject_probe_binary(
 
                     out.push(BatchedSubjectProbeMatch {
                         subject_id: s_id,
+                        object,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn batched_subject_star_spot(
+    ctx: &ExecutionContext<'_>,
+    store: &Arc<BinaryIndexStore>,
+    subject_ids: &[u64],
+    predicates: &[SpotStarPredicateParams<'_>],
+    dict_overlay: Option<&crate::dict_overlay::DictOverlay>,
+) -> Result<Vec<BatchedSpotStarMatch>> {
+    use fluree_db_binary_index::format::leaf::{
+        decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
+    };
+    use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+    use fluree_db_binary_index::read::column_loader::load_leaflet_columns_cached;
+    use fluree_db_binary_index::{ColumnProjection, RunSortOrder};
+
+    if subject_ids.is_empty() || predicates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut predicates_by_id: HashMap<u32, &SpotStarPredicateParams<'_>> = HashMap::new();
+    for predicate in predicates {
+        let Some(p_id) = store.sid_to_p_id(&predicate.pred_sid) else {
+            continue;
+        };
+        predicates_by_id.insert(p_id, predicate);
+    }
+    if predicates_by_id.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(branch) = store.branch_for_order(ctx.binary_g_id, RunSortOrder::Spot) else {
+        return Ok(Vec::new());
+    };
+
+    let mut unique_s_ids = subject_ids.to_vec();
+    unique_s_ids.sort_unstable();
+    unique_s_ids.dedup();
+    if unique_s_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let cmp = cmp_v2_for_order(RunSortOrder::Spot);
+    let min_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(unique_s_ids[0]),
+        p_id: 0,
+        o_key: 0,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id: ctx.binary_g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(*unique_s_ids.last().unwrap()),
+        p_id: u32::MAX,
+        o_key: u64::MAX,
+        t: u32::MAX,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id: ctx.binary_g_id,
+    };
+    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+    let cache = store.leaflet_cache();
+    let mut out = Vec::new();
+
+    #[inline]
+    fn lower_bound_s_id(
+        batch: &fluree_db_binary_index::ColumnBatch,
+        start: usize,
+        end: usize,
+        target: u64,
+    ) -> usize {
+        let mut lo = start;
+        let mut hi = end;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if batch.s_id.get(mid) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    #[inline]
+    fn upper_bound_s_id(
+        batch: &fluree_db_binary_index::ColumnBatch,
+        start: usize,
+        end: usize,
+        target: u64,
+    ) -> usize {
+        let mut lo = start;
+        let mut hi = end;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if batch.s_id.get(mid) <= target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    for leaf_idx in leaf_range {
+        let leaf_entry = &branch.leaves[leaf_idx];
+        let leaf_bytes = store
+            .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
+            .map_err(|e| QueryError::Internal(format!("fetch leaf: {e}")))?;
+        let header = decode_leaf_header_v3(&leaf_bytes)
+            .map_err(|e| QueryError::Internal(format!("read leaf header: {e}")))?;
+        let dir = decode_leaf_dir_v3_with_base(&leaf_bytes, &header)
+            .map_err(|e| QueryError::Internal(format!("decode leaf dir: {e}")))?;
+        let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
+
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 {
+                continue;
+            }
+
+            let batch = if let Some(c) = &cache {
+                load_leaflet_columns_cached(
+                    &leaf_bytes,
+                    entry,
+                    dir.payload_base,
+                    header.order,
+                    c,
+                    leaf_id,
+                    u32::try_from(leaflet_idx)
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
+                )
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            } else {
+                use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+                load_leaflet_columns(
+                    &leaf_bytes,
+                    entry,
+                    dir.payload_base,
+                    &ColumnProjection::all(),
+                    header.order,
+                )
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            };
+
+            let row_count = batch.row_count;
+            if row_count == 0 {
+                continue;
+            }
+
+            let leaflet_s_min = batch.s_id.get(0);
+            let leaflet_s_max = batch.s_id.get(row_count - 1);
+            let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
+            let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
+            if subj_start >= subj_end {
+                continue;
+            }
+
+            for &s_id in &unique_s_ids[subj_start..subj_end] {
+                let row_start = lower_bound_s_id(&batch, 0, row_count, s_id);
+                let row_end = upper_bound_s_id(&batch, row_start, row_count, s_id);
+                if row_start == row_end {
+                    continue;
+                }
+
+                for row in row_start..row_end {
+                    let p_id = entry.p_const.unwrap_or_else(|| batch.p_id.get_or(row, 0));
+                    let Some(predicate) = predicates_by_id.get(&p_id).copied() else {
+                        continue;
+                    };
+
+                    let o_type_val = entry
+                        .o_type_const
+                        .unwrap_or_else(|| batch.o_type.get_or(row, 0));
+                    let o_key_val = batch.o_key.get(row);
+
+                    if predicate.object_bounds.is_some() || predicate.bound_object.is_some() {
+                        let decoded = store
+                            .decode_value_v3(o_type_val, o_key_val, p_id, ctx.binary_g_id)
+                            .map_err(|e| {
+                                QueryError::Internal(format!(
+                                    "decode_value_v3 (batched spot star filter): {e}"
+                                ))
+                            })?;
+                        if let Some(bounds) = predicate.object_bounds {
+                            if !bounds.matches(&decoded) {
+                                continue;
+                            }
+                        }
+                        if let Some(term) = predicate.bound_object {
+                            if !term_matches_probe_value(store, term, &decoded) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    let object = if predicate.emit_object {
+                        Some(build_probe_object_binding(
+                            ctx,
+                            store,
+                            dict_overlay,
+                            p_id,
+                            o_type_val,
+                            o_key_val,
+                            batch.o_i.get_or(row, u32::MAX),
+                            batch.t.get_or(row, 0) as i64,
+                        )?)
+                    } else {
+                        None
+                    };
+
+                    out.push(BatchedSpotStarMatch {
+                        subject_id: s_id,
+                        predicate_idx: predicate.predicate_idx,
                         object,
                     });
                 }
