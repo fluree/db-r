@@ -202,6 +202,7 @@ impl QueryResult {
     ///         sparql_text: Some(sparql.to_string()),
     ///         from_count: 1,
     ///         iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+    ///         ..Default::default()
     ///     });
     /// let json = result.to_agent_json_with_config(snapshot, &config)?;
     /// ```

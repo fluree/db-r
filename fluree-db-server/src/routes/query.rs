@@ -304,6 +304,7 @@ pub async fn query(
                 sparql_text: Some(sparql.to_string()),
                 from_count,
                 iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                ..Default::default()
             };
             let mut config = fluree_db_api::FormatterConfig::agent_json()
                 .with_agent_json_context(agent_ctx);
@@ -1561,7 +1562,8 @@ async fn execute_sparql_ledger(
                 let agent_ctx = fluree_db_api::AgentJsonContext {
                     sparql_text: Some(sparql.to_string()),
                     from_count,
-                    iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                    iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                    ..Default::default()
                 };
                 let mut config = fluree_db_api::FormatterConfig::agent_json()
                     .with_agent_json_context(agent_ctx);
@@ -1776,7 +1778,8 @@ async fn execute_sparql_ledger(
             let agent_ctx = fluree_db_api::AgentJsonContext {
                 sparql_text: Some(sparql.to_string()),
                 from_count,
-                iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                iso_timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                ..Default::default()
             };
             let mut config = fluree_db_api::FormatterConfig::agent_json()
                 .with_agent_json_context(agent_ctx);

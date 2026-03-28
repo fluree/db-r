@@ -100,7 +100,7 @@ pub enum OutputFormat {
 /// Additional context for AgentJson formatting (resume query, timestamps)
 ///
 /// Passed via `FormatterConfig` to avoid modifying `QueryResult`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AgentJsonContext {
     /// Original SPARQL query text (for generating resume queries)
     pub sparql_text: Option<String>,
@@ -108,6 +108,19 @@ pub struct AgentJsonContext {
     pub from_count: usize,
     /// Pre-resolved ISO-8601 timestamp for the query's effective time
     pub iso_timestamp: Option<String>,
+    /// Row limit to use in resume queries (defaults to 100)
+    pub resume_limit: usize,
+}
+
+impl Default for AgentJsonContext {
+    fn default() -> Self {
+        Self {
+            sparql_text: None,
+            from_count: 0,
+            iso_timestamp: None,
+            resume_limit: 100,
+        }
+    }
 }
 
 /// Configuration for result formatting
@@ -307,6 +320,7 @@ mod tests {
                 sparql_text: Some("SELECT * WHERE { ?s ?p ?o }".to_string()),
                 from_count: 1,
                 iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+                ..Default::default()
             });
 
         assert_eq!(config.max_bytes, Some(32768));

@@ -39,7 +39,6 @@ pub fn format(
     let mut type_map: HashMap<VarId, BTreeSet<String>> = HashMap::new();
     let mut cumulative_bytes: usize = 0;
     let mut has_more = false;
-    let mut total_rows: usize = 0;
     // Scratch buffer for byte measurement — reused across rows to avoid allocation
     let mut size_buf: Vec<u8> = if max_bytes.is_some() {
         Vec::with_capacity(512)
@@ -49,8 +48,6 @@ pub fn format(
 
     'outer: for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            total_rows += 1;
-
             let vars_to_scan = select_vars.unwrap_or_else(|| batch.schema());
 
             // Single pass: format row values AND extract types simultaneously
@@ -110,17 +107,31 @@ pub fn format(
 
     envelope.insert("hasMore".to_string(), JsonValue::Bool(has_more));
 
+    if row_count == 0 {
+        envelope.insert(
+            "message".to_string(),
+            JsonValue::String(
+                "Query returned no results. The schema is empty because no rows were \
+                 available to infer types from. This does not necessarily indicate an \
+                 incorrect query — the data may not exist for the given constraints."
+                    .to_string(),
+            ),
+        );
+    }
+
     if has_more {
         let budget_str = max_bytes.map(|b| b.to_string()).unwrap_or_default();
         let mut msg = format!(
-            "Response truncated due to size limit of {} bytes. {} of {} rows included.",
-            budget_str, row_count, total_rows
+            "Response truncated due to size limit of {} bytes. {} of {} total rows included.",
+            budget_str, row_count, total_row_hint
         );
 
         if let Some(ref ctx) = config.agent_json_context {
             if ctx.from_count <= 1 {
                 if let (Some(ref sparql), Some(t)) = (&ctx.sparql_text, result.t) {
-                    if let Some(resume) = generate_resume_query(sparql, t, row_count) {
+                    if let Some(resume) =
+                        generate_resume_query(sparql, t, row_count, ctx.resume_limit)
+                    {
                         msg = format!(
                             "Response truncated due to size limit of {} bytes. \
                              Use the query below to retrieve the next batch.",
@@ -134,8 +145,8 @@ pub fn format(
                 if let Some(ref iso) = ctx.iso_timestamp {
                     msg.push_str(&format!(
                         " To retrieve the next batch, re-issue your query with \
-                         @iso:{} on each FROM clause and add OFFSET {} LIMIT 100.",
-                        iso, row_count
+                         @iso:{} on each FROM clause and add OFFSET {} LIMIT {}.",
+                        iso, row_count, ctx.resume_limit
                     ));
                 }
             }
@@ -256,7 +267,7 @@ fn build_schema(
 ///
 /// Rewrites the original SPARQL to pin time with `@t:` and add OFFSET/LIMIT.
 /// Returns `None` if the query has zero or multiple FROM clauses.
-fn generate_resume_query(sparql: &str, t: i64, row_count: usize) -> Option<String> {
+fn generate_resume_query(sparql: &str, t: i64, row_count: usize, limit: usize) -> Option<String> {
     // Find all FROM <...> occurrences (case insensitive)
     let lower = sparql.to_lowercase();
     let from_positions: Vec<usize> = lower
@@ -301,29 +312,52 @@ fn generate_resume_query(sparql: &str, t: i64, row_count: usize) -> Option<Strin
 
     // Append new OFFSET and LIMIT
     let trimmed = result.trim_end();
-    format!("{} OFFSET {} LIMIT 100", trimmed, row_count).into()
+    format!("{} OFFSET {} LIMIT {}", trimmed, row_count, limit).into()
 }
 
-/// Remove a SPARQL clause like "OFFSET 10" or "LIMIT 50" (case insensitive)
+/// Remove a SPARQL clause like "OFFSET 10" or "LIMIT 50" (case insensitive).
+///
+/// Uses word-boundary checks so that IRIs containing the keyword as a substring
+/// (e.g. `<http://example.com/offsetValue>`) are not matched.
 fn strip_clause(sparql: &str, keyword: &str) -> String {
     let lower = sparql.to_lowercase();
-    if let Some(pos) = lower.find(keyword) {
-        let before = &sparql[..pos];
-        let after = &sparql[pos + keyword.len()..];
-        // Skip whitespace and digits after the keyword
-        let rest = after.trim_start();
-        let digit_end = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        let consumed = after.len() - rest.len() + digit_end;
-        format!(
-            "{}{}",
-            before.trim_end(),
-            &sparql[pos + keyword.len() + consumed..]
-        )
-    } else {
-        sparql.to_string()
+    let kw_len = keyword.len();
+
+    // Search for the keyword on a word boundary
+    let mut search_from = 0;
+    while let Some(rel) = lower[search_from..].find(keyword) {
+        let pos = search_from + rel;
+
+        // Check word boundary: char before must be non-alphanumeric (or start of string)
+        let boundary_before = pos == 0
+            || !sparql.as_bytes()[pos - 1].is_ascii_alphanumeric()
+                && sparql.as_bytes()[pos - 1] != b'_';
+
+        // Char after must be non-alphanumeric (or end of string)
+        let boundary_after = pos + kw_len >= sparql.len()
+            || !sparql.as_bytes()[pos + kw_len].is_ascii_alphanumeric()
+                && sparql.as_bytes()[pos + kw_len] != b'_';
+
+        if boundary_before && boundary_after {
+            let before = &sparql[..pos];
+            let after = &sparql[pos + kw_len..];
+            // Skip whitespace and digits after the keyword
+            let rest = after.trim_start();
+            let digit_end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let consumed = after.len() - rest.len() + digit_end;
+            return format!(
+                "{}{}",
+                before.trim_end(),
+                &sparql[pos + kw_len + consumed..]
+            );
+        }
+
+        search_from = pos + kw_len;
     }
+
+    sparql.to_string()
 }
 
 #[cfg(test)]
@@ -333,7 +367,7 @@ mod tests {
     #[test]
     fn test_generate_resume_basic() {
         let sparql = "SELECT ?s ?p ?o FROM <mydb:main> WHERE { ?s ?p ?o }";
-        let result = generate_resume_query(sparql, 5, 47).unwrap();
+        let result = generate_resume_query(sparql, 5, 47, 100).unwrap();
         assert!(result.contains("mydb:main@t:5"));
         assert!(result.contains("OFFSET 47"));
         assert!(result.contains("LIMIT 100"));
@@ -342,7 +376,7 @@ mod tests {
     #[test]
     fn test_generate_resume_existing_time_suffix() {
         let sparql = "SELECT ?s FROM <mydb:main@t:3> WHERE { ?s ?p ?o }";
-        let result = generate_resume_query(sparql, 5, 10).unwrap();
+        let result = generate_resume_query(sparql, 5, 10, 100).unwrap();
         assert!(result.contains("mydb:main@t:5"));
         assert!(!result.contains("@t:3"));
     }
@@ -350,7 +384,7 @@ mod tests {
     #[test]
     fn test_generate_resume_existing_offset_limit() {
         let sparql = "SELECT ?s FROM <mydb:main> WHERE { ?s ?p ?o } OFFSET 10 LIMIT 50";
-        let result = generate_resume_query(sparql, 5, 47).unwrap();
+        let result = generate_resume_query(sparql, 5, 47, 100).unwrap();
         assert!(result.contains("OFFSET 47"));
         assert!(result.contains("LIMIT 100"));
         assert!(!result.contains("OFFSET 10"));
@@ -360,13 +394,13 @@ mod tests {
     #[test]
     fn test_generate_resume_multi_from_returns_none() {
         let sparql = "SELECT ?s FROM <db1:main> FROM <db2:main> WHERE { ?s ?p ?o }";
-        assert!(generate_resume_query(sparql, 5, 10).is_none());
+        assert!(generate_resume_query(sparql, 5, 10, 100).is_none());
     }
 
     #[test]
     fn test_generate_resume_no_from_returns_none() {
         let sparql = "SELECT ?s WHERE { ?s ?p ?o }";
-        assert!(generate_resume_query(sparql, 5, 10).is_none());
+        assert!(generate_resume_query(sparql, 5, 10, 100).is_none());
     }
 
     #[test]
@@ -423,5 +457,49 @@ mod tests {
         let schema = build_schema(&type_map, &vars);
         assert!(schema.get("?name").is_some());
         assert!(schema.get("?__pp0").is_none());
+    }
+
+    #[test]
+    fn test_strip_clause_word_boundary() {
+        // Should NOT match "offset" inside an IRI
+        let sparql = "SELECT ?s FROM <http://example.com/offsetValue> WHERE { ?s ?p ?o }";
+        let result = strip_clause(sparql, "offset");
+        assert_eq!(result, sparql, "should not strip 'offset' inside an IRI");
+
+        // Should strip standalone OFFSET
+        let sparql2 = "SELECT ?s FROM <db:main> WHERE { ?s ?p ?o } OFFSET 10";
+        let result2 = strip_clause(sparql2, "offset");
+        assert!(
+            !result2.contains("OFFSET"),
+            "should strip standalone OFFSET"
+        );
+        assert!(
+            !result2.contains("10"),
+            "should strip the digit after OFFSET"
+        );
+    }
+
+    #[test]
+    fn test_strip_clause_limit_word_boundary() {
+        // Should NOT match "limit" inside "limitless"
+        let sparql = "SELECT ?s FROM <limitless/db1> WHERE { ?s ?p ?o }";
+        let result = strip_clause(sparql, "limit");
+        assert_eq!(
+            result, sparql,
+            "should not strip 'limit' inside 'limitless'"
+        );
+
+        // Should strip standalone LIMIT
+        let sparql2 = "SELECT ?s WHERE { ?s ?p ?o } LIMIT 50";
+        let result2 = strip_clause(sparql2, "limit");
+        assert!(!result2.contains("LIMIT"), "should strip standalone LIMIT");
+    }
+
+    #[test]
+    fn test_generate_resume_with_custom_limit() {
+        let sparql = "SELECT ?s ?p ?o FROM <mydb:main> WHERE { ?s ?p ?o }";
+        let result = generate_resume_query(sparql, 5, 47, 500).unwrap();
+        assert!(result.contains("LIMIT 500"), "should use custom limit");
+        assert!(result.contains("OFFSET 47"));
     }
 }

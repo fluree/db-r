@@ -157,7 +157,10 @@ async fn agent_json_truncation() {
     let row_count = obj["rowCount"].as_u64().unwrap() as usize;
     let rows = obj["rows"].as_array().unwrap();
     assert_eq!(rows.len(), row_count);
-    assert!(row_count < 3, "should have fewer than 3 rows due to truncation");
+    assert!(
+        row_count < 3,
+        "should have fewer than 3 rows due to truncation"
+    );
 }
 
 // ============================================================================
@@ -189,6 +192,7 @@ async fn agent_json_resume_query() {
             sparql_text: Some(sparql_with_from.to_string()),
             from_count: 1,
             iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+            ..Default::default()
         });
 
     let json = result
@@ -245,6 +249,7 @@ async fn agent_json_iso_timestamp() {
         sparql_text: None,
         from_count: 1,
         iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+        ..Default::default()
     });
 
     let json = result
@@ -272,6 +277,7 @@ async fn agent_json_multi_ledger_no_t() {
         sparql_text: None,
         from_count: 2, // simulate multi-ledger
         iso_timestamp: Some("2026-03-26T14:30:00Z".to_string()),
+        ..Default::default()
     });
 
     let json = result
