@@ -25,6 +25,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
+#[derive(Clone, Debug)]
+pub(crate) struct BatchedSubjectProbeMatch {
+    pub subject_id: u64,
+    pub object: Option<Binding>,
+}
+
 /// Create a right-side scan operator for a join.
 ///
 /// Uses `ScanOperator` which selects between `BinaryScanOperator` (streaming
@@ -2197,6 +2203,388 @@ impl NestedLoopJoinOperator {
         );
         Ok(())
     }
+}
+
+fn term_matches_probe_value(
+    store: &BinaryIndexStore,
+    term: &Term,
+    decoded: &fluree_db_core::FlakeValue,
+) -> bool {
+    match term {
+        Term::Var(_) => true,
+        Term::Sid(sid) => matches!(decoded, fluree_db_core::FlakeValue::Ref(found) if found == sid),
+        Term::Iri(iri) => {
+            let sid = store.encode_iri(iri);
+            matches!(decoded, fluree_db_core::FlakeValue::Ref(found) if *found == sid)
+        }
+        Term::Value(value) => decoded == value,
+    }
+}
+
+fn build_probe_object_binding(
+    ctx: &ExecutionContext<'_>,
+    store: &BinaryIndexStore,
+    dict_overlay: Option<&crate::dict_overlay::DictOverlay>,
+    p_id: u32,
+    o_type_val: u16,
+    o_key_val: u64,
+    o_i: u32,
+    t: i64,
+) -> Result<Binding> {
+    use fluree_db_core::o_type::{DecodeKind, OType};
+
+    if o_type_val == OType::IRI_REF.as_u16() || o_type_val == OType::BLANK_NODE.as_u16() {
+        return Ok(Binding::EncodedSid { s_id: o_key_val });
+    }
+
+    let ot = OType::from_u16(o_type_val);
+    match ot.decode_kind() {
+        DecodeKind::StringDict => {
+            use fluree_db_core::ids::DatatypeDictId;
+            use fluree_db_core::value_id::ObjKind;
+
+            let (dt_id, lang_id) = if ot.is_lang_string() {
+                (DatatypeDictId::LANG_STRING.as_u16(), ot.payload())
+            } else if o_type_val == OType::FULLTEXT.as_u16() {
+                (DatatypeDictId::FULL_TEXT.as_u16(), 0)
+            } else {
+                (DatatypeDictId::STRING.as_u16(), 0)
+            };
+
+            Ok(Binding::EncodedLit {
+                o_kind: ObjKind::LEX_ID.as_u8(),
+                o_key: o_key_val,
+                p_id,
+                dt_id,
+                lang_id,
+                i_val: if o_i == u32::MAX {
+                    i32::MIN
+                } else {
+                    o_i as i32
+                },
+                t,
+            })
+        }
+        DecodeKind::JsonArena => {
+            use fluree_db_core::ids::DatatypeDictId;
+            use fluree_db_core::value_id::ObjKind;
+            Ok(Binding::EncodedLit {
+                o_kind: ObjKind::JSON_ID.as_u8(),
+                o_key: o_key_val,
+                p_id,
+                dt_id: DatatypeDictId::JSON.as_u16(),
+                lang_id: 0,
+                i_val: if o_i == u32::MAX {
+                    i32::MIN
+                } else {
+                    o_i as i32
+                },
+                t,
+            })
+        }
+        DecodeKind::VectorArena => {
+            use fluree_db_core::ids::DatatypeDictId;
+            use fluree_db_core::value_id::ObjKind;
+            Ok(Binding::EncodedLit {
+                o_kind: ObjKind::VECTOR_ID.as_u8(),
+                o_key: o_key_val,
+                p_id,
+                dt_id: DatatypeDictId::VECTOR.as_u16(),
+                lang_id: 0,
+                i_val: if o_i == u32::MAX {
+                    i32::MIN
+                } else {
+                    o_i as i32
+                },
+                t,
+            })
+        }
+        DecodeKind::NumBigArena => {
+            use fluree_db_core::ids::DatatypeDictId;
+            use fluree_db_core::value_id::ObjKind;
+            Ok(Binding::EncodedLit {
+                o_kind: ObjKind::NUM_BIG.as_u8(),
+                o_key: o_key_val,
+                p_id,
+                dt_id: DatatypeDictId::DECIMAL.as_u16(),
+                lang_id: 0,
+                i_val: if o_i == u32::MAX {
+                    i32::MIN
+                } else {
+                    o_i as i32
+                },
+                t,
+            })
+        }
+        _ => {
+            let val: fluree_db_core::FlakeValue = match (ot.decode_kind(), dict_overlay) {
+                (DecodeKind::IriRef, Some(ov)) => {
+                    let iri = ov.resolve_subject_iri(o_key_val).map_err(|e| {
+                        QueryError::Internal(format!("resolve_subject_iri (batched probe): {e}"))
+                    })?;
+                    fluree_db_core::FlakeValue::Ref(store.encode_iri(&iri))
+                }
+                (DecodeKind::StringDict, Some(ov)) => {
+                    let s = ov.resolve_string_value(o_key_val as u32).map_err(|e| {
+                        QueryError::Internal(format!("resolve_string_value (batched probe): {e}"))
+                    })?;
+                    fluree_db_core::FlakeValue::String(s)
+                }
+                (DecodeKind::JsonArena, Some(ov)) => {
+                    let s = ov.resolve_string_value(o_key_val as u32).map_err(|e| {
+                        QueryError::Internal(format!(
+                            "resolve_string_value (batched probe json): {e}"
+                        ))
+                    })?;
+                    fluree_db_core::FlakeValue::Json(s)
+                }
+                _ => store
+                    .decode_value_v3(o_type_val, o_key_val, p_id, ctx.binary_g_id)
+                    .map_err(|e| {
+                        QueryError::Internal(format!("decode_value_v3 (batched probe): {e}"))
+                    })?,
+            };
+            match val {
+                fluree_db_core::FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
+                other => {
+                    let dtc = match store.resolve_lang_tag(o_type_val).map(Arc::from) {
+                        Some(lang) => DatatypeConstraint::LangTag(lang),
+                        None => DatatypeConstraint::Explicit(
+                            store
+                                .resolve_datatype_sid(o_type_val)
+                                .unwrap_or_else(|| Sid::new(0, "")),
+                        ),
+                    };
+                    Ok(Binding::Lit {
+                        val: other,
+                        dtc,
+                        t: Some(t),
+                        op: None,
+                        p_id: Some(p_id),
+                    })
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn batched_subject_probe_binary(
+    ctx: &ExecutionContext<'_>,
+    store: &Arc<BinaryIndexStore>,
+    pred_sid: &Sid,
+    subject_ids: &[u64],
+    object_bounds: Option<&ObjectBounds>,
+    bound_object: Option<&Term>,
+    emit_object: bool,
+    dict_overlay: Option<&crate::dict_overlay::DictOverlay>,
+) -> Result<Vec<BatchedSubjectProbeMatch>> {
+    use fluree_db_binary_index::format::leaf::{
+        decode_leaf_dir_v3_with_base, decode_leaf_header_v3,
+    };
+    use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
+    use fluree_db_binary_index::read::column_loader::load_leaflet_columns_cached;
+    use fluree_db_binary_index::{ColumnProjection, RunSortOrder};
+
+    if subject_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(p_id) = store.sid_to_p_id(pred_sid) else {
+        return Ok(Vec::new());
+    };
+    let Some(branch) = store.branch_for_order(ctx.binary_g_id, RunSortOrder::Psot) else {
+        return Ok(Vec::new());
+    };
+
+    let mut unique_s_ids = subject_ids.to_vec();
+    unique_s_ids.sort_unstable();
+    unique_s_ids.dedup();
+    if unique_s_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let cmp = cmp_v2_for_order(RunSortOrder::Psot);
+    let min_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(unique_s_ids[0]),
+        o_key: 0,
+        p_id,
+        t: 0,
+        o_i: 0,
+        o_type: 0,
+        g_id: ctx.binary_g_id,
+    };
+    let max_key = RunRecordV2 {
+        s_id: SubjectId::from_u64(*unique_s_ids.last().unwrap()),
+        o_key: u64::MAX,
+        p_id,
+        t: u32::MAX,
+        o_i: u32::MAX,
+        o_type: u16::MAX,
+        g_id: ctx.binary_g_id,
+    };
+    let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
+    let cache = store.leaflet_cache();
+    let mut out = Vec::new();
+
+    for leaf_idx in leaf_range {
+        let leaf_entry = &branch.leaves[leaf_idx];
+        let leaf_bytes = store
+            .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
+            .map_err(|e| QueryError::Internal(format!("fetch leaf: {e}")))?;
+        let header = decode_leaf_header_v3(&leaf_bytes)
+            .map_err(|e| QueryError::Internal(format!("read leaf header: {e}")))?;
+        let dir = decode_leaf_dir_v3_with_base(&leaf_bytes, &header)
+            .map_err(|e| QueryError::Internal(format!("decode leaf dir: {e}")))?;
+        let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
+
+        for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
+            if entry.row_count == 0 {
+                continue;
+            }
+            if entry.p_const.is_some() && entry.p_const != Some(p_id) {
+                continue;
+            }
+
+            let batch = if let Some(c) = &cache {
+                load_leaflet_columns_cached(
+                    &leaf_bytes,
+                    entry,
+                    dir.payload_base,
+                    header.order,
+                    c,
+                    leaf_id,
+                    u32::try_from(leaflet_idx)
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
+                )
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            } else {
+                use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
+                load_leaflet_columns(
+                    &leaf_bytes,
+                    entry,
+                    dir.payload_base,
+                    &ColumnProjection::all(),
+                    header.order,
+                )
+                .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
+            };
+
+            let row_count = batch.row_count;
+            let p_start = (0..row_count)
+                .position(|i| batch.p_id.get_or(i, 0) >= p_id)
+                .unwrap_or(row_count);
+            let p_end = (p_start..row_count)
+                .position(|i| batch.p_id.get_or(p_start + i, 0) > p_id)
+                .map(|offset| p_start + offset)
+                .unwrap_or(row_count);
+            if p_start == p_end {
+                continue;
+            }
+
+            let leaflet_s_min = batch.s_id.get(p_start);
+            let leaflet_s_max = batch.s_id.get(p_end - 1);
+            let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
+            let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
+            if subj_start >= subj_end {
+                continue;
+            }
+
+            fn lower_bound_s_id(
+                batch: &fluree_db_binary_index::ColumnBatch,
+                start: usize,
+                end: usize,
+                target: u64,
+            ) -> usize {
+                let mut lo = start;
+                let mut hi = end;
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if batch.s_id.get(mid) < target {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                lo
+            }
+
+            fn upper_bound_s_id(
+                batch: &fluree_db_binary_index::ColumnBatch,
+                start: usize,
+                end: usize,
+                target: u64,
+            ) -> usize {
+                let mut lo = start;
+                let mut hi = end;
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if batch.s_id.get(mid) <= target {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                lo
+            }
+
+            for &s_id in &unique_s_ids[subj_start..subj_end] {
+                let row_start = lower_bound_s_id(&batch, p_start, p_end, s_id);
+                let row_end = upper_bound_s_id(&batch, p_start, p_end, s_id);
+                if row_start == row_end {
+                    continue;
+                }
+
+                for row in row_start..row_end {
+                    let o_type_val = entry
+                        .o_type_const
+                        .unwrap_or_else(|| batch.o_type.get_or(row, 0));
+                    let o_key_val = batch.o_key.get(row);
+
+                    if object_bounds.is_some() || bound_object.is_some() {
+                        let decoded = store
+                            .decode_value_v3(o_type_val, o_key_val, p_id, ctx.binary_g_id)
+                            .map_err(|e| {
+                                QueryError::Internal(format!(
+                                    "decode_value_v3 (batched subject probe filter): {e}"
+                                ))
+                            })?;
+                        if let Some(bounds) = object_bounds {
+                            if !bounds.matches(&decoded) {
+                                continue;
+                            }
+                        }
+                        if let Some(term) = bound_object {
+                            if !term_matches_probe_value(store, term, &decoded) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    let object = if emit_object {
+                        Some(build_probe_object_binding(
+                            ctx,
+                            store,
+                            dict_overlay,
+                            p_id,
+                            o_type_val,
+                            o_key_val,
+                            batch.o_i.get_or(row, u32::MAX),
+                            batch.t.get_or(row, 0) as i64,
+                        )?)
+                    } else {
+                        None
+                    };
+
+                    out.push(BatchedSubjectProbeMatch {
+                        subject_id: s_id,
+                        object,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]

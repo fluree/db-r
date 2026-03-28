@@ -27,11 +27,9 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::join::NestedLoopJoinOperator;
+use crate::join::batched_subject_probe_binary;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::seed::EmptyOperator;
 use crate::triple::{Ref, Term, TriplePattern};
-use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::DatatypeConstraint;
@@ -539,6 +537,16 @@ impl Operator for PropertyJoinOperator {
                     if let Some(pred_sid) = pred_sid {
                         let subject_ids = driver_subject_ids.as_ref().unwrap();
                         if !subject_ids.is_empty() {
+                            let dict_overlay = ctx.dict_novelty.as_ref().map(|dn| {
+                                crate::dict_overlay::DictOverlay::new(
+                                    fluree_db_binary_index::BinaryGraphView::with_novelty(
+                                        Arc::clone(store),
+                                        ctx.binary_g_id,
+                                        Some(Arc::clone(dn)),
+                                    ),
+                                    Arc::clone(dn),
+                                )
+                            });
                             // IMPORTANT: Batched join uses the min/max s_id range of the left batch
                             // to decide which leaf files/leaflets to scan. If the subject IDs are
                             // sparse across the full id space, a single huge batch can still scan
@@ -575,100 +583,41 @@ impl Operator for PropertyJoinOperator {
                                 used_batched_probe = true;
                                 probe_chunks += 1;
                                 probe_subjects_total += chunk.len() as u64;
-
-                                let rows: Vec<Vec<Binding>> = chunk
-                                    .iter()
-                                    .map(|&s_id| vec![Binding::EncodedSid { s_id }])
-                                    .collect();
-
-                                // Seed: VALUES ?s { <subjectIds...> }
-                                let left = Box::new(ValuesOperator::new(
-                                    Box::new(EmptyOperator::new()),
-                                    vec![self.subject_var],
-                                    rows,
-                                ));
-                                let left_schema: Arc<[VarId]> =
-                                    Arc::from(vec![self.subject_var].into_boxed_slice());
-
-                                // Probe: ?s <pred> ?o / ?s <pred> <const>
-                                let right_pattern = TriplePattern::new(
-                                    Ref::Var(self.subject_var),
-                                    Ref::Sid(pred_sid.clone()),
-                                    match &predicate.object {
-                                        PropertyJoinObject::Var(_) => Term::Var(TEMP_OBJECT_VAR),
-                                        PropertyJoinObject::Bound(term) => term.clone(),
-                                    },
-                                );
                                 let emit_obj = self.emit_positions[pred_idx].is_some();
-                                let right_emit = if emit_obj {
-                                    EmitMask {
-                                        s: true,
-                                        p: false,
-                                        o: true,
-                                    }
-                                } else {
-                                    EmitMask {
-                                        s: true,
-                                        p: false,
-                                        o: false,
-                                    }
-                                };
-
-                                let mut join = NestedLoopJoinOperator::new(
-                                    left,
-                                    left_schema,
-                                    right_pattern,
+                                let probe_matches = batched_subject_probe_binary(
+                                    ctx,
+                                    store,
+                                    &pred_sid,
+                                    chunk,
                                     match &predicate.object {
                                         PropertyJoinObject::Var(obj_var) => {
-                                            self.object_bounds.get(obj_var).cloned()
+                                            self.object_bounds.get(obj_var)
                                         }
                                         PropertyJoinObject::Bound(_) => None,
                                     },
-                                    Vec::new(),
-                                    right_emit,
-                                );
-                                join.open(ctx).await?;
-                                while let Some(batch) = join.next_batch(ctx).await? {
-                                    let subject_col = batch.column_by_idx(0);
-                                    let object_col = batch.column_by_idx(1);
-                                    if let Some(subjects) = subject_col {
-                                        scan_rows_total += batch.len() as u64;
-                                        if emit_obj {
-                                            if let Some(objects) = object_col {
-                                                for (subject, object) in
-                                                    subjects.iter().zip(objects.iter())
-                                                {
-                                                    if let Some(key) =
-                                                        Self::subject_key(ctx, subject)?
-                                                    {
-                                                        if let Some(entry) =
-                                                            all_subject_values.get_mut(&key)
-                                                        {
-                                                            entry.1 |= 1u64 << pred_idx;
-                                                            if let Some(epos) =
-                                                                self.emit_positions[pred_idx]
-                                                            {
-                                                                entry.2[epos].push(object.clone());
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            for subject in subjects.iter() {
-                                                if let Some(key) = Self::subject_key(ctx, subject)?
-                                                {
-                                                    if let Some(entry) =
-                                                        all_subject_values.get_mut(&key)
-                                                    {
-                                                        entry.1 |= 1u64 << pred_idx;
-                                                    }
-                                                }
+                                    match &predicate.object {
+                                        PropertyJoinObject::Bound(term) => Some(term),
+                                        PropertyJoinObject::Var(_) => None,
+                                    },
+                                    emit_obj,
+                                    dict_overlay.as_ref(),
+                                )?;
+                                scan_rows_total += probe_matches.len() as u64;
+                                for probe_match in probe_matches {
+                                    let subject = Binding::EncodedSid {
+                                        s_id: probe_match.subject_id,
+                                    };
+                                    if let Some(key) = Self::subject_key(ctx, &subject)? {
+                                        if let Some(entry) = all_subject_values.get_mut(&key) {
+                                            entry.1 |= 1u64 << pred_idx;
+                                            if let (Some(epos), Some(object)) =
+                                                (self.emit_positions[pred_idx], probe_match.object)
+                                            {
+                                                entry.2[epos].push(object);
                                             }
                                         }
                                     }
                                 }
-                                join.close();
                                 chunk_start = i;
                             }
 
