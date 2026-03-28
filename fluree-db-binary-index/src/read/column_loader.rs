@@ -241,26 +241,14 @@ pub fn load_columns_cached_via_handle(
     leaf_id: u128,
     leaflet_idx_u32: u32,
 ) -> io::Result<ColumnBatch> {
-    let span = tracing::debug_span!(
-        "binary_load_leaflet",
-        leaf_id = format_args!("{leaf_id:032x}"),
-        leaflet_idx = leaflet_idx_u32,
-        cache_hit = tracing::field::Empty,
-        row_count = tracing::field::Empty
-    );
-    let _guard = span.enter();
     let key = super::leaflet_cache::V3BatchCacheKey {
         leaf_id,
         leaflet_idx: leaflet_idx_u32,
     };
-    let cache_hit = cache.get_v3_batch(&key).is_some();
-    span.record("cache_hit", cache_hit);
-
     let batch = cache.try_get_or_decode_v3_batch(key, || {
         let all = ColumnProjection::all();
         handle.load_columns(leaflet_idx, &all, order)
     })?;
-    span.record("row_count", batch.row_count as u64);
     Ok(batch)
 }
 

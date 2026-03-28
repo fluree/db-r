@@ -31,6 +31,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
+use crate::object_binding::{late_materialized_object_binding, materialized_object_binding};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::sid_iri;
@@ -43,9 +44,6 @@ use crate::var_registry::VarId;
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
-use fluree_db_core::ids::DatatypeDictId;
-use fluree_db_core::value_id::ObjKind;
-
 /// Mask indicating which triple components should be emitted as columns.
 ///
 /// Used by plan-time optimizations to prune unused output columns.
@@ -898,85 +896,6 @@ impl BinaryScanOperator {
             && !self.check_s_eq_p
             && !self.check_p_eq_o;
 
-        let encode_object =
-            |o_type: u16, o_key: u64, p_id: u32, t: i64, o_i: u32| -> Option<Binding> {
-                let ot = OType::from_u16(o_type);
-                match ot.decode_kind() {
-                    fluree_db_core::o_type::DecodeKind::IriRef => {
-                        Some(Binding::EncodedSid { s_id: o_key })
-                    }
-                    fluree_db_core::o_type::DecodeKind::BlankNode => {
-                        // Blank nodes aren't subject-dict IDs in V3; materialize to a Sid now.
-                        Some(Binding::Sid(Sid::new(0, format!("_:b{}", o_key))))
-                    }
-                    fluree_db_core::o_type::DecodeKind::StringDict => {
-                        let (dt_id, lang_id) = if ot.is_lang_string() {
-                            (DatatypeDictId::LANG_STRING.as_u16(), ot.payload())
-                        } else if o_type == OType::FULLTEXT.as_u16() {
-                            (DatatypeDictId::FULL_TEXT.as_u16(), 0)
-                        } else {
-                            // Default string dict values to xsd:string for late materialization.
-                            (DatatypeDictId::STRING.as_u16(), 0)
-                        };
-                        Some(Binding::EncodedLit {
-                            o_kind: ObjKind::LEX_ID.as_u8(),
-                            o_key,
-                            p_id,
-                            dt_id,
-                            lang_id,
-                            i_val: if o_i == u32::MAX {
-                                i32::MIN
-                            } else {
-                                o_i as i32
-                            },
-                            t,
-                        })
-                    }
-                    fluree_db_core::o_type::DecodeKind::JsonArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::JSON_ID.as_u8(),
-                        o_key,
-                        p_id,
-                        dt_id: DatatypeDictId::JSON.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    fluree_db_core::o_type::DecodeKind::VectorArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::VECTOR_ID.as_u8(),
-                        o_key,
-                        p_id,
-                        dt_id: DatatypeDictId::VECTOR.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    fluree_db_core::o_type::DecodeKind::NumBigArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::NUM_BIG.as_u8(),
-                        o_key,
-                        p_id,
-                        // Best-effort: treat as decimal for late materialization; NUM_BIG identity
-                        // relies on (kind,key,dt/lang) and includes p_id in eq/hash when needed.
-                        dt_id: DatatypeDictId::DECIMAL.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    _ => None,
-                }
-            };
-
         for row in 0..batch.row_count {
             let s_id = batch.s_id.get(row);
             let p_id = batch.p_id.get_or(row, 0);
@@ -1092,49 +1011,17 @@ impl BinaryScanOperator {
             if let Some(pos) = self.o_var_pos {
                 let binding = if needs_o_decode || !late_materialize {
                     let val = decoded_o.expect("decoded object required");
-                    match &val {
-                        FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
-                        _ => {
-                            let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from) {
-                                Some(lang) => DatatypeConstraint::LangTag(lang),
-                                None => DatatypeConstraint::Explicit(
-                                    self.store()
-                                        .resolve_datatype_sid(o_type)
-                                        .unwrap_or_else(|| Sid::new(0, "")),
-                                ),
-                            };
-                            Binding::Lit {
-                                val,
-                                dtc,
-                                t: t_opt,
-                                op: None,
-                                p_id: Some(p_id),
-                            }
-                        }
-                    }
-                } else if let Some(encoded) = encode_object(o_type, o_key, p_id, t_enc, o_i) {
+                    materialized_object_binding(self.store(), o_type, p_id, val, t_opt)
+                } else if let Some(encoded) =
+                    late_materialized_object_binding(o_type, o_key, p_id, t_enc, o_i)
+                {
                     encoded
                 } else {
                     // Fallback: decode if we don't have a safe encoded representation.
                     // This preserves correctness for uncommon/custom OTypes.
                     match decode_value(o_type, o_key, p_id) {
-                        Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
                         Ok(val) => {
-                            let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from) {
-                                Some(lang) => DatatypeConstraint::LangTag(lang),
-                                None => DatatypeConstraint::Explicit(
-                                    self.store()
-                                        .resolve_datatype_sid(o_type)
-                                        .unwrap_or_else(|| Sid::new(0, "")),
-                                ),
-                            };
-                            Binding::Lit {
-                                val,
-                                dtc,
-                                t: t_opt,
-                                op: None,
-                                p_id: Some(p_id),
-                            }
+                            materialized_object_binding(self.store(), o_type, p_id, val, t_opt)
                         }
                         Err(e) => {
                             return Err(QueryError::dictionary_lookup(format!(

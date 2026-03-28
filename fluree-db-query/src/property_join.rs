@@ -27,7 +27,10 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::join::batched_subject_probe_binary;
+use crate::fast_path_common::try_normalize_pred_sid;
+use crate::join::{
+    batched_subject_probe_binary, make_dict_overlay, BatchedSubjectProbeMatch, SubjectProbeParams,
+};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -197,6 +200,67 @@ impl PropertyJoinOperator {
             .enumerate()
             .min_by_key(|(idx, predicate)| (Self::driver_score(predicate, object_bounds), *idx))
             .map(|(idx, _)| idx)
+    }
+
+    fn predicate_bounds<'a>(
+        &'a self,
+        predicate: &'a PropertyJoinPredicate,
+    ) -> Option<&'a ObjectBounds> {
+        match &predicate.object {
+            PropertyJoinObject::Var(obj_var) => self.object_bounds.get(obj_var),
+            PropertyJoinObject::Bound(_) => None,
+        }
+    }
+
+    fn predicate_bound_object(predicate: &PropertyJoinPredicate) -> Option<&Term> {
+        match &predicate.object {
+            PropertyJoinObject::Bound(term) => Some(term),
+            PropertyJoinObject::Var(_) => None,
+        }
+    }
+
+    fn ingest_probe_match(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        all_subject_values: &mut FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+        pred_idx: usize,
+        probe_match: BatchedSubjectProbeMatch,
+    ) -> Result<()> {
+        let subject = Binding::EncodedSid {
+            s_id: probe_match.subject_id,
+        };
+        if let Some(key) = Self::subject_key(ctx, &subject)? {
+            if let Some(entry) = all_subject_values.get_mut(&key) {
+                entry.1 |= 1u64 << pred_idx;
+                if let (Some(epos), Some(object)) =
+                    (self.emit_positions[pred_idx], probe_match.object)
+                {
+                    entry.2[epos].push(object);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_driver_subject_ids(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        order_pos: usize,
+        all_subject_values: &FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+    ) -> Option<Vec<u64>> {
+        if order_pos != 0 || ctx.binary_store.is_none() {
+            return None;
+        }
+
+        let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
+        for key in all_subject_values.keys() {
+            if let SubjectKey::Id(s_id) = key {
+                ids.push(*s_id);
+            } else {
+                return None;
+            }
+        }
+        (!ids.is_empty()).then_some(ids)
     }
 
     /// Create a new property-join operator from patterns
@@ -528,25 +592,12 @@ impl Operator for PropertyJoinOperator {
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
-                    let pred_sid = match &predicate.pred_ref {
-                        Ref::Sid(s) => Some(s.clone()),
-                        Ref::Iri(iri) => Some(store.encode_iri(iri)),
-                        Ref::Var(_) => None,
-                    };
+                    let pred_sid = try_normalize_pred_sid(store, &predicate.pred_ref);
 
                     if let Some(pred_sid) = pred_sid {
                         let subject_ids = driver_subject_ids.as_ref().unwrap();
                         if !subject_ids.is_empty() {
-                            let dict_overlay = ctx.dict_novelty.as_ref().map(|dn| {
-                                crate::dict_overlay::DictOverlay::new(
-                                    fluree_db_binary_index::BinaryGraphView::with_novelty(
-                                        Arc::clone(store),
-                                        ctx.binary_g_id,
-                                        Some(Arc::clone(dn)),
-                                    ),
-                                    Arc::clone(dn),
-                                )
-                            });
+                            let dict_overlay = make_dict_overlay(ctx, store);
                             // IMPORTANT: Batched join uses the min/max s_id range of the left batch
                             // to decide which leaf files/leaflets to scan. If the subject IDs are
                             // sparse across the full id space, a single huge batch can still scan
@@ -587,36 +638,23 @@ impl Operator for PropertyJoinOperator {
                                 let probe_matches = batched_subject_probe_binary(
                                     ctx,
                                     store,
-                                    &pred_sid,
-                                    chunk,
-                                    match &predicate.object {
-                                        PropertyJoinObject::Var(obj_var) => {
-                                            self.object_bounds.get(obj_var)
-                                        }
-                                        PropertyJoinObject::Bound(_) => None,
+                                    &SubjectProbeParams {
+                                        pred_sid: &pred_sid,
+                                        subject_ids: chunk,
+                                        object_bounds: self.predicate_bounds(predicate),
+                                        bound_object: Self::predicate_bound_object(predicate),
+                                        emit_object: emit_obj,
+                                        dict_overlay: dict_overlay.as_ref(),
                                     },
-                                    match &predicate.object {
-                                        PropertyJoinObject::Bound(term) => Some(term),
-                                        PropertyJoinObject::Var(_) => None,
-                                    },
-                                    emit_obj,
-                                    dict_overlay.as_ref(),
                                 )?;
                                 scan_rows_total += probe_matches.len() as u64;
                                 for probe_match in probe_matches {
-                                    let subject = Binding::EncodedSid {
-                                        s_id: probe_match.subject_id,
-                                    };
-                                    if let Some(key) = Self::subject_key(ctx, &subject)? {
-                                        if let Some(entry) = all_subject_values.get_mut(&key) {
-                                            entry.1 |= 1u64 << pred_idx;
-                                            if let (Some(epos), Some(object)) =
-                                                (self.emit_positions[pred_idx], probe_match.object)
-                                            {
-                                                entry.2[epos].push(object);
-                                            }
-                                        }
-                                    }
+                                    self.ingest_probe_match(
+                                        ctx,
+                                        &mut all_subject_values,
+                                        pred_idx,
+                                        probe_match,
+                                    )?;
                                 }
                                 chunk_start = i;
                             }
@@ -730,20 +768,8 @@ impl Operator for PropertyJoinOperator {
                 // After the first scan, capture subject IDs for batched probing when the
                 // subject keys stayed as encoded IDs. This lets a selective exact scan like
                 // `?s rdf:type :Deal` drive later subject-bound probes.
-                if order_pos == 0 && ctx.binary_store.is_some() {
-                    let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
-                    for k in all_subject_values.keys() {
-                        if let SubjectKey::Id(s_id) = k {
-                            ids.push(*s_id);
-                        } else {
-                            ids.clear();
-                            break;
-                        }
-                    }
-                    if !ids.is_empty() {
-                        driver_subject_ids = Some(ids);
-                    }
-                }
+                driver_subject_ids =
+                    self.capture_driver_subject_ids(ctx, order_pos, &all_subject_values);
             }
 
             // Filter to only subjects that have values for ALL predicates

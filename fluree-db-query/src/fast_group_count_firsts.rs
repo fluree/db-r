@@ -1,6 +1,7 @@
 use crate::binding::Binding;
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::normalize_pred_sid;
 use crate::operator::BoxedOperator;
 use crate::operator::{Operator, OperatorState};
 use crate::triple::Term;
@@ -511,15 +512,7 @@ fn resolve_predicate_id_v6(
     predicate: &crate::triple::Ref,
     store: &BinaryIndexStore,
 ) -> Result<u32> {
-    let sid = match predicate {
-        crate::triple::Ref::Sid(s) => s.clone(),
-        crate::triple::Ref::Iri(i) => store.encode_iri(i),
-        crate::triple::Ref::Var(_) => {
-            return Err(QueryError::Internal(
-                "fast-path requires bound predicate".to_string(),
-            ))
-        }
-    };
+    let sid = normalize_pred_sid(store, predicate)?;
     store
         .sid_to_p_id(&sid)
         .ok_or_else(|| QueryError::Internal("predicate not found in V6 dictionary".to_string()))

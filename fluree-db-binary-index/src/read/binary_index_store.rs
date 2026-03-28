@@ -492,14 +492,6 @@ impl BinaryIndexStore {
         use super::leaf_access::{
             fetch_header_and_directory, FullBlobLeafHandle, RangeReadLeafHandle,
         };
-        let span = tracing::debug_span!(
-            "binary_open_leaf",
-            leaf = %leaf_cid,
-            need_replay,
-            source = tracing::field::Empty
-        );
-        let _guard = span.enter();
-
         let cs = self
             .cas
             .as_ref()
@@ -509,8 +501,6 @@ impl BinaryIndexStore {
 
         // Fast path 1: local filesystem — full read is optimal (OS page cache).
         if let Some(local_path) = cs.resolve_local_path(leaf_cid) {
-            span.record("source", "local_path");
-            tracing::debug!(leaf = %leaf_cid, need_replay, source = "local_path", "binary leaf open");
             let bytes = std::fs::read(local_path)?;
             let sidecar = if need_replay {
                 self.fetch_sidecar_bytes_sync(sidecar_cid)?
@@ -523,8 +513,6 @@ impl BinaryIndexStore {
         // Fast path 2: locally cached — full read from disk cache.
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
         if cache_path.exists() {
-            span.record("source", "disk_cache");
-            tracing::debug!(leaf = %leaf_cid, need_replay, source = "disk_cache", "binary leaf open");
             let bytes = std::fs::read(&cache_path)?;
             let sidecar = if need_replay {
                 self.fetch_sidecar_bytes_sync(sidecar_cid)?
@@ -538,7 +526,6 @@ impl BinaryIndexStore {
 
         if let Some(dir) = self.remote_leaf_metadata.read().get(leaf_cid).cloned() {
             if touch_count >= HOT_REMOTE_LEAF_PROMOTION_TOUCHES {
-                span.record("source", "remote_promote_disk");
                 tracing::debug!(
                     leaf = %leaf_cid,
                     need_replay,
@@ -554,16 +541,6 @@ impl BinaryIndexStore {
                 };
                 return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
             }
-            span.record("source", "remote_meta_cache");
-            tracing::debug!(
-                leaf = %leaf_cid,
-                need_replay,
-                source = "remote_meta_cache",
-                touch_count,
-                leaflets = dir.entries.len(),
-                payload_base = dir.payload_base,
-                "binary leaf open"
-            );
             let sc_cid = if need_replay {
                 sidecar_cid.cloned()
             } else {
@@ -583,7 +560,6 @@ impl BinaryIndexStore {
         }
 
         // Slow path: remote — use range reads for column-selective access.
-        span.record("source", "remote_range");
         tracing::debug!(
             leaf = %leaf_cid,
             need_replay,
@@ -2110,15 +2086,6 @@ impl ContentStoreRangeFetcher {
 
 impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
     fn fetch_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> io::Result<Vec<u8>> {
-        let span = tracing::debug_span!(
-            "binary_range_fetch",
-            leaf = %id,
-            range_start = range.start,
-            range_len = range.end.saturating_sub(range.start),
-            source = tracing::field::Empty,
-            bytes_read = tracing::field::Empty
-        );
-        let _guard = span.enter();
         // Try local path first — positional read.
         if let Some(local_path) = self.cs.resolve_local_path(id) {
             let file = std::fs::File::open(local_path)?;
@@ -2138,8 +2105,6 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                 let n = file.read(&mut buf)?;
                 buf.truncate(n);
             }
-            span.record("source", "local_path");
-            span.record("bytes_read", buf.len() as u64);
             return Ok(buf);
         }
 
@@ -2163,17 +2128,12 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                 let n = file.read(&mut buf)?;
                 buf.truncate(n);
             }
-            span.record("source", "disk_cache");
-            span.record("bytes_read", buf.len() as u64);
             return Ok(buf);
         }
 
         // Remote CAS: use async get_range via sync bridge.
-        span.record("source", "remote_cas");
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
-        let range_start = range.start;
-        let range_len = range.end.saturating_sub(range.start);
         let timeout = cas_sync_timeout();
         let bytes = run_sync_on_runtime(async move {
             let fut = cs.get_range(&cid, range.clone());
@@ -2194,15 +2154,6 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                     .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
             }
         })?;
-        span.record("bytes_read", bytes.len() as u64);
-        tracing::debug!(
-            leaf = %id,
-            range_start,
-            range_len,
-            bytes_read = bytes.len(),
-            source = "remote_cas",
-            "binary remote range fetch"
-        );
         Ok(bytes)
     }
 }
