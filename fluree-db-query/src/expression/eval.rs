@@ -5,6 +5,7 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
+use super::helpers::eval_cached_bool_predicate;
 use super::value::ComparableValue;
 use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
@@ -29,18 +30,7 @@ impl Expression {
         QueryError::dictionary_lookup(format!("{kind}: {details}: {err}"))
     }
 
-    /// Evaluate a filter expression against a row.
-    ///
-    /// Returns `true` if the row passes the filter, `false` otherwise.
-    /// Type mismatches and unbound variables result in `false`.
-    ///
-    /// The `ctx` parameter provides access to the execution context for resolving
-    /// `Binding::EncodedLit` values (late materialization). Pass `None` if no
-    /// context is available (e.g., in tests).
-    ///
-    /// This method is generic over `RowAccess`, allowing it to work with both
-    /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
-    pub fn eval_to_bool<R: RowAccess>(
+    fn eval_to_bool_uncached<R: RowAccess>(
         &self,
         row: &R,
         ctx: Option<&ExecutionContext<'_>>,
@@ -66,6 +56,31 @@ impl Expression {
                 Ok(false)
             }
         }
+    }
+
+    /// Evaluate a filter expression against a row.
+    ///
+    /// Returns `true` if the row passes the filter, `false` otherwise.
+    /// Type mismatches and unbound variables result in `false`.
+    ///
+    /// The `ctx` parameter provides access to the execution context for resolving
+    /// `Binding::EncodedLit` values (late materialization). Pass `None` if no
+    /// context is available (e.g., in tests).
+    ///
+    /// This method is generic over `RowAccess`, allowing it to work with both
+    /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
+    pub fn eval_to_bool<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<bool> {
+        if let Some(pass) =
+            eval_cached_bool_predicate(self, row, ctx, || self.eval_to_bool_uncached(row, ctx))?
+        {
+            return Ok(pass);
+        }
+
+        self.eval_to_bool_uncached(row, ctx)
     }
 
     /// Evaluate expression to a comparable value.
