@@ -39,6 +39,7 @@
 //! let csv = result.to_csv(&ledger.snapshot)?;
 //! ```
 
+mod agent_json;
 pub mod config;
 mod construct;
 pub mod datatype;
@@ -53,7 +54,7 @@ mod sparql_xml;
 mod typed;
 mod xml_escape;
 
-pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
+pub use config::{AgentJsonContext, FormatterConfig, OutputFormat, QueryOutput};
 pub use iri::IriCompactor;
 
 use crate::QueryResult;
@@ -150,6 +151,7 @@ pub fn format_results(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::AgentJson => agent_json::format(result, &compactor, config),
         OutputFormat::SparqlXml => Err(FormatError::InvalidBinding(
             "SPARQL XML produces String, not JsonValue. Use format_results_string() instead."
                 .to_string(),
@@ -293,9 +295,13 @@ pub async fn format_results_async(
         // crawl must use this overlay so it can resolve references that span
         // ledger boundaries (e.g. a movie's `isBasedOn` pointing to a book in
         // a different ledger).
-        let crawl_db = match &result.novelty {
-            Some(novelty) => GraphDbRef::new(db.snapshot, db.g_id, novelty.as_ref(), result.t),
-            None => db,
+        let crawl_db = match (&result.novelty, result.t) {
+            (Some(novelty), Some(t)) => GraphDbRef::new(db.snapshot, db.g_id, novelty.as_ref(), t),
+            // Multi-ledger dataset results may carry a composite overlay but no
+            // meaningful shared `t`; keep the primary view's real bound instead
+            // of imposing a synthetic dataset-wide max.
+            (Some(novelty), None) => GraphDbRef::new(db.snapshot, db.g_id, novelty.as_ref(), db.t),
+            (None, _) => db,
         };
         let v = graph_crawl::format_async(result, crawl_db, &compactor, config, policy, tracker)
             .await?;
@@ -316,6 +322,7 @@ pub async fn format_results_async(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::AgentJson => agent_json::format(result, &compactor, config),
         OutputFormat::SparqlXml => Err(FormatError::InvalidBinding(
             "SPARQL XML produces String, not JsonValue. Use format_results_string_async() instead."
                 .to_string(),
@@ -380,7 +387,7 @@ mod tests {
     fn make_test_result() -> QueryResult {
         QueryResult {
             vars: VarRegistry::new(),
-            t: 0,
+            t: Some(0),
             novelty: None,
             context: fluree_graph_json_ld::ParsedContext::default(),
             orig_context: None,
