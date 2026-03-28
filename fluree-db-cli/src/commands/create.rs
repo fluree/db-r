@@ -36,6 +36,9 @@ pub async fn run(
     let fluree = context::build_fluree(dirs)?;
 
     match from {
+        Some(path) if is_flpack_path(path) => {
+            run_flpack_import(&fluree, ledger, path, dirs).await?;
+        }
         Some(path) if path.is_dir() => {
             // Validate directory format (catches mixed formats & empty dirs).
             fluree_db_api::scan_directory_format(path)?;
@@ -472,6 +475,214 @@ where
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Native ledger import (.flpack)
+// ============================================================================
+
+/// Whether this path looks like a `.flpack` ledger archive.
+fn is_flpack_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("flpack"))
+}
+
+/// Import a native ledger pack file (`.flpack`).
+///
+/// Reads the pack stream from a local file, writes all CAS objects into the
+/// local storage under the given `ledger` name, then sets the commit and index
+/// heads from the embedded nameservice manifest.
+async fn run_flpack_import<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    ledger: &str,
+    path: &Path,
+    dirs: &FlureeDir,
+) -> CliResult<()>
+where
+    S: fluree_db_core::storage::Storage
+        + fluree_db_core::storage::ContentAddressedWrite
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::ConfigPublisher
+        + fluree_db_nameservice::RefPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    use colored::Colorize;
+    use fluree_db_core::pack::{
+        decode_frame, read_stream_preamble, PackFrame, DEFAULT_MAX_PAYLOAD,
+    };
+    use fluree_db_core::ContentKind;
+    use fluree_db_nameservice_sync::ingest_pack_frame;
+
+    let data = std::fs::read(path)
+        .map_err(|e| CliError::Input(format!("failed to read {}: {e}", path.display())))?;
+
+    let file_size = data.len() as u64;
+    eprintln!(
+        "Importing ledger '{}' from {} ({})...",
+        ledger.cyan(),
+        path.display(),
+        format_human_bytes(file_size),
+    );
+
+    // Create the local ledger first.
+    fluree
+        .create_ledger(ledger)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to create ledger: {e}")))?;
+
+    let ledger_id = crate::context::to_ledger_id(ledger);
+
+    // Decode the pack stream.
+    let mut pos = read_stream_preamble(&data)
+        .map_err(|e| CliError::Input(format!("invalid .flpack file (bad preamble): {e}")))?;
+
+    let mut saw_header = false;
+    let mut commits_stored = 0usize;
+    let mut txn_blobs_stored = 0usize;
+    let mut index_artifacts_stored = 0usize;
+    let mut ns_manifest: Option<serde_json::Value> = None;
+
+    loop {
+        if pos >= data.len() {
+            return Err(CliError::Input(
+                "unexpected end of .flpack file (missing End frame)".to_string(),
+            ));
+        }
+
+        let (frame, consumed) = decode_frame(&data[pos..], DEFAULT_MAX_PAYLOAD)
+            .map_err(|e| CliError::Input(format!("invalid .flpack frame at offset {pos}: {e}")))?;
+        pos += consumed;
+
+        match frame {
+            PackFrame::Header(_header) => {
+                if saw_header {
+                    return Err(CliError::Input(
+                        "invalid .flpack: duplicate Header frame".to_string(),
+                    ));
+                }
+                saw_header = true;
+            }
+            PackFrame::Data { cid, payload } => {
+                if !saw_header {
+                    return Err(CliError::Input(
+                        "invalid .flpack: Data frame before Header".to_string(),
+                    ));
+                }
+                ingest_pack_frame(&cid, &payload, fluree.storage(), &ledger_id)
+                    .await
+                    .map_err(|e| CliError::Config(format!("failed to ingest object {cid}: {e}")))?;
+
+                match cid.content_kind() {
+                    Some(ContentKind::Commit) => commits_stored += 1,
+                    Some(ContentKind::Txn) => txn_blobs_stored += 1,
+                    _ => index_artifacts_stored += 1,
+                }
+
+                let total = commits_stored + txn_blobs_stored + index_artifacts_stored;
+                if total % 100 == 0 {
+                    eprint!("  {} objects...\r", total);
+                }
+            }
+            PackFrame::Manifest(json) => {
+                if json.get("phase").and_then(|v| v.as_str()) == Some("nameservice") {
+                    ns_manifest = Some(json);
+                }
+            }
+            PackFrame::Error(msg) => {
+                return Err(CliError::Config(format!(
+                    ".flpack contains error frame: {msg}"
+                )));
+            }
+            PackFrame::End => break,
+        }
+    }
+
+    // Set commit head from the nameservice manifest.
+    let handle = fluree
+        .ledger_cached(&ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to load ledger handle: {e}")))?;
+
+    if let Some(ref manifest) = ns_manifest {
+        // Parse commit head.
+        if let Some(commit_cid_str) = manifest.get("commit_head_id").and_then(|v| v.as_str()) {
+            let commit_cid: fluree_db_core::ContentId = commit_cid_str
+                .parse()
+                .map_err(|e| CliError::Config(format!("invalid commit CID in manifest: {e}")))?;
+            let commit_t = manifest
+                .get("commit_t")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            fluree
+                .set_commit_head(&handle, &commit_cid, commit_t)
+                .await
+                .map_err(|e| CliError::Config(format!("failed to set commit head: {e}")))?;
+        }
+
+        // Parse index head.
+        if let Some(index_cid_str) = manifest.get("index_head_id").and_then(|v| v.as_str()) {
+            let index_cid: fluree_db_core::ContentId = index_cid_str
+                .parse()
+                .map_err(|e| CliError::Config(format!("invalid index CID in manifest: {e}")))?;
+            let index_t = manifest
+                .get("index_t")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            fluree
+                .set_index_head(&handle, &index_cid, index_t)
+                .await
+                .map_err(|e| CliError::Config(format!("failed to set index head: {e}")))?;
+        }
+    } else {
+        return Err(CliError::Input(
+            ".flpack file is missing nameservice manifest — cannot determine commit/index heads"
+                .to_string(),
+        ));
+    }
+
+    config::write_active_ledger(dirs.data_dir(), ledger)?;
+
+    let objects = commits_stored + txn_blobs_stored + index_artifacts_stored;
+    println!(
+        "{} Imported '{}' — {} commits, {} txn blobs, {} index artifacts ({} objects)",
+        "✓".green(),
+        ledger,
+        commits_stored,
+        txn_blobs_stored,
+        index_artifacts_stored,
+        objects,
+    );
+
+    Ok(())
+}
+
+/// Format bytes as a human-readable size.
+fn format_human_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1_073_741_824.0;
+    const MIB: f64 = 1_048_576.0;
+    const KIB: f64 = 1_024.0;
+
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.0} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 // ============================================================================

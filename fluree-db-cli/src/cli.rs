@@ -337,18 +337,26 @@ pub enum Commands {
         format: String,
     },
 
-    /// Export ledger data as Turtle or JSON-LD
+    /// Export ledger data as Turtle, JSON-LD, or native ledger pack
     Export {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
 
-        /// Output format: turtle or jsonld (default: turtle)
+        /// Output format: turtle, jsonld, or ledger (default: turtle)
+        ///
+        /// The `ledger` format exports the full native ledger (commits, indexes,
+        /// dictionaries) as a `.flpack` file that can be imported via
+        /// `fluree create <name> --from <file>.flpack`.
         #[arg(long, default_value = "turtle")]
         format: String,
 
-        /// Query at a specific point in time
+        /// Query at a specific point in time (turtle/jsonld only)
         #[arg(long)]
         at: Option<String>,
+
+        /// Output file path (ledger format only; defaults to <ledger>.flpack)
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
     },
 
     /// Show commit log for a ledger
@@ -441,6 +449,25 @@ pub enum Commands {
     Push {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
+    },
+
+    /// Publish a local ledger to a remote server (create + push all commits)
+    ///
+    /// Creates the ledger on the remote if it doesn't exist, pushes all local
+    /// commits, and configures upstream tracking for subsequent push/pull.
+    ///
+    /// Usage:
+    ///   fluree publish <remote> [ledger]
+    Publish {
+        /// Remote name (e.g., "origin")
+        remote: String,
+
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// Remote ledger name (defaults to local ledger name)
+        #[arg(long)]
+        remote_name: Option<String>,
     },
 
     /// Clone a ledger from a remote server (downloads all commits and indexes)
