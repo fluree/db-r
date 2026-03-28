@@ -12,7 +12,7 @@ use fluree_db_core::FlakeValue;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 
-use super::helpers::{build_regex_with_flags, check_arity};
+use super::helpers::{build_regex_with_flags, cached_encoded_lit_starts_with, check_arity};
 use super::value::ComparableValue;
 use crate::parse::UnresolvedDatatypeConstraint;
 
@@ -189,6 +189,11 @@ pub fn eval_str_starts<R: RowAccess>(
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRSTARTS")?;
+    if let Some(ComparableValue::String(prefix)) = args[1].eval_to_comparable(row, ctx)? {
+        if let Some(passes) = cached_encoded_lit_starts_with(&args[0], prefix.as_ref(), row, ctx)? {
+            return Ok(Some(ComparableValue::Bool(passes)));
+        }
+    }
     let haystack = args[0].eval_to_comparable(row, ctx)?;
     let prefix = args[1].eval_to_comparable(row, ctx)?;
     match (haystack, prefix) {

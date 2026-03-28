@@ -6,7 +6,7 @@ use crate::binding::Binding;
 use crate::context::ExecutionContext;
 use crate::context::WellKnownDatatypes;
 use crate::error::{QueryError, Result};
-use crate::ir::Expression;
+use crate::ir::{Expression, Function};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use fluree_db_core::FlakeValue;
 use once_cell::sync::Lazy;
@@ -35,6 +35,8 @@ pub static WELL_KNOWN_DATATYPES: Lazy<WellKnownDatatypes> = Lazy::new(WellKnownD
 thread_local! {
     static REGEX_CACHE: RefCell<lru::LruCache<(String, String), Regex>> =
         RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap()));
+    static ENCODED_STRING_STARTS_CACHE: RefCell<lru::LruCache<(usize, u8, u64, u32, u16, u16, String), bool>> =
+        RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(256).unwrap()));
 }
 
 /// Build a regex with optional flags (cached)
@@ -87,6 +89,78 @@ pub fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<Regex> {
     });
 
     Ok(re)
+}
+
+pub fn cached_encoded_lit_starts_with<R: crate::binding::RowAccess>(
+    arg: &Expression,
+    prefix: &str,
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+) -> Result<Option<bool>> {
+    let ctx = match ctx {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+    let Expression::Call { func, args } = arg else {
+        return Ok(None);
+    };
+    if *func != Function::Str || args.len() != 1 {
+        return Ok(None);
+    }
+    let Expression::Var(var) = &args[0] else {
+        return Ok(None);
+    };
+    let Some(Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        ..
+    }) = row.get(*var)
+    else {
+        return Ok(None);
+    };
+    let Some(store) = ctx.binary_store.as_ref() else {
+        return Ok(None);
+    };
+
+    let cache_key = (
+        Arc::as_ptr(store) as usize,
+        *o_kind,
+        *o_key,
+        *p_id,
+        *dt_id,
+        *lang_id,
+        prefix.to_string(),
+    );
+    if let Some(hit) =
+        ENCODED_STRING_STARTS_CACHE.with(|cache| cache.borrow_mut().get(&cache_key).copied())
+    {
+        return Ok(Some(hit));
+    }
+
+    let Some(decoded) = ctx.decode_encoded_value(*o_kind, *o_key, *p_id, *dt_id, *lang_id) else {
+        return Ok(None);
+    };
+    let decoded = decoded.map_err(|e| {
+        QueryError::dictionary_lookup(format!(
+            "decode encoded literal for STRSTARTS cache: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
+            o_kind, o_key, p_id, dt_id, lang_id, e
+        ))
+    })?;
+    let Some(value) = super::value::ComparableValue::try_from(&decoded)
+        .ok()
+        .and_then(|v| v.into_string_value())
+        .and_then(|v| v.as_str().map(|s| s.to_owned()))
+    else {
+        return Ok(None);
+    };
+    let passes = value.starts_with(prefix);
+    ENCODED_STRING_STARTS_CACHE.with(|cache| {
+        cache.borrow_mut().put(cache_key, passes);
+    });
+    Ok(Some(passes))
 }
 
 // =============================================================================

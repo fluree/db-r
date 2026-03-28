@@ -308,6 +308,14 @@ pub struct InnerJoinBlock {
     pub filters: Vec<FilterPattern>,
 }
 
+#[derive(Default)]
+struct PropertyJoinTail {
+    end_index: usize,
+    optional_triples: Vec<TriplePattern>,
+    binds: Vec<BindPattern>,
+    filters: Vec<FilterPattern>,
+}
+
 /// Minimum weighted star width required before choosing the property-join path.
 ///
 /// Required triples count as 1.0 each. Adjacent same-subject OPTIONAL triples
@@ -350,6 +358,79 @@ fn property_join_width_score(
     }
 
     (required_score + optional_bonus, optional_bonus)
+}
+
+fn collect_property_join_tail(
+    patterns: &[Pattern],
+    start: usize,
+    required_triples: &[TriplePattern],
+) -> PropertyJoinTail {
+    let Some(subject_var) = required_triples.first().and_then(|tp| tp.s.as_var()) else {
+        return PropertyJoinTail {
+            end_index: start,
+            ..PropertyJoinTail::default()
+        };
+    };
+
+    let mut out = PropertyJoinTail {
+        end_index: start,
+        ..PropertyJoinTail::default()
+    };
+    let mut i = start;
+    let mut combined = required_triples.to_vec();
+    let mut available_required_vars: HashSet<VarId> = required_triples
+        .iter()
+        .flat_map(|tp| tp.variables())
+        .collect();
+
+    while let Some(Pattern::Optional(inner_patterns)) = patterns.get(i) {
+        if inner_patterns.len() != 1 {
+            break;
+        }
+        let Some(optional_triple) = inner_patterns[0].as_triple().cloned() else {
+            break;
+        };
+        if optional_triple.s.as_var() != Some(subject_var) || !optional_triple.p_bound() {
+            break;
+        }
+
+        combined.push(optional_triple.clone());
+        if !analyze_property_join(&combined).eligible() {
+            break;
+        }
+
+        out.optional_triples.push(optional_triple);
+        i += 1;
+    }
+
+    while i < patterns.len() {
+        match &patterns[i] {
+            Pattern::Filter(expr) => {
+                let required: HashSet<VarId> = expr.variables().into_iter().collect();
+                if !required.is_subset(&available_required_vars) {
+                    break;
+                }
+                out.filters.push(FilterPattern::new(
+                    usize::MAX - out.filters.len(),
+                    expr.clone(),
+                ));
+                i += 1;
+            }
+            Pattern::Bind { var, expr } => {
+                let Some(bind) = BindPattern::when_eligible(*var, expr, &available_required_vars)
+                else {
+                    break;
+                };
+                available_required_vars.insert(*var);
+                out.binds.push(bind);
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+
+    out.end_index = i;
+    out
 }
 
 /// Require a child operator, returning an error if None.
@@ -596,8 +677,8 @@ fn build_single_pattern(
 /// VALUES and any ready BINDs/FILTERs on top.
 #[allow(clippy::too_many_arguments)]
 fn build_property_join_block(
-    operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
+    optional_triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
@@ -605,19 +686,44 @@ fn build_property_join_block(
     required_where_vars: Option<&[VarId]>,
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
-    group_by: &[VarId],
-    distinct_query: bool,
 ) -> Result<Option<BoxedOperator>> {
-    let mut operator = Some(build_triple_operators(
-        operator,
+    let mut needed: HashSet<VarId> = HashSet::new();
+    if let Some(rwv) = required_where_vars {
+        needed.extend(rwv.iter().copied());
+    }
+    for (v, c) in var_counts {
+        if *c > 1 || protected_vars.contains(v) {
+            needed.insert(*v);
+        }
+    }
+
+    let mut available_vars: HashSet<VarId> = triples.iter().flat_map(|tp| tp.variables()).collect();
+    available_vars.extend(optional_triples.iter().flat_map(|tp| tp.variables()));
+
+    let (inline_ops, pending_binds, pending_filters) = build_inline_ops(
+        pending_binds,
+        pending_filters,
+        &available_vars,
+        &pushdown.consumed_indices,
+    );
+    for op in &inline_ops {
+        match op {
+            InlineOperator::Filter(expr) => needed.extend(expr.variables()),
+            InlineOperator::Bind { var, expr } => {
+                needed.insert(*var);
+                needed.extend(expr.variables());
+            }
+        }
+    }
+
+    let property_join = PropertyJoinOperator::new_with_options(
         triples,
-        &pushdown.object_bounds,
-        required_where_vars,
-        var_counts,
-        protected_vars,
-        group_by,
-        distinct_query,
-    )?);
+        optional_triples,
+        pushdown.object_bounds.clone(),
+        Some(&needed),
+        inline_ops,
+    )?;
+    let mut operator: Option<BoxedOperator> = Some(Box::new(property_join));
 
     if !block_values.is_empty() {
         operator = apply_values(operator, block_values);
@@ -1086,12 +1192,11 @@ pub fn build_where_operators_seeded_with_needed(
                 }
                 i = end;
 
-                let augmented_rwv = augmented_at(end);
-                let augmented_ref = augmented_rwv.as_deref();
-
                 // Hot path: triples only (no BIND/FILTER).
                 // Skip dependency bookkeeping entirely.
                 if block.binds.is_empty() && block.filters.is_empty() {
+                    let augmented_rwv = augmented_at(end);
+                    let augmented_ref = augmented_rwv.as_deref();
                     if !block.values.is_empty() {
                         operator = apply_values(operator.take(), block.values);
                     }
@@ -1199,6 +1304,18 @@ pub fn build_where_operators_seeded_with_needed(
                     && pj_analysis.eligible()
                     && property_join_meets_width_threshold;
 
+                let property_join_tail = if can_property_join {
+                    collect_property_join_tail(patterns, end, &triples_for_exec)
+                } else {
+                    PropertyJoinTail {
+                        end_index: end,
+                        ..PropertyJoinTail::default()
+                    }
+                };
+                let property_join_end = property_join_tail.end_index;
+                let augmented_rwv = augmented_at(property_join_end);
+                let augmented_ref = augmented_rwv.as_deref();
+
                 if triples_for_exec.len() >= 2 {
                     tracing::debug!(
                         block_start = start,
@@ -1220,6 +1337,9 @@ pub fn build_where_operators_seeded_with_needed(
                         property_join_width_score,
                         property_join_optional_bonus,
                         property_join_meets_width_threshold,
+                        property_join_optional_triples = property_join_tail.optional_triples.len(),
+                        property_join_tail_filters = property_join_tail.filters.len(),
+                        property_join_tail_binds = property_join_tail.binds.len(),
                         chosen_strategy = if can_property_join {
                             "property_join"
                         } else {
@@ -1230,18 +1350,21 @@ pub fn build_where_operators_seeded_with_needed(
                 }
 
                 if can_property_join {
+                    i = property_join_end;
+                    let mut property_join_binds = pending_binds;
+                    property_join_binds.extend(property_join_tail.binds);
+                    let mut property_join_filters = pending_filters;
+                    property_join_filters.extend(property_join_tail.filters);
                     operator = build_property_join_block(
-                        operator,
                         &triples_for_exec,
+                        &property_join_tail.optional_triples,
                         block.values,
-                        pending_binds,
-                        pending_filters,
+                        property_join_binds,
+                        property_join_filters,
                         &pushdown,
                         augmented_ref,
                         &var_counts,
                         &protected_vars,
-                        group_by,
-                        distinct_query,
                     )?;
                 } else {
                     operator = build_sequential_join_block(
@@ -2467,6 +2590,39 @@ mod tests {
         assert_eq!(optional_bonus, 0.0);
         assert_eq!(score, 2.0);
         assert!(score <= PROPERTY_JOIN_MIN_WIDTH_SCORE);
+    }
+
+    #[test]
+    fn test_collect_property_join_tail_fuses_simple_optionals_and_required_filter() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+            make_pattern(s, "stage", VarId(3)),
+        ];
+        let patterns = vec![
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                s,
+                "probability",
+                VarId(4),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "closedAt", VarId(5)))]),
+            Pattern::Filter(Expression::not(Expression::Call {
+                func: crate::ir::Function::StrStarts,
+                args: vec![
+                    Expression::Call {
+                        func: crate::ir::Function::Str,
+                        args: vec![Expression::Var(VarId(3))],
+                    },
+                    Expression::Const(FilterValue::String("Closed".to_string())),
+                ],
+            })),
+        ];
+
+        let tail = collect_property_join_tail(&patterns, 0, &required);
+        assert_eq!(tail.end_index, patterns.len());
+        assert_eq!(tail.optional_triples.len(), 2);
+        assert_eq!(tail.filters.len(), 1);
     }
 
     #[test]

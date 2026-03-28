@@ -32,6 +32,7 @@ use crate::join::{
     batched_subject_probe_binary, batched_subject_star_spot, make_dict_overlay,
     BatchedSpotStarMatch, BatchedSubjectProbeMatch, SpotStarPredicateParams, SubjectProbeParams,
 };
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -113,6 +114,10 @@ pub struct PropertyJoinOperator {
     /// For each predicate index, the position in `subject_values`'s values vec if emitted.
     /// Existence-only predicates are `None`.
     emit_positions: Vec<Option<usize>>,
+    /// Whether each emitted position comes from a required predicate.
+    emitted_required: Vec<bool>,
+    /// Row-local filters/binds applied after star rows are assembled.
+    inline_ops: Vec<InlineOperator>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +134,7 @@ struct PropertyJoinPredicate {
     object: PropertyJoinObject,
     dtc: Option<DatatypeConstraint>,
     emit_object: bool,
+    required: bool,
 }
 
 /// Join-safe subject key for PropertyJoinOperator.
@@ -199,6 +205,7 @@ impl PropertyJoinOperator {
         predicates
             .iter()
             .enumerate()
+            .filter(|(_, predicate)| predicate.required)
             .min_by_key(|(idx, predicate)| (Self::driver_score(predicate, object_bounds), *idx))
             .map(|(idx, _)| idx)
     }
@@ -316,13 +323,7 @@ impl PropertyJoinOperator {
         patterns: &[TriplePattern],
         object_bounds: HashMap<VarId, ObjectBounds>,
     ) -> Result<Self> {
-        if !crate::planner::is_property_join(patterns) {
-            return Err(QueryError::Internal(
-                "Patterns must form a property-join shape".into(),
-            ));
-        }
-
-        Self::new_with_needed_vars(patterns, object_bounds, None)
+        Self::new_with_options(patterns, &[], object_bounds, None, Vec::new())
     }
 
     /// Create a new property-join operator, optionally treating some predicate patterns
@@ -332,14 +333,32 @@ impl PropertyJoinOperator {
         object_bounds: HashMap<VarId, ObjectBounds>,
         needed_vars: Option<&std::collections::HashSet<VarId>>,
     ) -> Result<Self> {
-        if !crate::planner::is_property_join(patterns) {
+        Self::new_with_options(patterns, &[], object_bounds, needed_vars, Vec::new())
+    }
+
+    pub fn new_with_options(
+        required_patterns: &[TriplePattern],
+        optional_patterns: &[TriplePattern],
+        object_bounds: HashMap<VarId, ObjectBounds>,
+        needed_vars: Option<&std::collections::HashSet<VarId>>,
+        inline_ops: Vec<InlineOperator>,
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(required_patterns) {
             return Err(QueryError::Internal(
                 "Patterns must form a property-join shape".into(),
             ));
         }
 
+        let mut all_patterns = required_patterns.to_vec();
+        all_patterns.extend_from_slice(optional_patterns);
+        if !crate::planner::is_property_join(&all_patterns) {
+            return Err(QueryError::Internal(
+                "Required and optional patterns must form a property-join shape".into(),
+            ));
+        }
+
         // Extract subject var (guaranteed same for all by is_property_join)
-        let subject_var = match &patterns[0].s {
+        let subject_var = match &required_patterns[0].s {
             Ref::Var(v) => *v,
             _ => {
                 return Err(QueryError::Internal(
@@ -352,33 +371,37 @@ impl PropertyJoinOperator {
         // depending on how the query was lowered. Bound objects are kept as existence-only
         // constraints so same-subject stars like `?s rdf:type :Class ; :name ?name` can still
         // use the property-join path.
-        let mut predicates = Vec::with_capacity(patterns.len());
-        for p in patterns {
-            let pred_ref = match &p.p {
-                Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
-                _ => {
-                    return Err(QueryError::Internal(
-                        "Property-join requires bound predicates (Sid or Iri)".into(),
-                    ))
-                }
-            };
-            let (object, emit_object) = match &p.o {
-                Term::Var(v) => {
-                    let emit = needed_vars.is_none_or(|n| n.contains(v));
-                    (PropertyJoinObject::Var(*v), emit)
-                }
-                _ => (PropertyJoinObject::Bound(p.o.clone()), false),
-            };
-            predicates.push(PropertyJoinPredicate {
-                pred_ref,
-                object,
-                dtc: p.dtc.clone(),
-                emit_object,
-            });
+        let mut predicates = Vec::with_capacity(all_patterns.len());
+        for (required, patterns) in [(true, required_patterns), (false, optional_patterns)] {
+            for p in patterns {
+                let pred_ref = match &p.p {
+                    Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
+                    _ => {
+                        return Err(QueryError::Internal(
+                            "Property-join requires bound predicates (Sid or Iri)".into(),
+                        ))
+                    }
+                };
+                let (object, emit_object) = match &p.o {
+                    Term::Var(v) => {
+                        let emit = needed_vars.is_none_or(|n| n.contains(v));
+                        (PropertyJoinObject::Var(*v), emit)
+                    }
+                    _ => (PropertyJoinObject::Bound(p.o.clone()), false),
+                };
+                predicates.push(PropertyJoinPredicate {
+                    pred_ref,
+                    object,
+                    dtc: p.dtc.clone(),
+                    emit_object,
+                    required,
+                });
+            }
         }
 
         // Build output schema: [subject_var, obj_var_1, obj_var_2, ...] but only for emitted vars.
         let mut schema_vec = vec![subject_var];
+        let mut emitted_required = Vec::new();
         for predicate in &predicates {
             if predicate.emit_object {
                 let PropertyJoinObject::Var(obj_var) = &predicate.object else {
@@ -387,9 +410,11 @@ impl PropertyJoinOperator {
                     ));
                 };
                 schema_vec.push(*obj_var);
+                emitted_required.push(predicate.required);
             };
         }
-        let output_schema: Arc<[VarId]> = Arc::from(schema_vec.into_boxed_slice());
+        let output_schema: Arc<[VarId]> =
+            Arc::from(extend_schema(&schema_vec, &inline_ops).into_boxed_slice());
 
         let emit_positions = {
             let mut out = Vec::with_capacity(predicates.len());
@@ -415,6 +440,8 @@ impl PropertyJoinOperator {
             subject_idx: 0,
             object_bounds,
             emit_positions,
+            emitted_required,
+            inline_ops,
         })
     }
 
@@ -495,6 +522,7 @@ impl PropertyJoinOperator {
         output_schema_len: usize,
         subject_binding: &Binding,
         values_per_pred: &[Vec<Binding>],
+        emitted_required: &[bool],
     ) -> Vec<Vec<Binding>> {
         // If no object vars are emitted (existence-only predicates), then each matching
         // subject produces exactly one output row.
@@ -506,12 +534,22 @@ impl PropertyJoinOperator {
             }];
         }
 
-        if values_per_pred.iter().any(|v| v.is_empty()) {
-            return Vec::new();
-        }
-
         // Calculate total combinations
-        let total: usize = values_per_pred.iter().map(|v| v.len()).product();
+        let total: usize = values_per_pred
+            .iter()
+            .enumerate()
+            .map(|(idx, values)| {
+                if values.is_empty() {
+                    if emitted_required.get(idx).copied().unwrap_or(true) {
+                        0
+                    } else {
+                        1
+                    }
+                } else {
+                    values.len()
+                }
+            })
+            .product();
         if total == 0 {
             return Vec::new();
         }
@@ -526,7 +564,11 @@ impl PropertyJoinOperator {
             let mut row = Vec::with_capacity(output_schema_len);
             row.push(subject_binding.clone());
             for (pred_idx, val_idx) in indices.iter().enumerate() {
-                row.push(values_per_pred[pred_idx][*val_idx].clone());
+                if values_per_pred[pred_idx].is_empty() {
+                    row.push(Binding::Poisoned);
+                } else {
+                    row.push(values_per_pred[pred_idx][*val_idx].clone());
+                }
             }
             rows.push(row);
 
@@ -535,7 +577,12 @@ impl PropertyJoinOperator {
             for i in (0..indices.len()).rev() {
                 if carry {
                     indices[i] += 1;
-                    if indices[i] >= values_per_pred[i].len() {
+                    let width = if values_per_pred[i].is_empty() {
+                        1
+                    } else {
+                        values_per_pred[i].len()
+                    };
+                    if indices[i] >= width {
                         indices[i] = 0;
                     } else {
                         carry = false;
@@ -594,21 +641,38 @@ impl Operator for PropertyJoinOperator {
             let mut all_subject_values: FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)> =
                 FxHashMap::default();
             let required_mask: u64 = if self.predicates.len() >= 64 {
-                // Extremely unlikely; fall back to generic join behavior rather than miscount.
-                // (PropertyJoinOperator isn't intended for 64+ predicate stars.)
                 u64::MAX
             } else {
-                (1u64 << self.predicates.len()) - 1
+                self.predicates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, predicate)| predicate.required)
+                    .fold(0u64, |mask, (idx, _)| mask | (1u64 << idx))
             };
 
             let driver_pred_idx =
                 Self::select_driver_predicate(&self.predicates, &self.object_bounds);
             tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
 
-            let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
+            let mut scan_order: Vec<usize> = self
+                .predicates
+                .iter()
+                .enumerate()
+                .filter(|(_, predicate)| predicate.required)
+                .map(|(idx, _)| idx)
+                .collect();
             if let Some(d) = driver_pred_idx {
-                scan_order.swap(0, d);
+                if let Some(driver_pos) = scan_order.iter().position(|idx| *idx == d) {
+                    scan_order.swap(0, driver_pos);
+                }
             }
+            scan_order.extend(
+                self.predicates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, predicate)| !predicate.required)
+                    .map(|(idx, _)| idx),
+            );
 
             let mut driver_subject_ids: Option<Vec<u64>> = None;
             let mut used_batched_probe = false;
@@ -862,7 +926,11 @@ impl Operator for PropertyJoinOperator {
                 .into_iter()
                 .filter(|(_, (_sb, mask, values))| {
                     *mask == required_mask
-                        && (emit_count == 0 || values.iter().all(|v| !v.is_empty()))
+                        && (emit_count == 0
+                            || values
+                                .iter()
+                                .enumerate()
+                                .all(|(idx, v)| !self.emitted_required[idx] || !v.is_empty()))
                 })
                 .map(|(k, (sb, _mask, values))| (k, (sb, values)))
                 .collect();
@@ -902,8 +970,21 @@ impl Operator for PropertyJoinOperator {
             self.subject_idx += 1;
 
             if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_key) {
-                let rows = Self::generate_rows(schema_len, subject_binding, values_per_pred);
-                all_rows.extend(rows);
+                let rows = Self::generate_rows(
+                    schema_len,
+                    subject_binding,
+                    values_per_pred,
+                    &self.emitted_required,
+                );
+                for mut row in rows {
+                    if !apply_inline(&self.inline_ops, &self.output_schema, &mut row, Some(ctx))? {
+                        continue;
+                    }
+                    all_rows.push(row);
+                    if all_rows.len() >= batch_size {
+                        break;
+                    }
+                }
             }
         }
 
@@ -1042,6 +1123,7 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 3);
@@ -1070,6 +1152,7 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         // Cartesian product: 2 * 3 = 6 rows
         assert_eq!(rows.len(), 6);
@@ -1090,9 +1173,24 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         // No rows if any predicate is missing
         assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_generate_rows_missing_optional_uses_poisoned() {
+        let subject_binding = Binding::Sid(Sid::new(1, "alice"));
+        let values = vec![
+            vec![Binding::Sid(Sid::new(200, "Alice"))], // required name
+            vec![],                                     // optional probability
+        ];
+
+        let rows =
+            PropertyJoinOperator::generate_rows(3, &subject_binding, &values, &[true, false]);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0][2], Binding::Poisoned));
     }
 
     #[test]
