@@ -15,7 +15,7 @@
 use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::expression::passes_filters;
+use crate::expression::{passes_filters, PreparedBoolExpression};
 use crate::ir::Expression;
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
@@ -40,7 +40,7 @@ pub struct BindOperator {
     /// Inline filters evaluated after computing the BIND value.
     /// Rows that fail any filter are dropped before materialization,
     /// eliminating the overhead of a separate FilterOperator.
-    filters: Vec<Expression>,
+    filters: Vec<PreparedBoolExpression>,
     /// Output schema (child schema with var added if new)
     in_schema: Arc<[VarId]>,
     /// Position of var in output schema
@@ -96,7 +96,10 @@ impl BindOperator {
             child,
             var,
             expr,
-            filters,
+            filters: filters
+                .into_iter()
+                .map(PreparedBoolExpression::new)
+                .collect(),
             in_schema: schema,
             var_position,
             is_new_var,

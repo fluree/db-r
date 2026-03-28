@@ -15,19 +15,91 @@
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::primitives::ByteStream;
+use fs2::FileExt;
 use fluree_db_iceberg::catalog::SendCatalogClient;
 use fluree_db_iceberg::catalog::TableIdentifier;
 use fluree_db_iceberg::metadata::TableMetadata;
 use fluree_db_iceberg::{S3IcebergStorage, SendDirectCatalogClient, SendIcebergStorage};
 use std::sync::Arc;
 use std::time::Duration;
-use testcontainers::core::IntoContainerPort;
+use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 const LOCALSTACK_EDGE_PORT: u16 = 4566;
 const REGION: &str = "us-east-1";
 const BUCKET: &str = "iceberg-test";
 const TABLE_PREFIX: &str = "warehouse/ns/test_table";
+
+struct LocalstackTestLock {
+    _file: std::fs::File,
+}
+
+async fn acquire_localstack_test_lock() -> LocalstackTestLock {
+    tokio::task::spawn_blocking(|| {
+        let lock_path = std::env::temp_dir().join("fluree-localstack-tests.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap_or_else(|e| panic!("open LocalStack test lock {}: {e}", lock_path.display()));
+
+        lock_file
+            .lock_exclusive()
+            .unwrap_or_else(|e| panic!("lock LocalStack test lock {}: {e}", lock_path.display()));
+
+        LocalstackTestLock { _file: lock_file }
+    })
+    .await
+    .expect("join LocalStack test lock task")
+}
+
+async fn wait_for_localstack_host_port(
+    container: &testcontainers::ContainerAsync<GenericImage>,
+) -> u16 {
+    let mut last_err = None;
+
+    for _ in 0..40 {
+        match container.get_host_port_ipv4(LOCALSTACK_EDGE_PORT).await {
+            Ok(host_port) => return host_port,
+            Err(err) => {
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    panic!(
+        "LocalStack edge port mapped after retries: {:?}",
+        last_err.expect("at least one port lookup attempt")
+    );
+}
+
+async fn start_localstack(
+    services: &str,
+) -> (
+    LocalstackTestLock,
+    testcontainers::ContainerAsync<GenericImage>,
+    String,
+) {
+    let lock = acquire_localstack_test_lock().await;
+    let image = GenericImage::new("localstack/localstack", "4.4")
+        .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
+        .with_env_var("SERVICES", services)
+        .with_env_var("DEFAULT_REGION", REGION)
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
+
+    let container = image
+        .start()
+        .await
+        .expect("LocalStack started (Docker must be running)");
+    let host_port = wait_for_localstack_host_port(&container).await;
+    let endpoint = format!("http://127.0.0.1:{host_port}");
+    (lock, container, endpoint)
+}
 
 /// Minimal Iceberg v2 metadata JSON with one snapshot.
 const METADATA_V1: &str = r#"{
@@ -158,21 +230,7 @@ fn table_id() -> TableIdentifier {
 #[tokio::test]
 async fn direct_catalog_full_lifecycle() {
     // Boot LocalStack
-    let image = GenericImage::new("localstack/localstack", "latest")
-        .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
-        .with_env_var("SERVICES", "s3")
-        .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
-
-    let container = image
-        .start()
-        .await
-        .expect("LocalStack started (Docker must be running)");
-    let host_port = container
-        .get_host_port_ipv4(LOCALSTACK_EDGE_PORT)
-        .await
-        .expect("LocalStack edge port mapped");
-    let endpoint = format!("http://127.0.0.1:{host_port}");
+    let (_lock, _container, endpoint) = start_localstack("s3").await;
 
     let sdk_config = sdk_config_for_localstack(&endpoint).await;
     wait_for_localstack(&sdk_config).await;
@@ -277,18 +335,7 @@ async fn direct_catalog_full_lifecycle() {
 /// Test that missing version-hint.text produces a clear error.
 #[tokio::test]
 async fn direct_catalog_missing_version_hint() {
-    let image = GenericImage::new("localstack/localstack", "latest")
-        .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
-        .with_env_var("SERVICES", "s3")
-        .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
-
-    let container = image.start().await.expect("LocalStack started");
-    let host_port = container
-        .get_host_port_ipv4(LOCALSTACK_EDGE_PORT)
-        .await
-        .expect("port mapped");
-    let endpoint = format!("http://127.0.0.1:{host_port}");
+    let (_lock, _container, endpoint) = start_localstack("s3").await;
 
     let sdk_config = sdk_config_for_localstack(&endpoint).await;
     wait_for_localstack(&sdk_config).await;

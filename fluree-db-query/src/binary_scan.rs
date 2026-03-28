@@ -128,7 +128,7 @@ fn expr_needs_t(expr: &Expression) -> bool {
 #[inline]
 fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
     ops.iter().any(|op| match op {
-        InlineOperator::Filter(e) => expr_needs_t(e),
+        InlineOperator::Filter(e) => expr_needs_t(e.expr()),
         InlineOperator::Bind { expr, .. } => expr_needs_t(expr),
     })
 }
@@ -257,7 +257,7 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
             pruned.push(op.clone());
             continue;
         };
-        let Expression::Call { func, args } = expr else {
+        let Expression::Call { func, args } = expr.expr() else {
             pruned.push(op.clone());
             continue;
         };

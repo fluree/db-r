@@ -60,6 +60,12 @@ struct CacheableBoolPredicate {
     expr_hash: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PreparedBoolExpression {
+    expr: Expression,
+    cache_spec: Option<CacheableBoolPredicate>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VarUsage {
     None,
@@ -135,8 +141,60 @@ pub fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<Regex> {
     Ok(re)
 }
 
+impl PreparedBoolExpression {
+    pub fn new(expr: Expression) -> Self {
+        let cache_spec = analyze_cacheable_bool_predicate(&expr);
+        Self { expr, cache_spec }
+    }
+
+    pub fn expr(&self) -> &Expression {
+        &self.expr
+    }
+
+    pub fn variables(&self) -> Vec<VarId> {
+        self.expr.variables()
+    }
+
+    pub fn eval_to_bool<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<bool> {
+        if let Some(pass) =
+            eval_cached_bool_predicate_with_spec(self.cache_spec.as_ref(), row, ctx, || {
+                self.expr.eval_to_bool_uncached(row, ctx)
+            })?
+        {
+            return Ok(pass);
+        }
+        self.expr.eval_to_bool_uncached(row, ctx)
+    }
+
+    pub fn eval_to_bool_non_strict<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<bool> {
+        match self.eval_to_bool(row, ctx) {
+            Ok(pass) => Ok(pass),
+            Err(err) if err.can_demote_in_expression() => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 pub fn eval_cached_bool_predicate<R: RowAccess>(
     expr: &Expression,
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+    compute: impl FnOnce() -> Result<bool>,
+) -> Result<Option<bool>> {
+    let cache_spec = analyze_cacheable_bool_predicate(expr);
+    eval_cached_bool_predicate_with_spec(cache_spec.as_ref(), row, ctx, compute)
+}
+
+fn eval_cached_bool_predicate_with_spec<R: RowAccess>(
+    cache_spec: Option<&CacheableBoolPredicate>,
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
     compute: impl FnOnce() -> Result<bool>,
@@ -147,7 +205,7 @@ pub fn eval_cached_bool_predicate<R: RowAccess>(
     let Some(store) = ctx.binary_store.as_ref() else {
         return Ok(None);
     };
-    let Some(spec) = analyze_cacheable_bool_predicate(expr) else {
+    let Some(spec) = cache_spec else {
         return Ok(None);
     };
     let Some(binding) = row.get(spec.input_var) else {

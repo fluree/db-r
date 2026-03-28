@@ -99,6 +99,7 @@ sysinfo = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 tempfile = "3.19"
 mimalloc.workspace = true
+fs2 = "0.4"
 # Numeric types used by datatype tests
 num-bigint = "0.4"
 num-bigdecimal = { package = "bigdecimal", version = "0.4" }

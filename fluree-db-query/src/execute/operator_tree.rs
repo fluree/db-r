@@ -9,6 +9,7 @@ use crate::binary_scan::EmitMask;
 use crate::count_rows::CountRowsOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::expression::PreparedBoolExpression;
 use crate::fast_count::{
     count_blank_node_subjects_operator, count_distinct_object_operator,
     count_distinct_objects_operator, count_distinct_predicates_operator,
@@ -1858,8 +1859,10 @@ fn build_operator_tree_inner(
         if let Some((tp, filters, out_var)) = detect_count_rows_with_encoded_filters(query, options)
         {
             let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
-            let inline_ops: Vec<InlineOperator> =
-                filters.into_iter().map(InlineOperator::Filter).collect();
+            let inline_ops: Vec<InlineOperator> = filters
+                .into_iter()
+                .map(|expr| InlineOperator::Filter(PreparedBoolExpression::new(expr)))
+                .collect();
             let scan: BoxedOperator = Box::new(BinaryScanOperator::new_with_emit_and_index(
                 tp,
                 None,

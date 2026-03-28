@@ -15,6 +15,7 @@ use crate::bm25::Bm25SearchOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
+use crate::expression::PreparedBoolExpression;
 use crate::filter::{contains_exists, FilterOperator};
 use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
@@ -831,7 +832,7 @@ fn inline_eligible_filters(
     let (ready, remaining) =
         partition_eligible_filters(pending_filters, available, filter_idxs_consumed);
     for expr in ready {
-        ops.push(InlineOperator::Filter(expr));
+        ops.push(InlineOperator::Filter(PreparedBoolExpression::new(expr)));
     }
     remaining
 }
@@ -1243,11 +1244,21 @@ pub fn build_where_operators_seeded_with_needed(
                 if block.binds.is_empty() && block.filters.is_empty() {
                     let augmented_rwv = augmented_at(end);
                     let augmented_ref = augmented_rwv.as_deref();
-                    if !block.values.is_empty() {
-                        operator = apply_values(operator.take(), block.values);
-                    }
-                    operator = Some(build_triple_operators(
-                        operator,
+
+                    // Preserve property-join eligibility when a top-level VALUES precedes
+                    // a pure star block. Wrapping VALUES first seeds the schema/operator and
+                    // prevents `build_triple_operators()` from taking the property-join path.
+                    let values_after_triples = operator.is_none()
+                        && !block.values.is_empty()
+                        && block.triples.len() >= 2
+                        && is_property_join(&block.triples);
+
+                    let mut built = build_triple_operators(
+                        if values_after_triples {
+                            operator.take()
+                        } else {
+                            apply_values(operator.take(), block.values.clone())
+                        },
                         &block.triples,
                         &HashMap::new(),
                         augmented_ref,
@@ -1255,7 +1266,12 @@ pub fn build_where_operators_seeded_with_needed(
                         &protected_vars,
                         group_by,
                         distinct_query,
-                    )?);
+                    )?;
+                    if values_after_triples {
+                        built = apply_values(Some(built), block.values)
+                            .expect("apply_values should preserve operator");
+                    }
+                    operator = Some(built);
                     continue;
                 }
 
@@ -2027,7 +2043,8 @@ mod tests {
         // VALUES ?queryVec { 0 } .
         // ?article :date ?date .
         // ?article :vec ?vec .
-        // FILTER(?date >= "2026-01-01")
+        // ?article :title ?title .
+        // ?article :status ?status .
         //
         // We assert schema order to distinguish the plan shape:
         // - Bad (VALUES first): schema starts with ?queryVec
@@ -2039,10 +2056,8 @@ mod tests {
             },
             Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
             Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
-            Pattern::Filter(Expression::ge(
-                Expression::Var(VarId(1)),
-                Expression::Const(FilterValue::String("2026-01-01".to_string())),
-            )),
+            Pattern::Triple(make_pattern(VarId(0), "title", VarId(3))),
+            Pattern::Triple(make_pattern(VarId(0), "status", VarId(4))),
         ];
 
         let op = build_where_operators(&patterns, None).unwrap();

@@ -6,6 +6,7 @@
 use crate::binding::{Binding, BindingRow};
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::expression::PreparedBoolExpression;
 use crate::ir::Expression;
 use crate::var_registry::VarId;
 
@@ -16,7 +17,7 @@ use crate::var_registry::VarId;
 #[derive(Debug, Clone)]
 pub enum InlineOperator {
     /// Drop the row if the expression evaluates to false.
-    Filter(Expression),
+    Filter(PreparedBoolExpression),
     /// Evaluate expression and bind result to variable.
     Bind { var: VarId, expr: Expression },
 }

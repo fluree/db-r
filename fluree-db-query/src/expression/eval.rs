@@ -5,7 +5,7 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
-use super::helpers::eval_cached_bool_predicate;
+use super::helpers::{eval_cached_bool_predicate, PreparedBoolExpression};
 use super::value::ComparableValue;
 use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
@@ -30,7 +30,7 @@ impl Expression {
         QueryError::dictionary_lookup(format!("{kind}: {details}: {err}"))
     }
 
-    fn eval_to_bool_uncached<R: RowAccess>(
+    pub(crate) fn eval_to_bool_uncached<R: RowAccess>(
         &self,
         row: &R,
         ctx: Option<&ExecutionContext<'_>>,
@@ -254,7 +254,7 @@ impl Expression {
 /// `ScanOperator`, `NestedLoopJoinOperator`, and any future operator that
 /// supports inline filters.
 pub fn passes_filters(
-    filters: &[Expression],
+    filters: &[PreparedBoolExpression],
     schema: &[VarId],
     bindings: &[Binding],
     ctx: Option<&ExecutionContext<'_>>,

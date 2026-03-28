@@ -38,4 +38,5 @@ pub mod vector_math;
 
 // Re-export public API
 pub use eval::passes_filters;
+pub use helpers::PreparedBoolExpression;
 pub use value::{ArithmeticError, ComparableValue, ComparisonError, NullValueError};
