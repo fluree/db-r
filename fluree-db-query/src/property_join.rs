@@ -925,7 +925,7 @@ impl Operator for PropertyJoinOperator {
             self.subject_values = all_subject_values
                 .into_iter()
                 .filter(|(_, (_sb, mask, values))| {
-                    *mask == required_mask
+                    (*mask & required_mask) == required_mask
                         && (emit_count == 0
                             || values
                                 .iter()
@@ -1191,6 +1191,13 @@ mod tests {
             PropertyJoinOperator::generate_rows(3, &subject_binding, &values, &[true, false]);
         assert_eq!(rows.len(), 1);
         assert!(matches!(rows[0][2], Binding::Poisoned));
+    }
+
+    #[test]
+    fn test_required_mask_allows_optional_bits() {
+        let required_mask = 0b0011u64;
+        let actual_mask = 0b1111u64;
+        assert_eq!(actual_mask & required_mask, required_mask);
     }
 
     #[test]
