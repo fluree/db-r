@@ -178,6 +178,29 @@ impl Hash for SubjectKey {
 }
 
 impl PropertyJoinOperator {
+    fn driver_score(
+        predicate: &PropertyJoinPredicate,
+        object_bounds: &HashMap<VarId, ObjectBounds>,
+    ) -> u8 {
+        match &predicate.object {
+            PropertyJoinObject::Bound(_) if predicate.pred_ref.is_rdf_type() => 0,
+            PropertyJoinObject::Bound(_) => 1,
+            PropertyJoinObject::Var(obj_var) if object_bounds.contains_key(obj_var) => 2,
+            PropertyJoinObject::Var(_) => 3,
+        }
+    }
+
+    fn select_driver_predicate(
+        predicates: &[PropertyJoinPredicate],
+        object_bounds: &HashMap<VarId, ObjectBounds>,
+    ) -> Option<usize> {
+        predicates
+            .iter()
+            .enumerate()
+            .min_by_key(|(idx, predicate)| (Self::driver_score(predicate, object_bounds), *idx))
+            .map(|(idx, _)| idx)
+    }
+
     /// Create a new property-join operator from patterns
     ///
     /// # Arguments
@@ -477,14 +500,8 @@ impl Operator for PropertyJoinOperator {
                 (1u64 << self.predicates.len()) - 1
             };
 
-            let driver_pred_idx = self
-                .predicates
-                .iter()
-                .enumerate()
-                .find(|(_idx, predicate)| {
-                    matches!(&predicate.object, PropertyJoinObject::Var(obj_var) if self.object_bounds.contains_key(obj_var))
-                })
-                .map(|(idx, _)| idx);
+            let driver_pred_idx =
+                Self::select_driver_predicate(&self.predicates, &self.object_bounds);
             tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
 
             let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
@@ -601,7 +618,12 @@ impl Operator for PropertyJoinOperator {
                                     left,
                                     left_schema,
                                     right_pattern,
-                                    None, // bounds already applied in driver; keep probe unconstrained
+                                    match &predicate.object {
+                                        PropertyJoinObject::Var(obj_var) => {
+                                            self.object_bounds.get(obj_var).cloned()
+                                        }
+                                        PropertyJoinObject::Bound(_) => None,
+                                    },
                                     Vec::new(),
                                     right_emit,
                                 );
@@ -634,8 +656,10 @@ impl Operator for PropertyJoinOperator {
                                             }
                                         } else {
                                             for subject in subjects.iter() {
-                                                if let Some(key) = Self::subject_key(ctx, subject)? {
-                                                    if let Some(entry) = all_subject_values.get_mut(&key)
+                                                if let Some(key) = Self::subject_key(ctx, subject)?
+                                                {
+                                                    if let Some(entry) =
+                                                        all_subject_values.get_mut(&key)
                                                     {
                                                         entry.1 |= 1u64 << pred_idx;
                                                     }
@@ -920,6 +944,18 @@ mod tests {
 
         let schema = op.output_schema();
         assert_eq!(&schema[..], &[VarId(0), VarId(1), VarId(2)]);
+    }
+
+    #[test]
+    fn test_property_join_prefers_bound_object_driver_over_bounds() {
+        let patterns = make_property_join_patterns_with_bound_object();
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
+
+        let mut bounds = HashMap::new();
+        bounds.insert(VarId(2), ObjectBounds::new());
+
+        let driver = PropertyJoinOperator::select_driver_predicate(&op.predicates, &bounds);
+        assert_eq!(driver, Some(0));
     }
 
     #[test]

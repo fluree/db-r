@@ -90,11 +90,11 @@ enum BatchRef {
 ///
 /// Eligible patterns have shape: `(?s, fixed_p, ?o)` where subject is bound
 /// from the left, predicate is fixed (Ref::Sid), object is a new unbound
-/// variable, with no object bounds or datatype/language constraints.
+/// variable, with no datatype/language constraints.
 fn is_batched_eligible(
     bind_instructions: &[BindInstruction],
     right_pattern: &TriplePattern,
-    has_object_bounds: bool,
+    _has_object_bounds: bool,
 ) -> bool {
     // Subject must have a BindInstruction (bound from left)
     let has_subject_bind = bind_instructions
@@ -108,12 +108,10 @@ fn is_batched_eligible(
     let no_obj_bind = !bind_instructions
         .iter()
         .any(|b| b.position == PatternPosition::Object);
-    // No object bounds (no FILTER range pushdown)
-    let no_bounds = !has_object_bounds;
     // No datatype or language constraints
     let no_constraint = right_pattern.dtc.is_none();
 
-    has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_bounds && no_constraint
+    has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_constraint
 }
 
 /// Check if the right pattern is eligible for batched object join.
@@ -1479,6 +1477,15 @@ impl NestedLoopJoinOperator {
                         .o_type_const
                         .unwrap_or_else(|| batch.o_type.get_or(row, 0));
                     let o_key_val = batch.o_key.get(row);
+                    if !self.batched_row_matches_object_bounds(
+                        store,
+                        ctx.binary_g_id,
+                        p_id,
+                        o_type_val,
+                        o_key_val,
+                    )? {
+                        continue;
+                    }
 
                     let obj_binding = if o_type_val == OType::IRI_REF.as_u16()
                         || o_type_val == OType::BLANK_NODE.as_u16()
@@ -1682,6 +1689,23 @@ impl NestedLoopJoinOperator {
         );
 
         Ok(())
+    }
+
+    fn batched_row_matches_object_bounds(
+        &self,
+        store: &BinaryIndexStore,
+        g_id: GraphId,
+        p_id: u32,
+        o_type: u16,
+        o_key: u64,
+    ) -> Result<bool> {
+        let Some(bounds) = &self.object_bounds else {
+            return Ok(true);
+        };
+        let val = store
+            .decode_value_v3(o_type, o_key, p_id, g_id)
+            .map_err(|e| QueryError::Internal(format!("decode_value_v3 (batched bounds): {e}")))?;
+        Ok(bounds.matches(&val))
     }
 
     /// Phase 5: Assemble scattered results into output batches in left-row order.
@@ -2239,6 +2263,32 @@ mod tests {
         let mut combined = left_schema.to_vec();
         combined.extend(new_vars);
         assert_eq!(combined, vec![VarId(0), VarId(1)]);
+    }
+
+    #[test]
+    fn test_batched_subject_join_remains_eligible_with_object_bounds() {
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "date")),
+            Term::Var(VarId(1)),
+        );
+
+        let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v, i))
+            .collect();
+        let bind_instructions = vec![BindInstruction {
+            position: PatternPosition::Subject,
+            left_col: *left_var_positions.get(&VarId(0)).unwrap(),
+        }];
+
+        assert!(is_batched_eligible(
+            &bind_instructions,
+            &right_pattern,
+            true
+        ));
     }
 
     #[test]
