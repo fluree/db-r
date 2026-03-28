@@ -107,8 +107,8 @@ pub use execute::{
 };
 pub use exists::ExistsOperator;
 pub use explain::{
-    explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
-    SelectivityInputs,
+    explain_execution_hints, explain_patterns, ExecutionStrategyHint, ExplainPlan, FallbackReason,
+    OptimizationStatus, PatternDisplay, SelectivityInputs,
 };
 pub use filter::FilterOperator;
 pub use geo_rewrite::rewrite_geo_patterns;

@@ -308,12 +308,25 @@ pub struct InnerJoinBlock {
     pub filters: Vec<FilterPattern>,
 }
 
-#[derive(Default)]
-struct PropertyJoinTail {
+#[derive(Default, Clone)]
+pub(crate) struct PropertyJoinTail {
     end_index: usize,
-    optional_triples: Vec<TriplePattern>,
-    binds: Vec<BindPattern>,
-    filters: Vec<FilterPattern>,
+    pub optional_triples: Vec<TriplePattern>,
+    pub binds: Vec<BindPattern>,
+    pub filters: Vec<FilterPattern>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PropertyJoinPlanDecision {
+    pub analysis: crate::planner::PropertyJoinAnalysis,
+    pub width_score: f32,
+    pub optional_bonus: f32,
+    pub meets_width_threshold: bool,
+    pub has_upstream_seed: bool,
+    pub can_property_join: bool,
+    pub tail_optional_triples: usize,
+    pub tail_filters: usize,
+    pub tail_binds: usize,
 }
 
 /// Minimum weighted star width required before choosing the property-join path.
@@ -321,7 +334,7 @@ struct PropertyJoinTail {
 /// Required triples count as 1.0 each. Adjacent same-subject OPTIONAL triples
 /// count partially because they still represent future subject-correlated work,
 /// but they do not shrink the required-side candidate set.
-const PROPERTY_JOIN_MIN_WIDTH_SCORE: f32 = 3.0;
+pub(crate) const PROPERTY_JOIN_MIN_WIDTH_SCORE: f32 = 3.0;
 const OPTIONAL_STAR_WIDTH_WEIGHT: f32 = 0.5;
 
 fn optional_star_width_bonus(inner_patterns: &[Pattern], subject_var: VarId) -> f32 {
@@ -338,7 +351,7 @@ fn optional_star_width_bonus(inner_patterns: &[Pattern], subject_var: VarId) -> 
     OPTIONAL_STAR_WIDTH_WEIGHT * triple_count as f32
 }
 
-fn property_join_width_score(
+pub(crate) fn property_join_width_score(
     required_triples: &[TriplePattern],
     trailing_patterns: &[Pattern],
 ) -> (f32, f32) {
@@ -360,7 +373,7 @@ fn property_join_width_score(
     (required_score + optional_bonus, optional_bonus)
 }
 
-fn collect_property_join_tail(
+pub(crate) fn collect_property_join_tail(
     patterns: &[Pattern],
     start: usize,
     required_triples: &[TriplePattern],
@@ -431,6 +444,39 @@ fn collect_property_join_tail(
 
     out.end_index = i;
     out
+}
+
+pub(crate) fn analyze_property_join_plan(
+    patterns: &[Pattern],
+    block_end_index: usize,
+    triples_for_exec: &[TriplePattern],
+    has_upstream_seed: bool,
+) -> (PropertyJoinPlanDecision, PropertyJoinTail) {
+    let analysis = analyze_property_join(triples_for_exec);
+    let (width_score, optional_bonus) =
+        property_join_width_score(triples_for_exec, &patterns[block_end_index..]);
+    let meets_width_threshold = width_score > PROPERTY_JOIN_MIN_WIDTH_SCORE;
+    let can_property_join = !has_upstream_seed && analysis.eligible() && meets_width_threshold;
+    let tail = if can_property_join {
+        collect_property_join_tail(patterns, block_end_index, triples_for_exec)
+    } else {
+        PropertyJoinTail {
+            end_index: block_end_index,
+            ..PropertyJoinTail::default()
+        }
+    };
+    let decision = PropertyJoinPlanDecision {
+        analysis,
+        width_score,
+        optional_bonus,
+        meets_width_threshold,
+        has_upstream_seed,
+        can_property_join,
+        tail_optional_triples: tail.optional_triples.len(),
+        tail_filters: tail.filters.len(),
+        tail_binds: tail.binds.len(),
+    };
+    (decision, tail)
 }
 
 /// Require a child operator, returning an error if None.
@@ -1294,24 +1340,9 @@ pub fn build_where_operators_seeded_with_needed(
                     operator = Some(Box::new(EmptyOperator::new()));
                 }
 
-                let pj_analysis = analyze_property_join(&triples_for_exec);
-                let (property_join_width_score, property_join_optional_bonus) =
-                    property_join_width_score(&triples_for_exec, &patterns[block.end_index..]);
                 let has_upstream_seed = operator.is_some();
-                let property_join_meets_width_threshold =
-                    property_join_width_score > PROPERTY_JOIN_MIN_WIDTH_SCORE;
-                let can_property_join = !has_upstream_seed
-                    && pj_analysis.eligible()
-                    && property_join_meets_width_threshold;
-
-                let property_join_tail = if can_property_join {
-                    collect_property_join_tail(patterns, end, &triples_for_exec)
-                } else {
-                    PropertyJoinTail {
-                        end_index: end,
-                        ..PropertyJoinTail::default()
-                    }
-                };
+                let (property_join_plan, property_join_tail) =
+                    analyze_property_join_plan(patterns, end, &triples_for_exec, has_upstream_seed);
                 let property_join_end = property_join_tail.end_index;
                 let augmented_rwv = augmented_at(property_join_end);
                 let augmented_ref = augmented_rwv.as_deref();
@@ -1320,27 +1351,33 @@ pub fn build_where_operators_seeded_with_needed(
                     tracing::debug!(
                         block_start = start,
                         triple_count = triples_for_exec.len(),
-                        has_upstream_seed,
+                        has_upstream_seed = property_join_plan.has_upstream_seed,
                         has_values = !block.values.is_empty(),
                         has_object_bounds = !pushdown.object_bounds.is_empty(),
                         has_bound_object_triples =
                             triples_for_exec.iter().any(TriplePattern::o_bound),
-                        property_join_eligible = pj_analysis.eligible(),
-                        property_join_enough_patterns = pj_analysis.enough_patterns,
-                        property_join_subject_is_var = pj_analysis.subject_is_var,
-                        property_join_same_subject = pj_analysis.same_subject,
-                        property_join_predicates_bound = pj_analysis.predicates_bound,
-                        property_join_object_modes_supported = pj_analysis.object_modes_supported,
-                        property_join_object_vars_distinct = pj_analysis.object_vars_distinct,
-                        property_join_has_bound_objects = pj_analysis.has_bound_objects,
-                        property_join_predicates_distinct = pj_analysis.predicates_distinct,
-                        property_join_width_score,
-                        property_join_optional_bonus,
-                        property_join_meets_width_threshold,
-                        property_join_optional_triples = property_join_tail.optional_triples.len(),
-                        property_join_tail_filters = property_join_tail.filters.len(),
-                        property_join_tail_binds = property_join_tail.binds.len(),
-                        chosen_strategy = if can_property_join {
+                        property_join_eligible = property_join_plan.analysis.eligible(),
+                        property_join_enough_patterns = property_join_plan.analysis.enough_patterns,
+                        property_join_subject_is_var = property_join_plan.analysis.subject_is_var,
+                        property_join_same_subject = property_join_plan.analysis.same_subject,
+                        property_join_predicates_bound =
+                            property_join_plan.analysis.predicates_bound,
+                        property_join_object_modes_supported =
+                            property_join_plan.analysis.object_modes_supported,
+                        property_join_object_vars_distinct =
+                            property_join_plan.analysis.object_vars_distinct,
+                        property_join_has_bound_objects =
+                            property_join_plan.analysis.has_bound_objects,
+                        property_join_predicates_distinct =
+                            property_join_plan.analysis.predicates_distinct,
+                        property_join_width_score = property_join_plan.width_score,
+                        property_join_optional_bonus = property_join_plan.optional_bonus,
+                        property_join_meets_width_threshold =
+                            property_join_plan.meets_width_threshold,
+                        property_join_optional_triples = property_join_plan.tail_optional_triples,
+                        property_join_tail_filters = property_join_plan.tail_filters,
+                        property_join_tail_binds = property_join_plan.tail_binds,
+                        chosen_strategy = if property_join_plan.can_property_join {
                             "property_join"
                         } else {
                             "sequential_join"
@@ -1349,7 +1386,7 @@ pub fn build_where_operators_seeded_with_needed(
                     );
                 }
 
-                if can_property_join {
+                if property_join_plan.can_property_join {
                     i = property_join_end;
                     let mut property_join_binds = pending_binds;
                     property_join_binds.extend(property_join_tail.binds);

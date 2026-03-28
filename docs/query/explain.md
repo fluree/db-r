@@ -11,6 +11,7 @@ Explain plans show:
 - Whether database statistics were available for optimization
 - The cardinality category and cost estimate assigned to each pattern
 - The original vs. optimized pattern order
+- Execution strategy hints for special fast paths such as fused property-join stars
 
 ## Requesting Explain Plans
 
@@ -195,6 +196,43 @@ Key things to look for:
 - **Statistics available: no**: Without statistics, the planner uses
   conservative heuristics. Run at least one indexing cycle to enable
   statistics-based optimization.
+
+### Execution Hints
+
+Explain responses may also include an `execution-hints` array. These are not
+generic cardinality estimates; they describe when the executor expects to use a
+specialized path after planning.
+
+For the star-join work, look for:
+
+- `property_join`: the planner chose the same-subject property-join path
+- `property_join_fused_star`: the planner chose property join and also fused
+  trailing same-subject single-triple `OPTIONAL`s plus eligible trailing
+  `FILTER`/`BIND` patterns into the same star operator
+
+Typical fields include:
+
+- `required_triples`: number of required star predicates
+- `fused_optional_triples`: number of fused trailing `OPTIONAL` triples
+- `fused_filters`: number of trailing filters evaluated inside the star path
+- `fused_binds`: number of trailing binds evaluated inside the star path
+- `width_score`: weighted star width used by the property-join gate
+- `optional_bonus`: how much of the width score came from trailing optionals
+
+This is the clearest signal that a query like:
+
+```sparql
+?deal a crm:Deal ;
+      crm:name ?name ;
+      crm:amount ?amount ;
+      crm:stage ?stage .
+OPTIONAL { ?deal crm:probability ?probability }
+OPTIONAL { ?deal crm:closedAt ?closedAt }
+FILTER (!STRSTARTS(STR(?stage), "Closed"))
+```
+
+is using the fused two-pass star path rather than falling back to separate
+OPTIONAL and FILTER operators.
 
 ## Indexes
 

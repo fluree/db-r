@@ -32,10 +32,13 @@ pub static WELL_KNOWN_DATATYPES: Lazy<WellKnownDatatypes> = Lazy::new(WellKnownD
 // Thread-local cache for compiled regexes to avoid recompiling on every row.
 // SPARQL REGEX patterns are typically constant across a query, so caching
 // provides significant speedup for filter-heavy queries.
+/// Cache key for encoded STRSTARTS lookups: (store_id, g_id, o_key, p_id, o_type, o_i, prefix).
+type EncodedStartsKey = (usize, u8, u64, u32, u16, u16, String);
+
 thread_local! {
     static REGEX_CACHE: RefCell<lru::LruCache<(String, String), Regex>> =
         RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap()));
-    static ENCODED_STRING_STARTS_CACHE: RefCell<lru::LruCache<(usize, u8, u64, u32, u16, u16, String), bool>> =
+    static ENCODED_STRING_STARTS_CACHE: RefCell<lru::LruCache<EncodedStartsKey, bool>> =
         RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(256).unwrap()));
 }
 
