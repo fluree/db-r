@@ -19,6 +19,7 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
 use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
 use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
+use parking_lot::RwLock;
 
 use crate::dict::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
 use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
@@ -26,9 +27,12 @@ use crate::dict::pack_reader::ForwardPackReader;
 use crate::dict::DictTreeReader;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
 use crate::format::index_root::{IndexRoot, OTypeTableEntry};
+use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
 use super::leaflet_cache::LeafletCache;
+
+const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
 
 // ============================================================================
 // Shared dictionary / CAS utilities
@@ -240,6 +244,16 @@ pub struct BinaryIndexStore {
     cas: Option<Arc<dyn ContentStore>>,
     cache_dir: PathBuf,
     leaflet_cache: Option<Arc<LeafletCache>>,
+    /// Remote leaf metadata cache keyed by leaf CID.
+    ///
+    /// This avoids re-fetching the same header+directory ranges when repeated
+    /// scans reopen the same remote leaf within a query/session.
+    remote_leaf_metadata: RwLock<HashMap<ContentId, DecodedLeafDirV3>>,
+    /// Remote leaf open counts keyed by leaf CID.
+    ///
+    /// Once a remote leaf is touched repeatedly, we promote it to the local
+    /// disk cache so subsequent opens use `FullBlobLeafHandle`.
+    remote_leaf_open_counts: RwLock<HashMap<ContentId, usize>>,
     max_t: i64,
     base_t: i64,
     language_tags: Vec<String>,
@@ -362,6 +376,8 @@ impl BinaryIndexStore {
             cas: Some(cs),
             cache_dir: cache_dir.to_path_buf(),
             leaflet_cache,
+            remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
             max_t: root.index_t,
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
@@ -404,6 +420,13 @@ impl BinaryIndexStore {
 
     pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
         self.leaflet_cache.as_ref()
+    }
+
+    fn note_remote_leaf_open(&self, leaf_cid: &ContentId) -> usize {
+        let mut counts = self.remote_leaf_open_counts.write();
+        let count = counts.entry(leaf_cid.clone()).or_insert(0);
+        *count += 1;
+        *count
     }
 
     /// Fetch leaf bytes by CID: local path first, then CAS with caching.
@@ -469,7 +492,6 @@ impl BinaryIndexStore {
         use super::leaf_access::{
             fetch_header_and_directory, FullBlobLeafHandle, RangeReadLeafHandle,
         };
-
         let cs = self
             .cas
             .as_ref()
@@ -500,13 +522,60 @@ impl BinaryIndexStore {
             return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
         }
 
+        let touch_count = self.note_remote_leaf_open(leaf_cid);
+
+        if let Some(dir) = self.remote_leaf_metadata.read().get(leaf_cid).cloned() {
+            if touch_count >= HOT_REMOTE_LEAF_PROMOTION_TOUCHES {
+                tracing::debug!(
+                    leaf = %leaf_cid,
+                    need_replay,
+                    source = "remote_promote_disk",
+                    touch_count,
+                    "promoting hot remote leaf to disk cache"
+                );
+                let bytes = self.get_leaf_bytes_sync(leaf_cid)?;
+                let sidecar = if need_replay {
+                    self.fetch_sidecar_bytes_sync(sidecar_cid)?
+                } else {
+                    None
+                };
+                return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+            }
+            let sc_cid = if need_replay {
+                sidecar_cid.cloned()
+            } else {
+                None
+            };
+            return Ok(Box::new(RangeReadLeafHandle::new(
+                leaf_cid.clone(),
+                dir.clone(),
+                dir.payload_base as u64,
+                leaf_id,
+                Arc::new(ContentStoreRangeFetcher::new(
+                    Arc::clone(cs),
+                    self.cache_dir.clone(),
+                )) as Arc<dyn super::leaf_access::RangeReadFetcher>,
+                sc_cid,
+            )));
+        }
+
         // Slow path: remote — use range reads for column-selective access.
+        tracing::debug!(
+            leaf = %leaf_cid,
+            need_replay,
+            source = "remote_range",
+            touch_count,
+            "binary leaf open"
+        );
         let fetcher = Arc::new(ContentStoreRangeFetcher::new(
             Arc::clone(cs),
             self.cache_dir.clone(),
         ));
 
         let (dir, payload_base) = fetch_header_and_directory(fetcher.as_ref(), leaf_cid)?;
+        self.remote_leaf_metadata
+            .write()
+            .insert(leaf_cid.clone(), dir.clone());
 
         let sc_cid = if need_replay {
             sidecar_cid.cloned()
@@ -2066,7 +2135,7 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
         let timeout = cas_sync_timeout();
-        run_sync_on_runtime(async move {
+        let bytes = run_sync_on_runtime(async move {
             let fut = cs.get_range(&cid, range.clone());
             if let Some(dur) = timeout {
                 tokio::time::timeout(dur, fut)
@@ -2084,6 +2153,212 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                 fut.await
                     .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
             }
+        })?;
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use fluree_db_core::content_kind::ContentKind;
+    use fluree_db_core::o_type::OType;
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::MemoryContentStore;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+
+    use crate::format::leaf::LeafWriter;
+    use crate::format::run_record_v2::RunRecordV2;
+
+    #[derive(Debug, Clone)]
+    struct CountingContentStore {
+        inner: MemoryContentStore,
+        get_calls: Arc<AtomicUsize>,
+        range_calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingContentStore {
+        fn new() -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                get_calls: Arc::new(AtomicUsize::new(0)),
+                range_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn get_calls(&self) -> usize {
+            self.get_calls.load(AtomicOrdering::Relaxed)
+        }
+
+        fn range_calls(&self) -> usize {
+            self.range_calls.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for CountingContentStore {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            self.get_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.get(id).await
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn get_range(
+            &self,
+            id: &ContentId,
+            range: std::ops::Range<u64>,
+        ) -> fluree_db_core::Result<Vec<u8>> {
+            self.range_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.get_range(id, range).await
+        }
+    }
+
+    fn temp_cache_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let suffix = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "fluree-binary-index-remote-meta-cache-{}-{}",
+            std::process::id(),
+            suffix
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        path
+    }
+
+    fn empty_store(cs: Arc<dyn ContentStore>, cache_dir: PathBuf) -> BinaryIndexStore {
+        BinaryIndexStore {
+            dicts: DictionarySet {
+                predicates: PredicateDict::new(),
+                predicate_reverse: HashMap::new(),
+                graphs_reverse: HashMap::new(),
+                subject_forward_packs: BTreeMap::new(),
+                subject_reverse_tree: None,
+                string_forward_packs: crate::dict::pack_reader::ForwardPackReader::empty(),
+                string_reverse_tree: None,
+                subject_count: 0,
+                string_count: 0,
+                namespace_codes: HashMap::new(),
+                namespace_reverse: HashMap::new(),
+                prefix_trie: PrefixTrie::new(),
+                language_tags: LanguageTagDict::new(),
+                dt_sids: Vec::new(),
+            },
+            graph_indexes: HashMap::new(),
+            o_type_table: Vec::new(),
+            o_type_index: HashMap::new(),
+            cas: Some(cs),
+            cache_dir,
+            leaflet_cache: None,
+            remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
+            max_t: 1,
+            base_t: 0,
+            language_tags: Vec::new(),
+            lex_sorted_string_ids: false,
+            ns_split_mode: NsSplitMode::default(),
+            ns_split_mode_set: true,
+        }
+    }
+
+    fn make_rec(s_id: u64, p_id: u32, o_type: u16, o_key: u64, t: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key,
+            p_id,
+            t,
+            o_i: u32::MAX,
+            o_type,
+            g_id: 0,
+        }
+    }
+
+    fn build_test_leaf_bytes() -> Vec<u8> {
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
+        writer.set_skip_history(true);
+        for i in 0..5u64 {
+            writer
+                .push_record(make_rec(i + 1, 1, OType::XSD_INTEGER.as_u16(), i * 10, 1))
+                .unwrap();
+        }
+        writer.finish().unwrap().remove(0).leaf_bytes
+    }
+
+    #[test]
+    fn open_leaf_handle_caches_remote_metadata() {
+        let store = CountingContentStore::new();
+        let leaf_bytes = build_test_leaf_bytes();
+        let leaf_cid = run_sync_on_runtime({
+            let store = store.clone();
+            async move {
+                store
+                    .put(ContentKind::IndexLeaf, &leaf_bytes)
+                    .await
+                    .map_err(storage_to_io_error)
+            }
         })
+        .expect("store leaf bytes");
+        let cache_dir = temp_cache_dir();
+        let binary_store = empty_store(Arc::new(store.clone()), cache_dir.clone());
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("first remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        let first_range_calls = store.range_calls();
+        assert!(
+            first_range_calls >= 2,
+            "expected initial remote open to fetch header+directory"
+        );
+        drop(handle);
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("second remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        let second_range_calls = store.range_calls();
+        assert_eq!(
+            second_range_calls, first_range_calls,
+            "cached remote metadata should avoid extra range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "hot remote leaf should be promoted to full local cache on second open"
+        );
+        assert!(
+            cache_dir.join(leaf_cid.to_string()).exists(),
+            "promoted remote leaf should be written to disk cache"
+        );
+        drop(handle);
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("third remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        assert_eq!(
+            store.range_calls(),
+            second_range_calls,
+            "once promoted, repeated opens should not perform remote range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "once promoted, repeated opens should not refetch the full blob"
+        );
+
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 }

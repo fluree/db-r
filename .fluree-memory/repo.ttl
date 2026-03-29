@@ -1171,3 +1171,470 @@ mem:fact-01kmgg192p7hnveqckgqxyakz7 a mem:Fact ;
     mem:artifactRef "fluree-db-iceberg/src/catalog/mod.rs" ;
     mem:createdAt "2026-03-24T17:59:43.446602+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kmqem54pfgjxjv6k2t2wtmwd a mem:Fact ;
+    mem:content "Temporary `[DIAG][commit-t]` instrumentation for the remote commit-t debugging pass was added in `graph_commit_builder.rs`, `ledger_manager.rs`, `lib.rs::refresh`, `binary_range.rs`, and `peer/sync_task.rs`. It traces SSE/refresh ingress, cached snapshot composition, notify planning and commit catch-up, exact txn-meta POST `db:t` lookups, raw overlay probes, and binary range filter/overlay translation decisions so one deploy can isolate whether the miss is in cache refresh, graph routing, or range-provider filtering." ;
+    mem:tag "binary-range" ;
+    mem:tag "commit-t" ;
+    mem:tag "diagnostics" ;
+    mem:tag "ledger-manager" ;
+    mem:tag "overlay" ;
+    mem:tag "refresh" ;
+    mem:tag "txn-meta" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/graph_commit_builder.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_range.rs" ;
+    mem:artifactRef "fluree-db-server/src/peer/sync_task.rs" ;
+    mem:createdAt "2026-03-27T10:49:45.878260+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmqg0w83yereh4ypzr7eqv8b a mem:Fact ;
+    mem:content "FLI3 leaf files can legally contain more than 255 leaflets because the format stores `leaflet_count` as u32 and V3 leaf assembly flushes leaves by `leaf_target_rows`, not by leaflet count; POST/PSOT segmentation on `p_id` transitions and OPST segmentation on `o_type` transitions can therefore create many tiny leaflets in one leaf. Read-side cached query paths still key V3 batches by `leaflet_idx: u8`, so when a query scans a leaf whose 257th leaflet is reached it fails with `leaflet index 256 exceeds u8::MAX` (or query-side `leaflet idx exceeds u8`)." ;
+    mem:tag "binary-index" ;
+    mem:tag "bug" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet" ;
+    mem:tag "query" ;
+    mem:tag "v3-cursor" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/leaf.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_cursor.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:createdAt "2026-03-27T11:14:11.331131+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:artifact-01kmqgb1can4tedrab6atsbf4h a mem:Artifact ;
+    mem:content "Regression coverage for the former >255 leaflet cache-key bug lives in `fluree-db-binary-index/src/read/column_loader.rs` as `cached_loader_supports_leaflet_index_above_255`. The test builds a POST leaf with 257 one-row leaflets by varying `p_id` on every row, then loads leaflet 256 through `load_columns_cached_via_handle` with a `LeafletCache` to verify cached V3 batch loading works beyond the old u8 limit." ;
+    mem:tag "binary-index" ;
+    mem:tag "cache" ;
+    mem:tag "leaflet" ;
+    mem:tag "regression-test" ;
+    mem:tag "v3-cursor" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/column_loader.rs" ;
+    mem:createdAt "2026-03-27T11:19:44.266398+00:00"^^xsd:dateTime ;
+    mem:artifactKind "file" .
+
+mem:decision-01kmqh7wfsc15dzw6fvkesyza8 a mem:Decision ;
+    mem:content "Untyped numeric equality on the V3 binary path now uses a loose encoded prefilter (match by o_key, omit o_type) plus decoded-value equality, instead of forcing `FlakeValue::Long` to `OType::XSD_INTEGER`. This was needed because txn-meta `db:t` values can be stored as `xsd:long`, and exact `o_type` filtering in `binary_range_eq_v3`/`BinaryScanOperator` could miss valid matches." ;
+    mem:tag "binary-range" ;
+    mem:tag "binary-scan" ;
+    mem:tag "commit-t" ;
+    mem:tag "datatype" ;
+    mem:tag "integer-family" ;
+    mem:tag "numeric" ;
+    mem:tag "query-correctness" ;
+    mem:tag "txn-meta" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-core/src/range.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_range.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:createdAt "2026-03-27T11:35:29.529039+00:00"^^xsd:dateTime ;
+    mem:rationale "Reuse the existing decoded equality semantics instead of reimplementing datatype-family fanout separately in each binary caller." ;
+    mem:alternatives "Predicate-only decode/filter in resolve_t_to_commit_id, stats-driven multi-scan per datatype" .
+
+mem:fact-01kmqhh9n5qtsnjt3f7eq8xf3p a mem:Fact ;
+    mem:content "`fluree-db-api/src/graph_query_builder.rs` needs `graph_source_fallback` gated with `#[cfg(feature = \"iceberg\")]` on both the struct field and its constructor initialization. The field is only read inside an `iceberg`-gated fallback path, so leaving it unconditional causes a dead-code warning in default non-iceberg builds." ;
+    mem:tag "dead-code" ;
+    mem:tag "feature-gating" ;
+    mem:tag "fluree-db-api" ;
+    mem:tag "graph-query-builder" ;
+    mem:tag "iceberg" ;
+    mem:tag "r2rml" ;
+    mem:tag "warning" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/src/graph_query_builder.rs" ;
+    mem:createdAt "2026-03-27T11:40:37.925049+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:fact-01kmqjp9hjkevh3he6mpc2qtfh a mem:Fact ;
+    mem:content "Temporary `[DIAG][commit-t]` instrumentation used for the remote commit-t debugging pass has been removed after the fix landed. The detailed probes in `graph_commit_builder.rs`, `ledger_manager.rs`, `lib.rs::refresh`, `binary_range.rs`, and most of `peer/sync_task.rs` are gone. A single low-volume `tracing::debug!` remains in `peer/sync_task.rs` for successful SSE-triggered cache refresh completion (`\"refreshed cached ledger from SSE update\"`)." ;
+    mem:tag "binary-range" ;
+    mem:tag "commit-t" ;
+    mem:tag "debug-logging" ;
+    mem:tag "diagnostics" ;
+    mem:tag "ledger-manager" ;
+    mem:tag "overlay" ;
+    mem:tag "refresh" ;
+    mem:tag "txn-meta" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/graph_commit_builder.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_range.rs" ;
+    mem:artifactRef "fluree-db-server/src/peer/sync_task.rs" ;
+    mem:supersedes mem:fact-01kmqem54pfgjxjv6k2t2wtmwd ;
+    mem:createdAt "2026-03-27T12:00:50.226821+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmr1e8ma2ysetshgx60r6f6p a mem:Fact ;
+    mem:content "Query perf tracing gap: long ORDER BY traces can hide most time inside uninstrumented operator drain work rather than sort itself. In the zohocrm query shape, the visible spans (`sort_blocking`, `join_resolve_per_row`) left a large unattributed gap that maps to `OptionalOperator::next_batch()` and `NestedLoopJoinOperator::build_output_batch()`, so those need spans when investigating planner/join regressions." ;
+    mem:tag "join" ;
+    mem:tag "optional" ;
+    mem:tag "planner" ;
+    mem:tag "query-perf" ;
+    mem:tag "sort" ;
+    mem:tag "tracing" ;
+    mem:tag "xray" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:artifactRef "fluree-db-query/src/sort.rs" ;
+    mem:createdAt "2026-03-27T16:18:35.786815+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmr3thfmbcbwe2fq8hh4ckc7 a mem:Fact ;
+    mem:content "Remote binary-index queries can pay repeated leaf-open metadata cost even when decoded leaflet columns are cached: `BinaryIndexStore::open_leaf_handle()` chooses `RangeReadLeafHandle` when the full leaf is not on local disk, and that path re-runs `fetch_header_and_directory()` (range-read header + directory) before `load_columns_cached_via_handle()` can hit `LeafletCache`. Investigating tiny-dataset slow queries should therefore instrument all three layers separately: leaf open, header/directory range reads, and leaflet cache hit/miss." ;
+    mem:tag "binary-index" ;
+    mem:tag "instrumentation" ;
+    mem:tag "leaflet-cache" ;
+    mem:tag "query-perf" ;
+    mem:tag "range-read" ;
+    mem:tag "remote-storage" ;
+    mem:tag "xray" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/column_loader.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaf_access.rs" ;
+    mem:createdAt "2026-03-27T17:00:15.220284+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmrfjybvsfcpabafvy4hecn4 a mem:Fact ;
+    mem:content "`BinaryIndexStore::open_leaf_handle()` now caches remote leaf header+directory metadata by `leaf_cid` in-memory before constructing `RangeReadLeafHandle`. This avoids repeating `fetch_header_and_directory()` range reads on repeated opens of the same remote leaf, while leaving column block reads and local full-blob paths unchanged." ;
+    mem:tag "binary-index" ;
+    mem:tag "leaf-cache" ;
+    mem:tag "query-perf" ;
+    mem:tag "range-read" ;
+    mem:tag "remote-storage" ;
+    mem:tag "s3" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/format/leaf.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:createdAt "2026-03-27T20:25:49.179364+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmrgkcd7aa9aj55j0jseeegb a mem:Fact ;
+    mem:content "For Lambda query-perf investigations, broad `fluree_db_query=debug` logging is too noisy and the span-heavy join/optional diagnostics can overwhelm trace exports. Prefer `RUST_LOG=info,fluree_db_binary_index=debug` with explicit binary-index debug events (`binary leaf open`, `binary fetched leaf header and directory`, `binary remote range fetch`) to confirm repeated remote opens/downloads and metadata-cache hits." ;
+    mem:tag "binary-index" ;
+    mem:tag "cloudwatch" ;
+    mem:tag "lambda" ;
+    mem:tag "query-perf" ;
+    mem:tag "tracing" ;
+    mem:tag "xray" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaf_access.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:createdAt "2026-03-27T20:43:32.135946+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmrsrnfr06tvkwrwbqmt8w0z a mem:Fact ;
+    mem:content "PropertyJoinOperator now supports same-subject star blocks that mix variable objects with bound-object existence predicates (for example `?s rdf:type :Deal`, `?s :name ?name`, `?s :stage ?stage`). The operator treats bound-object patterns as existence-only constraints and now captures encoded subject IDs after the first scan so a selective exact scan can drive later batched subject probes even without filter-pushdown object bounds." ;
+    mem:tag "batched-probe" ;
+    mem:tag "performance" ;
+    mem:tag "planner" ;
+    mem:tag "property-join" ;
+    mem:tag "query" ;
+    mem:tag "rdf:type" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/planner.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-27T23:23:42.456970+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmrwc10tqgrtgqq5j90hqd8k a mem:Fact ;
+    mem:content "NestedLoopJoinOperator's batched subject-join path now remains enabled when the right pattern has static object bounds, and the batched PSOT scanner applies those bounds row-by-row before materializing bindings. PropertyJoinOperator also now ranks star drivers so bound-object predicates (especially rdf:type) are preferred ahead of range-bounded variable-object predicates when seeding the subject candidate set." ;
+    mem:tag "batched-probe" ;
+    mem:tag "join" ;
+    mem:tag "object-bounds" ;
+    mem:tag "performance" ;
+    mem:tag "property-join" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T00:09:14.010238+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmrxf5g1myvt34wg0vf5e6nd a mem:Fact ;
+    mem:content "PropertyJoinOperator now bypasses per-chunk NestedLoopJoinOperator construction for subject-bound follow-on probes. The star path calls a reusable `batched_subject_probe_binary` helper in `fluree-db-query/src/join.rs` that scans PSOT for a fixed predicate over a bounded subject set, applies optional bound-object or object-range filtering, and returns subject/object matches directly." ;
+    mem:tag "batched-probe" ;
+    mem:tag "join" ;
+    mem:tag "performance" ;
+    mem:tag "property-join" ;
+    mem:tag "psot" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T00:28:25.473585+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kms0v33qc3xfxjgj7g8sgje8 a mem:Fact ;
+    mem:content "Query-engine cleanup: `fluree-db-query/src/join.rs` now owns shared `make_dict_overlay(ctx, store)` construction for novelty-aware batched probe paths, and `PropertyJoinOperator` factors batched probe plumbing into small helpers (`predicate_sid`, per-predicate bounds/bound-object lookup, probe-match ingestion, driver subject capture). This keeps `PropertyJoinOperator::open` focused on control flow instead of inline setup/details." ;
+    mem:tag "cleanup" ;
+    mem:tag "dict-overlay" ;
+    mem:tag "join" ;
+    mem:tag "maintainability" ;
+    mem:tag "property-join" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T01:27:21.975499+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kms14fmrfc9ypprawdjg4g35 a mem:Fact ;
+    mem:content "V3 object-to-Binding conversion in `fluree-db-query` is now centralized in `src/v3_binding.rs`. Use `late_materialized_object_binding(...)` for the fast encoded-path mapping from `(o_type,o_key,p_id,t,o_i)` and `materialized_object_binding(...)` for wrapping decoded `FlakeValue`s with the correct `Binding::Sid`/`Binding::Lit` shape and datatype metadata. `binary_scan.rs` and `join.rs` both rely on this helper so blank-node, string/json/vector/NUM_BIG, and literal datatype handling stay aligned." ;
+    mem:tag "binding" ;
+    mem:tag "cleanup" ;
+    mem:tag "join" ;
+    mem:tag "maintainability" ;
+    mem:tag "query" ;
+    mem:tag "v3" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/v3_binding.rs" ;
+    mem:createdAt "2026-03-28T01:32:29.720370+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kms1m18azvc24qf6nc0f0tga a mem:Fact ;
+    mem:content "High-volume remote-query tracing was trimmed to reduce CloudWatch/X-Ray blowups: removed per-range `binary_range_fetch` span/debug events, per-leaf header-directory fetch span/debug events, per-leaflet cache/load spans, and extra batched-join phase spans. Kept only coarse summary debug events like hot remote leaf promotion, first-time remote range leaf opens, and batched join completion summaries." ;
+    mem:tag "binary-index" ;
+    mem:tag "join" ;
+    mem:tag "logging" ;
+    mem:tag "query-perf" ;
+    mem:tag "tracing" ;
+    mem:tag "xray" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/column_loader.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaf_access.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:createdAt "2026-03-28T01:40:59.274483+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt1mrbpkwzyrpfyckbkbkfx a mem:Fact ;
+    mem:content "Object-to-Binding conversion in `fluree-db-query` is centralized in `src/object_binding.rs`. Use `late_materialized_object_binding(...)` for the fast encoded-path mapping from `(o_type,o_key,p_id,t,o_i)` and `materialized_object_binding(...)` for wrapping decoded `FlakeValue`s with the correct `Binding::Sid`/`Binding::Lit` shape and datatype metadata. `binary_scan.rs` and `join.rs` both rely on this helper so blank-node, string/json/vector/NUM_BIG, and literal datatype handling stay aligned." ;
+    mem:tag "binding" ;
+    mem:tag "cleanup" ;
+    mem:tag "join" ;
+    mem:tag "maintainability" ;
+    mem:tag "object-binding" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/object_binding.rs" ;
+    mem:supersedes mem:fact-01kms14fmrfc9ypprawdjg4g35 ;
+    mem:createdAt "2026-03-28T11:00:37.366675+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt5bw0782hg138vkahvnha3 a mem:Fact ;
+    mem:content "Property-join planning now uses a weighted width gate in `fluree-db-query/src/execute/where_plan.rs`: the star path is only chosen when weighted width > 3.0. Required same-subject triples count as 1.0 each, and immediately trailing same-subject OPTIONAL triples with bound predicates count as 0.5 each. This is a planner-only heuristic; it does not fuse OPTIONAL execution into PropertyJoinOperator, it only influences whether the required block takes the property-join path." ;
+    mem:tag "optional" ;
+    mem:tag "planner" ;
+    mem:tag "property-join" ;
+    mem:tag "query" ;
+    mem:tag "star-shape" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:createdAt "2026-03-28T12:05:40.487105+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt5vns3h3p0jvn7taqcfv73 a mem:Fact ;
+    mem:content "PropertyJoinOperator now has a single subject-space follow-on path for binary single-ledger stars: after the first driver predicate seeds encoded subject IDs, it can skip per-predicate PSOT probes and call `batched_subject_star_spot` to walk the SPOT branch once across the candidate subject set, matching multiple remaining predicates and applying bound-object/object-bounds filters before recording per-predicate presence and emitted values. The fast path currently requires all remaining star predicates to have no datatype constraint." ;
+    mem:tag "binary-index" ;
+    mem:tag "property-join" ;
+    mem:tag "query-perf" ;
+    mem:tag "spot" ;
+    mem:tag "star-join" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T12:14:18.403921+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt6z03f41ptyctmg8z6fg37 a mem:Fact ;
+    mem:content "Property-join planning/execution now supports a narrow full-star fusion step for single-ledger binary stars: `build_where_operators_seeded_with_needed` can absorb consecutive same-subject single-triple OPTIONALs plus immediately following FILTER/BIND patterns that depend only on required-side vars, and `PropertyJoinOperator` treats those OPTIONAL triples as non-required predicates. Missing fused optional values emit `Binding::Poisoned`, while inline filters/binds run inside property-join row assembly so string predicates like `!STRSTARTS(STR(?stage), \"Closed\")` can execute without leaving the star operator." ;
+    mem:tag "filter" ;
+    mem:tag "optional" ;
+    mem:tag "property-join" ;
+    mem:tag "query-perf" ;
+    mem:tag "spot" ;
+    mem:tag "strstarts" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T12:33:35.855351+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt74hw9mt6dpzyxbrpnemmv a mem:Fact ;
+    mem:content "String FILTER fast path now caches repeated `STRSTARTS(STR(?var), const)` checks for `Binding::EncodedLit` values in `fluree-db-query/src/expression/helpers.rs`. A thread-local LRU keyed by `(BinaryIndexStore pointer, o_kind, o_key, p_id, dt_id, lang_id, prefix)` stores the boolean result, so enum-like repeated dictionary IDs avoid repeated decode-to-string and prefix comparison while remaining isolated per binary store." ;
+    mem:tag "cache" ;
+    mem:tag "encodedlit" ;
+    mem:tag "expression" ;
+    mem:tag "filter" ;
+    mem:tag "performance" ;
+    mem:tag "strstarts" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/expression/helpers.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/string.rs" ;
+    mem:createdAt "2026-03-28T12:36:37.897066+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt8sf8e55eg6p1cwfx5tgc7 a mem:Fact ;
+    mem:content "Zoho CRM query perf snapshot after property-join/star-pass work: local perf improved dramatically on the same dataset — COUNT ~352ms→2ms (~176x), simple 4-property LIMIT query ~8400ms→9ms (~933x), and the full query with OPTIONAL + ORDER BY + FILTER now returns correct filtered results in ~10ms locally. Remote Lambda baseline remained dominated by earlier storage/tracing behavior: original ~27s, remote leaf-open caching brought warm to ~3.0s, and with tracing off current deployed warm stayed ~1.2s. This indicates the recent executor/planner work massively improved local engine cost; remote gains from the newest fused-star/filter path still need fresh Lambda benchmarking." ;
+    mem:tag "benchmark" ;
+    mem:tag "lambda" ;
+    mem:tag "local" ;
+    mem:tag "property-join" ;
+    mem:tag "query-perf" ;
+    mem:tag "zoho" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/string.rs" ;
+    mem:artifactRef "fluree-db-query/src/property_join.rs" ;
+    mem:createdAt "2026-03-28T13:05:31.918535+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmt9rs6m9d4rxt2ges55teq1 a mem:Fact ;
+    mem:content "Explain now exposes fused star-path selection. `fluree-db-query/src/execute/where_plan.rs` centralizes property-join decisioning in `analyze_property_join_plan`, and `fluree-db-query/src/explain.rs::explain_execution_hints()` reuses that logic to report hints like `property_join` and `property_join_fused_star` with counts for required triples, fused optional triples, and inline filter/bind fusion. The API explain response includes these hints under `plan.execution-hints`, even when stats are unavailable." ;
+    mem:tag "api" ;
+    mem:tag "explain" ;
+    mem:tag "fused-star" ;
+    mem:tag "planner" ;
+    mem:tag "property-join" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "docs/query/explain.md" ;
+    mem:artifactRef "fluree-db-api/src/explain.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/explain.rs" ;
+    mem:createdAt "2026-03-28T13:22:37.908659+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmtcm1frjadepjjastrvmng8 a mem:Fact ;
+    mem:content "Boolean FILTER caching is now implemented at the shared expression layer instead of as a STRSTARTS-specific fast path. `Expression::eval_to_bool_non_strict()` calls `try_eval_cached_bool_predicate()` in `fluree-db-query/src/expression/helpers.rs`, which caches deterministic single-variable boolean predicates over late-materialized encoded bindings (`EncodedLit`, `EncodedSid`, `EncodedPid`) using a thread-local LRU keyed by `(BinaryIndexStore pointer, graph id, expression hash, encoded binding identity)`. The static gate is conservative: it only admits boolean predicate shapes such as comparisons, `IN`/`NOT IN`, string predicates (`CONTAINS`, `STRSTARTS`, `STRENDS`, `REGEX`), `LANGMATCHES`, `SAMETERM`, and logical compositions of those, while excluding volatile functions like `RAND`, `NOW`, UUID generation, fulltext, vector, geo, and custom functions." ;
+    mem:tag "cache" ;
+    mem:tag "expression" ;
+    mem:tag "filter" ;
+    mem:tag "late-materialization" ;
+    mem:tag "performance" ;
+    mem:tag "regex" ;
+    mem:tag "strstarts" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/expression/eval.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/helpers.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/string.rs" ;
+    mem:supersedes mem:fact-01kmt74hw9mt6dpzyxbrpnemmv ;
+    mem:createdAt "2026-03-28T14:12:28.280119+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmtec88erhp5fk1f4gfybyp0 a mem:Fact ;
+    mem:content "Boolean FILTER caching now hooks into strict `Expression::eval_to_bool()` rather than only `eval_to_bool_non_strict()`. `fluree-db-query/src/expression/helpers.rs::eval_cached_bool_predicate()` accepts a closure for uncached strict evaluation, and `fluree-db-query/src/expression/eval.rs` routes `eval_to_bool()` through that helper before falling back to `eval_to_bool_uncached()`. This means nested boolean conditions inside `IF`, `AND`, `OR`, and `NOT` automatically benefit from the same cache, while `eval_to_bool_non_strict()` preserves its demotion behavior by delegating to strict evaluation first and only demoting errors afterward." ;
+    mem:tag "cache" ;
+    mem:tag "expression" ;
+    mem:tag "filter" ;
+    mem:tag "if" ;
+    mem:tag "logical" ;
+    mem:tag "performance" ;
+    mem:tag "strict-semantics" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/expression/eval.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/helpers.rs" ;
+    mem:supersedes mem:fact-01kmtcm1frjadepjjastrvmng8 ;
+    mem:createdAt "2026-03-28T14:43:10.222971+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmtepx0kz4nmz1sb455wxj2y a mem:Fact ;
+    mem:content "Boolean expression caching now uses a single recursive analysis in `fluree-db-query/src/expression/helpers.rs` to derive cacheability, the single encoded input variable, and the expression hash in one traversal. The old separate recursive passes (`expr_returns_cacheable_bool`, `expr_may_materialize_encoded_value`, and a standalone hash walk) were consolidated into `analyze_bool_cache()`. Temporal `FilterValue::Temporal` constants are also no longer hashed via debug formatting; `hash_flake_value()` now hashes temporal and duration variants using their stable `original()` lexical forms, with structural hashing for other `FlakeValue` variants." ;
+    mem:tag "cache" ;
+    mem:tag "expression" ;
+    mem:tag "hashing" ;
+    mem:tag "performance" ;
+    mem:tag "temporal" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/expression/conditional.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/helpers.rs" ;
+    mem:supersedes mem:fact-01kmtec88erhp5fk1f4gfybyp0 ;
+    mem:createdAt "2026-03-28T14:48:59.155982+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmtf7e63dh83atzzsr92t8bx a mem:Fact ;
+    mem:content "Boolean expression caching now has a prepared form for hot filter paths. `fluree-db-query/src/expression/helpers.rs` defines `PreparedBoolExpression`, which precomputes the optional cache spec once from an `Expression` and then reuses it across row evaluations. The main repeated filter-bearing operator paths now construct prepared expressions at build time: `FilterOperator`, `HavingOperator`, `InlineOperator::Filter`, and `BindOperator`'s fused post-bind filters. Generic `Expression::eval_to_bool()` still supports uncached ad hoc use, but hot query execution paths no longer re-run cacheability analysis on every row." ;
+    mem:tag "cache" ;
+    mem:tag "expression" ;
+    mem:tag "filter" ;
+    mem:tag "operator" ;
+    mem:tag "performance" ;
+    mem:tag "prepared" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-query/src/bind.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/expression/helpers.rs" ;
+    mem:artifactRef "fluree-db-query/src/filter.rs" ;
+    mem:artifactRef "fluree-db-query/src/having.rs" ;
+    mem:artifactRef "fluree-db-query/src/operator/inline.rs" ;
+    mem:supersedes mem:fact-01kmtepx0kz4nmz1sb455wxj2y ;
+    mem:createdAt "2026-03-28T14:58:01.027368+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmtgrqzhejen89tyr9046wq0 a mem:Fact ;
+    mem:content "Several JSON-LD/UNION API integration tests in `fluree-db-api` were relying on implicit row order without `orderBy`. After query planner/executor changes, the result sets were still semantically correct but row order shifted, so `it_query_jsonld::jsonld_filter_filtering_for_absence` and `it_query_misc::{union_basic_combine_emails, union_passthrough_variables}` needed order-insensitive assertions (`sort()` or `normalize_rows`) instead of raw `assert_eq!` on unsorted rows. `union_different_variables` was updated similarly for consistency." ;
+    mem:tag "jsonld" ;
+    mem:tag "ordering" ;
+    mem:tag "regression" ;
+    mem:tag "tests" ;
+    mem:tag "union" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_jsonld.rs" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_misc.rs" ;
+    mem:createdAt "2026-03-28T15:24:56.689659+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kmth3vjk05yrpfpmcjq5nfjz a mem:Fact ;
+    mem:content "LocalStack testcontainers tests in `fluree-db-connection/tests/aws_testcontainers_test.rs` can intermittently fail under `cargo nextest` with `PortNotExposed { port: Tcp(4566) }` immediately after `image.start().await`, even though plain `cargo test` passes. A reliable fix is to centralize LocalStack startup and retry `container.get_host_port_ipv4(4566)` for a short window before treating startup as failed." ;
+    mem:tag "aws-testcontainers" ;
+    mem:tag "flaky-tests" ;
+    mem:tag "localstack" ;
+    mem:tag "nextest" ;
+    mem:tag "port-mapping" ;
+    mem:tag "testcontainers" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-connection/tests/aws_testcontainers_test.rs" ;
+    mem:createdAt "2026-03-28T15:31:00.819186+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .

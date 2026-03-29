@@ -57,6 +57,7 @@ pub mod join;
 pub mod limit;
 pub mod materializer;
 pub mod minus;
+pub(crate) mod object_binding;
 pub mod offset;
 pub mod operator;
 pub mod optional;
@@ -106,8 +107,8 @@ pub use execute::{
 };
 pub use exists::ExistsOperator;
 pub use explain::{
-    explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
-    SelectivityInputs,
+    explain_execution_hints, explain_patterns, ExecutionStrategyHint, ExplainPlan, FallbackReason,
+    OptimizationStatus, PatternDisplay, SelectivityInputs,
 };
 pub use filter::FilterOperator;
 pub use geo_rewrite::rewrite_geo_patterns;

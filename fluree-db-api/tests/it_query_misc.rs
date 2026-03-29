@@ -1269,7 +1269,7 @@ async fn union_basic_combine_emails() {
         ["Cam", "cam@example.org"]
     ]);
 
-    assert_eq!(rows, expected);
+    assert_eq!(normalize_rows(&rows), normalize_rows(&expected));
 }
 
 #[tokio::test]
@@ -1301,7 +1301,7 @@ async fn union_different_variables() {
         ["ex:cam", "cam@example.org", null]
     ]);
 
-    assert_eq!(rows, expected);
+    assert_eq!(normalize_rows(&rows), normalize_rows(&expected));
 }
 
 #[tokio::test]
@@ -1333,5 +1333,5 @@ async fn union_passthrough_variables() {
         ["Cam", "cam@example.org", null]
     ]);
 
-    assert_eq!(rows, expected);
+    assert_eq!(normalize_rows(&rows), normalize_rows(&expected));
 }

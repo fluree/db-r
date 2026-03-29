@@ -3428,3 +3428,48 @@ async fn sparql_describe_constant_iri_outgoing_triples() {
         "DESCRIBE should include outgoing link ex:knows: {alice}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Star-shaped query with OPTIONAL + FILTER
+// ---------------------------------------------------------------------------
+
+/// Exercises a star-shaped multi-predicate pattern with a trailing OPTIONAL and
+/// a FILTER on a bound object. This pattern is eligible for property-join
+/// (and, when indexed, fused-star) optimization.
+#[tokio::test]
+async fn sparql_star_query_with_optional_and_filter() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "star-opt-filter:main").await;
+
+    // Star shape: same ?person subject, bound predicates handle + fullName,
+    // OPTIONAL email, FILTER on handle containing "bob" (case-insensitive).
+    let query = r#"
+        PREFIX person: <http://example.org/Person#>
+        SELECT ?person ?fullName ?handle ?email
+        WHERE {
+          ?person person:handle  ?handle .
+          ?person person:fullName ?fullName .
+          OPTIONAL { ?person person:email ?email . }
+          FILTER( CONTAINS(LCASE(?handle), "bob") )
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    // Expected: bbob and jbob match the filter; only fbueller has email but is
+    // excluded by FILTER. So email should be null for both matches.
+    let expected = json!([
+        ["http://example.org/ns/bbob", "Billy Bob", "bbob", null],
+        ["http://example.org/ns/jbob", "Jenny Bob", "jbob", null]
+    ]);
+
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected),
+        "Star query with OPTIONAL + FILTER should return matching rows.\nGot: {jsonld:#}"
+    );
+}

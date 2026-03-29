@@ -245,11 +245,11 @@ pub fn load_columns_cached_via_handle(
         leaf_id,
         leaflet_idx: leaflet_idx_u32,
     };
-
-    cache.try_get_or_decode_v3_batch(key, || {
+    let batch = cache.try_get_or_decode_v3_batch(key, || {
         let all = ColumnProjection::all();
         handle.load_columns(leaflet_idx, &all, order)
-    })
+    })?;
+    Ok(batch)
 }
 
 // Re-export for convenience: callers use decode_leaf_dir_v3_with_base to get

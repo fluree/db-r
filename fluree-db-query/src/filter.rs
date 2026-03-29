@@ -21,6 +21,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::execute::build_where_operators_seeded;
+use crate::expression::PreparedBoolExpression;
 use crate::ir::{Expression, FilterValue, Pattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::{EmptyOperator, SeedOperator};
@@ -45,7 +46,7 @@ use fluree_db_core::Sid;
 /// Returns `None` if no rows pass the filter.
 pub fn filter_batch(
     batch: &Batch,
-    expr: &Expression,
+    expr: &PreparedBoolExpression,
     schema: &Arc<[VarId]>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Option<Batch>> {
@@ -412,7 +413,8 @@ async fn filter_batch_with_exists(
 
     // If no EXISTS nodes remain, we can use the fast synchronous path
     if !contains_exists(&partially_resolved) {
-        return filter_batch(batch, &partially_resolved, schema, ctx);
+        let prepared = PreparedBoolExpression::new(partially_resolved);
+        return filter_batch(batch, &prepared, schema, ctx);
     }
 
     // Phase 2: resolve remaining correlated EXISTS per-row
@@ -458,6 +460,7 @@ pub struct FilterOperator {
     child: BoxedOperator,
     /// Filter expression to evaluate
     expr: Expression,
+    prepared_expr: PreparedBoolExpression,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -473,9 +476,11 @@ impl FilterOperator {
     pub fn new(child: BoxedOperator, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         let has_exists = contains_exists(&expr);
+        let prepared_expr = PreparedBoolExpression::new(expr.clone());
         Self {
             child,
             expr,
+            prepared_expr,
             schema,
             state: OperatorState::Created,
             has_exists,
@@ -532,7 +537,7 @@ impl Operator for FilterOperator {
                 )
                 .await?
             } else {
-                filter_batch(&batch, &self.expr, &self.schema, ctx)?
+                filter_batch(&batch, &self.prepared_expr, &self.schema, ctx)?
             };
 
             if let Some(filtered) = filtered {

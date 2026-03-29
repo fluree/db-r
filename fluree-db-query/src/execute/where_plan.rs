@@ -15,6 +15,7 @@ use crate::bm25::Bm25SearchOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
+use crate::expression::PreparedBoolExpression;
 use crate::filter::{contains_exists, FilterOperator};
 use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
@@ -22,7 +23,7 @@ use crate::minus::MinusOperator;
 use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
-use crate::planner::{is_property_join, reorder_patterns};
+use crate::planner::{analyze_property_join, is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
@@ -308,6 +309,177 @@ pub struct InnerJoinBlock {
     pub filters: Vec<FilterPattern>,
 }
 
+#[derive(Default, Clone)]
+pub(crate) struct PropertyJoinTail {
+    end_index: usize,
+    pub optional_triples: Vec<TriplePattern>,
+    pub binds: Vec<BindPattern>,
+    pub filters: Vec<FilterPattern>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PropertyJoinPlanDecision {
+    pub analysis: crate::planner::PropertyJoinAnalysis,
+    pub width_score: f32,
+    pub optional_bonus: f32,
+    pub meets_width_threshold: bool,
+    pub has_upstream_seed: bool,
+    pub can_property_join: bool,
+    pub tail_optional_triples: usize,
+    pub tail_filters: usize,
+    pub tail_binds: usize,
+}
+
+/// Minimum weighted star width required before choosing the property-join path.
+///
+/// Required triples count as 1.0 each. Adjacent same-subject OPTIONAL triples
+/// count partially because they still represent future subject-correlated work,
+/// but they do not shrink the required-side candidate set.
+pub(crate) const PROPERTY_JOIN_MIN_WIDTH_SCORE: f32 = 3.0;
+const OPTIONAL_STAR_WIDTH_WEIGHT: f32 = 0.5;
+
+fn optional_star_width_bonus(inner_patterns: &[Pattern], subject_var: VarId) -> f32 {
+    let mut triple_count = 0usize;
+    for pattern in inner_patterns {
+        match pattern {
+            Pattern::Triple(tp) if tp.s.as_var() == Some(subject_var) && tp.p_bound() => {
+                triple_count += 1;
+            }
+            Pattern::Filter(_) | Pattern::Bind { .. } | Pattern::Values { .. } => {}
+            _ => return 0.0,
+        }
+    }
+    OPTIONAL_STAR_WIDTH_WEIGHT * triple_count as f32
+}
+
+pub(crate) fn property_join_width_score(
+    required_triples: &[TriplePattern],
+    trailing_patterns: &[Pattern],
+) -> (f32, f32) {
+    let required_score = required_triples.len() as f32;
+    let Some(subject_var) = required_triples.first().and_then(|tp| tp.s.as_var()) else {
+        return (required_score, 0.0);
+    };
+
+    let mut optional_bonus = 0.0;
+    for pattern in trailing_patterns {
+        match pattern {
+            Pattern::Optional(inner_patterns) => {
+                optional_bonus += optional_star_width_bonus(inner_patterns, subject_var);
+            }
+            _ => break,
+        }
+    }
+
+    (required_score + optional_bonus, optional_bonus)
+}
+
+pub(crate) fn collect_property_join_tail(
+    patterns: &[Pattern],
+    start: usize,
+    required_triples: &[TriplePattern],
+) -> PropertyJoinTail {
+    let Some(subject_var) = required_triples.first().and_then(|tp| tp.s.as_var()) else {
+        return PropertyJoinTail {
+            end_index: start,
+            ..PropertyJoinTail::default()
+        };
+    };
+
+    let mut out = PropertyJoinTail {
+        end_index: start,
+        ..PropertyJoinTail::default()
+    };
+    let mut i = start;
+    let mut combined = required_triples.to_vec();
+    let mut available_required_vars: HashSet<VarId> = required_triples
+        .iter()
+        .flat_map(|tp| tp.variables())
+        .collect();
+
+    while let Some(Pattern::Optional(inner_patterns)) = patterns.get(i) {
+        if inner_patterns.len() != 1 {
+            break;
+        }
+        let Some(optional_triple) = inner_patterns[0].as_triple().cloned() else {
+            break;
+        };
+        if optional_triple.s.as_var() != Some(subject_var) || !optional_triple.p_bound() {
+            break;
+        }
+
+        combined.push(optional_triple.clone());
+        if !analyze_property_join(&combined).eligible() {
+            break;
+        }
+
+        out.optional_triples.push(optional_triple);
+        i += 1;
+    }
+
+    while i < patterns.len() {
+        match &patterns[i] {
+            Pattern::Filter(expr) => {
+                let required: HashSet<VarId> = expr.variables().into_iter().collect();
+                if !required.is_subset(&available_required_vars) {
+                    break;
+                }
+                out.filters.push(FilterPattern::new(
+                    usize::MAX - out.filters.len(),
+                    expr.clone(),
+                ));
+                i += 1;
+            }
+            Pattern::Bind { var, expr } => {
+                let Some(bind) = BindPattern::when_eligible(*var, expr, &available_required_vars)
+                else {
+                    break;
+                };
+                available_required_vars.insert(*var);
+                out.binds.push(bind);
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+
+    out.end_index = i;
+    out
+}
+
+pub(crate) fn analyze_property_join_plan(
+    patterns: &[Pattern],
+    block_end_index: usize,
+    triples_for_exec: &[TriplePattern],
+    has_upstream_seed: bool,
+) -> (PropertyJoinPlanDecision, PropertyJoinTail) {
+    let analysis = analyze_property_join(triples_for_exec);
+    let (width_score, optional_bonus) =
+        property_join_width_score(triples_for_exec, &patterns[block_end_index..]);
+    let meets_width_threshold = width_score > PROPERTY_JOIN_MIN_WIDTH_SCORE;
+    let can_property_join = !has_upstream_seed && analysis.eligible() && meets_width_threshold;
+    let tail = if can_property_join {
+        collect_property_join_tail(patterns, block_end_index, triples_for_exec)
+    } else {
+        PropertyJoinTail {
+            end_index: block_end_index,
+            ..PropertyJoinTail::default()
+        }
+    };
+    let decision = PropertyJoinPlanDecision {
+        analysis,
+        width_score,
+        optional_bonus,
+        meets_width_threshold,
+        has_upstream_seed,
+        can_property_join,
+        tail_optional_triples: tail.optional_triples.len(),
+        tail_filters: tail.filters.len(),
+        tail_binds: tail.binds.len(),
+    };
+    (decision, tail)
+}
+
 /// Require a child operator, returning an error if None.
 #[inline]
 fn require_child(operator: Option<BoxedOperator>, pattern_name: &str) -> Result<BoxedOperator> {
@@ -552,8 +724,8 @@ fn build_single_pattern(
 /// VALUES and any ready BINDs/FILTERs on top.
 #[allow(clippy::too_many_arguments)]
 fn build_property_join_block(
-    operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
+    optional_triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
     pending_filters: Vec<FilterPattern>,
@@ -561,19 +733,44 @@ fn build_property_join_block(
     required_where_vars: Option<&[VarId]>,
     var_counts: &HashMap<VarId, usize>,
     protected_vars: &HashSet<VarId>,
-    group_by: &[VarId],
-    distinct_query: bool,
 ) -> Result<Option<BoxedOperator>> {
-    let mut operator = Some(build_triple_operators(
-        operator,
+    let mut needed: HashSet<VarId> = HashSet::new();
+    if let Some(rwv) = required_where_vars {
+        needed.extend(rwv.iter().copied());
+    }
+    for (v, c) in var_counts {
+        if *c > 1 || protected_vars.contains(v) {
+            needed.insert(*v);
+        }
+    }
+
+    let mut available_vars: HashSet<VarId> = triples.iter().flat_map(|tp| tp.variables()).collect();
+    available_vars.extend(optional_triples.iter().flat_map(|tp| tp.variables()));
+
+    let (inline_ops, pending_binds, pending_filters) = build_inline_ops(
+        pending_binds,
+        pending_filters,
+        &available_vars,
+        &pushdown.consumed_indices,
+    );
+    for op in &inline_ops {
+        match op {
+            InlineOperator::Filter(expr) => needed.extend(expr.variables()),
+            InlineOperator::Bind { var, expr } => {
+                needed.insert(*var);
+                needed.extend(expr.variables());
+            }
+        }
+    }
+
+    let property_join = PropertyJoinOperator::new_with_options(
         triples,
-        &pushdown.object_bounds,
-        required_where_vars,
-        var_counts,
-        protected_vars,
-        group_by,
-        distinct_query,
-    )?);
+        optional_triples,
+        pushdown.object_bounds.clone(),
+        Some(&needed),
+        inline_ops,
+    )?;
+    let mut operator: Option<BoxedOperator> = Some(Box::new(property_join));
 
     if !block_values.is_empty() {
         operator = apply_values(operator, block_values);
@@ -635,7 +832,7 @@ fn inline_eligible_filters(
     let (ready, remaining) =
         partition_eligible_filters(pending_filters, available, filter_idxs_consumed);
     for expr in ready {
-        ops.push(InlineOperator::Filter(expr));
+        ops.push(InlineOperator::Filter(PreparedBoolExpression::new(expr)));
     }
     remaining
 }
@@ -1042,17 +1239,26 @@ pub fn build_where_operators_seeded_with_needed(
                 }
                 i = end;
 
-                let augmented_rwv = augmented_at(end);
-                let augmented_ref = augmented_rwv.as_deref();
-
                 // Hot path: triples only (no BIND/FILTER).
                 // Skip dependency bookkeeping entirely.
                 if block.binds.is_empty() && block.filters.is_empty() {
-                    if !block.values.is_empty() {
-                        operator = apply_values(operator.take(), block.values);
-                    }
-                    operator = Some(build_triple_operators(
-                        operator,
+                    let augmented_rwv = augmented_at(end);
+                    let augmented_ref = augmented_rwv.as_deref();
+
+                    // Preserve property-join eligibility when a top-level VALUES precedes
+                    // a pure star block. Wrapping VALUES first seeds the schema/operator and
+                    // prevents `build_triple_operators()` from taking the property-join path.
+                    let values_after_triples = operator.is_none()
+                        && !block.values.is_empty()
+                        && block.triples.len() >= 2
+                        && is_property_join(&block.triples);
+
+                    let mut built = build_triple_operators(
+                        if values_after_triples {
+                            operator.take()
+                        } else {
+                            apply_values(operator.take(), block.values.clone())
+                        },
                         &block.triples,
                         &HashMap::new(),
                         augmented_ref,
@@ -1060,7 +1266,12 @@ pub fn build_where_operators_seeded_with_needed(
                         &protected_vars,
                         group_by,
                         distinct_query,
-                    )?);
+                    )?;
+                    if values_after_triples {
+                        built = apply_values(Some(built), block.values)
+                            .expect("apply_values should preserve operator");
+                    }
+                    operator = Some(built);
                     continue;
                 }
 
@@ -1145,23 +1356,68 @@ pub fn build_where_operators_seeded_with_needed(
                     operator = Some(Box::new(EmptyOperator::new()));
                 }
 
-                let can_property_join = operator.is_none()
-                    && triples_for_exec.len() >= 2
-                    && is_property_join(&triples_for_exec);
+                let has_upstream_seed = operator.is_some();
+                let (property_join_plan, property_join_tail) =
+                    analyze_property_join_plan(patterns, end, &triples_for_exec, has_upstream_seed);
+                let property_join_end = property_join_tail.end_index;
+                let augmented_rwv = augmented_at(property_join_end);
+                let augmented_ref = augmented_rwv.as_deref();
 
-                if can_property_join {
+                if triples_for_exec.len() >= 2 {
+                    tracing::debug!(
+                        block_start = start,
+                        triple_count = triples_for_exec.len(),
+                        has_upstream_seed = property_join_plan.has_upstream_seed,
+                        has_values = !block.values.is_empty(),
+                        has_object_bounds = !pushdown.object_bounds.is_empty(),
+                        has_bound_object_triples =
+                            triples_for_exec.iter().any(TriplePattern::o_bound),
+                        property_join_eligible = property_join_plan.analysis.eligible(),
+                        property_join_enough_patterns = property_join_plan.analysis.enough_patterns,
+                        property_join_subject_is_var = property_join_plan.analysis.subject_is_var,
+                        property_join_same_subject = property_join_plan.analysis.same_subject,
+                        property_join_predicates_bound =
+                            property_join_plan.analysis.predicates_bound,
+                        property_join_object_modes_supported =
+                            property_join_plan.analysis.object_modes_supported,
+                        property_join_object_vars_distinct =
+                            property_join_plan.analysis.object_vars_distinct,
+                        property_join_has_bound_objects =
+                            property_join_plan.analysis.has_bound_objects,
+                        property_join_predicates_distinct =
+                            property_join_plan.analysis.predicates_distinct,
+                        property_join_width_score = property_join_plan.width_score,
+                        property_join_optional_bonus = property_join_plan.optional_bonus,
+                        property_join_meets_width_threshold =
+                            property_join_plan.meets_width_threshold,
+                        property_join_optional_triples = property_join_plan.tail_optional_triples,
+                        property_join_tail_filters = property_join_plan.tail_filters,
+                        property_join_tail_binds = property_join_plan.tail_binds,
+                        chosen_strategy = if property_join_plan.can_property_join {
+                            "property_join"
+                        } else {
+                            "sequential_join"
+                        },
+                        "planned inner join block"
+                    );
+                }
+
+                if property_join_plan.can_property_join {
+                    i = property_join_end;
+                    let mut property_join_binds = pending_binds;
+                    property_join_binds.extend(property_join_tail.binds);
+                    let mut property_join_filters = pending_filters;
+                    property_join_filters.extend(property_join_tail.filters);
                     operator = build_property_join_block(
-                        operator,
                         &triples_for_exec,
+                        &property_join_tail.optional_triples,
                         block.values,
-                        pending_binds,
-                        pending_filters,
+                        property_join_binds,
+                        property_join_filters,
                         &pushdown,
                         augmented_ref,
                         &var_counts,
                         &protected_vars,
-                        group_by,
-                        distinct_query,
                     )?;
                 } else {
                     operator = build_sequential_join_block(
@@ -1787,7 +2043,8 @@ mod tests {
         // VALUES ?queryVec { 0 } .
         // ?article :date ?date .
         // ?article :vec ?vec .
-        // FILTER(?date >= "2026-01-01")
+        // ?article :title ?title .
+        // ?article :status ?status .
         //
         // We assert schema order to distinguish the plan shape:
         // - Bad (VALUES first): schema starts with ?queryVec
@@ -1799,10 +2056,8 @@ mod tests {
             },
             Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
             Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
-            Pattern::Filter(Expression::ge(
-                Expression::Var(VarId(1)),
-                Expression::Const(FilterValue::String("2026-01-01".to_string())),
-            )),
+            Pattern::Triple(make_pattern(VarId(0), "title", VarId(3))),
+            Pattern::Triple(make_pattern(VarId(0), "status", VarId(4))),
         ];
 
         let op = build_where_operators(&patterns, None).unwrap();
@@ -2343,6 +2598,83 @@ mod tests {
             schema.contains(&VarId(3)),
             "email var from OPTIONAL present"
         );
+    }
+
+    #[test]
+    fn test_property_join_width_score_counts_same_subject_optionals_partially() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+            make_pattern(s, "stage", VarId(3)),
+        ];
+        let trailing = vec![
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                s,
+                "probability",
+                VarId(4),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "closedAt", VarId(5)))]),
+        ];
+
+        let (score, optional_bonus) = property_join_width_score(&required, &trailing);
+        assert_eq!(optional_bonus, 1.0);
+        assert_eq!(score, 4.0);
+        assert!(score > PROPERTY_JOIN_MIN_WIDTH_SCORE);
+    }
+
+    #[test]
+    fn test_property_join_width_score_ignores_non_star_optional_shapes() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+        ];
+        let trailing = vec![Pattern::Optional(vec![Pattern::Triple(
+            TriplePattern::new(
+                Ref::Var(VarId(9)),
+                Ref::Sid(Sid::new(100, "other")),
+                Term::Var(VarId(10)),
+            ),
+        )])];
+
+        let (score, optional_bonus) = property_join_width_score(&required, &trailing);
+        assert_eq!(optional_bonus, 0.0);
+        assert_eq!(score, 2.0);
+        assert!(score <= PROPERTY_JOIN_MIN_WIDTH_SCORE);
+    }
+
+    #[test]
+    fn test_collect_property_join_tail_fuses_simple_optionals_and_required_filter() {
+        let s = VarId(0);
+        let required = vec![
+            make_pattern(s, "name", VarId(1)),
+            make_pattern(s, "amount", VarId(2)),
+            make_pattern(s, "stage", VarId(3)),
+        ];
+        let patterns = vec![
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                s,
+                "probability",
+                VarId(4),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "closedAt", VarId(5)))]),
+            Pattern::Filter(Expression::not(Expression::Call {
+                func: crate::ir::Function::StrStarts,
+                args: vec![
+                    Expression::Call {
+                        func: crate::ir::Function::Str,
+                        args: vec![Expression::Var(VarId(3))],
+                    },
+                    Expression::Const(FilterValue::String("Closed".to_string())),
+                ],
+            })),
+        ];
+
+        let tail = collect_property_join_tail(&patterns, 0, &required);
+        assert_eq!(tail.end_index, patterns.len());
+        assert_eq!(tail.optional_triples.len(), 2);
+        assert_eq!(tail.filters.len(), 1);
     }
 
     #[test]

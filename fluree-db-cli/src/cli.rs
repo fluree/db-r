@@ -39,6 +39,11 @@ pub struct Cli {
     /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
     #[arg(long, global = true, default_value_t = 0)]
     pub parallelism: usize,
+
+    /// Timeout in seconds for remote HTTP requests (default: 300).
+    /// Set higher for long-running queries or transactions.
+    #[arg(long, global = true, default_value_t = 300)]
+    pub timeout: u64,
 }
 
 #[derive(Subcommand)]

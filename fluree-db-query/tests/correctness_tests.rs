@@ -10,6 +10,7 @@ use fluree_db_core::{LedgerSnapshot, Sid};
 use fluree_db_query::binary_scan::EmitMask;
 use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
+use fluree_db_query::expression::PreparedBoolExpression;
 use fluree_db_query::ir::{Expression, FilterValue};
 use fluree_db_query::join::NestedLoopJoinOperator;
 use fluree_db_query::operator::inline::InlineOperator;
@@ -161,8 +162,8 @@ async fn test_range_scan_empty_schema_respects_inline_filter() {
     let schema: Vec<VarId> = vec![];
     let mut bindings: Vec<Binding> = vec![];
 
-    let inline_ops = vec![InlineOperator::Filter(Expression::Const(
-        FilterValue::Bool(false),
+    let inline_ops = vec![InlineOperator::Filter(PreparedBoolExpression::new(
+        Expression::Const(FilterValue::Bool(false)),
     ))];
     let keep =
         fluree_db_query::operator::inline::apply_inline(&inline_ops, &schema, &mut bindings, None)

@@ -2333,6 +2333,7 @@ dependencies = [
  "fluree-graph-turtle",
  "fluree-search-protocol",
  "fluree-vocab",
+ "fs2",
  "futures",
  "hex",
  "itoa",
@@ -2359,6 +2360,7 @@ dependencies = [
 name = "fluree-db-binary-index"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bigdecimal 0.4.10",
  "chrono",
  "fluree-db-core",
@@ -2450,6 +2452,7 @@ dependencies = [
  "fluree-db-query",
  "fluree-db-storage-aws",
  "fluree-graph-json-ld",
+ "fs2",
  "once_cell",
  "serde",
  "serde_json",

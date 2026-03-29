@@ -48,3 +48,6 @@ hex.workspace = true
 # Text analysis (shared analyzer for fulltext indexing + query scoring)
 regex = "1"
 rust-stemmers = "1.2"
+
+[dev-dependencies]
+async-trait.workspace = true

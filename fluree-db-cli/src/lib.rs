@@ -25,6 +25,9 @@ use fluree_db_api::server_defaults::{generate_config_template_for, ConfigFormat,
 /// consumers can construct a [`Cli`] programmatically and call this
 /// directly, or call individual command handlers from [`commands`].
 pub async fn run(cli: Cli) -> error::CliResult<()> {
+    // Set the global remote HTTP timeout from CLI args before dispatching.
+    context::set_remote_timeout(std::time::Duration::from_secs(cli.timeout));
+
     let config_path = cli.config.as_deref();
     let direct = cli.direct;
 
