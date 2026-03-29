@@ -64,7 +64,6 @@
   - [Index format](design/index-format.md)
   - [Namespace allocation and fallback modes](design/namespace-allocation.md)
   - [Storage traits](design/storage-traits.md)
-  - [Server implementation guide (CLI compatibility)](design/server-implementation.md)
 
 - [HTTP API (fluree-db-server)](api/README.md)
   - [Overview](api/overview.md)
