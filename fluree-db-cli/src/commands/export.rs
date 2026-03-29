@@ -139,10 +139,13 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
     let content_store = content_store_for(fluree.storage().clone(), &ledger_id);
 
     // Compute all commits (oldest-first).
-    let missing_commits =
-        compute_missing_commits(&content_store, std::slice::from_ref(commit_head_id), &HashSet::new())
-            .await
-            .map_err(|e| CliError::Config(format!("failed to walk commit chain: {e}")))?;
+    let missing_commits = compute_missing_commits(
+        &content_store,
+        std::slice::from_ref(commit_head_id),
+        &HashSet::new(),
+    )
+    .await
+    .map_err(|e| CliError::Config(format!("failed to walk commit chain: {e}")))?;
 
     // Compute index artifacts (if an index exists).
     let index_artifacts = if let Some(ref index_id) = ns_record.index_head_id {

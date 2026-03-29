@@ -49,10 +49,13 @@ where
 
     let content_store = content_store_for(fluree.storage().clone(), ledger_id);
 
-    let missing_commits =
-        compute_missing_commits(&content_store, std::slice::from_ref(commit_head_id), &HashSet::new())
-            .await
-            .expect("walk commit chain");
+    let missing_commits = compute_missing_commits(
+        &content_store,
+        std::slice::from_ref(commit_head_id),
+        &HashSet::new(),
+    )
+    .await
+    .expect("walk commit chain");
 
     let index_artifacts = if let Some(ref index_id) = ns_record.index_head_id {
         Some(
