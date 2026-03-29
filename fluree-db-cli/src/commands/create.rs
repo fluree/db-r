@@ -588,7 +588,7 @@ where
                 }
 
                 let total = commits_stored + txn_blobs_stored + index_artifacts_stored;
-                if total % 100 == 0 {
+                if total.is_multiple_of(100) {
                     eprint!("  {} objects...\r", total);
                 }
             }

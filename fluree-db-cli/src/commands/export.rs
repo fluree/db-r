@@ -140,7 +140,7 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
 
     // Compute all commits (oldest-first).
     let missing_commits =
-        compute_missing_commits(&content_store, &[commit_head_id.clone()], &HashSet::new())
+        compute_missing_commits(&content_store, std::slice::from_ref(commit_head_id), &HashSet::new())
             .await
             .map_err(|e| CliError::Config(format!("failed to walk commit chain: {e}")))?;
 
@@ -224,7 +224,7 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
             }
         }
 
-        if commits_written % 100 == 0 {
+        if commits_written.is_multiple_of(100) {
             eprint!("  {} commits...\r", commits_written);
         }
     }
