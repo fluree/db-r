@@ -4,8 +4,8 @@ mod support;
 
 use fluree_db_api::{ApiError, FlureeBuilder};
 use fluree_db_core::{
-    range_with_overlay, Flake, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
-    TXN_META_GRAPH_ID,
+    range_with_overlay, ContentId, Flake, FlakeValue, IndexType, RangeMatch, RangeOptions,
+    RangeTest, Sid, TXN_META_GRAPH_ID,
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_novelty::Novelty;
@@ -363,4 +363,75 @@ async fn commit_show_with_bad_identity_returns_query_error() {
             // identity resolves but has no policyClass. This is also acceptable.
         }
     }
+}
+
+#[tokio::test]
+async fn commit_show_prefix_with_identity_filters_flakes_by_policy() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/commit-show-prefix-policy:main";
+    let (_ledger, t) = seed_ledger_with_policy(&fluree, ledger_id).await;
+
+    // First, get the commit CID via the t-based path
+    let by_t = fluree
+        .graph(ledger_id)
+        .commit_t(t)
+        .execute()
+        .await
+        .expect("commit by t");
+
+    // Extract the SHA-256 hex digest from the CID, then take a prefix.
+    // resolve_commit_prefix expects a hex digest prefix, not a CID string prefix.
+    let cid: ContentId = by_t.id.parse().expect("parse CID");
+    let hex_digest = cid.digest_hex();
+    let prefix = &hex_digest[..12];
+
+    // Resolve via prefix WITHOUT policy → should see both SSNs
+    let unfiltered = fluree
+        .graph(ledger_id)
+        .commit_prefix(prefix)
+        .execute()
+        .await
+        .expect("prefix lookup unfiltered");
+    assert_eq!(unfiltered.t, t, "prefix should resolve to the same commit");
+    let unfiltered_ssns: Vec<_> = unfiltered
+        .flakes
+        .iter()
+        .filter(|f| f.p.contains("ssn"))
+        .collect();
+    assert_eq!(
+        unfiltered_ssns.len(),
+        2,
+        "unfiltered prefix lookup should see both SSNs"
+    );
+
+    // Resolve via prefix WITH identity → policy should filter to Alice's SSN only
+    let filtered = fluree
+        .graph(ledger_id)
+        .commit_prefix(prefix)
+        .identity(Some("http://example.org/ns/aliceIdentity"))
+        .execute()
+        .await
+        .expect("prefix lookup with identity");
+    assert_eq!(
+        filtered.t, t,
+        "filtered prefix should resolve to same commit"
+    );
+
+    let filtered_ssns: Vec<_> = filtered
+        .flakes
+        .iter()
+        .filter(|f| f.p.contains("ssn"))
+        .collect();
+    assert_eq!(
+        filtered_ssns.len(),
+        1,
+        "policy-filtered prefix lookup should see only Alice's SSN, got: {:?}",
+        filtered_ssns
+    );
+
+    let ssn_value = match &filtered_ssns[0].o {
+        fluree_db_api::graph_commit_builder::ResolvedValue::String(s) => s.as_str(),
+        other => panic!("expected string SSN, got: {:?}", other),
+    };
+    assert_eq!(ssn_value, "111-11-1111", "should be Alice's SSN");
 }
