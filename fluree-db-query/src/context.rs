@@ -468,10 +468,7 @@ impl<'a> ExecutionContext<'a> {
     /// A dataset wrapper alone is not enough: single-ledger `FROM` queries
     /// still need binary-store-backed late materialization and should behave like
     /// normal single-ledger execution.
-    fn compute_multi_ledger(
-        dataset: Option<&DataSet<'_>>,
-        active_graph: &ActiveGraph,
-    ) -> bool {
+    fn compute_multi_ledger(dataset: Option<&DataSet<'_>>, active_graph: &ActiveGraph) -> bool {
         let Some(ds) = dataset else {
             return false;
         };
