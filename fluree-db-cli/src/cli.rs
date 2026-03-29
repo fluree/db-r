@@ -368,6 +368,10 @@ pub enum Commands {
         /// Ledger name (defaults to active ledger)
         #[arg(long)]
         ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Manage configuration

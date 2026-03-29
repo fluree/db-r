@@ -183,6 +183,37 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
 // Range match filtering for genesis overlay path
 // ============================================================================
 
+/// Check whether a flake satisfies an equality `RangeMatch`.
+#[inline]
+pub fn flake_matches_range_eq(f: &Flake, match_val: &RangeMatch) -> bool {
+    if let Some(ref s) = match_val.s {
+        if f.s != *s {
+            return false;
+        }
+    }
+    if let Some(ref p) = match_val.p {
+        if f.p != *p {
+            return false;
+        }
+    }
+    if let Some(ref o) = match_val.o {
+        if f.o != *o {
+            return false;
+        }
+    }
+    if let Some(ref dt) = match_val.dt {
+        if !dt_compatible(dt, &f.dt) {
+            return false;
+        }
+    }
+    if let Some(t) = match_val.t {
+        if f.t != t {
+            return false;
+        }
+    }
+    true
+}
+
 /// Apply range match filtering to overlay flakes.
 ///
 /// The genesis LedgerSnapshot path collects all overlay flakes; this narrows them
@@ -195,34 +226,7 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
         // post-filter so returning the full set is safe.
         return;
     }
-    flakes.retain(|f| {
-        if let Some(ref s) = match_val.s {
-            if f.s != *s {
-                return false;
-            }
-        }
-        if let Some(ref p) = match_val.p {
-            if f.p != *p {
-                return false;
-            }
-        }
-        if let Some(ref o) = match_val.o {
-            if f.o != *o {
-                return false;
-            }
-        }
-        if let Some(ref dt) = match_val.dt {
-            if !dt_compatible(dt, &f.dt) {
-                return false;
-            }
-        }
-        if let Some(t) = match_val.t {
-            if f.t != t {
-                return false;
-            }
-        }
-        true
-    });
+    flakes.retain(|f| flake_matches_range_eq(f, match_val));
 }
 
 /// Apply RangeOptions to the overlay-only (genesis LedgerSnapshot) path.

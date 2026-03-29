@@ -2919,7 +2919,6 @@ where
             Some(record) => record,
             None => return Ok(None), // Ledger doesn't exist in nameservice
         };
-
         // Step C: Use NsRecord.ledger_id as the cache key
         // The ledger_id field contains the canonical form (e.g., "testdb:main")
         // Note: NsRecord.name field only contains the name without branch, despite docs
@@ -2935,7 +2934,6 @@ where
 
         // Step E: Read resulting t from the cached state
         let t = mgr.current_t(&canonical_alias).await.unwrap_or(0);
-
         // Step F: Enforce min_t if requested
         if let Some(min_t) = opts.min_t {
             if t < min_t {

@@ -478,7 +478,7 @@ fn load_v6_batch(
     order: RunSortOrder,
     cache: &Option<&Arc<fluree_db_binary_index::LeafletCache>>,
     leaf_id: u128,
-    leaflet_idx: u8,
+    leaflet_idx: u32,
 ) -> Result<fluree_db_binary_index::ColumnBatch> {
     if let Some(c) = cache {
         load_leaflet_columns_cached(
@@ -617,7 +617,8 @@ fn count_bound_object_v6(
                 header.order,
                 &cache,
                 leaf_id,
-                i as u8,
+                u32::try_from(i)
+                    .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
             )?;
 
             for row in 0..batch.row_count {
@@ -715,7 +716,8 @@ fn group_count_v6(
                 header.order,
                 &cache,
                 leaf_id,
-                i as u8,
+                u32::try_from(i)
+                    .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
             )?;
 
             for row in 0..batch.row_count {

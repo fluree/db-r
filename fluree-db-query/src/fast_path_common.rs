@@ -444,16 +444,16 @@ impl<'a> PsotSubjectCountIter<'a> {
                     continue;
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -590,16 +590,16 @@ impl<'a> PostObjectGroupCountIter<'a> {
                     return Ok(None);
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Post,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -815,16 +815,16 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                 }
 
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {

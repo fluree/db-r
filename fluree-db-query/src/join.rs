@@ -1340,7 +1340,9 @@ impl NestedLoopJoinOperator {
                         header.order,
                         c,
                         leaf_id,
-                        leaflet_idx as u8,
+                        u32::try_from(leaflet_idx).map_err(|_| {
+                            QueryError::Internal("leaflet idx exceeds u32".to_string())
+                        })?,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
                 } else {
@@ -1954,7 +1956,9 @@ impl NestedLoopJoinOperator {
                 let batch = if let Some(c) = &cache {
                     let key = fluree_db_binary_index::read::leaflet_cache::V3BatchCacheKey {
                         leaf_id,
-                        leaflet_idx: leaflet_idx as u8,
+                        leaflet_idx: u32::try_from(leaflet_idx).map_err(|_| {
+                            QueryError::Internal("leaflet idx exceeds u32".to_string())
+                        })?,
                     };
                     if let Some(cached) = c.get_v3_batch(&key) {
                         cached

@@ -19,6 +19,7 @@ fluree show <COMMIT> [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--ledger <NAME>` | Ledger name (defaults to active ledger) |
+| `--remote <NAME>` | Execute against a remote server (by remote name, e.g., "origin") |
 
 ## Description
 
@@ -28,6 +29,14 @@ The commit identifier can be:
 - A **transaction number** prefixed with `t:` (e.g., `t:5`) as shown in `fluree log` output
 - An **abbreviated hex digest** (minimum 6 characters) as shown in the storage directory or obtained from the txn-meta graph
 - A **full CID string** (e.g., `bagaybqabciq...`)
+
+## Policy Filtering
+
+When executed against a remote server (`--remote`), the returned flakes are filtered by the server's data-auth policy. The identity is derived from the Bearer token and the policy class from the server's `default_policy_class` configuration. Flakes the caller is not permitted to read are silently omitted, and the `asserts`/`retracts` counts reflect only the visible flakes.
+
+Unlike the query endpoints, show does not support per-request policy overrides via headers or request body — it uses only the Bearer token identity and server-configured default policy class.
+
+When executed locally (no `--remote`, or with `--direct`), `fluree show` operates with full local-admin access and no policy filtering is applied. This is consistent with other local CLI operations that read directly from storage.
 
 ## Output Format
 
@@ -63,6 +72,12 @@ fluree show 3dd028
 
 # Show a commit from a specific ledger
 fluree show 0303b7 --ledger _system
+
+# Show a commit on a remote server
+fluree show t:5 --remote origin
+
+# Show by hex prefix on remote with explicit ledger
+fluree show 3dd028 --remote origin --ledger mydb
 
 # Pipe to jq for filtering
 fluree show 3dd028 | jq '.flakes[] | select(.[4] == true)'

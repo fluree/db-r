@@ -7,6 +7,8 @@ mod support;
 use fluree_db_api::FlureeBuilder;
 use serde_json::json;
 use support::{context_ex_schema, genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
+#[cfg(feature = "native")]
+use support::{start_background_indexer_local, trigger_index_and_wait};
 
 async fn seed_three_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
     let ledger0 = genesis_ledger(fluree, ledger_id);
@@ -914,6 +916,78 @@ async fn untyped_value_matching_parity() {
         "expected commit IRI, got: {:?}",
         r_untyped
     );
+}
+
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn indexed_untyped_value_matching_parity() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "misc/untyped-value-matching-indexed:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger0 = genesis_ledger(&fluree, ledger_id);
+            let ctx = json!({"ex": "http://example.org/ns/"});
+
+            let tx1 = json!({
+                "@context": ctx,
+                "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+            });
+            let ledger1 = fluree.insert(ledger0, &tx1).await.unwrap().ledger;
+
+            let tx2 = json!({
+                "@context": ctx,
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+            });
+            let ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
+            let commit_t = ledger2.t();
+
+            trigger_index_and_wait(&handle, ledger_id, commit_t).await;
+            fluree.disconnect_ledger(ledger_id).await;
+            let indexed = fluree.ledger(ledger_id).await.expect("load indexed ledger");
+            assert!(
+                indexed.snapshot.range_provider.is_some(),
+                "expected range_provider after indexing"
+            );
+
+            let q_typed = json!({
+                "@context": {
+                    "f": "https://ns.flur.ee/db#",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "from": "misc/untyped-value-matching-indexed:main#txn-meta",
+                "select": "?c",
+                "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
+            });
+            let r_typed = fluree
+                .query_connection(&q_typed)
+                .await
+                .unwrap()
+                .to_jsonld(&indexed.snapshot)
+                .unwrap();
+            assert_eq!(r_typed.as_array().map(|a| a.len()), Some(1));
+
+            let q_untyped = json!({
+                "@context": {"f": "https://ns.flur.ee/db#"},
+                "from": "misc/untyped-value-matching-indexed:main#txn-meta",
+                "select": "?c",
+                "where": [{"@id": "?c", "f:t": commit_t}]
+            });
+            let r_untyped = fluree
+                .query_connection(&q_untyped)
+                .await
+                .unwrap()
+                .to_jsonld(&indexed.snapshot)
+                .unwrap();
+            assert_eq!(r_untyped.as_array().map(|a| a.len()), Some(1));
+        })
+        .await;
 }
 
 // =============================================================================

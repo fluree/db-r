@@ -723,6 +723,24 @@ impl RemoteLedgerClient {
             .await
     }
 
+    /// Get a decoded commit from the remote server.
+    ///
+    /// Calls `GET {base_url}/show/{ledger}?commit={commit_ref}`.
+    pub async fn commit_show(
+        &self,
+        ledger: &str,
+        commit_ref: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!(
+            "{}/show/{}?commit={}",
+            self.base_url,
+            Self::ledger_tail(ledger),
+            urlencoding::encode(commit_ref),
+        );
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
     /// Check if a ledger exists on the remote server.
     pub async fn ledger_exists(&self, ledger: &str) -> Result<bool, RemoteLedgerError> {
         let url = self.op_url("exists", ledger);

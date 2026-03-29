@@ -42,6 +42,7 @@ use std::sync::Arc;
 pub struct GraphQueryBuilder<'a, 'g, S: Storage + 'static, N> {
     graph: &'g Graph<'a, S, N>,
     core: QueryCore<'g>,
+    #[cfg(feature = "iceberg")]
     /// When true, use graph source fallback for resolution (set by `with_r2rml()`).
     graph_source_fallback: bool,
 }
@@ -56,6 +57,7 @@ where
         Self {
             graph,
             core: QueryCore::new(),
+            #[cfg(feature = "iceberg")]
             graph_source_fallback: false,
         }
     }

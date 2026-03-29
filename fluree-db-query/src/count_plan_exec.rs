@@ -867,8 +867,8 @@ fn execute_chain(
 
                     let batch = if let Some(cache) = self.store.leaflet_cache() {
                         use fluree_db_binary_index::read::column_loader::load_columns_cached_via_handle;
-                        let idx_u8: u8 = idx.try_into().map_err(|_| {
-                            QueryError::Internal("leaflet idx exceeds u8".to_string())
+                        let idx_u32: u32 = idx.try_into().map_err(|_| {
+                            QueryError::Internal("leaflet idx exceeds u32".to_string())
                         })?;
                         load_columns_cached_via_handle(
                             handle.as_ref(),
@@ -876,7 +876,7 @@ fn execute_chain(
                             RunSortOrder::Psot,
                             cache,
                             handle.leaf_id(),
-                            idx_u8,
+                            idx_u32,
                         )
                         .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                     } else {

@@ -19,17 +19,20 @@
 //! }
 //! ```
 
+use crate::dataset::QueryConnectionOptions;
 use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
-use crate::{ApiError, NameService, Result, Storage};
+use crate::{policy_builder, ApiError, NameService, Result, Storage};
 use fluree_db_core::storage::content_store_for;
-use fluree_db_core::{ContentId, ContentStore, FlakeValue};
+use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider, Tracker};
 use fluree_db_novelty::commit_v2::read_commit;
 use fluree_db_novelty::Commit;
+use fluree_db_query::QueryPolicyEnforcer;
 use fluree_graph_json_ld::ParsedContext;
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ============================================================================
 // Response types
@@ -172,6 +175,10 @@ pub struct CommitBuilder<'a, 'g, S: Storage + 'static, N> {
     graph: &'g Graph<'a, S, N>,
     commit_ref: CommitRef,
     user_context: Option<ParsedContext>,
+    /// Authenticated identity IRI for policy filtering.
+    identity: Option<String>,
+    /// Default policy class for policy filtering.
+    policy_class: Option<String>,
 }
 
 impl<'a, 'g, S, N> CommitBuilder<'a, 'g, S, N>
@@ -184,6 +191,8 @@ where
             graph,
             commit_ref: CommitRef::Exact(commit_id),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -192,6 +201,8 @@ where
             graph,
             commit_ref: CommitRef::Prefix(prefix),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -200,6 +211,8 @@ where
             graph,
             commit_ref: CommitRef::T(t),
             user_context: None,
+            identity: None,
+            policy_class: None,
         }
     }
 
@@ -209,6 +222,25 @@ where
     /// instead of (or in addition to) the auto-derived prefixes.
     pub fn context(mut self, ctx: ParsedContext) -> Self {
         self.user_context = Some(ctx);
+        self
+    }
+
+    /// Set the authenticated identity for policy-based flake filtering.
+    ///
+    /// When set (along with an optional policy class), the returned flakes
+    /// are filtered according to the ledger's policy rules — only flakes
+    /// the identity is permitted to read are included.
+    ///
+    /// When neither identity nor policy class is set, all flakes are returned
+    /// (equivalent to root/admin access).
+    pub fn identity(mut self, identity: Option<&str>) -> Self {
+        self.identity = identity.map(|s| s.to_string());
+        self
+    }
+
+    /// Set the default policy class for policy-based flake filtering.
+    pub fn policy_class(mut self, policy_class: Option<&str>) -> Self {
+        self.policy_class = policy_class.map(|s| s.to_string());
         self
     }
 
@@ -269,11 +301,48 @@ where
         let blob_size = blob.len();
 
         // 5. Decode the commit
-        let commit = read_commit(&blob).map_err(|e| {
+        let mut commit = read_commit(&blob).map_err(|e| {
             ApiError::internal(format!("Failed to decode commit {}: {}", commit_id, e))
         })?;
 
-        // 6. Build the response
+        // 6. Apply policy filtering (if identity or policy_class is set).
+        //    Calls policy_builder and enforcer directly to preserve ApiError
+        //    variants (query vs internal) instead of losing them through
+        //    BlockFetchError's stringified intermediary.
+        if self.identity.is_some() || self.policy_class.is_some() {
+            let opts = QueryConnectionOptions {
+                identity: self.identity.clone(),
+                policy_class: self.policy_class.as_deref().map(|c| vec![c.to_string()]),
+                ..Default::default()
+            };
+            // Use the novelty overlay so policy rules in uncommitted
+            // transactions are visible to the policy builder.
+            let overlay: &dyn OverlayProvider = snapshot.novelty.as_ref();
+            let policy_ctx = policy_builder::build_policy_context_from_opts(
+                &snapshot.snapshot,
+                overlay,
+                Some(snapshot.novelty.as_ref()),
+                commit.t,
+                &opts,
+            )
+            .await?;
+
+            if !policy_ctx.wrapper().is_root() {
+                let enforcer = QueryPolicyEnforcer::new(Arc::new(policy_ctx));
+                let tracker = Tracker::disabled();
+                commit.flakes = enforcer
+                    .filter_flakes_for_graph(
+                        &snapshot.snapshot,
+                        overlay,
+                        commit.t,
+                        &tracker,
+                        commit.flakes,
+                    )
+                    .await?;
+            }
+        }
+
+        // 7. Build the response
         build_commit_detail(&commit, &commit_id, blob_size, &compactor)
     }
 }
