@@ -27,6 +27,7 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
+use fluree_vocab::namespaces;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -220,6 +221,9 @@ impl DictOverlay {
             }
             // Ephemeral fallback: namespace-aware sid64 allocation
             if let Some((ns_code, suffix)) = self.ext_subjects.resolve_subject(id) {
+                if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+                    return Ok(suffix.to_string());
+                }
                 let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
                 return Ok(format!("{}{}", prefix, suffix));
             }
@@ -237,6 +241,9 @@ impl DictOverlay {
         }
         // Novel — DictNovelty forward
         if let Some((ns_code, suffix)) = self.dict_novelty.subjects.resolve_subject(id) {
+            if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+                return Ok(suffix.to_string());
+            }
             let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
@@ -245,6 +252,9 @@ impl DictOverlay {
         // may allocate into ext_subjects in certain view paths (e.g., historical overlays
         // where DictNovelty is present but doesn't contain the entry).
         if let Some((ns_code, suffix)) = self.ext_subjects.resolve_subject(id) {
+            if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+                return Ok(suffix.to_string());
+            }
             let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }

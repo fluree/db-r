@@ -753,6 +753,9 @@ impl BinaryIndexStore {
                 format!("subject local_id {} not found in ns {}", local_id, ns_code),
             )
         })?;
+        if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+            return Ok(suffix);
+        }
         let prefix = self.dicts.namespace_codes.get(&ns_code).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
