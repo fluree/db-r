@@ -62,15 +62,27 @@ pub struct IndexBuildConfig {
 
 /// Result for a single graph's V2 index build.
 #[derive(Debug)]
+pub struct PersistedLeafInfo {
+    pub leaf_cid: ContentId,
+    pub leaf_path: PathBuf,
+    pub sidecar_cid: Option<ContentId>,
+    pub sidecar_path: Option<PathBuf>,
+    pub total_rows: u64,
+    pub first_key: fluree_db_binary_index::format::run_record_v2::RunRecordV2,
+    pub last_key: fluree_db_binary_index::format::run_record_v2::RunRecordV2,
+}
+
+/// Result for a single graph's V2 index build.
+#[derive(Debug)]
 pub struct GraphIndexResult {
     pub g_id: GraphId,
     pub total_rows: u64,
-    /// Branch manifest bytes (FBR3). Caller uploads to CAS.
-    pub branch_bytes: Vec<u8>,
-    /// Branch CID (content-addressed from branch_bytes).
+    /// Branch CID (content-addressed from branch bytes written to disk).
     pub branch_cid: ContentId,
-    /// Produced leaf artifacts (leaf bytes + optional sidecar bytes).
-    pub leaf_infos: Vec<LeafInfo>,
+    /// On-disk branch manifest path for later upload.
+    pub branch_path: PathBuf,
+    /// Produced leaf artifacts persisted to disk.
+    pub leaf_infos: Vec<PersistedLeafInfo>,
     /// Per-leaf branch entries for root assembly.
     pub leaf_entries: Vec<LeafEntry>,
     pub graph_dir: PathBuf,
@@ -243,7 +255,7 @@ fn create_graph_dir(index_dir: &Path, g_id: u16, order_name: &str) -> io::Result
     Ok(graph_dir)
 }
 
-fn finish_graph_v2(
+pub(crate) fn finish_graph_v2(
     g_id: GraphId,
     order: RunSortOrder,
     writer: LeafWriter,
@@ -255,19 +267,52 @@ fn finish_graph_v2(
 
     let total_rows: u64 = leaf_infos.iter().map(|l| l.total_rows).sum();
 
-    // Write leaf + sidecar blobs to disk (content-addressed).
-    for info in &leaf_infos {
-        let leaf_path = graph_dir.join(info.leaf_cid.to_string());
-        std::fs::write(&leaf_path, &info.leaf_bytes)?;
+    // Write leaf + sidecar blobs to disk (content-addressed), then retain only
+    // metadata + paths so the import build doesn't keep all FLI3/FHS1 bytes in RAM.
+    let persisted_leaf_infos: Vec<PersistedLeafInfo> = leaf_infos
+        .into_iter()
+        .map(|info| -> io::Result<PersistedLeafInfo> {
+            let LeafInfo {
+                leaf_cid,
+                leaf_bytes,
+                sidecar_cid,
+                sidecar_bytes,
+                total_rows,
+                first_key,
+                last_key,
+            } = info;
 
-        if let (Some(sc_cid), Some(sc_bytes)) = (&info.sidecar_cid, &info.sidecar_bytes) {
-            let sc_path = graph_dir.join(sc_cid.to_string());
-            std::fs::write(&sc_path, sc_bytes)?;
-        }
-    }
+            let leaf_path = graph_dir.join(leaf_cid.to_string());
+            std::fs::write(&leaf_path, &leaf_bytes)?;
+
+            let sidecar_path = match (&sidecar_cid, sidecar_bytes.as_ref()) {
+                (Some(sc_cid), Some(sc_bytes)) => {
+                    let sc_path = graph_dir.join(sc_cid.to_string());
+                    std::fs::write(&sc_path, sc_bytes)?;
+                    Some(sc_path)
+                }
+                (None, None) => None,
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(io::Error::other(
+                        "leaf sidecar CID/bytes mismatch while persisting index artifact",
+                    ));
+                }
+            };
+
+            Ok(PersistedLeafInfo {
+                leaf_cid,
+                leaf_path,
+                sidecar_cid,
+                sidecar_path,
+                total_rows,
+                first_key,
+                last_key,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
 
     // Build branch manifest entries.
-    let leaf_entries: Vec<LeafEntry> = leaf_infos
+    let leaf_entries: Vec<LeafEntry> = persisted_leaf_infos
         .iter()
         .map(|info| LeafEntry {
             first_key: info.first_key,
@@ -293,9 +338,9 @@ fn finish_graph_v2(
     Ok(GraphIndexResult {
         g_id,
         total_rows,
-        branch_bytes,
         branch_cid,
-        leaf_infos,
+        branch_path,
+        leaf_infos: persisted_leaf_infos,
         leaf_entries,
         graph_dir,
     })
@@ -379,13 +424,18 @@ pub fn build_all_indexes(
         if !run_dir.exists() {
             continue;
         }
+        let order_start = Instant::now();
+        let run_count = discover_run_files_v2(&run_dir)?.len();
+        tracing::info!(
+            order = order.dir_name(),
+            run_count,
+            run_dir = %run_dir.display(),
+            "starting order index build"
+        );
 
-        // Only attach progress to one order (POST) to avoid double-counting.
-        let order_progress = if order == RunSortOrder::Post {
-            config.progress.clone()
-        } else {
-            None
-        };
+        // Import progress wants to reflect all order builds, not just a single
+        // representative order, so attach the shared counter to every build.
+        let order_progress = config.progress.clone();
 
         let order_config = IndexBuildConfig {
             run_dir,
@@ -401,6 +451,13 @@ pub fn build_all_indexes(
         };
 
         let result = build_index(&order_config)?;
+        tracing::info!(
+            order = order.dir_name(),
+            total_rows = result.total_rows,
+            graphs = result.graphs.len(),
+            elapsed_ms = order_start.elapsed().as_millis(),
+            "completed order index build"
+        );
         results.push((order, result));
     }
 
@@ -484,11 +541,12 @@ mod tests {
 
         // Verify FLI3 format.
         let leaf = &graph.leaf_infos[0];
-        let header = decode_leaf_header_v3(&leaf.leaf_bytes).unwrap();
+        let leaf_bytes = std::fs::read(&leaf.leaf_path).unwrap();
+        let header = decode_leaf_header_v3(&leaf_bytes).unwrap();
         assert_eq!(header.order, RunSortOrder::Post);
 
         // Should have 2 leaflets (p_id=1 and p_id=2 segmentation).
-        let leaf_dir = decode_leaf_dir_v3(&leaf.leaf_bytes, &header).unwrap();
+        let leaf_dir = decode_leaf_dir_v3(&leaf_bytes, &header).unwrap();
         assert_eq!(leaf_dir.len(), 2);
         assert_eq!(leaf_dir[0].p_const, Some(1));
         assert_eq!(leaf_dir[0].row_count, 3);
@@ -545,8 +603,9 @@ mod tests {
         assert_eq!(result.total_rows, 4);
 
         let leaf = &result.graphs[0].leaf_infos[0];
-        let header = decode_leaf_header_v3(&leaf.leaf_bytes).unwrap();
-        let leaf_dir = decode_leaf_dir_v3(&leaf.leaf_bytes, &header).unwrap();
+        let leaf_bytes = std::fs::read(&leaf.leaf_path).unwrap();
+        let header = decode_leaf_header_v3(&leaf_bytes).unwrap();
+        let leaf_dir = decode_leaf_dir_v3(&leaf_bytes, &header).unwrap();
 
         // Should have 2 leaflets (INTEGER and STRING type segmentation).
         assert_eq!(leaf_dir.len(), 2);

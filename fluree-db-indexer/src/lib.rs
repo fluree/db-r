@@ -64,7 +64,7 @@ pub use build::types::{UploadedDicts, UploadedIndexes};
 // Re-export build pipeline types
 pub use run_index::build::build_from_commits::{
     build_indexes_from_commits, build_indexes_from_remapped_commits, BuildConfig, BuildResult,
-    CommitInput,
+    CommitInput, BUILD_STAGE_LINK_RUNS, BUILD_STAGE_MERGE, BUILD_STAGE_REMAP,
 };
 
 use fluree_db_core::{ContentStore, Storage};
@@ -256,8 +256,16 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     ledger_id: &str,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
+    trust_sorted_order_invariants: bool,
 ) -> Result<UploadedDicts> {
-    build::upload_dicts::upload_dicts_from_disk(storage, ledger_id, run_dir, namespace_codes).await
+    build::upload_dicts::upload_dicts_from_disk(
+        storage,
+        ledger_id,
+        run_dir,
+        namespace_codes,
+        trust_sorted_order_invariants,
+    )
+    .await
 }
 
 /// Publish index result to nameservice

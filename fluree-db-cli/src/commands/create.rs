@@ -279,6 +279,10 @@ where
     // Track when the commit phase actually starts (first Committing event),
     // so M flakes/s reflects commit throughput, not reading/parsing time.
     let commit_start: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    // Whether we've received any Scanning event (streaming mode). When true,
+    // the scan bar manages its own lifecycle — the Committing handler must not
+    // clear it prematurely.
+    let is_streaming_scan = std::sync::atomic::AtomicBool::new(false);
     let breadcrumb_path_for_cb = breadcrumb_path.clone();
     let breadcrumb_last_write_for_cb = std::sync::Arc::clone(&breadcrumb_last_write);
     let breadcrumb_ledger_for_cb = ledger_owned.clone();
@@ -322,6 +326,7 @@ where
                 bytes_read,
                 total_bytes,
             } => {
+                is_streaming_scan.store(true, std::sync::atomic::Ordering::Relaxed);
                 sb.set_length(total_bytes);
                 sb.set_position(bytes_read);
                 let gb_read = bytes_read as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -337,9 +342,14 @@ where
                 cumulative_flakes,
                 ..
             } => {
-                // Finish the scan bar if scanning never happened (small/non-streaming files).
-                // If scanning did happen, the bar is already finished via finish_with_message().
-                if !sb.is_finished() {
+                // For non-streaming imports (small files, directories), scanning
+                // never happens — hide the scan bar on the first Committing event.
+                // For streaming imports, the scan bar finishes itself via
+                // finish_with_message() when reading completes; don't kill it here
+                // while the reader thread is still active.
+                if !sb.is_finished()
+                    && !is_streaming_scan.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     sb.finish_and_clear();
                 }
                 let t0 = *commit_start.get_or_init(std::time::Instant::now);
@@ -361,27 +371,26 @@ where
                 ib.set_message(stage.to_string());
             }
             ImportPhase::Indexing {
-                merged_flakes,
+                stage,
+                processed_flakes,
                 total_flakes,
-                elapsed_secs,
+                stage_elapsed_secs,
             } => {
                 cb.finish();
                 ib.set_length(total_flakes);
                 // Start at 1% minimum so the bar shows activity immediately
-                let pos = if merged_flakes == 0 && total_flakes > 0 {
+                let pos = if processed_flakes == 0 && total_flakes > 0 {
                     total_flakes / 100
                 } else {
-                    merged_flakes
+                    processed_flakes
                 };
                 ib.set_position(pos);
-                // Rate in real flakes/s (total_flakes is 2× because SPOT +
-                // secondary pipelines both contribute to progress).
-                let rate = if elapsed_secs > 0.0 {
-                    merged_flakes as f64 / 2.0 / 1_000_000.0 / elapsed_secs
+                let rate = if stage_elapsed_secs > 0.0 {
+                    processed_flakes as f64 / 1_000_000.0 / stage_elapsed_secs
                 } else {
                     0.0
                 };
-                ib.set_message(format!("{:.2} M flakes/s", rate));
+                ib.set_message(format!("{stage} {:.2} M flakes/s", rate));
             }
             ImportPhase::Done => {
                 ib.finish();

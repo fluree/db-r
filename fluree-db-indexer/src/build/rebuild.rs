@@ -576,7 +576,10 @@ where
                     leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
                     zstd_level: 1,
                     run_budget_bytes: config.run_budget_bytes,
-                    progress: None,
+                    worker_count: 1,
+                    remap_progress: None,
+                    build_progress: None,
+                    stage_marker: None,
                 };
 
                 let v3_result = crate::build_indexes_from_remapped_commits(
@@ -1076,7 +1079,7 @@ where
 
             // Phase F-V3: Upload dicts + assemble FIR6 root.
             let uploaded_dicts =
-                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes)
+                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes, false)
                     .instrument(tracing::debug_span!("upload_dicts_v3"))
                     .await?;
 
