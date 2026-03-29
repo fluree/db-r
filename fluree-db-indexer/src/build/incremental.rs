@@ -35,6 +35,14 @@ use crate::run_index::build::incremental_resolve::{
 use crate::run_index::build::incremental_root::IncrementalRootBuilder;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
+fn artifact_cache_dir(config: &IndexerConfig) -> std::path::PathBuf {
+    config
+        .data_dir
+        .as_ref()
+        .map(|d| d.join("binary_artifact_cache"))
+        .unwrap_or_else(|| std::env::temp_dir().join("fluree_binary_cache"))
+}
+
 /// Run `update_branch` on a blocking thread.
 ///
 /// Uses `spawn_blocking` instead of `block_in_place` so this works on both
@@ -46,31 +54,45 @@ async fn run_update_branch(
     sorted_ops: Vec<u8>,
     branch_config: BranchUpdateConfig,
     content_store: Arc<dyn fluree_db_core::storage::ContentStore>,
+    cache_dir: std::path::PathBuf,
 ) -> std::result::Result<BranchUpdateResult, IndexerError> {
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let cs = content_store.clone();
         let cs2 = content_store;
+        let cache_dir2 = cache_dir.clone();
         update_branch(
             &branch_bytes,
             &sorted_records,
             &sorted_ops,
             &branch_config,
             &|cid| {
-                handle
-                    .block_on(async { cs.get(cid).await })
-                    .map_err(std::io::Error::other)
+                handle.block_on(async {
+                    fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                        cs.as_ref(),
+                        cid,
+                        &cache_dir,
+                    )
+                    .await
+                })
             },
             &|cid| {
                 handle
-                    .block_on(async { cs2.get(cid).await })
+                    .block_on(async {
+                        fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                            cs2.as_ref(),
+                            cid,
+                            &cache_dir2,
+                        )
+                        .await
+                    })
                     .map(Some)
-                    .or_else(|e| match e {
-                        fluree_db_core::error::Error::NotFound(_) => {
+                    .or_else(|e| match e.kind() {
+                        std::io::ErrorKind::NotFound => {
                             tracing::debug!("sidecar not found (treating as absent): {e}");
                             Ok(None)
                         }
-                        other => Err(std::io::Error::other(other)),
+                        _ => Err(e),
                     })
             },
         )
@@ -103,6 +125,8 @@ where
     let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
         fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
     );
+    let cache_dir = artifact_cache_dir(&config);
+    let _ = std::fs::create_dir_all(&cache_dir);
 
     // ---- Phase 1: Resolve incremental commits ----
     let resolve_config = IncrementalResolveConfig {
@@ -205,6 +229,7 @@ where
                         sorted_ops,
                         branch_config,
                         content_store.clone(),
+                        cache_dir.clone(),
                     )
                     .await?;
 
@@ -244,7 +269,13 @@ where
                 if let Some(existing_branch_cid) = branch_cid {
                     // Fetch existing branch manifest.
                     let branch_bytes =
-                        content_store.get(existing_branch_cid).await.map_err(|e| {
+                        fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                            content_store.as_ref(),
+                            existing_branch_cid,
+                            &cache_dir,
+                        )
+                        .await
+                        .map_err(|e| {
                             IndexerError::StorageRead(format!(
                                 "fetch V3 branch g_id={g_id} {order:?}: {e}"
                             ))
@@ -267,6 +298,7 @@ where
                         sorted_ops,
                         branch_config,
                         content_store.clone(),
+                        cache_dir.clone(),
                     )
                     .await?;
 
@@ -1409,13 +1441,6 @@ where
                     novelty_records = novelty.records.len(),
                     "Phase 3b: class-property attribution starting"
                 );
-                let cache_dir = config
-                    .data_dir
-                    .as_ref()
-                    .map(|d| d.join("class_cache"))
-                    .unwrap_or_else(|| std::env::temp_dir().join("fluree_class_cache_v6"));
-                let _ = std::fs::create_dir_all(&cache_dir);
-
                 // subject_classes: (g_id, s_id) → HashSet<class_sid64>
                 let mut subject_classes: std::collections::HashMap<
                     (u16, u64),
@@ -1945,13 +1970,6 @@ where
         });
 
         if has_schema_records {
-            let cache_dir = config
-                .data_dir
-                .as_ref()
-                .map(|d| d.join("schema_cache"))
-                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache_v6"));
-            let _ = std::fs::create_dir_all(&cache_dir);
-
             match fluree_db_binary_index::read::binary_index_store::BinaryIndexStore::load_from_root_v6(
                 content_store.clone(),
                 base_root,

@@ -2366,6 +2366,7 @@ dependencies = [
  "fluree-db-core",
  "fluree-db-spatial",
  "fluree-vocab",
+ "fs2",
  "hex",
  "memmap2",
  "moka",
