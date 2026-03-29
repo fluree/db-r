@@ -29,6 +29,7 @@
   - [fetch](cli/fetch.md)
   - [pull](cli/pull.md)
   - [push](cli/push.md)
+  - [publish](cli/publish.md)
   - [clone](cli/clone.md)
   - [track](cli/track.md)
   - [server](cli/server.md)

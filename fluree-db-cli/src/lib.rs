@@ -221,9 +221,21 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             .await
         }
 
-        Commands::Export { ledger, format, at } => {
+        Commands::Export {
+            ledger,
+            format,
+            at,
+            output,
+        } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::export::run(ledger.as_deref(), &format, at.as_deref(), &fluree_dir).await
+            commands::export::run(
+                ledger.as_deref(),
+                &format,
+                at.as_deref(),
+                output.as_deref(),
+                &fluree_dir,
+            )
+            .await
         }
 
         Commands::Log {
@@ -301,6 +313,21 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Push { ledger } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::sync::run_push(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Publish {
+            remote,
+            ledger,
+            remote_name,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::sync::run_publish(
+                &remote,
+                ledger.as_deref(),
+                remote_name.as_deref(),
+                &fluree_dir,
+            )
+            .await
         }
 
         Commands::Clone {

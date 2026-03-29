@@ -2318,6 +2318,7 @@ dependencies = [
  "fluree-db-indexer",
  "fluree-db-ledger",
  "fluree-db-nameservice",
+ "fluree-db-nameservice-sync",
  "fluree-db-novelty",
  "fluree-db-policy",
  "fluree-db-query",

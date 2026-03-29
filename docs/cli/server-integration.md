@@ -68,6 +68,39 @@ The `commit` query parameter accepts the same identifiers as the local `fluree s
 - `404 Not Found` — ledger or commit not found
 - `501 Not Implemented` — proxy storage mode (no local index available for decoding)
 
+### `fluree publish <remote> [ledger]` (create + push)
+
+Creates a ledger on the remote and pushes all local commits in a single operation.
+
+Required endpoints:
+
+- `GET {api_base_url}/exists/*ledger` (check if ledger already exists)
+- `POST {api_base_url}/create` (create empty ledger if not exists)
+- `GET {api_base_url}/info/*ledger` (check remote head when ledger exists)
+- `POST {api_base_url}/push/*ledger` (push all commits)
+
+**Workflow:**
+
+1. CLI calls `GET /exists?ledger=mydb:main`
+2. If `exists: false`, CLI calls `POST /create` with `{"ledger": "mydb:main"}`
+3. If `exists: true`, CLI calls `GET /info/mydb:main` and rejects if `t > 0` (remote already has data)
+4. CLI walks the full local commit chain (oldest → newest) and sends all commits via `POST /push/mydb:main`
+5. CLI configures upstream tracking locally
+
+The `--remote-name` flag allows publishing under a different name on the remote (e.g., `fluree publish origin mydb --remote-name production-db`).
+
+### `fluree create <name> --from <file>.flpack` (native ledger import)
+
+- No server endpoint required (local-only operation)
+
+Imports a `.flpack` file (native ledger pack) into a new local ledger. The `.flpack` format uses the same `fluree-pack-v1` wire format as `POST /pack`. See [Ledger portability](#ledger-portability-flpack-files) below.
+
+### `fluree export --format ledger` (native ledger export)
+
+- No server endpoint required (local-only operation)
+
+Exports a full local ledger (all commits, indexes, dictionaries) as a `.flpack` file. See [Ledger portability](#ledger-portability-flpack-files) below.
+
 ### `fluree query`, `fluree insert`, `fluree upsert`, `fluree update`, `fluree track`, `fluree info`, `fluree exists`
 
 - `POST {api_base_url}/query/*ledger`
@@ -113,6 +146,24 @@ These endpoints exist so a client can fetch bytes by CID without knowing storage
 - `GET {api_base_url}/storage/objects/:cid?ledger=:ledger-id` returns raw bytes for the CID after verifying integrity.
 
 `/storage/block` is only required for query peers that need server-mediated index-leaf access.
+
+## `/create` Contract
+
+- Endpoint: `POST {api_base_url}/create`
+- Request body: `{"ledger": "mydb:main"}`
+- Response (201 Created): `{"ledger": "mydb:main", "t": 0}`
+- Response (409 Conflict): ledger already exists
+
+If no branch suffix is provided (e.g., `"mydb"`), the server MUST normalize to `"mydb:main"`.
+
+Used by `fluree publish` (and potentially future `fluree create --remote`) to create a ledger on a remote server before pushing commits.
+
+## `/exists` Response Contract
+
+- Endpoint: `GET {api_base_url}/exists?ledger=mydb:main` (or via `fluree-ledger` header)
+- Response (200 OK, always): `{"ledger": "mydb:main", "exists": true|false}`
+
+MUST return 200 regardless of whether the ledger exists (the `exists` field carries the result). Should query the nameservice only — no ledger data loading.
 
 ## `/info` Response Contract (CLI Minimum)
 
@@ -357,6 +408,48 @@ f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
 - **`GET /ledgers`** and **`GET /info/*name`** are read-only (same auth as other read endpoints)
 - **`POST /query/*ledger`** with graph source GRAPH patterns uses normal query auth
 
+## Ledger Portability (.flpack Files)
+
+The CLI supports exporting and importing full native ledgers as `.flpack` files using the `fluree-pack-v1` wire format. This enables ledger portability without a running server.
+
+```bash
+# Export a ledger (all commits + indexes + dictionaries)
+fluree export mydb --format ledger -o mydb.flpack
+
+# Import into a new instance (can use a different ledger name)
+fluree create imported-db --from mydb.flpack
+```
+
+The `.flpack` format is identical to the binary stream served by `POST /pack/{ledger}`, with the addition of a **nameservice manifest frame** that carries the metadata needed to reconstruct the nameservice record on import:
+
+```json
+{
+  "phase": "nameservice",
+  "ledger_id": "original-name:main",
+  "name": "original-name",
+  "branch": "main",
+  "commit_head_id": "bafybeig...commitHead",
+  "commit_t": 42,
+  "index_head_id": "bafybeig...indexRoot",
+  "index_t": 40
+}
+```
+
+**Aliasing on import:** The ledger name provided to `fluree create` determines the local storage path. The data itself is content-addressed (CIDs), so a ledger can be imported under any name. The `ledger_id` inside the index root binary is informational and does not affect CAS resolution.
+
+**Combined with publish:** A typical workflow for moving a ledger from one environment to another:
+
+```bash
+# On source machine: export
+fluree export mydb --format ledger -o mydb.flpack
+
+# On target machine: import and publish to server
+fluree create mydb --from mydb.flpack
+fluree remote add prod https://prod.example.com
+fluree auth login --remote prod
+fluree publish prod mydb
+```
+
 ## Quick Validation Script
 
 From a clean project directory:
@@ -371,6 +464,15 @@ fluree fetch origin
 fluree clone origin mydb:main
 fluree pull mydb:main
 fluree push mydb:main
+
+# Publish a local ledger to remote
+fluree create local-db
+fluree insert local-db -e '{"@id": "ex:test", "ex:val": 1}'
+fluree publish origin local-db
+
+# Export / import round-trip
+fluree export mydb --format ledger -o mydb.flpack
+fluree create imported --from mydb.flpack
 
 # Iceberg operations (requires iceberg feature on server)
 fluree iceberg map my-gs \

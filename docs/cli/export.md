@@ -1,6 +1,6 @@
 # fluree export
 
-Export ledger data as Turtle or JSON-LD.
+Export ledger data as Turtle, JSON-LD, or a native ledger pack.
 
 ## Usage
 
@@ -18,12 +18,21 @@ fluree export [LEDGER] [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--format <FORMAT>` | Output format: `turtle` or `jsonld` (default: `turtle`) |
-| `--at <TIME>` | Export at a specific point in time |
+| `--format <FORMAT>` | Output format: `turtle`, `jsonld`, or `ledger` (default: `turtle`) |
+| `--at <TIME>` | Export at a specific point in time (turtle/jsonld only) |
+| `-o, --output <PATH>` | Output file path (ledger format only; defaults to `<ledger>.flpack`) |
 
-## Description
+## Formats
 
-Exports all data from a ledger in the specified format. Output goes to stdout so it can be redirected to a file or piped to other tools.
+### turtle / jsonld (data snapshot)
+
+Exports a point-in-time snapshot of all triples in the ledger. Output goes to stdout.
+
+### ledger (native pack)
+
+Exports the full native ledger — all commits, transaction blobs, indexes, and dictionaries — as a `.flpack` file. This format preserves the complete history and can be imported into a new Fluree instance via `fluree create <name> --from <file>.flpack`.
+
+The `.flpack` format uses the `fluree-pack-v1` binary wire protocol (the same format used by `fluree clone` and `fluree pull` for network transfers).
 
 ## Examples
 
@@ -40,8 +49,12 @@ fluree export production > prod-backup.ttl
 # Export historical snapshot
 fluree export --at 10 > snapshot-t10.ttl
 
-# Pipe to other tools
-fluree export | grep "example.org"
+# Export full native ledger (all history + indexes)
+fluree export --format ledger
+fluree export mydb --format ledger -o /backups/mydb.flpack
+
+# Import into a new instance (can use a different name)
+fluree create newdb --from mydb.flpack
 ```
 
 ## Output
@@ -71,9 +84,13 @@ ex:bob a ex:Person ;
 }
 ```
 
+### Ledger (.flpack)
+
+Binary file containing the full pack stream. Use `fluree create <name> --from <file>.flpack` to import.
+
 ## Time Travel
 
-Export historical snapshots:
+Export historical snapshots (turtle/jsonld only):
 
 ```bash
 # Export at transaction 5
@@ -85,5 +102,6 @@ fluree export --at abc123def > snapshot.ttl
 
 ## See Also
 
+- [create](create.md) - Create ledger with `--from` to import `.flpack` files
+- [publish](publish.md) - Publish a local ledger to a remote server
 - [query](query.md) - Run custom queries
-- [create](create.md) - Create ledger with `--from` to import
