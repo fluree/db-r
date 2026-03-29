@@ -638,18 +638,42 @@ impl BinaryIndexStore {
                 Ok(FlakeValue::Ref(Sid::new(0, &bnode_iri)))
             }
             DecodeKind::IriRef => {
-                let iri = self.resolve_subject_iri(o_key)?;
+                let iri = self.resolve_subject_iri(o_key).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        o_key,
+                        error = %e,
+                        "binary index failed to resolve IRI ref subject"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::Ref(self.encode_iri(&iri)))
             }
             DecodeKind::StringDict => {
-                let s = self.resolve_string_value(o_key as u32)?;
+                let s = self.resolve_string_value(o_key as u32).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        str_id = o_key as u32,
+                        error = %e,
+                        "binary index failed to resolve string dictionary value"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::String(s))
             }
             DecodeKind::JsonArena => {
                 // Despite the "Arena" name in DecodeKind, JSON values are currently
                 // stored in the string dictionary (same as ObjKind::JSON_ID).
                 // A dedicated JSON arena may be introduced later.
-                let json_str = self.resolve_string_value(o_key as u32)?;
+                let json_str = self.resolve_string_value(o_key as u32).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        str_id = o_key as u32,
+                        error = %e,
+                        "binary index failed to resolve JSON dictionary value"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::Json(json_str))
             }
             DecodeKind::NumBigArena => {
@@ -839,7 +863,8 @@ impl BinaryIndexStore {
 
     /// Resolve a string dictionary ID to its value.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
-        self.dicts
+        let result = self
+            .dicts
             .string_forward_packs
             .forward_lookup_str(str_id as u64)?
             .ok_or_else(|| {
@@ -847,7 +872,15 @@ impl BinaryIndexStore {
                     io::ErrorKind::NotFound,
                     format!("string id {} not found in forward packs", str_id),
                 )
-            })
+            });
+        if let Err(err) = &result {
+            tracing::debug!(
+                str_id,
+                error = %err,
+                "resolve_string_value failed"
+            );
+        }
+        result
     }
 
     /// Resolve a predicate ID to its IRI.
@@ -1520,6 +1553,10 @@ impl BinaryGraphView {
         dt_id: u16,
         lang_id: u16,
     ) -> io::Result<FlakeValue> {
+        let novelty_initialized = self
+            .dict_novelty
+            .as_ref()
+            .is_some_and(|dn| dn.is_initialized());
         if let Some(ref dn) = self.dict_novelty {
             if dn.is_initialized() {
                 // Route dict-backed ObjKinds through watermark checks.
@@ -1538,8 +1575,24 @@ impl BinaryGraphView {
                 }
             }
         }
-        self.store
-            .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id)
+        let result = self
+            .store
+            .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id);
+        if let Err(err) = &result {
+            tracing::debug!(
+                g_id = self.g_id,
+                o_kind,
+                o_key,
+                p_id,
+                dt_id,
+                lang_id,
+                has_dict_novelty = self.dict_novelty.is_some(),
+                novelty_initialized,
+                error = %err,
+                "BinaryGraphView decode_value_from_kind failed"
+            );
+        }
+        result
     }
 
     /// Resolve a subject ID to its full IRI string. Novelty-aware.
@@ -1547,11 +1600,29 @@ impl BinaryGraphView {
         if let Some(ref dn) = self.dict_novelty {
             if dn.is_initialized() {
                 if let Some(result) = self.resolve_novel_subject_iri(dn, s_id) {
+                    if let Err(err) = &result {
+                        tracing::debug!(
+                            g_id = self.g_id,
+                            s_id,
+                            error = %err,
+                            "BinaryGraphView novelty subject lookup failed"
+                        );
+                    }
                     return result;
                 }
             }
         }
-        self.store.resolve_subject_iri(s_id)
+        let result = self.store.resolve_subject_iri(s_id);
+        if let Err(err) = &result {
+            tracing::debug!(
+                g_id = self.g_id,
+                s_id,
+                has_dict_novelty = self.dict_novelty.is_some(),
+                error = %err,
+                "BinaryGraphView persisted subject lookup failed"
+            );
+        }
+        result
     }
 
     /// Resolve a subject ID to a `Sid`. Novelty-aware.

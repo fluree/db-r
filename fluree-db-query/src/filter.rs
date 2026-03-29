@@ -49,15 +49,15 @@ pub fn filter_batch(
     schema: &Arc<[VarId]>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Option<Batch>> {
-    let keep_indices: Vec<usize> = (0..batch.len())
-        .filter_map(|row_idx| {
-            let row = batch.row_view(row_idx)?;
-            expr.eval_to_bool(&row, Some(ctx))
-                .ok()
-                .filter(|&pass| pass)
-                .map(|_| row_idx)
-        })
-        .collect();
+    let mut keep_indices: Vec<usize> = Vec::new();
+    for row_idx in 0..batch.len() {
+        let Some(row) = batch.row_view(row_idx) else {
+            continue;
+        };
+        if expr.eval_to_bool_non_strict(&row, Some(ctx))? {
+            keep_indices.push(row_idx);
+        }
+    }
 
     if keep_indices.is_empty() {
         return Ok(None);
@@ -424,7 +424,7 @@ async fn filter_batch_with_exists(
         let Some(row) = batch.row_view(row_idx) else {
             continue;
         };
-        let pass = resolved_expr.eval_to_bool(&row, Some(ctx)).unwrap_or(false);
+        let pass = resolved_expr.eval_to_bool_non_strict(&row, Some(ctx))?;
         if pass {
             keep_indices.push(row_idx);
         }

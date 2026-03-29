@@ -44,8 +44,9 @@ pub fn extend_schema(base_schema: &[VarId], operators: &[InlineOperator]) -> Vec
 ///   if it fails.
 /// - **Bind**: evaluates expression and either pushes a new binding or performs
 ///   a clobber check on an existing variable. In non-strict mode (default),
-///   evaluation errors produce `Binding::Unbound`; in strict mode
-///   (`ctx.strict_bind_errors`) they propagate as `Result::Err`.
+///   expression-level errors produce `Binding::Unbound`, while fatal execution
+///   errors (for example dictionary lookup failures) still propagate. In strict
+///   mode (`ctx.strict_bind_errors`) all errors propagate as `Result::Err`.
 ///
 /// Returns `true` if the row survived all filters and clobber checks.
 ///
@@ -67,7 +68,7 @@ pub fn apply_inline(
         let row = BindingRow::new(&schema[..bindings.len()], bindings);
         match op {
             InlineOperator::Filter(expr) => {
-                if !expr.eval_to_bool(&row, ctx).unwrap_or(false) {
+                if !expr.eval_to_bool_non_strict(&row, ctx)? {
                     return Ok(false);
                 }
             }
@@ -75,7 +76,7 @@ pub fn apply_inline(
                 let value = if strict {
                     expr.try_eval_to_binding(&row, ctx)?
                 } else {
-                    expr.eval_to_binding(&row, ctx)
+                    expr.try_eval_to_binding_non_strict(&row, ctx)?
                 };
                 match schema[..bindings.len()].iter().position(|&v| v == *var) {
                     None => bindings.push(value),
