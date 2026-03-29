@@ -56,6 +56,10 @@ use crate::binary_scan::{EmitMask, ScanOperator};
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
+/// Safety cap for cartesian product row generation. Prevents unbounded memory
+/// allocation when predicates have extreme cardinality (e.g. 100k × 100k).
+const MAX_CARTESIAN_ROWS: usize = 10_000_000;
+
 fn make_property_join_scan(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
@@ -534,12 +538,13 @@ impl PropertyJoinOperator {
             }];
         }
 
-        // Calculate total combinations
+        // Calculate total combinations (using saturating multiply to avoid overflow
+        // on extremely high-cardinality predicates).
         let total: usize = values_per_pred
             .iter()
             .enumerate()
-            .map(|(idx, values)| {
-                if values.is_empty() {
+            .fold(1usize, |acc, (idx, values)| {
+                let factor = if values.is_empty() {
                     if emitted_required.get(idx).copied().unwrap_or(true) {
                         0
                     } else {
@@ -547,14 +552,14 @@ impl PropertyJoinOperator {
                     }
                 } else {
                     values.len()
-                }
-            })
-            .product();
+                };
+                acc.saturating_mul(factor)
+            });
         if total == 0 {
             return Vec::new();
         }
 
-        let mut rows = Vec::with_capacity(total);
+        let mut rows = Vec::with_capacity(total.min(MAX_CARTESIAN_ROWS));
 
         // Generate cartesian product using indices
         let mut indices: Vec<usize> = vec![0; values_per_pred.len()];
@@ -571,6 +576,9 @@ impl PropertyJoinOperator {
                 }
             }
             rows.push(row);
+            if rows.len() >= MAX_CARTESIAN_ROWS {
+                break;
+            }
 
             // Increment indices (like odometer)
             let mut carry = true;

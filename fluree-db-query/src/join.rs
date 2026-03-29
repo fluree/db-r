@@ -25,6 +25,48 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
+/// Binary search for the first row in `batch.s_id[start..end]` where `s_id >= target`.
+#[inline]
+fn lower_bound_s_id(
+    batch: &fluree_db_binary_index::ColumnBatch,
+    start: usize,
+    end: usize,
+    target: u64,
+) -> usize {
+    let mut lo = start;
+    let mut hi = end;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if batch.s_id.get(mid) < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Binary search for the first row in `batch.s_id[start..end]` where `s_id > target`.
+#[inline]
+fn upper_bound_s_id(
+    batch: &fluree_db_binary_index::ColumnBatch,
+    start: usize,
+    end: usize,
+    target: u64,
+) -> usize {
+    let mut lo = start;
+    let mut hi = end;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if batch.s_id.get(mid) <= target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BatchedSubjectProbeMatch {
     pub subject_id: u64,
@@ -127,7 +169,6 @@ enum BatchRef {
 fn is_batched_eligible(
     bind_instructions: &[BindInstruction],
     right_pattern: &TriplePattern,
-    _has_object_bounds: bool,
 ) -> bool {
     // Subject must have a BindInstruction (bound from left)
     let has_subject_bind = bind_instructions
@@ -407,7 +448,7 @@ impl NestedLoopJoinOperator {
 
         let has_bounds = object_bounds.is_some();
 
-        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern, has_bounds);
+        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern);
         let batched_object_eligible = !batched_eligible
             && is_batched_object_eligible(&bind_instructions, &right_pattern, has_bounds);
         let subject_left_col = if batched_eligible {
@@ -1058,7 +1099,6 @@ impl NestedLoopJoinOperator {
             .collect();
 
         let mut rows_added = 0;
-        let mut rows_examined = 0usize;
 
         while rows_added < batch_size && !self.pending_output.is_empty() {
             let (batch_ref, left_row, right_batch) = self.pending_output.front().unwrap();
@@ -1077,7 +1117,6 @@ impl NestedLoopJoinOperator {
             // Process rows from this right batch, starting from where we left off
             let mut right_row = self.pending_right_row;
             while right_row < right_batch_len && rows_added < batch_size {
-                rows_examined += 1;
                 // Unification check: shared vars must match
                 if self.unify_check(left_batch, left_row, right_batch, right_row) {
                     // Combine and add to output
@@ -1115,17 +1154,14 @@ impl NestedLoopJoinOperator {
         }
 
         if rows_added == 0 {
-            let _ = rows_examined;
             return Ok(None);
         }
 
         // Special-case: empty schema batches still need a correct row count.
         if self.combined_schema.is_empty() {
-            let _ = rows_examined;
             return Ok(Some(Batch::empty_schema_with_len(rows_added)));
         }
 
-        let _ = rows_examined;
         Ok(Some(Batch::new(
             self.combined_schema.clone(),
             output_columns,
@@ -1160,8 +1196,6 @@ impl NestedLoopJoinOperator {
         let batch_idx = self.ensure_current_batch_stored();
         let batch_len = self.stored_left_batches[batch_idx].len();
         let cached_gv = ctx.graph_view();
-        let mut right_scans = 0usize;
-        let mut matched_rows = 0usize;
 
         while self.current_left_row < batch_len {
             let left_row = self.current_left_row;
@@ -1186,10 +1220,8 @@ impl NestedLoopJoinOperator {
             let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
             let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
             right_scan.open(ctx).await?;
-            right_scans += 1;
             while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                 if !right_batch.is_empty() {
-                    matched_rows += right_batch.len();
                     self.pending_output.push_back((
                         BatchRef::Stored(batch_idx),
                         left_row,
@@ -1200,7 +1232,6 @@ impl NestedLoopJoinOperator {
             right_scan.close();
         }
 
-        let _ = (right_scans, matched_rows);
         Ok(())
     }
 
@@ -1430,47 +1461,6 @@ impl NestedLoopJoinOperator {
                 let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
                 if subj_start >= subj_end {
                     continue;
-                }
-
-                // Binary search within the predicate segment for each target s_id.
-                #[inline]
-                fn lower_bound_s_id(
-                    batch: &fluree_db_binary_index::ColumnBatch,
-                    start: usize,
-                    end: usize,
-                    target: u64,
-                ) -> usize {
-                    let mut lo = start;
-                    let mut hi = end;
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        if batch.s_id.get(mid) < target {
-                            lo = mid + 1;
-                        } else {
-                            hi = mid;
-                        }
-                    }
-                    lo
-                }
-
-                #[inline]
-                fn upper_bound_s_id(
-                    batch: &fluree_db_binary_index::ColumnBatch,
-                    start: usize,
-                    end: usize,
-                    target: u64,
-                ) -> usize {
-                    let mut lo = start;
-                    let mut hi = end;
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        if batch.s_id.get(mid) <= target {
-                            lo = mid + 1;
-                        } else {
-                            hi = mid;
-                        }
-                    }
-                    lo
                 }
 
                 for &s_id in &unique_s_ids[subj_start..subj_end] {
@@ -2357,44 +2347,6 @@ pub(crate) fn batched_subject_probe_binary(
                 continue;
             }
 
-            fn lower_bound_s_id(
-                batch: &fluree_db_binary_index::ColumnBatch,
-                start: usize,
-                end: usize,
-                target: u64,
-            ) -> usize {
-                let mut lo = start;
-                let mut hi = end;
-                while lo < hi {
-                    let mid = (lo + hi) / 2;
-                    if batch.s_id.get(mid) < target {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
-            }
-
-            fn upper_bound_s_id(
-                batch: &fluree_db_binary_index::ColumnBatch,
-                start: usize,
-                end: usize,
-                target: u64,
-            ) -> usize {
-                let mut lo = start;
-                let mut hi = end;
-                while lo < hi {
-                    let mid = (lo + hi) / 2;
-                    if batch.s_id.get(mid) <= target {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
-            }
-
             for &s_id in &unique_s_ids[subj_start..subj_end] {
                 let row_start = lower_bound_s_id(&batch, p_start, p_end, s_id);
                 let row_end = upper_bound_s_id(&batch, p_start, p_end, s_id);
@@ -2517,46 +2469,6 @@ pub(crate) fn batched_subject_star_spot(
     let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp);
     let cache = store.leaflet_cache();
     let mut out = Vec::new();
-
-    #[inline]
-    fn lower_bound_s_id(
-        batch: &fluree_db_binary_index::ColumnBatch,
-        start: usize,
-        end: usize,
-        target: u64,
-    ) -> usize {
-        let mut lo = start;
-        let mut hi = end;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if batch.s_id.get(mid) < target {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
-    }
-
-    #[inline]
-    fn upper_bound_s_id(
-        batch: &fluree_db_binary_index::ColumnBatch,
-        start: usize,
-        end: usize,
-        target: u64,
-    ) -> usize {
-        let mut lo = start;
-        let mut hi = end;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if batch.s_id.get(mid) <= target {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
-    }
 
     for leaf_idx in leaf_range {
         let leaf_entry = &branch.leaves[leaf_idx];
@@ -2762,11 +2674,7 @@ mod tests {
             left_col: *left_var_positions.get(&VarId(0)).unwrap(),
         }];
 
-        assert!(is_batched_eligible(
-            &bind_instructions,
-            &right_pattern,
-            true
-        ));
+        assert!(is_batched_eligible(&bind_instructions, &right_pattern,));
     }
 
     #[test]

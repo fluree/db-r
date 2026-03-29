@@ -8,12 +8,12 @@
 mod support;
 
 use aws_config::meta::region::RegionProviderChain;
-use fs2::FileExt;
 use fluree_db_api::{tx, Fluree};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use fluree_db_indexer::IndexerConfig;
 use fluree_db_nameservice::NameService;
 use fluree_db_storage_aws::{DynamoDbConfig, DynamoDbNameService, S3Config, S3Storage};
+use fs2::FileExt;
 use serde_json::json;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};

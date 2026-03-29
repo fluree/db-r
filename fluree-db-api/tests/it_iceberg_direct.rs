@@ -15,11 +15,11 @@
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::primitives::ByteStream;
-use fs2::FileExt;
 use fluree_db_iceberg::catalog::SendCatalogClient;
 use fluree_db_iceberg::catalog::TableIdentifier;
 use fluree_db_iceberg::metadata::TableMetadata;
 use fluree_db_iceberg::{S3IcebergStorage, SendDirectCatalogClient, SendIcebergStorage};
+use fs2::FileExt;
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};

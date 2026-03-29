@@ -5,7 +5,6 @@
 
 #![cfg(feature = "aws-testcontainers")]
 
-use fs2::FileExt;
 use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{ContentId, ContentKind, StorageRead, StorageWrite};
 use fluree_db_nameservice::{
@@ -15,6 +14,7 @@ use fluree_db_nameservice::{
     StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
+use fs2::FileExt;
 use serde_json::json;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
