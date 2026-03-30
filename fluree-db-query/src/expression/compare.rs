@@ -37,7 +37,7 @@ fn log_fastpath_hit_once(kind: &'static str) {
     }
 }
 
-fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
+fn fast_eq_ne_for_iri_bindings<R: RowAccess>(
     op: CompareOp,
     args: &[Expression],
     row: &R,
@@ -51,6 +51,19 @@ fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
     };
     let Some(store) = ctx.binary_store.as_deref() else {
         return Ok(None);
+    };
+
+    let sid_to_iri = |sid: &fluree_db_core::Sid| {
+        store
+            .sid_to_iri(sid)
+            .or_else(|| ctx.snapshot.decode_sid(sid))
+    };
+    let comparable_to_subject_iri = |value: ComparableValue| -> Option<String> {
+        match value {
+            ComparableValue::Sid(sid) => sid_to_iri(&sid),
+            ComparableValue::Iri(iri) => Some(iri.to_string()),
+            _ => None,
+        }
     };
 
     let try_side = |var_expr: &Expression, other_expr: &Expression| -> Result<Option<bool>> {
@@ -67,23 +80,73 @@ fn fast_eq_ne_for_encoded_sid<R: RowAccess>(
 
         match binding {
             Binding::EncodedSid { s_id } => {
-                let rhs_s_id_opt = match other {
-                    ComparableValue::Sid(sid) => store
-                        .find_subject_id_by_parts(sid.namespace_code, sid.name.as_ref())
-                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
-                    ComparableValue::Iri(iri) => store
-                        .find_subject_id(iri.as_ref())
-                        .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?,
-                    _ => return Ok(None),
+                let Some(lhs_iri) = ctx
+                    .resolve_subject_iri(*s_id)
+                    .transpose()
+                    .map_err(|e| QueryError::Internal(format!("resolve_subject_iri: {e}")))?
+                else {
+                    return Ok(None);
+                };
+                let Some(rhs_iri) = comparable_to_subject_iri(other) else {
+                    return Ok(None);
                 };
 
-                let eq = rhs_s_id_opt.is_some_and(|rhs_s_id| rhs_s_id == *s_id);
+                let eq = lhs_iri == rhs_iri;
                 let out = match op {
                     CompareOp::Eq => eq,
                     CompareOp::Ne => !eq,
                     _ => unreachable!(),
                 };
                 log_fastpath_hit_once("EncodedSid");
+                Ok(Some(out))
+            }
+            Binding::Sid(sid) => {
+                let eq = match other {
+                    ComparableValue::Sid(rhs) => {
+                        if sid == &rhs {
+                            true
+                        } else {
+                            let (Some(lhs_iri), Some(rhs_iri)) =
+                                (sid_to_iri(sid), sid_to_iri(&rhs))
+                            else {
+                                return Ok(None);
+                            };
+                            lhs_iri == rhs_iri
+                        }
+                    }
+                    ComparableValue::Iri(iri) => {
+                        let Some(lhs_iri) = sid_to_iri(sid) else {
+                            return Ok(None);
+                        };
+                        lhs_iri == iri.as_ref()
+                    }
+                    _ => return Ok(None),
+                };
+                let out = match op {
+                    CompareOp::Eq => eq,
+                    CompareOp::Ne => !eq,
+                    _ => unreachable!(),
+                };
+                log_fastpath_hit_once("Sid");
+                Ok(Some(out))
+            }
+            Binding::Iri(iri) | Binding::IriMatch { iri, .. } => {
+                let eq = match other {
+                    ComparableValue::Sid(rhs) => {
+                        let Some(rhs_iri) = sid_to_iri(&rhs) else {
+                            return Ok(None);
+                        };
+                        iri.as_ref() == rhs_iri
+                    }
+                    ComparableValue::Iri(rhs) => iri.as_ref() == rhs.as_ref(),
+                    _ => return Ok(None),
+                };
+                let out = match op {
+                    CompareOp::Eq => eq,
+                    CompareOp::Ne => !eq,
+                    _ => unreachable!(),
+                };
+                log_fastpath_hit_once("Iri");
                 Ok(Some(out))
             }
             Binding::EncodedPid { p_id } => {
@@ -141,7 +204,7 @@ impl CompareOp {
     ) -> Result<Option<ComparableValue>> {
         check_min_arity(args, 1, &self.to_string())?;
 
-        if let Some(b) = fast_eq_ne_for_encoded_sid(*self, args, row, ctx)? {
+        if let Some(b) = fast_eq_ne_for_iri_bindings(*self, args, row, ctx)? {
             return Ok(Some(ComparableValue::Bool(b)));
         }
 

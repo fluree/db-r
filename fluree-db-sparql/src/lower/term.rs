@@ -20,6 +20,7 @@ use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
 use fluree_vocab::namespaces::XSD;
 use fluree_vocab::{xsd, xsd_names};
+use std::sync::Arc;
 
 use super::{LowerError, LoweringContext, Result};
 
@@ -109,20 +110,20 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     pub(super) fn lower_iri(&mut self, iri: &Iri) -> Result<Term> {
         let full_iri = self.expand_iri(iri)?;
-        let sid = self
-            .encoder
-            .encode_iri(&full_iri)
-            .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
-        Ok(Term::Sid(sid))
+        if let Some(sid) = self.encoder.encode_iri_strict(&full_iri) {
+            Ok(Term::Sid(sid))
+        } else {
+            Ok(Term::Iri(Arc::from(full_iri)))
+        }
     }
 
     pub(super) fn lower_iri_ref(&mut self, iri: &Iri) -> Result<Ref> {
         let full_iri = self.expand_iri(iri)?;
-        let sid = self
-            .encoder
-            .encode_iri(&full_iri)
-            .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
-        Ok(Ref::Sid(sid))
+        if let Some(sid) = self.encoder.encode_iri_strict(&full_iri) {
+            Ok(Ref::Sid(sid))
+        } else {
+            Ok(Ref::Iri(Arc::from(full_iri)))
+        }
     }
 
     fn lower_literal(&self, lit: &Literal) -> Result<Term> {

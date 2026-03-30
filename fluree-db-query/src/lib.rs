@@ -42,6 +42,7 @@ pub(crate) mod fast_optional_chain_head_count_all;
 pub(crate) mod fast_path_common;
 pub(crate) mod fast_property_path_plus_count_all;
 pub(crate) mod fast_star_const_order_topk;
+pub(crate) mod fast_string_prefix_count_all;
 pub(crate) mod fast_sum_strlen_group_concat;
 pub(crate) mod fast_transitive_path_plus_count_all;
 pub(crate) mod fast_union_star_count_all;

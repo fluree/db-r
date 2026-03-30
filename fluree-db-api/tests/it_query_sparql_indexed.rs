@@ -1202,6 +1202,42 @@ async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
                 vec![vec![json!("Alice Adams")]]
             );
 
+            let indexed_strstarts = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(STRSTARTS(?name, "Ali"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(indexed_strstarts))
+                .await
+                .expect("indexed STRSTARTS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Alice Adams")]]
+            );
+
+            let indexed_regex_prefix = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(REGEX(?name, "^Ali"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(indexed_regex_prefix))
+                .await
+                .expect("indexed regex-prefix query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Alice Adams")]]
+            );
+
             let overlay_equality = r#"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?name
@@ -1250,6 +1286,24 @@ async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
                 .query(&view, QueryInput::Sparql(overlay_regex))
                 .await
                 .expect("overlay REGEX query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_regex_prefix = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(REGEX(?name, "^Brian"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_regex_prefix))
+                .await
+                .expect("overlay REGEX prefix query");
             let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
             assert_eq!(
                 normalize_rows_array(&jsonld),
@@ -1310,6 +1364,79 @@ async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
             let bindings = normalize_sparql_bindings(&sparql_json);
             assert_eq!(bindings.len(), 1, "LCASE should bind one row");
             assert_eq!(bindings[0]["lower"]["value"], json!("brian platz"));
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn indexed_strstarts_sum_counts_prefix_matches() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-strstarts-sum:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:name": "Alice Adams"},
+                    {"@id": "ex:ann", "ex:name": "Ann Arbor"},
+                    {"@id": "ex:bob", "ex:name": "Bob Builder"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let indexed = fluree
+                .db_at_t(ledger_id, ledger.t())
+                .await
+                .expect("load indexed-only view");
+            let query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+                SELECT (SUM(xsd:integer(STRSTARTS(?name, "A"))) AS ?count)
+                WHERE {
+                  ?s ex:name ?name .
+                }
+            "#;
+            let result = fluree
+                .query(&indexed, QueryInput::Sparql(query))
+                .await
+                .expect("indexed STRSTARTS SUM query");
+            let jsonld = result.to_jsonld(&indexed.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                normalize_rows_array(&json!([2])),
+                "indexed SUM(xsd:integer(STRSTARTS(...))) should count matching rows"
+            );
         })
         .await;
 }

@@ -30,6 +30,9 @@ use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
 use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
 use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
 use crate::fast_star_const_order_topk::star_const_ordered_limit_operator;
+use crate::fast_string_prefix_count_all::{
+    string_prefix_count_all_operator, string_prefix_sum_strstarts_operator,
+};
 use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
 use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
 use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
@@ -1180,6 +1183,179 @@ fn detect_count_rows_with_encoded_filters(
     ))
 }
 
+fn detect_string_prefix_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Arc<str>, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+    if query.patterns.len() != 2 {
+        return None;
+    }
+
+    let (tp, filter) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Filter(expr)) => (tp, expr),
+        (Pattern::Filter(expr), Pattern::Triple(tp)) => (tp, expr),
+        _ => return None,
+    };
+
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
+    let prefix = extract_string_prefix_filter(filter, o_var)?;
+    Some((pred, prefix, out_var))
+}
+
+fn detect_string_prefix_sum_strstarts(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Arc<str>, VarId)> {
+    use crate::ir::{Expression, FilterValue, Function};
+
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    if options.limit == Some(0) {
+        return None;
+    }
+
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::Sum) {
+        return None;
+    }
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let (tp, bind_var, bind_expr) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Bind { var, expr }) => (tp, *var, expr),
+        _ => return None,
+    };
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
+    if agg.input_var != Some(bind_var) {
+        return None;
+    }
+
+    let Expression::Call {
+        func: Function::XsdInteger,
+        args,
+    } = bind_expr
+    else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let Expression::Call {
+        func: Function::StrStarts,
+        args,
+    } = &args[0]
+    else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    if !matches!(&args[0], Expression::Var(v) if *v == o_var) {
+        return None;
+    }
+    let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+        return None;
+    };
+    if prefix.is_empty() {
+        return None;
+    }
+
+    Some((pred, Arc::from(prefix.as_str()), agg.output_var))
+}
+
+fn extract_string_prefix_filter(
+    expr: &crate::ir::Expression,
+    object_var: VarId,
+) -> Option<Arc<str>> {
+    use crate::ir::{Expression, FilterValue, Function};
+
+    let is_object_var = |expr: &Expression| matches!(expr, Expression::Var(v) if *v == object_var);
+
+    match expr {
+        Expression::Call { func, args } if *func == Function::Regex => {
+            if args.len() != 2 && args.len() != 3 {
+                return None;
+            }
+            if !is_object_var(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(pattern)) = &args[1] else {
+                return None;
+            };
+            if args.len() == 3 {
+                let Expression::Const(FilterValue::String(flags)) = &args[2] else {
+                    return None;
+                };
+                if !flags.is_empty() {
+                    return None;
+                }
+            }
+            anchored_literal_regex_prefix(pattern)
+        }
+        Expression::Call { func, args } if *func == Function::StrStarts && args.len() == 2 => {
+            if !is_object_var(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+                return None;
+            };
+            if prefix.is_empty() {
+                return None;
+            }
+            Some(Arc::from(prefix.as_str()))
+        }
+        _ => None,
+    }
+}
+
+fn anchored_literal_regex_prefix(pattern: &str) -> Option<Arc<str>> {
+    let prefix = pattern.strip_prefix('^')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    }) {
+        return None;
+    }
+    Some(Arc::from(prefix))
+}
+
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
 /// Returns `Some((predicate_var, count_output_var))` if the query matches the pattern.
@@ -1842,6 +2018,32 @@ fn build_operator_tree_inner(
             return Ok(Box::new(predicate_min_max_string_operator(
                 pred,
                 mode,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `COUNT(*)` over one triple with an anchored string-prefix filter.
+    if enable_fused_fast_paths {
+        if let Some((pred, prefix, out_var)) = detect_string_prefix_count_all(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(string_prefix_count_all_operator(
+                pred,
+                prefix,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `SUM(xsd:integer(STRSTARTS(?o, "...")))` over one triple.
+    if enable_fused_fast_paths {
+        if let Some((pred, prefix, out_var)) = detect_string_prefix_sum_strstarts(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(string_prefix_sum_strstarts_operator(
+                pred,
+                prefix,
                 out_var,
                 Some(fallback),
             )));

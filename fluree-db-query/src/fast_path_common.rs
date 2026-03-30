@@ -1412,14 +1412,30 @@ pub fn build_psot_cursor_for_predicate(
 /// Resolve a bound `Ref` (Iri or Sid) to its internal `s_id` (u64).
 ///
 /// Returns `Ok(None)` for `Ref::Var` or if the subject is not found in the store.
-pub fn subject_ref_to_s_id(store: &BinaryIndexStore, r: &Ref) -> Result<Option<u64>> {
+pub fn subject_ref_to_s_id(
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    store: &BinaryIndexStore,
+    r: &Ref,
+) -> Result<Option<u64>> {
     match r {
         Ref::Iri(iri) => Ok(store
             .find_subject_id(iri)
             .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?),
-        Ref::Sid(sid) => Ok(store
-            .find_subject_id_by_parts(sid.namespace_code, &sid.name)
-            .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?),
+        Ref::Sid(sid) => {
+            if let Some(s_id) = store
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?
+            {
+                return Ok(Some(s_id));
+            }
+            if let Some(iri) = snapshot.decode_sid(sid).or_else(|| store.sid_to_iri(sid)) {
+                Ok(store
+                    .find_subject_id(&iri)
+                    .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?)
+            } else {
+                Ok(None)
+            }
+        }
         Ref::Var(_) => Ok(None),
     }
 }

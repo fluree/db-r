@@ -17,7 +17,7 @@ use fluree_db_binary_index::{
     resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
     BinaryIndexStore, ColumnBatch, ColumnProjection, OverlayOp,
 };
-use fluree_db_core::o_type::OType;
+use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::DatatypeConstraint;
@@ -37,6 +37,7 @@ use crate::operator::{Operator, OperatorState};
 use crate::sid_iri;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
+use fluree_vocab::{namespaces, rdf_names, xsd_names};
 
 // ============================================================================
 // Shared types and utilities
@@ -182,6 +183,9 @@ pub struct BinaryScanOperator {
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
     range_iter: Option<std::vec::IntoIter<RangeFlake>>,
+    /// When a bound subject IRI cannot be translated to a persisted `s_id`,
+    /// keep a widened base scan correct by checking the resolved subject IRI row-by-row.
+    unresolved_bound_subject_iri: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +210,9 @@ enum EncodedPreFilter {
     SubjectEqObjectRef,
     /// `FILTER(?s != ?o)` under two-valued logic: false only when both sides are comparable+equal.
     SubjectNeObjectRef,
+    /// `FILTER(STRSTARTS(?o, "..."))` or anchored literal `REGEX(?o, "^...")`
+    /// on dictionary-backed string objects.
+    ObjectStringPrefix { id_ranges: Arc<[(u32, u32)]> },
 }
 
 impl EncodedPreFilter {
@@ -230,6 +237,16 @@ impl EncodedPreFilter {
                     || o_type == fluree_db_core::o_type::OType::BLANK_NODE.as_u16();
                 !(is_ref && s_id == o_key)
             }
+            EncodedPreFilter::ObjectStringPrefix { id_ranges } => {
+                let ot = OType::from_u16(o_type);
+                if ot.decode_kind() != DecodeKind::StringDict {
+                    return false;
+                }
+                let Ok(str_id) = u32::try_from(o_key) else {
+                    return false;
+                };
+                range_contains(id_ranges, str_id)
+            }
         }
     }
 }
@@ -238,6 +255,7 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
     inline_ops: &[InlineOperator],
     pattern: &TriplePattern,
     store: &BinaryIndexStore,
+    allow_string_prefix_pushdown: bool,
 ) -> (Vec<EncodedPreFilter>, Vec<InlineOperator>) {
     use crate::ir::{Expression, FilterValue, Function};
 
@@ -261,6 +279,22 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
             pruned.push(op.clone());
             continue;
         };
+        if allow_string_prefix_pushdown {
+            if let Some(prefix) =
+                extract_object_string_prefix(expr.expr(), obj_var, pattern.dtc.as_ref())
+            {
+                match build_prefix_id_ranges(store, prefix.as_ref()) {
+                    Ok(id_ranges) => {
+                        out.push(EncodedPreFilter::ObjectStringPrefix { id_ranges });
+                        continue;
+                    }
+                    Err(_) => {
+                        pruned.push(op.clone());
+                        continue;
+                    }
+                }
+            }
+        }
         if args.len() == 1 {
             // FILTER(ISBLANK(?o))
             if *func == Function::IsBlank {
@@ -333,6 +367,167 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
         }
     }
     (out, pruned)
+}
+
+fn string_literal_str_wrapper_safe(dtc: Option<&DatatypeConstraint>) -> bool {
+    match dtc {
+        Some(DatatypeConstraint::LangTag(_)) => true,
+        Some(DatatypeConstraint::Explicit(dt)) => {
+            (dt.namespace_code == namespaces::XSD && dt.name_str() == xsd_names::STRING)
+                || (dt.namespace_code == namespaces::RDF && dt.name_str() == rdf_names::LANG_STRING)
+        }
+        None => false,
+    }
+}
+
+fn object_prefix_input_matches(expr: &Expression, obj_var: VarId, allow_str_wrapper: bool) -> bool {
+    match expr {
+        Expression::Var(v) => *v == obj_var,
+        Expression::Call { func, args }
+            if allow_str_wrapper
+                && *func == Function::Str
+                && args.len() == 1
+                && matches!(&args[0], Expression::Var(v) if *v == obj_var) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn extract_object_string_prefix(
+    expr: &Expression,
+    obj_var: Option<VarId>,
+    pattern_dtc: Option<&DatatypeConstraint>,
+) -> Option<Arc<str>> {
+    use crate::ir::{FilterValue, Function};
+
+    let ov = obj_var?;
+    let allow_str_wrapper = string_literal_str_wrapper_safe(pattern_dtc);
+    let is_object_input = |e: &Expression| object_prefix_input_matches(e, ov, allow_str_wrapper);
+
+    match expr {
+        Expression::Call { func, args } if *func == Function::StrStarts && args.len() == 2 => {
+            if !is_object_input(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+                return None;
+            };
+            (!prefix.is_empty()).then(|| Arc::from(prefix.as_str()))
+        }
+        Expression::Call { func, args } if *func == Function::Regex => {
+            if args.len() != 2 && args.len() != 3 {
+                return None;
+            }
+            if !is_object_input(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(pattern)) = &args[1] else {
+                return None;
+            };
+            if args.len() == 3 {
+                let Expression::Const(FilterValue::String(flags)) = &args[2] else {
+                    return None;
+                };
+                if !flags.is_empty() {
+                    return None;
+                }
+            }
+            anchored_literal_regex_prefix(pattern)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn preferred_index_hint_for_prefix_filters(
+    pattern: &TriplePattern,
+    inline_ops: &[InlineOperator],
+) -> Option<IndexType> {
+    if !pattern.p_bound() || pattern.s_bound() {
+        return None;
+    }
+    let Term::Var(ov) = &pattern.o else {
+        return None;
+    };
+    let obj_var = Some(*ov);
+
+    inline_ops
+        .iter()
+        .any(|op| match op {
+            InlineOperator::Filter(expr) => {
+                extract_object_string_prefix(expr.expr(), obj_var, pattern.dtc.as_ref()).is_some()
+            }
+            InlineOperator::Bind { .. } => false,
+        })
+        .then_some(IndexType::Opst)
+}
+
+fn anchored_literal_regex_prefix(pattern: &str) -> Option<Arc<str>> {
+    let prefix = pattern.strip_prefix('^')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    }) {
+        return None;
+    }
+    Some(Arc::from(prefix))
+}
+
+fn build_prefix_id_ranges(
+    store: &BinaryIndexStore,
+    prefix: &str,
+) -> std::io::Result<Arc<[(u32, u32)]>> {
+    let mut ids = store.find_strings_by_prefix(prefix)?;
+    if ids.is_empty() {
+        return Ok(Arc::from(Vec::<(u32, u32)>::new()));
+    }
+    ids.sort_unstable();
+    let mut ranges = Vec::new();
+    let mut start = ids[0];
+    let mut prev = ids[0];
+    for &id in &ids[1..] {
+        if id == prev.saturating_add(1) {
+            prev = id;
+            continue;
+        }
+        ranges.push((start, prev));
+        start = id;
+        prev = id;
+    }
+    ranges.push((start, prev));
+    Ok(Arc::from(ranges.into_boxed_slice()))
+}
+
+fn range_contains(ranges: &[(u32, u32)], value: u32) -> bool {
+    ranges
+        .binary_search_by(|(start, end)| {
+            if value < *start {
+                std::cmp::Ordering::Greater
+            } else if value > *end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 impl BinaryScanOperator {
@@ -412,6 +607,7 @@ impl BinaryScanOperator {
             check_s_eq_p,
             check_p_eq_o,
             range_iter: None,
+            unresolved_bound_subject_iri: None,
         }
     }
 
@@ -463,6 +659,17 @@ impl BinaryScanOperator {
             };
             let flake = rf.flake;
             let ledger_alias = rf.ledger_alias;
+
+            if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
+                let subject_iri = ledger_alias
+                    .as_ref()
+                    .and_then(|alias| ctx.decode_sid_in_ledger(&flake.s, alias.as_ref()))
+                    .or_else(|| ctx.snapshot.decode_sid(&flake.s))
+                    .unwrap_or_else(|| flake.s.to_string());
+                if subject_iri != target_iri.as_ref() {
+                    continue;
+                }
+            }
 
             // Repeated-variable checks.
             if self.check_s_eq_p && flake.s != flake.p {
@@ -724,13 +931,24 @@ impl BinaryScanOperator {
 
     /// Build a `BinaryFilter` from bound pattern terms.
     fn build_filter_from_snapshot_sids(
+        snapshot: &LedgerSnapshot,
+        pattern: &TriplePattern,
         store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
-        let s_id = match s_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_s_id(store, sid)?,
-            None => None,
+        let s_id = match (&pattern.s, s_sid.as_ref()) {
+            (Ref::Iri(iri), _) => store.find_subject_id(iri)?,
+            (Ref::Sid(query_sid), Some(sid)) => {
+                if let Some(s_id) = sid_iri::sid_to_store_s_id(store, sid)? {
+                    Some(s_id)
+                } else if let Some(iri) = snapshot.decode_sid(query_sid) {
+                    store.find_subject_id(&iri)?
+                } else {
+                    None
+                }
+            }
+            _ => None,
         };
         let p_id = match p_sid.as_ref() {
             Some(sid) => sid_iri::sid_to_store_p_id(store, sid),
@@ -755,7 +973,11 @@ impl BinaryScanOperator {
             .store()
             .resolve_subject_iri(s_id)
             .map_err(|e| QueryError::Internal(format!("resolve s_id={s_id}: {e}")))?;
-        let sid = self.store().encode_iri(&iri);
+        let sid = self
+            .store()
+            .find_subject_sid(&iri)
+            .map_err(|e| QueryError::Internal(format!("find_subject_sid: {e}")))?
+            .unwrap_or_else(|| self.store().encode_iri(&iri));
         self.sid_cache.insert(s_id, sid.clone());
         Ok(sid)
     }
@@ -930,6 +1152,15 @@ impl BinaryScanOperator {
             // Enforce datatype constraints before decoding into bindings.
             if !self.matches_datatype_constraint(o_type) {
                 continue;
+            }
+
+            if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
+                let subject_iri = view
+                    .resolve_subject_iri(s_id)
+                    .map_err(|e| QueryError::Internal(format!("resolve_subject_iri: {e}")))?;
+                if subject_iri != target_iri.as_ref() {
+                    continue;
+                }
             }
 
             // Decode object when needed:
@@ -1199,10 +1430,27 @@ fn build_match_val_for_snapshot(
 ) -> Result<RangeMatch> {
     let mut match_val = RangeMatch::new();
 
+    let reencode_iri_subject = |iri: &Arc<str>| -> Result<Option<Sid>> {
+        if let Some(store) = ctx.binary_store.as_deref() {
+            if let Some(sid) = store
+                .find_subject_sid(iri.as_ref())
+                .map_err(|e| QueryError::Internal(format!("find_subject_sid: {e}")))?
+            {
+                return Ok(Some(sid));
+            }
+        }
+        Ok(snapshot.encode_iri(iri))
+    };
+
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
         if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+            if let Some(store) = ctx.binary_store.as_deref() {
+                if let Ok(Some(persisted_sid)) = store.find_subject_sid(&iri) {
+                    return Some(persisted_sid);
+                }
+            }
             snapshot.encode_iri(&iri)
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
@@ -1216,7 +1464,7 @@ fn build_match_val_for_snapshot(
     match &pattern.s {
         Ref::Sid(s) => match_val.s = reencode_sid(s),
         Ref::Var(_) => {}
-        Ref::Iri(iri) => match_val.s = snapshot.encode_iri(iri),
+        Ref::Iri(iri) => match_val.s = reencode_iri_subject(iri)?,
     }
 
     match &pattern.p {
@@ -1229,7 +1477,7 @@ fn build_match_val_for_snapshot(
         Term::Sid(o) => match_val.o = reencode_sid(o).map(FlakeValue::Ref),
         Term::Value(v) => match_val.o = Some(v.clone()),
         Term::Var(_) => {}
-        Term::Iri(iri) => match_val.o = snapshot.encode_iri(iri).map(FlakeValue::Ref),
+        Term::Iri(iri) => match_val.o = reencode_iri_subject(iri)?.map(FlakeValue::Ref),
     }
 
     Ok(match_val)
@@ -1315,8 +1563,14 @@ impl Operator for BinaryScanOperator {
         // by translating through full IRIs into store namespace space.
         let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter = Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
-            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        let mut filter = Self::build_filter_from_snapshot_sids(
+            ctx.snapshot,
+            &self.pattern,
+            store_ref,
+            &s_sid,
+            &p_sid,
+        )
+        .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
             s_bound = s_sid.is_some(),
@@ -1325,6 +1579,16 @@ impl Operator for BinaryScanOperator {
             ?filter.p_id,
             "BinaryScanOperator::open"
         );
+
+        self.unresolved_bound_subject_iri = if s_sid.is_some() && filter.s_id.is_none() {
+            match &self.pattern.s {
+                Ref::Iri(iri) => Some(Arc::clone(iri)),
+                Ref::Sid(sid) => ctx.snapshot.decode_sid(sid).map(Arc::from),
+                Ref::Var(_) => None,
+            }
+        } else {
+            None
+        };
 
         // Bound-object fast path: if the triple pattern has a constant object, encode it into
         // (o_type, o_key) so the cursor can seek directly to the relevant leaf range.
@@ -1386,8 +1650,14 @@ impl Operator for BinaryScanOperator {
         // base index scans. If a SID isn't in the base dictionaries, a range scan can
         // still devolve into a wide base scan. In this case we want an **overlay-only**
         // fallback to return only novelty matches.
-        if s_sid.is_some() && filter.s_id.is_none() || p_sid.is_some() && filter.p_id.is_none() {
+        if p_sid.is_some() && filter.p_id.is_none() {
             return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        }
+        if s_sid.is_some() && filter.s_id.is_none() && self.unresolved_bound_subject_iri.is_none() {
+            return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        }
+        if self.unresolved_bound_subject_iri.is_some() && filter.p_id.is_some() {
+            self.index = IndexType::Psot;
         }
 
         let order = index_type_to_sort_order(self.index);
@@ -1613,6 +1883,7 @@ impl Operator for BinaryScanOperator {
             &self.inline_ops,
             &self.pattern,
             store_ref,
+            ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0,
         );
         self.encoded_pre_filters = encoded;
         self.inline_ops = pruned;
@@ -1686,6 +1957,7 @@ impl Operator for BinaryScanOperator {
         self.store = None;
         self.sid_cache.clear();
         self.p_sids.clear();
+        self.unresolved_bound_subject_iri = None;
         self.state = OperatorState::Closed;
     }
 }

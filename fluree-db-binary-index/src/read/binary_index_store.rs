@@ -1049,28 +1049,61 @@ impl BinaryIndexStore {
             .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
-    /// Reverse subject lookup: find the u64 s_id for a given IRI.
-    ///
-    /// Uses canonical encoding to build the reverse-tree key,
-    /// matching the encoding used when the reverse dictionary was built.
-    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+    fn reverse_lookup_subject_key(&self, ns_code: u16, suffix: &[u8]) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
-                let ns_code = self
-                    .dicts
-                    .namespace_reverse
-                    .get(canonical_prefix)
-                    .copied()
-                    .unwrap_or(0);
-                let key = crate::dict::reverse_leaf::subject_reverse_key(
-                    ns_code,
-                    canonical_suffix.as_bytes(),
-                );
+                let key = crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix);
                 tree.reverse_lookup(&key)
             }
             None => Ok(None),
         }
+    }
+
+    fn find_full_iri_subject_fallback(&self, iri: &str) -> io::Result<Option<(u16, u64)>> {
+        for ns_code in [namespaces::EMPTY, namespaces::OVERFLOW] {
+            if !self.dicts.subject_forward_packs.contains_key(&ns_code) {
+                continue;
+            }
+            if let Some(s_id) = self.reverse_lookup_subject_key(ns_code, iri.as_bytes())? {
+                return Ok(Some((ns_code, s_id)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    ///
+    /// Uses canonical encoding when the IRI's canonical prefix is registered.
+    /// If not, it only consults full-IRI subject namespaces that are actually
+    /// present in the persisted dictionaries.
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if let Some(s_id) =
+                self.reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+            {
+                return Ok(Some(s_id));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(_ns_code, s_id)| s_id))
+    }
+
+    /// Resolve the exact persisted subject SID for a full IRI, if present.
+    pub fn find_subject_sid(&self, iri: &str) -> io::Result<Option<Sid>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if self
+                .reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+                .is_some()
+            {
+                return Ok(Some(Sid::new(ns_code, canonical_suffix)));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(ns_code, _s_id)| Sid::new(ns_code, iri)))
     }
 
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
@@ -1649,7 +1682,11 @@ impl BinaryGraphView {
             }
         }
         let iri = self.store.resolve_subject_iri(s_id)?;
-        Ok(self.store.encode_iri(&iri))
+        if let Some(sid) = self.store.find_subject_sid(&iri)? {
+            Ok(sid)
+        } else {
+            Ok(self.store.encode_iri(&iri))
+        }
     }
 
     pub fn store(&self) -> &BinaryIndexStore {
@@ -2113,6 +2150,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
+    use crate::dict::builder;
+    use crate::dict::forward_pack::{encode_forward_pack, KIND_SUBJECT_FWD};
+    use crate::dict::pack_reader::ForwardPackReader;
+    use crate::dict::reader::DictTreeReader;
+    use crate::dict::reverse_leaf::ReverseEntry;
     use crate::format::leaf::LeafWriter;
     use crate::format::run_record_v2::RunRecordV2;
 
@@ -2229,6 +2271,22 @@ mod tests {
         }
     }
 
+    fn build_reverse_reader(entries: Vec<ReverseEntry>) -> DictTreeReader {
+        let result =
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
+
+        let mut leaf_map = HashMap::new();
+        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
+            leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
+        }
+
+        DictTreeReader::from_memory(result.branch, leaf_map)
+    }
+
+    fn make_subject_pack_bytes(entries: &[(u64, &[u8])]) -> Vec<u8> {
+        encode_forward_pack(entries, KIND_SUBJECT_FWD, 0, 256 * 1024).unwrap()
+    }
+
     fn build_test_leaf_bytes() -> Vec<u8> {
         let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
@@ -2304,5 +2362,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn find_subject_id_uses_full_iri_fallback_when_store_has_it() {
+        let cache_dir = temp_cache_dir();
+        let mut store = empty_store(Arc::new(MemoryContentStore::new()), cache_dir);
+
+        let full_iri = "https://dblp.org/streams/conf/IEEEpact";
+        let s_id = SubjectId::new(namespaces::OVERFLOW, 7).as_u64();
+
+        store.dicts.subject_reverse_tree = Some(build_reverse_reader(vec![ReverseEntry {
+            key: crate::dict::reverse_leaf::subject_reverse_key(
+                namespaces::OVERFLOW,
+                full_iri.as_bytes(),
+            ),
+            id: s_id,
+        }]));
+        store.dicts.subject_forward_packs.insert(
+            namespaces::OVERFLOW,
+            ForwardPackReader::from_memory(vec![Arc::from(
+                make_subject_pack_bytes(&[(7, full_iri.as_bytes())]).into_boxed_slice(),
+            )])
+            .unwrap(),
+        );
+
+        assert_eq!(store.find_subject_id(full_iri).unwrap(), Some(s_id));
+        assert_eq!(
+            store.find_subject_sid(full_iri).unwrap(),
+            Some(Sid::new(namespaces::OVERFLOW, full_iri))
+        );
     }
 }

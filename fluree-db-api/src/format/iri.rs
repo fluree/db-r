@@ -8,8 +8,8 @@
 //! URI so that every IRI in the database gets a compact display form.
 
 use fluree_db_core::Sid;
-use fluree_vocab::namespaces;
 use fluree_graph_json_ld::{ContextCompactor, ParsedContext};
+use fluree_vocab::namespaces;
 use std::collections::{HashMap, HashSet};
 
 use super::{FormatError, Result};

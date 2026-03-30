@@ -19,8 +19,8 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
-use std::collections::{HashMap, VecDeque};
+use fluree_db_core::{GraphId, IndexType, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
@@ -109,14 +109,16 @@ fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     emit: EmitMask,
+    inline_ops: Vec<InlineOperator>,
+    index_hint: Option<IndexType>,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
     Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
         pattern,
         object_bounds,
-        Vec::new(),
+        inline_ops,
         emit,
-        None,
+        index_hint,
     ))
 }
 
@@ -305,6 +307,11 @@ pub struct NestedLoopJoinOperator {
     /// schema, so they can be evaluated immediately on each combined row rather than
     /// requiring separate Operator wrappers.
     inline_ops: Vec<InlineOperator>,
+    /// Inline filters that depend only on right-side output vars and can run
+    /// inside the right scan before row combination.
+    right_scan_inline_ops: Vec<InlineOperator>,
+    /// Preferred right-side scan order when planning can infer a better index.
+    right_index_hint: Option<IndexType>,
     /// Variables required by downstream operators; if set, output is trimmed.
     out_schema: Option<Arc<[VarId]>>,
     /// Emit the runtime path decision once per open().
@@ -312,6 +319,53 @@ pub struct NestedLoopJoinOperator {
 }
 
 impl NestedLoopJoinOperator {
+    fn partition_right_scan_inline_ops(
+        left_schema: &[VarId],
+        right_output_vars: &[VarId],
+        inline_ops: Vec<InlineOperator>,
+    ) -> (Vec<InlineOperator>, Vec<InlineOperator>) {
+        let left_vars: HashSet<VarId> = left_schema.iter().copied().collect();
+        let right_only_vars: HashSet<VarId> = right_output_vars
+            .iter()
+            .copied()
+            .filter(|v| !left_vars.contains(v))
+            .collect();
+        let mut right_scan_inline_ops = Vec::new();
+        let mut post_join_inline_ops = Vec::new();
+
+        for op in inline_ops {
+            match &op {
+                InlineOperator::Filter(expr)
+                    if expr
+                        .variables()
+                        .into_iter()
+                        .all(|v| right_only_vars.contains(&v)) =>
+                {
+                    right_scan_inline_ops.push(op);
+                }
+                _ => post_join_inline_ops.push(op),
+            }
+        }
+
+        (right_scan_inline_ops, post_join_inline_ops)
+    }
+
+    fn apply_right_scan_inline_ops(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        right_bindings: &mut Vec<Binding>,
+    ) -> Result<bool> {
+        if self.right_scan_inline_ops.is_empty() {
+            return Ok(true);
+        }
+        apply_inline(
+            &self.right_scan_inline_ops,
+            &self.right_new_vars,
+            right_bindings,
+            Some(ctx),
+        )
+    }
+
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -392,10 +446,17 @@ impl NestedLoopJoinOperator {
             }
         }
 
+        let (right_scan_inline_ops, inline_ops) =
+            Self::partition_right_scan_inline_ops(&left_schema, &right_output_vars, inline_ops);
+
         // Build combined schema: left schema + new right vars + inline bind vars
         let mut combined = left_schema.to_vec();
         combined.extend(right_output_vars.iter().copied());
         let combined_schema: Arc<[VarId]> = extend_schema(&combined, &inline_ops).into();
+        let right_index_hint = crate::binary_scan::preferred_index_hint_for_prefix_filters(
+            &right_pattern,
+            &right_scan_inline_ops,
+        );
 
         // Build unify instructions for shared vars
         //
@@ -501,6 +562,8 @@ impl NestedLoopJoinOperator {
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
             inline_ops,
+            right_scan_inline_ops,
+            right_index_hint,
             out_schema: None,
             logged_runtime_mode: false,
         }
@@ -1031,8 +1094,14 @@ impl Operator for NestedLoopJoinOperator {
                         cached_gv.as_ref(),
                     )?;
                     let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
-                    let mut right_scan =
-                        make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
+                    let mut right_scan = make_right_scan(
+                        bound_pattern,
+                        bounds,
+                        self.right_emit,
+                        self.right_scan_inline_ops.clone(),
+                        self.right_index_hint,
+                        ctx,
+                    );
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
@@ -1051,7 +1120,14 @@ impl Operator for NestedLoopJoinOperator {
                 let bound_pattern =
                     self.substitute_pattern_with_store(left_batch, left_row, cached_gv.as_ref())?;
                 let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
-                let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
+                let mut right_scan = make_right_scan(
+                    bound_pattern,
+                    bounds,
+                    self.right_emit,
+                    self.right_scan_inline_ops.clone(),
+                    self.right_index_hint,
+                    ctx,
+                );
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
@@ -1218,7 +1294,14 @@ impl NestedLoopJoinOperator {
             };
             let left_batch = &self.stored_left_batches[batch_idx];
             let bounds = self.bounds_for_row(left_batch, left_row, ctx)?;
-            let mut right_scan = make_right_scan(bound_pattern, bounds, self.right_emit, ctx);
+            let mut right_scan = make_right_scan(
+                bound_pattern,
+                bounds,
+                self.right_emit,
+                self.right_scan_inline_ops.clone(),
+                self.right_index_hint,
+                ctx,
+            );
             right_scan.open(ctx).await?;
             while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                 if !right_batch.is_empty() {
@@ -1645,14 +1728,19 @@ impl NestedLoopJoinOperator {
                         for &accum_idx in accum_indices {
                             let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
                             let left_batch = &self.stored_left_batches[*batch_idx];
+                            let mut right_bindings = Vec::with_capacity(self.right_new_vars.len());
+                            for _ in &self.right_new_vars {
+                                right_bindings.push(obj_binding.clone());
+                            }
+                            if !self.apply_right_scan_inline_ops(ctx, &mut right_bindings)? {
+                                continue;
+                            }
 
                             let mut combined = Vec::with_capacity(self.combined_schema.len());
                             for col in 0..self.left_schema.len() {
                                 combined.push(left_batch.get_by_col(*row_idx, col).clone());
                             }
-                            for _ in &self.right_new_vars {
-                                combined.push(obj_binding.clone());
-                            }
+                            combined.extend(right_bindings);
 
                             if !apply_inline(
                                 &self.inline_ops,
@@ -2027,15 +2115,20 @@ impl NestedLoopJoinOperator {
                                         "batched object join: left batch missing".into(),
                                     )
                                 })?;
+                            let mut right_bindings = Vec::with_capacity(self.right_new_vars.len());
+                            for _ in &self.right_new_vars {
+                                right_bindings.push(Binding::EncodedSid { s_id });
+                            }
+                            if !self.apply_right_scan_inline_ops(ctx, &mut right_bindings)? {
+                                continue;
+                            }
 
                             let mut combined: Vec<Binding> =
                                 Vec::with_capacity(self.combined_schema.len());
                             for col in 0..self.left_schema.len() {
                                 combined.push(left_batch.get_by_col(row_idx, col).clone());
                             }
-                            for _ in &self.right_new_vars {
-                                combined.push(Binding::EncodedSid { s_id });
-                            }
+                            combined.extend(right_bindings);
 
                             if !apply_inline(
                                 &self.inline_ops,
@@ -2115,15 +2208,20 @@ impl NestedLoopJoinOperator {
                                         "batched object join: left batch missing".into(),
                                     )
                                 })?;
+                            let mut right_bindings = Vec::with_capacity(self.right_new_vars.len());
+                            for _ in &self.right_new_vars {
+                                right_bindings.push(Binding::EncodedSid { s_id });
+                            }
+                            if !self.apply_right_scan_inline_ops(ctx, &mut right_bindings)? {
+                                continue;
+                            }
 
                             let mut combined: Vec<Binding> =
                                 Vec::with_capacity(self.combined_schema.len());
                             for col in 0..self.left_schema.len() {
                                 combined.push(left_batch.get_by_col(row_idx, col).clone());
                             }
-                            for _ in &self.right_new_vars {
-                                combined.push(Binding::EncodedSid { s_id });
-                            }
+                            combined.extend(right_bindings);
 
                             if !apply_inline(
                                 &self.inline_ops,
@@ -2881,6 +2979,96 @@ mod tests {
         assert_eq!(batch.len(), 1);
         // Output schema is [?v, ?x] (left vars + new right vars)
         assert_eq!(batch.schema(), &[v, x]);
+    }
+
+    #[test]
+    fn test_join_prefers_opst_for_prefix_filtered_right_scan() {
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
+            Term::Var(VarId(1)),
+        );
+
+        struct MockOp;
+        #[async_trait]
+        impl Operator for MockOp {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let join = NestedLoopJoinOperator::new(
+            Box::new(MockOp),
+            left_schema,
+            right_pattern,
+            None,
+            vec![InlineOperator::Filter(
+                crate::expression::PreparedBoolExpression::new(crate::ir::Expression::call(
+                    crate::ir::Function::StrStarts,
+                    vec![
+                        crate::ir::Expression::Var(VarId(1)),
+                        crate::ir::Expression::Const(crate::ir::FilterValue::String(
+                            "Ali".to_string(),
+                        )),
+                    ],
+                )),
+            )],
+            EmitMask::ALL,
+        );
+
+        assert_eq!(join.right_index_hint, Some(IndexType::Opst));
+        assert_eq!(join.right_scan_inline_ops.len(), 1);
+        assert!(join.inline_ops.is_empty());
+    }
+
+    #[test]
+    fn test_join_keeps_mixed_left_right_filter_post_join() {
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
+            Term::Var(VarId(1)),
+        );
+
+        struct MockOp;
+        #[async_trait]
+        impl Operator for MockOp {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let join = NestedLoopJoinOperator::new(
+            Box::new(MockOp),
+            left_schema,
+            right_pattern,
+            None,
+            vec![InlineOperator::Filter(
+                crate::expression::PreparedBoolExpression::new(crate::ir::Expression::eq(
+                    crate::ir::Expression::Var(VarId(0)),
+                    crate::ir::Expression::Var(VarId(1)),
+                )),
+            )],
+            EmitMask::ALL,
+        );
+
+        assert!(join.right_scan_inline_ops.is_empty());
+        assert_eq!(join.inline_ops.len(), 1);
     }
 
     /// Verify join produces correct output when unification IS needed.

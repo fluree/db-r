@@ -543,6 +543,7 @@ fn extract_numbers(values: &[Binding]) -> Vec<f64> {
         .filter_map(|b| match b {
             Binding::Lit { val, .. } => match val {
                 FlakeValue::Long(n) => Some(*n as f64),
+                FlakeValue::Boolean(b) => Some(i64::from(*b) as f64),
                 FlakeValue::Double(n) => {
                     if n.is_nan() {
                         None
@@ -645,6 +646,37 @@ mod tests {
         let result = agg_sum(&values);
         let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(30.5));
+    }
+
+    #[test]
+    fn test_agg_sum_booleans_as_zero_one() {
+        let values = vec![
+            Binding::lit(
+                FlakeValue::Boolean(true),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+            Binding::lit(
+                FlakeValue::Boolean(false),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+            Binding::lit(
+                FlakeValue::Boolean(true),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+        ];
+
+        let result = agg_sum(&values);
+        let (val, _) = result.as_lit().unwrap();
+        assert_eq!(*val, FlakeValue::Long(2));
     }
 
     #[test]
