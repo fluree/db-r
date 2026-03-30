@@ -28,7 +28,38 @@ use fluree_db_core::ledger_config::{
     ReasoningDefaults, ResolvedConfig, RollbackGuard, ShaclDefaults, TransactDefaults, TrustMode,
     TrustPolicy, ValidationMode,
 };
-use fluree_db_core::{GraphDbRef, LedgerSnapshot, OverlayProvider, Sid, CONFIG_GRAPH_ID};
+use fluree_db_core::{
+    Flake, GraphDbRef, GraphId, IndexType, LedgerSnapshot, OverlayProvider, Sid, CONFIG_GRAPH_ID,
+};
+
+/// Overlay wrapper that forces a non-zero epoch.
+///
+/// The binary scan operator uses epoch=0 to enable late materialization
+/// (returning `EncodedSid`/`EncodedLit` instead of resolved bindings).
+/// Config resolver queries need concrete `Sid`/`Lit` bindings, so we
+/// wrap the overlay with epoch=1 to disable late materialization.
+struct EagerOverlay<'a>(&'a dyn OverlayProvider);
+
+impl OverlayProvider for EagerOverlay<'_> {
+    fn epoch(&self) -> u64 {
+        // Force non-zero epoch to disable late materialization
+        self.0.epoch().max(1)
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        self.0
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback);
+    }
+}
 use fluree_db_query::{
     execute_pattern_with_overlay_at, Binding, Ref, Term, TriplePattern, VarRegistry,
 };
@@ -502,7 +533,10 @@ async fn find_instances_of_type(
         Term::Sid(type_sid.clone()),
     );
 
-    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t);
+    // Use EagerOverlay to disable late materialization — config resolver
+    // needs concrete Sid/Lit bindings, not EncodedSid/EncodedLit.
+    let eager = EagerOverlay(overlay);
+    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, &eager, to_t);
     let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     let mut results = Vec::new();
@@ -539,7 +573,8 @@ async fn query_config_predicate(
         Term::Var(obj_var),
     );
 
-    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t);
+    let eager = EagerOverlay(overlay);
+    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, &eager, to_t);
     let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     let mut results = Vec::new();
