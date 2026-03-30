@@ -106,9 +106,7 @@ impl StorageRead for MemoryStorage {
 #[async_trait]
 impl StorageWrite for MemoryStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
-        self.data
-            .write()
-            .insert(address.to_string(), bytes.to_vec());
+        self.insert(address, bytes.to_vec());
         Ok(())
     }
 
