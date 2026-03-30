@@ -61,6 +61,11 @@ impl MemoryStorage {
         self.insert(address, bytes);
         Ok(())
     }
+
+    /// Remove data at the given address, if present.
+    pub fn remove(&self, address: impl Into<String>) {
+        self.data.write().remove(&address.into());
+    }
 }
 
 #[async_trait]
@@ -112,7 +117,7 @@ impl StorageWrite for MemoryStorage {
 
     async fn delete(&self, address: &str) -> Result<()> {
         // Idempotent: ok even if not found
-        self.data.write().remove(address);
+        self.remove(address);
         Ok(())
     }
 }
