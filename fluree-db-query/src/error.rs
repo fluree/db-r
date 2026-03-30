@@ -51,6 +51,10 @@ pub enum QueryError {
     #[error("Invalid expression: {0}")]
     InvalidExpression(String),
 
+    /// Dictionary lookup or encoded-value decode failed during query execution
+    #[error("Dictionary lookup failed: {0}")]
+    DictionaryLookup(String),
+
     /// Resource limit exceeded
     #[error("Resource limit exceeded: {0}")]
     ResourceLimit(String),
@@ -85,6 +89,23 @@ pub enum QueryError {
 }
 
 impl QueryError {
+    /// Create a dictionary lookup failure with debug context.
+    pub fn dictionary_lookup(msg: impl Into<String>) -> Self {
+        Self::DictionaryLookup(msg.into())
+    }
+
+    /// Returns true when an expression error should degrade to false/unbound
+    /// under normal SPARQL evaluation instead of aborting the query.
+    pub fn can_demote_in_expression(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidFilter(_)
+                | Self::InvalidExpression(_)
+                | Self::Arithmetic(_)
+                | Self::Comparison(_)
+        )
+    }
+
     /// Create an execution error (runtime configuration/environment issue).
     pub fn execution(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
@@ -93,3 +114,19 @@ impl QueryError {
 
 /// Result type for query operations
 pub type Result<T> = std::result::Result<T, QueryError>;
+
+#[cfg(test)]
+mod tests {
+    use super::QueryError;
+
+    #[test]
+    fn can_demote_expression_errors_only() {
+        assert!(QueryError::InvalidFilter("bad regex".into()).can_demote_in_expression());
+        assert!(QueryError::InvalidExpression("bad bind".into()).can_demote_in_expression());
+        assert!(
+            !QueryError::dictionary_lookup("missing string id".to_string())
+                .can_demote_in_expression()
+        );
+        assert!(!QueryError::Internal("runtime failure".into()).can_demote_in_expression());
+    }
+}

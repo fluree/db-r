@@ -444,16 +444,16 @@ impl<'a> PsotSubjectCountIter<'a> {
                     continue;
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -590,16 +590,16 @@ impl<'a> PostObjectGroupCountIter<'a> {
                     return Ok(None);
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Post,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -815,16 +815,16 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                 }
 
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -1644,7 +1644,11 @@ pub fn term_to_ref_s_id(
 /// enforcement (or root policy), and no uncommitted overlay.
 #[inline]
 fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
-    !ctx.history_mode
+    // Fast paths rely on a single binary index + single-ledger semantics for encoded IDs.
+    // Dataset (multi-ledger) execution can span multiple ledgers/graphs, so disable fast
+    // paths for correctness unless/until they are made dataset-aware.
+    !ctx.is_multi_ledger()
+        && !ctx.history_mode
         && ctx.from_t.is_none()
         && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
         && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0

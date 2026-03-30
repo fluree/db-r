@@ -36,8 +36,39 @@ pub fn eval_coalesce<R: RowAccess>(
     for arg in args {
         match arg.eval_to_comparable(row, ctx) {
             Ok(Some(val)) => return Ok(Some(val)),
-            Ok(None) | Err(_) => continue,
+            Ok(None) => continue,
+            Err(err) if err.can_demote_in_expression() => continue,
+            Err(err) => return Err(err),
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::BindingRow;
+    use crate::ir::{FilterValue, Function};
+    use crate::var_registry::VarId;
+
+    #[test]
+    fn if_condition_errors_propagate() {
+        let expr = Expression::call(
+            Function::If,
+            vec![
+                Expression::call(
+                    Function::StrStarts,
+                    vec![
+                        Expression::Const(FilterValue::Long(1)),
+                        Expression::Const(FilterValue::String("x".to_string())),
+                    ],
+                ),
+                Expression::Const(FilterValue::String("then".to_string())),
+                Expression::Const(FilterValue::String("else".to_string())),
+            ],
+        );
+
+        let row = BindingRow::new(&[] as &[VarId], &[]);
+        assert!(expr.eval_to_comparable(&row, None).is_err());
+    }
 }

@@ -149,7 +149,7 @@ pub fn rewrite_patterns_for_r2rml(
 /// Convert a triple pattern to an R2RML pattern.
 ///
 /// Returns `None` if the pattern cannot be converted (e.g., subject is a literal).
-fn convert_triple_to_r2rml(
+pub fn convert_triple_to_r2rml(
     tp: &TriplePattern,
     graph_source_id: &str,
     snapshot: &LedgerSnapshot,

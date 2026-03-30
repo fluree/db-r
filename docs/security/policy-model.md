@@ -356,6 +356,8 @@ For development only:
 
 All access allowed unless explicitly denied.
 
+> **Note:** When `opts.identity` is provided, `default-allow` is ignored if the identity IRI has no subject node in the ledger. Unknown identities always fail-closed regardless of this setting. See the [Policy Combining Algorithm](programmatic-policy.md#policy-combining-algorithm) for the three-state identity resolution.
+
 ## Policy Priority
 
 Control policy evaluation order with priority:

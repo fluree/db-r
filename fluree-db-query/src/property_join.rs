@@ -1,7 +1,8 @@
 //! Property-join operator for same-subject multi-predicate patterns
 //!
 //! The `PropertyJoinOperator` optimizes queries where multiple triple patterns
-//! share the same subject variable and have bound predicates with variable objects.
+//! share the same subject variable and have bound predicates, with either variable
+//! objects or bound existence checks.
 //!
 //! # Example Pattern
 //!
@@ -26,11 +27,14 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::join::NestedLoopJoinOperator;
+use crate::fast_path_common::try_normalize_pred_sid;
+use crate::join::{
+    batched_subject_probe_binary, batched_subject_star_spot, make_dict_overlay,
+    BatchedSpotStarMatch, BatchedSubjectProbeMatch, SpotStarPredicateParams, SubjectProbeParams,
+};
+use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::seed::EmptyOperator;
 use crate::triple::{Ref, Term, TriplePattern};
-use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::DatatypeConstraint;
@@ -52,6 +56,10 @@ use crate::binary_scan::{EmitMask, ScanOperator};
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
+/// Safety cap for cartesian product row generation. Prevents unbounded memory
+/// allocation when predicates have extreme cardinality (e.g. 100k × 100k).
+const MAX_CARTESIAN_ROWS: usize = 10_000_000;
+
 fn make_property_join_scan(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
@@ -70,6 +78,7 @@ fn make_property_join_scan(
 ///
 /// Optimizes queries of the form:
 /// ```text
+/// ?s rdf:type :Deal
 /// ?s :pred1 ?obj1
 /// ?s :pred2 ?obj2
 /// ...
@@ -86,11 +95,8 @@ fn make_property_join_scan(
 pub struct PropertyJoinOperator {
     /// The shared subject variable
     subject_var: VarId,
-    /// Predicates and their corresponding object variables
-    /// Each entry is (predicate_ref, object_var, optional datatype constraint, emit_object).
-    /// predicate_ref can be Ref::Sid or Ref::Iri depending on how the query was lowered.
-    /// emit_object is false for existence-only (semijoin) predicates.
-    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>, bool)>,
+    /// Predicates and their object requirements.
+    predicates: Vec<PropertyJoinPredicate>,
     /// Output schema: [subject_var, obj_var_1, obj_var_2, ...]
     output_schema: Arc<[VarId]>,
     /// Operator state
@@ -112,6 +118,27 @@ pub struct PropertyJoinOperator {
     /// For each predicate index, the position in `subject_values`'s values vec if emitted.
     /// Existence-only predicates are `None`.
     emit_positions: Vec<Option<usize>>,
+    /// Whether each emitted position comes from a required predicate.
+    emitted_required: Vec<bool>,
+    /// Row-local filters/binds applied after star rows are assembled.
+    inline_ops: Vec<InlineOperator>,
+}
+
+#[derive(Clone, Debug)]
+enum PropertyJoinObject {
+    /// Variable object that may or may not be emitted.
+    Var(VarId),
+    /// Bound object used as an existence constraint (for example `?s rdf:type :Class`).
+    Bound(Term),
+}
+
+#[derive(Clone, Debug)]
+struct PropertyJoinPredicate {
+    pred_ref: Ref,
+    object: PropertyJoinObject,
+    dtc: Option<DatatypeConstraint>,
+    emit_object: bool,
+    required: bool,
 }
 
 /// Join-safe subject key for PropertyJoinOperator.
@@ -163,6 +190,129 @@ impl Hash for SubjectKey {
 }
 
 impl PropertyJoinOperator {
+    fn driver_score(
+        predicate: &PropertyJoinPredicate,
+        object_bounds: &HashMap<VarId, ObjectBounds>,
+    ) -> u8 {
+        match &predicate.object {
+            PropertyJoinObject::Bound(_) if predicate.pred_ref.is_rdf_type() => 0,
+            PropertyJoinObject::Bound(_) => 1,
+            PropertyJoinObject::Var(obj_var) if object_bounds.contains_key(obj_var) => 2,
+            PropertyJoinObject::Var(_) => 3,
+        }
+    }
+
+    fn select_driver_predicate(
+        predicates: &[PropertyJoinPredicate],
+        object_bounds: &HashMap<VarId, ObjectBounds>,
+    ) -> Option<usize> {
+        predicates
+            .iter()
+            .enumerate()
+            .filter(|(_, predicate)| predicate.required)
+            .min_by_key(|(idx, predicate)| (Self::driver_score(predicate, object_bounds), *idx))
+            .map(|(idx, _)| idx)
+    }
+
+    fn predicate_bounds<'a>(
+        &'a self,
+        predicate: &'a PropertyJoinPredicate,
+    ) -> Option<&'a ObjectBounds> {
+        match &predicate.object {
+            PropertyJoinObject::Var(obj_var) => self.object_bounds.get(obj_var),
+            PropertyJoinObject::Bound(_) => None,
+        }
+    }
+
+    fn predicate_bound_object(predicate: &PropertyJoinPredicate) -> Option<&Term> {
+        match &predicate.object {
+            PropertyJoinObject::Bound(term) => Some(term),
+            PropertyJoinObject::Var(_) => None,
+        }
+    }
+
+    fn ingest_probe_match(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        all_subject_values: &mut FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+        pred_idx: usize,
+        probe_match: BatchedSubjectProbeMatch,
+    ) -> Result<()> {
+        let subject = Binding::EncodedSid {
+            s_id: probe_match.subject_id,
+        };
+        if let Some(key) = Self::subject_key(ctx, &subject)? {
+            if let Some(entry) = all_subject_values.get_mut(&key) {
+                entry.1 |= 1u64 << pred_idx;
+                if let (Some(epos), Some(object)) =
+                    (self.emit_positions[pred_idx], probe_match.object)
+                {
+                    entry.2[epos].push(object);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ingest_spot_star_match(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        all_subject_values: &mut FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+        spot_match: BatchedSpotStarMatch,
+    ) -> Result<()> {
+        let subject = Binding::EncodedSid {
+            s_id: spot_match.subject_id,
+        };
+        if let Some(key) = Self::subject_key(ctx, &subject)? {
+            if let Some(entry) = all_subject_values.get_mut(&key) {
+                entry.1 |= 1u64 << spot_match.predicate_idx;
+                if let (Some(epos), Some(object)) = (
+                    self.emit_positions[spot_match.predicate_idx],
+                    spot_match.object,
+                ) {
+                    entry.2[epos].push(object);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_driver_subject_ids(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        order_pos: usize,
+        all_subject_values: &FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)>,
+    ) -> Option<Vec<u64>> {
+        if order_pos != 0 || ctx.binary_store.is_none() {
+            return None;
+        }
+
+        let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
+        for key in all_subject_values.keys() {
+            if let SubjectKey::Id(s_id) = key {
+                ids.push(*s_id);
+            } else {
+                return None;
+            }
+        }
+        (!ids.is_empty()).then_some(ids)
+    }
+
+    fn can_spot_walk_remaining(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        driver_subject_ids: &Option<Vec<u64>>,
+        remaining_predicates: &[usize],
+    ) -> bool {
+        driver_subject_ids.is_some()
+            && !ctx.is_multi_ledger()
+            && ctx.binary_store.is_some()
+            && !remaining_predicates.is_empty()
+            && remaining_predicates
+                .iter()
+                .all(|&idx| self.predicates[idx].dtc.is_none())
+    }
+
     /// Create a new property-join operator from patterns
     ///
     /// # Arguments
@@ -177,13 +327,7 @@ impl PropertyJoinOperator {
         patterns: &[TriplePattern],
         object_bounds: HashMap<VarId, ObjectBounds>,
     ) -> Result<Self> {
-        if !crate::planner::is_property_join(patterns) {
-            return Err(QueryError::Internal(
-                "Patterns must form a property-join shape".into(),
-            ));
-        }
-
-        Self::new_with_needed_vars(patterns, object_bounds, None)
+        Self::new_with_options(patterns, &[], object_bounds, None, Vec::new())
     }
 
     /// Create a new property-join operator, optionally treating some predicate patterns
@@ -193,14 +337,32 @@ impl PropertyJoinOperator {
         object_bounds: HashMap<VarId, ObjectBounds>,
         needed_vars: Option<&std::collections::HashSet<VarId>>,
     ) -> Result<Self> {
-        if !crate::planner::is_property_join(patterns) {
+        Self::new_with_options(patterns, &[], object_bounds, needed_vars, Vec::new())
+    }
+
+    pub fn new_with_options(
+        required_patterns: &[TriplePattern],
+        optional_patterns: &[TriplePattern],
+        object_bounds: HashMap<VarId, ObjectBounds>,
+        needed_vars: Option<&std::collections::HashSet<VarId>>,
+        inline_ops: Vec<InlineOperator>,
+    ) -> Result<Self> {
+        if !crate::planner::is_property_join(required_patterns) {
             return Err(QueryError::Internal(
                 "Patterns must form a property-join shape".into(),
             ));
         }
 
+        let mut all_patterns = required_patterns.to_vec();
+        all_patterns.extend_from_slice(optional_patterns);
+        if !crate::planner::is_property_join(&all_patterns) {
+            return Err(QueryError::Internal(
+                "Required and optional patterns must form a property-join shape".into(),
+            ));
+        }
+
         // Extract subject var (guaranteed same for all by is_property_join)
-        let subject_var = match &patterns[0].s {
+        let subject_var = match &required_patterns[0].s {
             Ref::Var(v) => *v,
             _ => {
                 return Err(QueryError::Internal(
@@ -209,44 +371,60 @@ impl PropertyJoinOperator {
             }
         };
 
-        // Extract (predicate_ref, object_var, dt, emit_object) tuples.
-        // Predicate can be Ref::Sid or Ref::Iri depending on lowering
-        let mut predicates = Vec::with_capacity(patterns.len());
-        for p in patterns {
-            let pred_ref = match &p.p {
-                Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
-                _ => {
-                    return Err(QueryError::Internal(
-                        "Property-join requires bound predicates (Sid or Iri)".into(),
-                    ))
-                }
-            };
-            let obj_var = match &p.o {
-                Term::Var(v) => *v,
-                _ => {
-                    return Err(QueryError::Internal(
-                        "Property-join requires variable objects".into(),
-                    ))
-                }
-            };
-            let emit_object = needed_vars.is_none_or(|n| n.contains(&obj_var));
-            predicates.push((pred_ref, obj_var, p.dtc.clone(), emit_object));
+        // Extract predicate/object requirements. Predicates can be Ref::Sid or Ref::Iri
+        // depending on how the query was lowered. Bound objects are kept as existence-only
+        // constraints so same-subject stars like `?s rdf:type :Class ; :name ?name` can still
+        // use the property-join path.
+        let mut predicates = Vec::with_capacity(all_patterns.len());
+        for (required, patterns) in [(true, required_patterns), (false, optional_patterns)] {
+            for p in patterns {
+                let pred_ref = match &p.p {
+                    Ref::Sid(_) | Ref::Iri(_) => p.p.clone(),
+                    _ => {
+                        return Err(QueryError::Internal(
+                            "Property-join requires bound predicates (Sid or Iri)".into(),
+                        ))
+                    }
+                };
+                let (object, emit_object) = match &p.o {
+                    Term::Var(v) => {
+                        let emit = needed_vars.is_none_or(|n| n.contains(v));
+                        (PropertyJoinObject::Var(*v), emit)
+                    }
+                    _ => (PropertyJoinObject::Bound(p.o.clone()), false),
+                };
+                predicates.push(PropertyJoinPredicate {
+                    pred_ref,
+                    object,
+                    dtc: p.dtc.clone(),
+                    emit_object,
+                    required,
+                });
+            }
         }
 
         // Build output schema: [subject_var, obj_var_1, obj_var_2, ...] but only for emitted vars.
         let mut schema_vec = vec![subject_var];
-        for (_, obj_var, _, emit) in &predicates {
-            if *emit {
+        let mut emitted_required = Vec::new();
+        for predicate in &predicates {
+            if predicate.emit_object {
+                let PropertyJoinObject::Var(obj_var) = &predicate.object else {
+                    return Err(QueryError::Internal(
+                        "property-join cannot emit a bound object".into(),
+                    ));
+                };
                 schema_vec.push(*obj_var);
-            }
+                emitted_required.push(predicate.required);
+            };
         }
-        let output_schema: Arc<[VarId]> = Arc::from(schema_vec.into_boxed_slice());
+        let output_schema: Arc<[VarId]> =
+            Arc::from(extend_schema(&schema_vec, &inline_ops).into_boxed_slice());
 
         let emit_positions = {
             let mut out = Vec::with_capacity(predicates.len());
             let mut next = 0usize;
-            for (_, _ov, _dt, emit) in &predicates {
-                if *emit {
+            for predicate in &predicates {
+                if predicate.emit_object {
                     out.push(Some(next));
                     next += 1;
                 } else {
@@ -266,6 +444,8 @@ impl PropertyJoinOperator {
             subject_idx: 0,
             object_bounds,
             emit_positions,
+            emitted_required,
+            inline_ops,
         })
     }
 
@@ -289,35 +469,52 @@ impl PropertyJoinOperator {
         }
     }
 
-    fn subject_key_multi(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
-        match subject {
+    fn subject_key_multi(
+        ctx: &ExecutionContext<'_>,
+        subject: &Binding,
+    ) -> Result<Option<SubjectKey>> {
+        Ok(match subject {
             Binding::IriMatch { iri, .. } => Some(SubjectKey::Iri(iri.clone())),
             Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
             Binding::Sid(sid) => {
                 // In dataset mode, use canonical IRI strings as join keys.
                 // Prefer decoding within the active ledger when available.
-                let iri = ctx
+                let Some(iri) = ctx
                     .active_ledger_id()
                     .and_then(|addr| ctx.decode_sid_in_ledger(sid, addr))
-                    .or_else(|| ctx.decode_sid(sid))?;
+                    .or_else(|| ctx.decode_sid(sid))
+                else {
+                    return Ok(None);
+                };
                 Some(SubjectKey::Iri(Arc::from(iri)))
             }
             Binding::EncodedSid { s_id } => {
                 // Resolve to canonical IRI for cross-ledger comparison.
                 // Novelty-aware via ctx.resolve_subject_iri().
-                ctx.resolve_subject_iri(*s_id)
-                    .and_then(|r| r.ok())
-                    .map(|iri| SubjectKey::Iri(Arc::from(iri)))
+                match ctx.resolve_subject_iri(*s_id) {
+                    Some(Ok(iri)) => Some(SubjectKey::Iri(Arc::from(iri))),
+                    Some(Err(e)) => {
+                        tracing::debug!(
+                            s_id,
+                            error = %e,
+                            "property join failed to resolve encoded subject"
+                        );
+                        return Err(crate::error::QueryError::dictionary_lookup(format!(
+                            "property join subject key: resolve subject IRI for s_id={s_id}: {e}"
+                        )));
+                    }
+                    None => None,
+                }
             }
             _ => None,
-        }
+        })
     }
 
-    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
+    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Result<Option<SubjectKey>> {
         if ctx.is_multi_ledger() {
             Self::subject_key_multi(ctx, subject)
         } else {
-            Self::subject_key_single(subject)
+            Ok(Self::subject_key_single(subject))
         }
     }
 
@@ -329,6 +526,7 @@ impl PropertyJoinOperator {
         output_schema_len: usize,
         subject_binding: &Binding,
         values_per_pred: &[Vec<Binding>],
+        emitted_required: &[bool],
     ) -> Vec<Vec<Binding>> {
         // If no object vars are emitted (existence-only predicates), then each matching
         // subject produces exactly one output row.
@@ -340,17 +538,28 @@ impl PropertyJoinOperator {
             }];
         }
 
-        if values_per_pred.iter().any(|v| v.is_empty()) {
-            return Vec::new();
-        }
-
-        // Calculate total combinations
-        let total: usize = values_per_pred.iter().map(|v| v.len()).product();
+        // Calculate total combinations (using saturating multiply to avoid overflow
+        // on extremely high-cardinality predicates).
+        let total: usize = values_per_pred
+            .iter()
+            .enumerate()
+            .fold(1usize, |acc, (idx, values)| {
+                let factor = if values.is_empty() {
+                    if emitted_required.get(idx).copied().unwrap_or(true) {
+                        0
+                    } else {
+                        1
+                    }
+                } else {
+                    values.len()
+                };
+                acc.saturating_mul(factor)
+            });
         if total == 0 {
             return Vec::new();
         }
 
-        let mut rows = Vec::with_capacity(total);
+        let mut rows = Vec::with_capacity(total.min(MAX_CARTESIAN_ROWS));
 
         // Generate cartesian product using indices
         let mut indices: Vec<usize> = vec![0; values_per_pred.len()];
@@ -360,16 +569,28 @@ impl PropertyJoinOperator {
             let mut row = Vec::with_capacity(output_schema_len);
             row.push(subject_binding.clone());
             for (pred_idx, val_idx) in indices.iter().enumerate() {
-                row.push(values_per_pred[pred_idx][*val_idx].clone());
+                if values_per_pred[pred_idx].is_empty() {
+                    row.push(Binding::Poisoned);
+                } else {
+                    row.push(values_per_pred[pred_idx][*val_idx].clone());
+                }
             }
             rows.push(row);
+            if rows.len() >= MAX_CARTESIAN_ROWS {
+                break;
+            }
 
             // Increment indices (like odometer)
             let mut carry = true;
             for i in (0..indices.len()).rev() {
                 if carry {
                     indices[i] += 1;
-                    if indices[i] >= values_per_pred[i].len() {
+                    let width = if values_per_pred[i].is_empty() {
+                        1
+                    } else {
+                        values_per_pred[i].len()
+                    };
+                    if indices[i] >= width {
                         indices[i] = 0;
                     } else {
                         carry = false;
@@ -428,55 +649,67 @@ impl Operator for PropertyJoinOperator {
             let mut all_subject_values: FxHashMap<SubjectKey, (Binding, u64, Vec<Vec<Binding>>)> =
                 FxHashMap::default();
             let required_mask: u64 = if self.predicates.len() >= 64 {
-                // Extremely unlikely; fall back to generic join behavior rather than miscount.
-                // (PropertyJoinOperator isn't intended for 64+ predicate stars.)
                 u64::MAX
             } else {
-                (1u64 << self.predicates.len()) - 1
+                self.predicates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, predicate)| predicate.required)
+                    .fold(0u64, |mask, (idx, _)| mask | (1u64 << idx))
             };
 
-            let driver_pred_idx = self
+            let driver_pred_idx =
+                Self::select_driver_predicate(&self.predicates, &self.object_bounds);
+            tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
+
+            let mut scan_order: Vec<usize> = self
                 .predicates
                 .iter()
                 .enumerate()
-                .find(|(_idx, (_p, obj_var, _dt, _emit))| self.object_bounds.contains_key(obj_var))
-                .map(|(idx, _)| idx);
-            tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
-
-            let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
+                .filter(|(_, predicate)| predicate.required)
+                .map(|(idx, _)| idx)
+                .collect();
             if let Some(d) = driver_pred_idx {
-                scan_order.swap(0, d);
+                if let Some(driver_pos) = scan_order.iter().position(|idx| *idx == d) {
+                    scan_order.swap(0, driver_pos);
+                }
             }
+            scan_order.extend(
+                self.predicates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, predicate)| !predicate.required)
+                    .map(|(idx, _)| idx),
+            );
 
             let mut driver_subject_ids: Option<Vec<u64>> = None;
             let mut used_batched_probe = false;
+            let mut used_spot_star_walk = false;
             let mut probe_chunks: u64 = 0;
             let mut probe_subjects_total: u64 = 0;
             let mut scan_rows_total: u64 = 0;
             let emit_count = self.emit_positions.iter().flatten().count();
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, dtc, _emit) = &self.predicates[pred_idx];
+                let predicate = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
                 // Batched probe requires binary store with batched_lookup support.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
+                    && !ctx.is_multi_ledger()
                     && ctx.binary_store.is_some()
-                    && dtc.is_none();
+                    && predicate.dtc.is_none();
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
-                    let pred_sid = match pred_term {
-                        Ref::Sid(s) => Some(s.clone()),
-                        Ref::Iri(iri) => Some(store.encode_iri(iri)),
-                        Ref::Var(_) => None,
-                    };
+                    let pred_sid = try_normalize_pred_sid(store, &predicate.pred_ref);
 
                     if let Some(pred_sid) = pred_sid {
                         let subject_ids = driver_subject_ids.as_ref().unwrap();
                         if !subject_ids.is_empty() {
+                            let dict_overlay = make_dict_overlay(ctx, store);
                             // IMPORTANT: Batched join uses the min/max s_id range of the left batch
                             // to decide which leaf files/leaflets to scan. If the subject IDs are
                             // sparse across the full id space, a single huge batch can still scan
@@ -513,62 +746,28 @@ impl Operator for PropertyJoinOperator {
                                 used_batched_probe = true;
                                 probe_chunks += 1;
                                 probe_subjects_total += chunk.len() as u64;
-
-                                let rows: Vec<Vec<Binding>> = chunk
-                                    .iter()
-                                    .map(|&s_id| vec![Binding::EncodedSid { s_id }])
-                                    .collect();
-
-                                // Seed: VALUES ?s { <subjectIds...> }
-                                let left = Box::new(ValuesOperator::new(
-                                    Box::new(EmptyOperator::new()),
-                                    vec![self.subject_var],
-                                    rows,
-                                ));
-                                let left_schema: Arc<[VarId]> =
-                                    Arc::from(vec![self.subject_var].into_boxed_slice());
-
-                                // Probe: ?s <pred> ?o
-                                let right_pattern = TriplePattern::new(
-                                    Ref::Var(self.subject_var),
-                                    Ref::Sid(pred_sid.clone()),
-                                    Term::Var(TEMP_OBJECT_VAR),
-                                );
-
-                                let mut join = NestedLoopJoinOperator::new(
-                                    left,
-                                    left_schema,
-                                    right_pattern,
-                                    None, // bounds already applied in driver; keep probe unconstrained
-                                    Vec::new(),
-                                    EmitMask::ALL,
-                                );
-                                join.open(ctx).await?;
-                                while let Some(batch) = join.next_batch(ctx).await? {
-                                    let subject_col = batch.column_by_idx(0);
-                                    let object_col = batch.column_by_idx(1);
-                                    if let (Some(subjects), Some(objects)) =
-                                        (subject_col, object_col)
-                                    {
-                                        scan_rows_total += batch.len() as u64;
-                                        for (subject, object) in subjects.iter().zip(objects.iter())
-                                        {
-                                            if let Some(key) = Self::subject_key(ctx, subject) {
-                                                if let Some(entry) =
-                                                    all_subject_values.get_mut(&key)
-                                                {
-                                                    entry.1 |= 1u64 << pred_idx;
-                                                    if let Some(epos) =
-                                                        self.emit_positions[pred_idx]
-                                                    {
-                                                        entry.2[epos].push(object.clone());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                let emit_obj = self.emit_positions[pred_idx].is_some();
+                                let probe_matches = batched_subject_probe_binary(
+                                    ctx,
+                                    store,
+                                    &SubjectProbeParams {
+                                        pred_sid: &pred_sid,
+                                        subject_ids: chunk,
+                                        object_bounds: self.predicate_bounds(predicate),
+                                        bound_object: Self::predicate_bound_object(predicate),
+                                        emit_object: emit_obj,
+                                        dict_overlay: dict_overlay.as_ref(),
+                                    },
+                                )?;
+                                scan_rows_total += probe_matches.len() as u64;
+                                for probe_match in probe_matches {
+                                    self.ingest_probe_match(
+                                        ctx,
+                                        &mut all_subject_values,
+                                        pred_idx,
+                                        probe_match,
+                                    )?;
                                 }
-                                join.close();
                                 chunk_start = i;
                             }
 
@@ -578,20 +777,26 @@ impl Operator for PropertyJoinOperator {
                 }
 
                 // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
-                // pred_term is already a Ref (Sid or Iri) so use it directly
+                // pred_ref is already a Ref (Sid or Iri) so use it directly.
+                let (object, bounds) = match &predicate.object {
+                    PropertyJoinObject::Var(obj_var) => (
+                        Term::Var(TEMP_OBJECT_VAR),
+                        self.object_bounds.get(obj_var).cloned(),
+                    ),
+                    PropertyJoinObject::Bound(term) => (term.clone(), None),
+                };
                 let pattern = TriplePattern {
                     s: Ref::Var(self.subject_var),
-                    p: pred_term.clone(),
-                    o: Term::Var(TEMP_OBJECT_VAR),
-                    dtc: dtc.clone(),
+                    p: predicate.pred_ref.clone(),
+                    o: object,
+                    dtc: predicate.dtc.clone(),
                 };
 
                 // Create scan with optional bounds pushdown for this object variable.
                 //
                 // `ScanOperator` selects between binary cursor and range fallback
                 // at open() time based on the execution context.
-                let bounds = self.object_bounds.get(obj_var).cloned();
-                let emit = if self.predicates[pred_idx].3 {
+                let emit = if predicate.emit_object {
                     // Subject + object (no predicate column) for emitted predicates.
                     EmitMask {
                         s: true,
@@ -622,7 +827,7 @@ impl Operator for PropertyJoinOperator {
                         if emit_obj {
                             if let Some(objects) = object_col {
                                 for (subject, object) in subjects.iter().zip(objects.iter()) {
-                                    if let Some(key) = Self::subject_key(ctx, subject) {
+                                    if let Some(key) = Self::subject_key(ctx, subject)? {
                                         if order_pos > 0 && !all_subject_values.is_empty() {
                                             if let Some(entry) = all_subject_values.get_mut(&key) {
                                                 entry.1 |= 1u64 << pred_idx;
@@ -652,7 +857,7 @@ impl Operator for PropertyJoinOperator {
                             // Existence-only: only update presence bit for subjects already tracked,
                             // unless this is the first scan (map empty) where we can seed subjects.
                             for subject in subjects.iter() {
-                                if let Some(key) = Self::subject_key(ctx, subject) {
+                                if let Some(key) = Self::subject_key(ctx, subject)? {
                                     if order_pos > 0 && !all_subject_values.is_empty() {
                                         if let Some(entry) = all_subject_values.get_mut(&key) {
                                             entry.1 |= 1u64 << pred_idx;
@@ -672,19 +877,54 @@ impl Operator for PropertyJoinOperator {
 
                 scan.close();
 
-                // After the first scan (driver), capture the subject IDs for batched probing.
-                if order_pos == 0 && driver_pred_idx.is_some() && ctx.binary_store.is_some() {
-                    let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
-                    for k in all_subject_values.keys() {
-                        if let SubjectKey::Id(s_id) = k {
-                            ids.push(*s_id);
-                        } else {
-                            ids.clear();
+                // After the first scan, capture subject IDs for batched probing when the
+                // subject keys stayed as encoded IDs. This lets a selective exact scan like
+                // `?s rdf:type :Deal` drive later subject-bound probes.
+                driver_subject_ids =
+                    self.capture_driver_subject_ids(ctx, order_pos, &all_subject_values);
+
+                if order_pos == 0 {
+                    let remaining_predicates = &scan_order[1..];
+                    if self.can_spot_walk_remaining(ctx, &driver_subject_ids, remaining_predicates)
+                    {
+                        let store = ctx.binary_store.as_ref().unwrap();
+                        let dict_overlay = make_dict_overlay(ctx, store);
+                        let spot_predicates: Vec<_> = remaining_predicates
+                            .iter()
+                            .filter_map(|&idx| {
+                                let predicate = &self.predicates[idx];
+                                let pred_sid = try_normalize_pred_sid(store, &predicate.pred_ref)?;
+                                Some(SpotStarPredicateParams {
+                                    predicate_idx: idx,
+                                    pred_sid,
+                                    object_bounds: self.predicate_bounds(predicate),
+                                    bound_object: Self::predicate_bound_object(predicate),
+                                    emit_object: self.emit_positions[idx].is_some(),
+                                })
+                            })
+                            .collect();
+
+                        if spot_predicates.len() == remaining_predicates.len()
+                            && !spot_predicates.is_empty()
+                        {
+                            used_spot_star_walk = true;
+                            let spot_matches = batched_subject_star_spot(
+                                ctx,
+                                store,
+                                driver_subject_ids.as_ref().unwrap(),
+                                &spot_predicates,
+                                dict_overlay.as_ref(),
+                            )?;
+                            scan_rows_total += spot_matches.len() as u64;
+                            for spot_match in spot_matches {
+                                self.ingest_spot_star_match(
+                                    ctx,
+                                    &mut all_subject_values,
+                                    spot_match,
+                                )?;
+                            }
                             break;
                         }
-                    }
-                    if !ids.is_empty() {
-                        driver_subject_ids = Some(ids);
                     }
                 }
             }
@@ -693,8 +933,12 @@ impl Operator for PropertyJoinOperator {
             self.subject_values = all_subject_values
                 .into_iter()
                 .filter(|(_, (_sb, mask, values))| {
-                    *mask == required_mask
-                        && (emit_count == 0 || values.iter().all(|v| !v.is_empty()))
+                    (*mask & required_mask) == required_mask
+                        && (emit_count == 0
+                            || values
+                                .iter()
+                                .enumerate()
+                                .all(|(idx, v)| !self.emitted_required[idx] || !v.is_empty()))
                 })
                 .map(|(k, (sb, _mask, values))| (k, (sb, values)))
                 .collect();
@@ -705,6 +949,7 @@ impl Operator for PropertyJoinOperator {
             tracing::debug!(
                 subjects = self.pending_subjects.len(),
                 used_batched_probe,
+                used_spot_star_walk,
                 probe_chunks,
                 probe_subjects_total,
                 scan_rows_total,
@@ -733,8 +978,21 @@ impl Operator for PropertyJoinOperator {
             self.subject_idx += 1;
 
             if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_key) {
-                let rows = Self::generate_rows(schema_len, subject_binding, values_per_pred);
-                all_rows.extend(rows);
+                let rows = Self::generate_rows(
+                    schema_len,
+                    subject_binding,
+                    values_per_pred,
+                    &self.emitted_required,
+                );
+                for mut row in rows {
+                    if !apply_inline(&self.inline_ops, &self.output_schema, &mut row, Some(ctx))? {
+                        continue;
+                    }
+                    all_rows.push(row);
+                    if all_rows.len() >= batch_size {
+                        break;
+                    }
+                }
             }
         }
 
@@ -788,6 +1046,26 @@ mod tests {
         ]
     }
 
+    fn make_property_join_patterns_with_bound_object() -> Vec<TriplePattern> {
+        vec![
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "type")),
+                Term::Sid(Sid::new(100, "Deal")),
+            ),
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(100, "name")),
+                Term::Var(VarId(1)),
+            ),
+            TriplePattern::new(
+                Ref::Var(VarId(0)),
+                Ref::Sid(Sid::new(101, "stage")),
+                Term::Var(VarId(2)),
+            ),
+        ]
+    }
+
     #[test]
     fn test_property_join_creation() {
         let patterns = make_property_join_patterns();
@@ -807,6 +1085,27 @@ mod tests {
         assert_eq!(schema[0], VarId(0)); // subject
         assert_eq!(schema[1], VarId(1)); // name object
         assert_eq!(schema[2], VarId(2)); // age object
+    }
+
+    #[test]
+    fn test_property_join_schema_with_bound_object_predicate() {
+        let patterns = make_property_join_patterns_with_bound_object();
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
+
+        let schema = op.output_schema();
+        assert_eq!(&schema[..], &[VarId(0), VarId(1), VarId(2)]);
+    }
+
+    #[test]
+    fn test_property_join_prefers_bound_object_driver_over_bounds() {
+        let patterns = make_property_join_patterns_with_bound_object();
+        let op = PropertyJoinOperator::new(&patterns, HashMap::new()).unwrap();
+
+        let mut bounds = HashMap::new();
+        bounds.insert(VarId(2), ObjectBounds::new());
+
+        let driver = PropertyJoinOperator::select_driver_predicate(&op.predicates, &bounds);
+        assert_eq!(driver, Some(0));
     }
 
     #[test]
@@ -832,6 +1131,7 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 3);
@@ -860,6 +1160,7 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         // Cartesian product: 2 * 3 = 6 rows
         assert_eq!(rows.len(), 6);
@@ -880,9 +1181,31 @@ mod tests {
             op.output_schema().len(),
             &subject_binding,
             &values,
+            &[true, true],
         );
         // No rows if any predicate is missing
         assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_generate_rows_missing_optional_uses_poisoned() {
+        let subject_binding = Binding::Sid(Sid::new(1, "alice"));
+        let values = vec![
+            vec![Binding::Sid(Sid::new(200, "Alice"))], // required name
+            vec![],                                     // optional probability
+        ];
+
+        let rows =
+            PropertyJoinOperator::generate_rows(3, &subject_binding, &values, &[true, false]);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0][2], Binding::Poisoned));
+    }
+
+    #[test]
+    fn test_required_mask_allows_optional_bits() {
+        let required_mask = 0b0011u64;
+        let actual_mask = 0b1111u64;
+        assert_eq!(actual_mask & required_mask, required_mask);
     }
 
     #[test]

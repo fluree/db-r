@@ -103,6 +103,19 @@ pub struct ExecutionContext<'a> {
     /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
     /// When absent, falls back to per-document TF-saturation scoring.
     pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Set of ledger IDs that are backed by R2RML graph sources.
+    ///
+    /// Precomputed at context setup. When a scan operator encounters a graph
+    /// with its `ledger_id` in this set, it routes triple patterns through
+    /// R2RML scan instead of native index scan.
+    pub r2rml_graph_ids: std::collections::HashSet<Arc<str>>,
+    /// Cached result of the multi-ledger check.
+    ///
+    /// `true` when the active query scope spans more than one distinct ledger ID.
+    /// Computed once at construction time (and recomputed when `active_graph` changes
+    /// via `with_active_graph` / `with_default_graph`). This avoids re-iterating
+    /// active graphs on every per-row call site.
+    multi_ledger: bool,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -131,6 +144,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -165,6 +180,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -203,6 +220,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -236,6 +255,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -274,6 +295,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -308,6 +331,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
         }
     }
 
@@ -428,12 +453,36 @@ impl<'a> ExecutionContext<'a> {
         self.snapshot.decode_sid(sid)
     }
 
-    /// Check if we're in multi-ledger (dataset) mode
+    /// Check if we're in multi-ledger (dataset) mode.
     ///
-    /// Returns true if a dataset is attached, meaning cross-ledger joins may occur
-    /// and IriMatch bindings should be used instead of plain Sid bindings.
+    /// Returns `true` only when the currently active query scope spans more than
+    /// one distinct ledger ID. This is a cached value computed at construction
+    /// time, so it is free to call per-row.
+    #[inline]
     pub fn is_multi_ledger(&self) -> bool {
-        self.dataset.is_some()
+        self.multi_ledger
+    }
+
+    /// Compute the multi-ledger flag from dataset + active_graph state.
+    ///
+    /// A dataset wrapper alone is not enough: single-ledger `FROM` queries
+    /// still need binary-store-backed late materialization and should behave like
+    /// normal single-ledger execution.
+    fn compute_multi_ledger(dataset: Option<&DataSet<'_>>, active_graph: &ActiveGraph) -> bool {
+        let Some(ds) = dataset else {
+            return false;
+        };
+        let graphs: Vec<_> = match active_graph {
+            ActiveGraph::Default => ds.default_graphs().iter().collect(),
+            ActiveGraph::Named(iri) => ds.named_graph(iri).into_iter().collect(),
+        };
+        let Some(first) = graphs.first() else {
+            return false;
+        };
+        graphs
+            .iter()
+            .skip(1)
+            .any(|graph| graph.ledger_id.as_ref() != first.ledger_id.as_ref())
     }
 
     /// Decode a SID to an IRI using a specific ledger's namespace table
@@ -482,6 +531,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Attach a dataset to this execution context for multi-graph queries
     pub fn with_dataset(mut self, dataset: &'a DataSet<'a>) -> Self {
+        self.multi_ledger = Self::compute_multi_ledger(Some(dataset), &self.active_graph);
         self.dataset = Some(dataset);
         self
     }
@@ -611,6 +661,8 @@ impl<'a> ExecutionContext<'a> {
             .dataset
             .and_then(|ds| ds.named_graph(&iri).map(|g| g.g_id))
             .unwrap_or(self.binary_g_id);
+        let active_graph = ActiveGraph::Named(iri);
+        let multi_ledger = Self::compute_multi_ledger(self.dataset, &active_graph);
         Self {
             snapshot: self.snapshot,
             vars: self.vars,
@@ -625,7 +677,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_provider: self.r2rml_provider,
             r2rml_table_provider: self.r2rml_table_provider,
             dataset: self.dataset,
-            active_graph: ActiveGraph::Named(iri),
+            active_graph,
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
@@ -634,6 +686,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger,
         }
     }
 
@@ -677,6 +731,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
         }
     }
 
@@ -711,6 +767,8 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
         }
     }
 

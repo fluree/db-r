@@ -352,7 +352,7 @@ mod tests {
     fn make_test_result() -> QueryResult {
         QueryResult {
             vars: VarRegistry::new(),
-            t: 0,
+            t: Some(0),
             novelty: None,
             context: fluree_graph_json_ld::ParsedContext::default(),
             orig_context: None,

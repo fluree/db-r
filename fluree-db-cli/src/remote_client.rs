@@ -109,13 +109,25 @@ impl fmt::Display for RemoteLedgerError {
 }
 
 impl RemoteLedgerClient {
-    /// Create a new remote ledger client.
+    /// Default HTTP request timeout (5 minutes).
+    ///
+    /// Long-running queries and transactions are expected; the server should
+    /// be the authority on when to time out. This client-side value is a
+    /// safety net, not a policy knob.
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// Create a new remote ledger client with the default 5-minute timeout.
     ///
     /// `base_url` is the Fluree API base (e.g., `http://localhost:8090/fluree`
     /// or `https://example.com/v1/fluree`). Trailing slashes are stripped.
     pub fn new(base_url: &str, auth_token: Option<String>) -> Self {
+        Self::with_timeout(base_url, auth_token, Self::DEFAULT_TIMEOUT)
+    }
+
+    /// Create a new remote ledger client with a custom timeout.
+    pub fn with_timeout(base_url: &str, auth_token: Option<String>, timeout: Duration) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(timeout)
             .build()
             .expect("Failed to build HTTP client");
 
@@ -723,6 +735,24 @@ impl RemoteLedgerClient {
             .await
     }
 
+    /// Get a decoded commit from the remote server.
+    ///
+    /// Calls `GET {base_url}/show/{ledger}?commit={commit_ref}`.
+    pub async fn commit_show(
+        &self,
+        ledger: &str,
+        commit_ref: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!(
+            "{}/show/{}?commit={}",
+            self.base_url,
+            Self::ledger_tail(ledger),
+            urlencoding::encode(commit_ref),
+        );
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
     /// Check if a ledger exists on the remote server.
     pub async fn ledger_exists(&self, ledger: &str) -> Result<bool, RemoteLedgerError> {
         let url = self.op_url("exists", ledger);
@@ -1031,6 +1061,29 @@ fn extract_error_message(body: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+impl RemoteLedgerClient {
+    // =========================================================================
+    // Iceberg graph source operations
+    // =========================================================================
+
+    /// Map an Iceberg table as a graph source on the remote server.
+    ///
+    /// Calls `POST {base_url}/iceberg/map`.
+    pub async fn iceberg_map(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("iceberg/map");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
 }
 
 fn push_idempotency_key(ledger: &str, request: &fluree_db_api::PushCommitsRequest) -> String {

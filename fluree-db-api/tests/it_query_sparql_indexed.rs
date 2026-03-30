@@ -18,7 +18,7 @@ use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::{
     assert_index_defaults, genesis_ledger_for_fluree, normalize_rows_array,
-    start_background_indexer_local, trigger_index_and_wait_outcome,
+    normalize_sparql_bindings, start_background_indexer_local, trigger_index_and_wait_outcome,
 };
 
 type MemoryFluree = fluree_db_api::Fluree<MemoryStorage, MemoryNameService>;
@@ -1118,6 +1118,202 @@ async fn indexed_novelty_only_string_object_returns_data() {
         .await;
 }
 
+/// Regression: SPARQL string functions must work on indexed strings and
+/// novelty-overlay strings after the binary index is attached.
+///
+/// Equality on encoded strings already has dedicated indexed coverage. This
+/// test specifically exercises function evaluation, which forces late decode /
+/// materialization of `Binding::EncodedLit` values.
+#[tokio::test]
+async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-string-functions:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:alice", "ex:name": "Alice Adams"},
+                    {"@id": "ex:bob", "ex:name": "Bob Builder"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let overlay_insert = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:brian", "ex:name": "Brian Platz"}
+                ]
+            });
+            let result = fluree
+                .insert(ledger, &overlay_insert)
+                .await
+                .expect("overlay insert");
+            let _ledger = result.ledger;
+
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            let indexed_contains = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(CONTAINS(?name, "Alice"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(indexed_contains))
+                .await
+                .expect("indexed CONTAINS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Alice Adams")]]
+            );
+
+            let overlay_equality = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_equality))
+                .await
+                .expect("overlay equality query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_contains = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(CONTAINS(?name, "Brian"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_contains))
+                .await
+                .expect("overlay CONTAINS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_regex = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(REGEX(?name, "brian", "i"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_regex))
+                .await
+                .expect("overlay REGEX query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_strstarts = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(STRSTARTS(?name, "Brian"))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_strstarts))
+                .await
+                .expect("overlay STRSTARTS query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz")]]
+            );
+
+            let overlay_strlen = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?name (STRLEN(?name) AS ?len)
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_strlen))
+                .await
+                .expect("overlay STRLEN query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                vec![vec![json!("Brian Platz"), json!(11)]]
+            );
+
+            let overlay_lcase = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (LCASE(?name) AS ?lower)
+                WHERE {
+                  ?s ex:name ?name .
+                  FILTER(?name = "Brian Platz")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(overlay_lcase))
+                .await
+                .expect("overlay LCASE query");
+            let sparql_json = result
+                .to_sparql_json(&view.snapshot)
+                .expect("to_sparql_json");
+            let bindings = normalize_sparql_bindings(&sparql_json);
+            assert_eq!(bindings.len(), 1, "LCASE should bind one row");
+            assert_eq!(bindings[0]["lower"]["value"], json!("brian platz"));
+        })
+        .await;
+}
+
 /// Regression: filtering by a novelty-only ref object must return matches.
 ///
 /// Exercises the ref-object path in `binary_range_eq_v3` where
@@ -1220,6 +1416,156 @@ async fn indexed_novelty_only_ref_object_returns_data() {
                 rows.len(),
                 1,
                 "indexed ref ex:bob should still match; got: {jsonld:?}"
+            );
+        })
+        .await;
+}
+
+// =============================================================================
+// IRI_REF and BLANK_NODE datatype resolution through binary index
+// =============================================================================
+
+/// Verify that IRI references and blank nodes resolve correctly through the
+/// binary index path (via `resolve_datatype_sid` mapping IRI_REF/BLANK_NODE
+/// to `jsonld:@id`).
+///
+/// Previously these OTypes returned `None` from `resolve_datatype_sid`, which
+/// could cause callers to skip or use a fallback. This test ensures both
+/// IRI-valued bindings (`skos:broader ?o` → IRI) and blank node subjects
+/// (`isBlank(?s)`) work correctly through the indexed path.
+#[tokio::test]
+async fn indexed_iri_ref_and_blank_node_resolve_correctly() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/iri-bnode-resolve-idx:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+
+            // Insert data with both IRI references and blank nodes.
+            // The blank node (no @id) will get a system-generated blank node ID.
+            let insert = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/"
+                },
+                "@graph": [
+                    {
+                        "@id": "ex:alice",
+                        "ex:name": "Alice",
+                        "ex:knows": {"@id": "ex:bob"}
+                    },
+                    {
+                        "@id": "ex:bob",
+                        "ex:name": "Bob",
+                        "ex:knows": {
+                            "ex:name": "Anonymous"
+                        }
+                    }
+                ]
+            });
+
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &insert,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert");
+            let ledger = result.ledger;
+
+            // Trigger indexing
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1, "should index to t=1");
+            }
+
+            let view = fluree.db(ledger_id).await.expect("load view");
+
+            // Test 1: IRI-valued bindings resolve correctly through binary index.
+            // `ex:knows` points to IRIs (stored as OType::IRI_REF), including both
+            // named IRIs (ex:bob) and blank nodes (the anonymous friend).
+            let iri_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?s ?friend
+                WHERE {
+                    ?s ex:knows ?friend .
+                }
+                ORDER BY ?s
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(iri_query))
+                .await
+                .expect("IRI ref query should succeed through indexed path");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("should be array");
+            assert_eq!(
+                rows.len(),
+                2,
+                "should find 2 ex:knows bindings (alice->bob, bob->bnode); got: {jsonld:?}"
+            );
+            // Verify named IRI reference resolves correctly
+            let alice_row = rows
+                .iter()
+                .find(|r| r[0].as_str() == Some("ex:alice"))
+                .expect("should find alice row");
+            assert_eq!(
+                alice_row[1].as_str().unwrap(),
+                "ex:bob",
+                "IRI ref should resolve to ex:bob"
+            );
+            // Verify blank node reference also resolves (starts with _:)
+            let bob_row = rows
+                .iter()
+                .find(|r| r[0].as_str() == Some("ex:bob"))
+                .expect("should find bob row");
+            assert!(
+                bob_row[1].as_str().unwrap().starts_with("_:"),
+                "blank node ref should start with _:, got: {}",
+                bob_row[1]
+            );
+
+            // Test 2: Blank node subjects are queryable through binary index.
+            // Bob's anonymous friend has a blank node ID.
+            let bnode_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT ?bnode ?name
+                WHERE {
+                    ?bnode ex:name ?name .
+                    FILTER(isBlank(?bnode))
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(bnode_query))
+                .await
+                .expect("blank node query should succeed through indexed path");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            let rows = jsonld.as_array().expect("should be array");
+            assert_eq!(
+                rows.len(),
+                1,
+                "should find 1 blank node subject with ex:name; got: {jsonld:?}"
+            );
+            assert_eq!(
+                rows[0][1].as_str().unwrap(),
+                "Anonymous",
+                "blank node's name should be 'Anonymous'"
             );
         })
         .await;

@@ -396,7 +396,17 @@ fn fetch_and_load(
     let bytes = std::thread::spawn(move || handle.block_on(cs.get(&cid)))
         .join()
         .map_err(|_| io::Error::other("lazy pack fetch thread panicked"))?
-        .map_err(|e| io::Error::other(format!("lazy pack fetch: {e}")))?;
+        .map_err(|e| {
+            tracing::debug!(
+                cid = %pack_cid,
+                cache_path = %cache_path.display(),
+                first_id = expected_first_id,
+                last_id = expected_last_id,
+                error = %e,
+                "remote lazy fetch for forward pack failed"
+            );
+            io::Error::other(format!("lazy pack fetch: {e}"))
+        })?;
 
     // Write to cache, then mmap the cache file (no heap duplication).
     atomic_write_to_cache(cache_path, &bytes)?;

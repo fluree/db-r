@@ -1,6 +1,7 @@
 use crate::binding::Binding;
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::normalize_pred_sid;
 use crate::operator::BoxedOperator;
 use crate::operator::{Operator, OperatorState};
 use crate::triple::Term;
@@ -478,7 +479,7 @@ fn load_v6_batch(
     order: RunSortOrder,
     cache: &Option<&Arc<fluree_db_binary_index::LeafletCache>>,
     leaf_id: u128,
-    leaflet_idx: u8,
+    leaflet_idx: u32,
 ) -> Result<fluree_db_binary_index::ColumnBatch> {
     if let Some(c) = cache {
         load_leaflet_columns_cached(
@@ -511,15 +512,7 @@ fn resolve_predicate_id_v6(
     predicate: &crate::triple::Ref,
     store: &BinaryIndexStore,
 ) -> Result<u32> {
-    let sid = match predicate {
-        crate::triple::Ref::Sid(s) => s.clone(),
-        crate::triple::Ref::Iri(i) => store.encode_iri(i),
-        crate::triple::Ref::Var(_) => {
-            return Err(QueryError::Internal(
-                "fast-path requires bound predicate".to_string(),
-            ))
-        }
-    };
+    let sid = normalize_pred_sid(store, predicate)?;
     store
         .sid_to_p_id(&sid)
         .ok_or_else(|| QueryError::Internal("predicate not found in V6 dictionary".to_string()))
@@ -617,7 +610,8 @@ fn count_bound_object_v6(
                 header.order,
                 &cache,
                 leaf_id,
-                i as u8,
+                u32::try_from(i)
+                    .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
             )?;
 
             for row in 0..batch.row_count {
@@ -715,7 +709,8 @@ fn group_count_v6(
                 header.order,
                 &cache,
                 leaf_id,
-                i as u8,
+                u32::try_from(i)
+                    .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?,
             )?;
 
             for row in 0..batch.row_count {

@@ -13,11 +13,11 @@ use fluree_db_binary_index::{
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
-    Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider, RangeMatch, RangeOptions,
-    RangeProvider, RangeTest, Sid,
+    flake_matches_range_eq, Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider,
+    RangeMatch, RangeOptions, RangeProvider, RangeTest, Sid,
 };
 
-use crate::binary_scan::index_type_to_sort_order;
+use crate::binary_scan::{encode_bound_object_prefilter, index_type_to_sort_order};
 
 /// Result of translating overlay flakes into V3 `OverlayOp`s.
 ///
@@ -306,11 +306,17 @@ fn binary_range_eq_v3(
                 filter.o_key = Some(str_id as u64);
             }
             _ => {
-                // Best-effort: encode basic inline types for equality filtering.
-                if let Ok((ot, key)) = crate::binary_scan::value_to_otype_okey_simple(o_val, store)
-                {
-                    filter.o_type = Some(ot.as_u16());
-                    filter.o_key = Some(key);
+                // Use the same bound-object prefilter semantics as BinaryScanOperator:
+                // preserve untyped numeric family matching by not forcing an exact o_type.
+                if let Ok(prefilter) = encode_bound_object_prefilter(
+                    o_val,
+                    match_val.dt.as_ref(),
+                    None,
+                    store,
+                    Some(dict_novelty),
+                ) {
+                    filter.o_type = prefilter.o_type.map(OType::as_u16);
+                    filter.o_key = Some(prefilter.o_key);
                 }
             }
         }
@@ -460,6 +466,10 @@ fn binary_range_eq_v3(
                 continue;
             }
 
+            if !flake_matches_range_eq(&flake, match_val) {
+                continue;
+            }
+
             // Fast path filters/limits.
             if let Some(bounds) = &opts.object_bounds {
                 if !bounds.matches(&flake.o) {
@@ -485,6 +495,7 @@ fn binary_range_eq_v3(
     // resolve per-fact lifecycles (latest-op-wins), then apply RangeOptions.
     flakes.extend(untranslated);
     let mut resolved = resolve_latest_ops_keep_asserts(flakes, index);
+    resolved.retain(|f| flake_matches_range_eq(f, match_val));
 
     if let Some(bounds) = &opts.object_bounds {
         resolved.retain(|f| bounds.matches(&f.o));

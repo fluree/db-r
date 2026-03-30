@@ -258,7 +258,8 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
             DropMode::Soft
         };
 
-        // Ledger drop is only in transaction mode (peers forward)
+        // Ledger drop is only in transaction mode (peers forward).
+        // Try ledger first, then fall back to graph source if not found.
         let report = match state.fluree.as_file().drop_ledger(&req.ledger, mode).await {
             Ok(report) => report,
             Err(e) => {
@@ -269,12 +270,150 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
             }
         };
 
+        // If ledger not found, try graph source drop
+        if matches!(report.status, DropStatus::NotFound) {
+            let gs_report = match state
+                .fluree
+                .as_file()
+                .drop_graph_source(&req.ledger, None, mode)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    set_span_error_code(&span, "error:NotFound");
+                    tracing::error!(error = %e, "graph source drop also failed");
+                    return Err(ServerError::Api(e));
+                }
+            };
+
+            let gs_status = match gs_report.status {
+                DropStatus::Dropped => "dropped",
+                DropStatus::AlreadyRetracted => "already_retracted",
+                DropStatus::NotFound => "not_found",
+            };
+
+            tracing::info!(
+                status = "success",
+                drop_status = gs_status,
+                "graph source dropped"
+            );
+            return Ok(Json(DropResponse {
+                ledger_id: format!("{}:{}", gs_report.name, gs_report.branch),
+                status: gs_status.to_string(),
+                files_deleted: None,
+                warnings: gs_report.warnings,
+            }));
+        }
+
         tracing::info!(status = "success", drop_status = ?report.status, "ledger dropped");
         Ok(Json(DropResponse::from(report)))
     }
     .instrument(span)
     .await
 }
+
+// =============================================================================
+// List ledgers + graph sources
+// =============================================================================
+
+/// Entry in the ledger/graph-source list response
+#[derive(Serialize)]
+pub struct ListEntry {
+    pub name: String,
+    pub branch: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub t: i64,
+}
+
+/// List all ledgers and graph sources
+///
+/// GET /fluree/ledgers
+pub async fn list_ledgers(State(state): State<Arc<AppState>>) -> Result<Json<Vec<ListEntry>>> {
+    let ledger_records = state
+        .fluree
+        .all_ns_records()
+        .await
+        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
+
+    let gs_records = state
+        .fluree
+        .all_graph_source_records()
+        .await
+        .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
+
+    let mut entries = Vec::new();
+
+    for r in &ledger_records {
+        if r.retracted {
+            continue;
+        }
+        entries.push(ListEntry {
+            name: r.name.clone(),
+            branch: r.branch.clone(),
+            entry_type: "Ledger".to_string(),
+            t: r.commit_t,
+        });
+    }
+
+    for gs in &gs_records {
+        if gs.retracted {
+            continue;
+        }
+        entries.push(ListEntry {
+            name: gs.name.clone(),
+            branch: gs.branch.clone(),
+            entry_type: format_source_type(&gs.source_type),
+            t: gs.index_t,
+        });
+    }
+
+    Ok(Json(entries))
+}
+
+fn format_source_type(st: &fluree_db_nameservice::GraphSourceType) -> String {
+    match st {
+        fluree_db_nameservice::GraphSourceType::Bm25 => "BM25".to_string(),
+        fluree_db_nameservice::GraphSourceType::Vector => "Vector".to_string(),
+        fluree_db_nameservice::GraphSourceType::Geo => "Geo".to_string(),
+        fluree_db_nameservice::GraphSourceType::R2rml => "R2RML".to_string(),
+        fluree_db_nameservice::GraphSourceType::Iceberg => "Iceberg".to_string(),
+        fluree_db_nameservice::GraphSourceType::Unknown(s) => format!("Unknown({s})"),
+    }
+}
+
+/// Build a JSON representation of a graph source record for the info endpoint.
+fn graph_source_info_json(gs: &fluree_db_nameservice::GraphSourceRecord) -> JsonValue {
+    let mut obj = serde_json::json!({
+        "name": gs.name,
+        "branch": gs.branch,
+        "type": format_source_type(&gs.source_type),
+        "graph_source_id": gs.graph_source_id,
+        "retracted": gs.retracted,
+        "index_t": gs.index_t,
+    });
+
+    if let Some(ref id) = gs.index_id {
+        obj["index_id"] = serde_json::Value::String(id.to_string());
+    }
+
+    if !gs.dependencies.is_empty() {
+        obj["dependencies"] = serde_json::json!(gs.dependencies);
+    }
+
+    // Include parsed config if non-empty
+    if !gs.config.is_empty() && gs.config != "{}" {
+        if let Ok(parsed) = serde_json::from_str::<JsonValue>(&gs.config) {
+            obj["config"] = parsed;
+        }
+    }
+
+    obj
+}
+
+// =============================================================================
+// Info
+// =============================================================================
 
 /// Ledger info response (simplified, used in proxy storage mode fallback)
 #[derive(Serialize)]
@@ -363,8 +502,21 @@ pub async fn info(
             return info_simplified(&state, alias, &span).await;
         }
 
-        // Non-proxy mode: load ledger and return comprehensive info
-        let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
+        // Non-proxy mode: load ledger and return comprehensive info.
+        // If ledger is not found, fall back to graph source lookup.
+        let ledger_state = match super::query::load_ledger_for_query(&state, alias, &span).await {
+            Ok(ls) => ls,
+            Err(ServerError::Api(ref e)) if e.is_not_found() => {
+                // Try graph source lookup
+                if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+                    tracing::info!(status = "success", "graph source info retrieved");
+                    return Ok(Json(graph_source_info_json(&gs)).into_response());
+                }
+                set_span_error_code(&span, "error:NotFound");
+                return Err(ServerError::Api(ApiError::NotFound(alias.to_string())));
+            }
+            Err(e) => return Err(e),
+        };
 
         let t = ledger_state.snapshot.t;
 
@@ -439,38 +591,44 @@ pub async fn info_ledger_tail(
     info(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
-/// Simplified ledger info for proxy storage mode (nameservice lookup only)
+/// Simplified ledger info for proxy storage mode (nameservice lookup only).
+/// Falls back to graph source lookup if ledger is not found.
 async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) -> Result<Response> {
     // Lookup ledger in nameservice
-    let record = match state.fluree.nameservice_lookup(alias).await {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            let server_error = ServerError::Api(ApiError::NotFound(alias.to_string()));
-            set_span_error_code(span, "error:NotFound");
-            tracing::warn!(error = %server_error, "ledger not found in nameservice");
-            return Err(server_error);
+    match state.fluree.nameservice_lookup(alias).await {
+        Ok(Some(record)) => {
+            tracing::info!(
+                status = "success",
+                commit_t = record.commit_t,
+                "ledger info retrieved (simplified)"
+            );
+            return Ok(Json(LedgerInfoResponse {
+                ledger_id: record.ledger_id.clone(),
+                t: record.commit_t,
+                commit_head_id: record.commit_head_id.clone(),
+                index_head_id: record.index_head_id.clone(),
+            })
+            .into_response());
         }
+        Ok(None) => { /* fall through to graph source lookup */ }
         Err(e) => {
             let server_error = ServerError::Api(ApiError::NameService(e));
             set_span_error_code(span, "error:InternalError");
             tracing::error!(error = %server_error, "nameservice lookup failed");
             return Err(server_error);
         }
-    };
+    }
 
-    // Return simplified ledger info from nameservice record
-    tracing::info!(
-        status = "success",
-        commit_t = record.commit_t,
-        "ledger info retrieved (simplified)"
-    );
-    Ok(Json(LedgerInfoResponse {
-        ledger_id: record.ledger_id.clone(),
-        t: record.commit_t,
-        commit_head_id: record.commit_head_id.clone(),
-        index_head_id: record.index_head_id.clone(),
-    })
-    .into_response())
+    // Try graph source lookup
+    if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+        tracing::info!(status = "success", "graph source info retrieved");
+        return Ok(Json(graph_source_info_json(&gs)).into_response());
+    }
+
+    let server_error = ServerError::Api(ApiError::NotFound(alias.to_string()));
+    set_span_error_code(span, "error:NotFound");
+    tracing::warn!(error = %server_error, "not found as ledger or graph source");
+    Err(server_error)
 }
 
 /// Query parameters for ledger-info
@@ -1054,7 +1212,7 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 }
 
 /// Forward a transaction request to the transaction server (peer mode)
-async fn forward_write_request(state: &AppState, request: Request) -> Response {
+pub(super) async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {
         Some(c) => c,
         None => {

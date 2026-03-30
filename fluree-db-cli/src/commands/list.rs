@@ -4,7 +4,7 @@ use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::NameService;
+use fluree_db_nameservice::{GraphSourceLookup, NameService};
 
 pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
@@ -21,23 +21,31 @@ pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> C
     let fluree = context::build_fluree(dirs)?;
     let active = config::read_active_ledger(dirs.data_dir());
     let records = fluree.nameservice().all_records().await?;
+    let gs_records = fluree.nameservice().all_graph_source_records().await?;
 
     // Filter out retracted records
     let active_records: Vec<_> = records.iter().filter(|r| !r.retracted).collect();
+    let active_gs: Vec<_> = gs_records.iter().filter(|r| !r.retracted).collect();
 
     let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let tracked = store.tracked_ledgers();
 
-    if active_records.is_empty() && tracked.is_empty() {
+    let has_gs = !active_gs.is_empty();
+
+    if active_records.is_empty() && active_gs.is_empty() && tracked.is_empty() {
         println!("No ledgers found. Run 'fluree create <name>' to create one.");
         return Ok(());
     }
 
-    // Local ledgers
-    if !active_records.is_empty() {
+    // Local ledgers + graph sources in one table
+    if !active_records.is_empty() || has_gs {
         let mut table = Table::new();
         table.set_content_arrangement(ContentArrangement::Dynamic);
-        table.set_header(vec!["", "LEDGER", "BRANCH", "T"]);
+        if has_gs {
+            table.set_header(vec!["", "NAME", "BRANCH", "TYPE", "T"]);
+        } else {
+            table.set_header(vec!["", "LEDGER", "BRANCH", "T"]);
+        }
 
         for record in &active_records {
             let marker = if active.as_deref() == Some(&record.name) {
@@ -45,12 +53,39 @@ pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> C
             } else {
                 " "
             };
-            table.add_row(vec![
-                marker.to_string(),
-                record.name.clone(),
-                record.branch.clone(),
-                record.commit_t.to_string(),
-            ]);
+            if has_gs {
+                table.add_row(vec![
+                    marker.to_string(),
+                    record.name.clone(),
+                    record.branch.clone(),
+                    "Ledger".to_string(),
+                    record.commit_t.to_string(),
+                ]);
+            } else {
+                table.add_row(vec![
+                    marker.to_string(),
+                    record.name.clone(),
+                    record.branch.clone(),
+                    record.commit_t.to_string(),
+                ]);
+            }
+        }
+
+        for gs in &active_gs {
+            let t_str = if gs.index_t > 0 {
+                gs.index_t.to_string()
+            } else {
+                "-".to_string()
+            };
+            if has_gs {
+                table.add_row(vec![
+                    " ".to_string(),
+                    gs.name.clone(),
+                    gs.branch.clone(),
+                    format_source_type(&gs.source_type),
+                    t_str,
+                ]);
+            }
         }
 
         println!("{table}");
@@ -119,7 +154,7 @@ async fn run_remote_with_client(
 
 /// Print a ledger list from a JSON response.
 fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> CliResult<()> {
-    let ledgers = match result.as_array() {
+    let entries = match result.as_array() {
         Some(arr) => arr,
         None => {
             return Err(CliError::Remote(
@@ -128,7 +163,7 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
         }
     };
 
-    if ledgers.is_empty() {
+    if entries.is_empty() {
         match remote_label {
             Some(name) => println!("No ledgers on remote '{}'.", name),
             None => println!("No ledgers found."),
@@ -140,23 +175,63 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
         println!("Ledgers on remote '{}':", name.green());
     }
 
+    // Check if any entry has a non-Ledger type (to decide whether to show TYPE column)
+    let has_graph_sources = entries.iter().any(|e| {
+        e.get("type")
+            .and_then(|v| v.as_str())
+            .is_some_and(|t| t != "Ledger")
+    });
+
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["LEDGER", "T"]);
+    if has_graph_sources {
+        table.set_header(vec!["NAME", "BRANCH", "TYPE", "T"]);
+    } else {
+        table.set_header(vec!["LEDGER", "BRANCH", "T"]);
+    }
 
-    for ledger in ledgers {
-        let name = ledger
+    for entry in entries {
+        let name = entry
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)");
-        let t = ledger
+        let branch = entry
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main");
+        let t = entry
             .get("t")
             .and_then(|v| v.as_i64())
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
-        table.add_row(vec![name.to_string(), t]);
+
+        if has_graph_sources {
+            let entry_type = entry
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Ledger");
+            table.add_row(vec![
+                name.to_string(),
+                branch.to_string(),
+                entry_type.to_string(),
+                t,
+            ]);
+        } else {
+            table.add_row(vec![name.to_string(), branch.to_string(), t]);
+        }
     }
 
     println!("{table}");
     Ok(())
+}
+
+fn format_source_type(st: &fluree_db_nameservice::GraphSourceType) -> String {
+    match st {
+        fluree_db_nameservice::GraphSourceType::Bm25 => "BM25".to_string(),
+        fluree_db_nameservice::GraphSourceType::Vector => "Vector".to_string(),
+        fluree_db_nameservice::GraphSourceType::Geo => "Geo".to_string(),
+        fluree_db_nameservice::GraphSourceType::R2rml => "R2RML".to_string(),
+        fluree_db_nameservice::GraphSourceType::Iceberg => "Iceberg".to_string(),
+        fluree_db_nameservice::GraphSourceType::Unknown(s) => format!("Unknown({s})"),
+    }
 }

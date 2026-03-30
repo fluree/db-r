@@ -10,7 +10,7 @@
 mod support;
 
 use fluree_db_api::TimeSpec;
-use fluree_db_api::{DataSetDb, DatasetSpec, FlureeBuilder, GraphDb, GraphSource};
+use fluree_db_api::{DataSetDb, DatasetSpec, FlureeBuilder, GraphDb, GraphSource, QueryInput};
 use fluree_db_core::StorageContentStore;
 use fluree_db_novelty::load_commit_by_id;
 use serde_json::json;
@@ -1837,5 +1837,86 @@ async fn sparql_from_time_travel_suffixes() {
     assert_eq!(
         normalize_flat_results(&jsonld),
         normalize_flat_results(&json!(["Alice", "Carol", "Dave"]))
+    );
+}
+
+// =============================================================================
+// Regression: single-ledger dataset string function evaluation
+// =============================================================================
+
+/// Regression test for single-ledger dataset queries with SPARQL string functions.
+///
+/// Previously, `ExecutionContext::is_multi_ledger()` returned `true` for any
+/// dataset-backed query, which disabled the binary-store decode path. This caused
+/// CONTAINS, REGEX, STRLEN and other string functions to silently return empty
+/// results because encoded literals were never materialized into strings.
+#[tokio::test]
+async fn single_ledger_dataset_string_functions() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let _ledger = seed_people_ledger(&fluree, "strfn:main").await;
+
+    let spec = DatasetSpec::new().with_default(GraphSource::new("strfn:main"));
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build dataset");
+
+    // CONTAINS — should find "Alice" (not empty results)
+    let contains = r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name
+        WHERE {
+            ?s schema:name ?name .
+            FILTER(CONTAINS(?name, "lic"))
+        }
+    "#;
+    let result = fluree
+        .query_dataset(&dataset, QueryInput::Sparql(contains))
+        .await
+        .expect("CONTAINS query through dataset");
+    let primary = dataset.primary().unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    assert_eq!(
+        normalize_flat_results(&jsonld),
+        normalize_flat_results(&json!(["Alice"]))
+    );
+
+    // STRLEN — should return actual lengths (not empty/unbound)
+    let strlen = r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT ?name (STRLEN(?name) AS ?len)
+        WHERE {
+            ?s schema:name ?name .
+            FILTER(?name = "Bob")
+        }
+    "#;
+    let result = fluree
+        .query_dataset(&dataset, QueryInput::Sparql(strlen))
+        .await
+        .expect("STRLEN query through dataset");
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        vec![vec![json!("Bob"), json!(3)]]
+    );
+
+    // LCASE — should return lowercased string (not empty)
+    let lcase = r#"
+        PREFIX schema: <http://schema.org/>
+        SELECT (LCASE(?name) AS ?lower)
+        WHERE {
+            ?s schema:name ?name .
+            FILTER(?name = "Alice")
+        }
+    "#;
+    let result = fluree
+        .query_dataset(&dataset, QueryInput::Sparql(lcase))
+        .await
+        .expect("LCASE query through dataset");
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    assert_eq!(
+        normalize_flat_results(&jsonld),
+        normalize_flat_results(&json!(["alice"]))
     );
 }

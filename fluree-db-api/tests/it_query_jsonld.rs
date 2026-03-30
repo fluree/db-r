@@ -392,6 +392,8 @@ async fn jsonld_filter_filtering_for_absence() {
         })
         .collect();
 
+    let mut names = names;
+    names.sort();
     assert_eq!(names, vec!["Brian", "David"]);
 }
 

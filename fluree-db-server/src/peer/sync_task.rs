@@ -324,10 +324,12 @@ impl PeerSyncTask {
                 | NotifyResult::IndexUpdated
                 | NotifyResult::CommitsApplied { .. }),
             ) => {
-                tracing::info!(
+                let after_t = mgr.current_t(&record.ledger_id).await;
+                tracing::debug!(
                     alias = %record.ledger_id,
+                    after_cached_t = ?after_t,
                     ?result,
-                    "Refreshed cached ledger from SSE update"
+                    "refreshed cached ledger from SSE update"
                 );
             }
             Err(e) => {

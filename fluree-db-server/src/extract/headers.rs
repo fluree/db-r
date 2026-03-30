@@ -222,6 +222,27 @@ impl FlureeHeaders {
             .unwrap_or(false)
     }
 
+    /// Check if the client explicitly requests AgentJson output via Accept header.
+    ///
+    /// Matches `application/vnd.fluree.agent+json` (case-insensitive).
+    /// Does NOT match `*/*` — AgentJson must be explicitly requested.
+    pub fn wants_agent_json(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| {
+                a.to_ascii_lowercase()
+                    .contains("application/vnd.fluree.agent+json")
+            })
+            .unwrap_or(false)
+    }
+
+    /// Get the max-bytes value from the `Fluree-Max-Bytes` header.
+    ///
+    /// Used by AgentJson format to set the byte budget for response truncation.
+    pub fn max_bytes(&self) -> Option<usize> {
+        get_header_str(&self.raw, "fluree-max-bytes").and_then(|v| v.parse().ok())
+    }
+
     /// Check if the client explicitly requests RDF/XML output via Accept header.
     ///
     /// Matches `application/rdf+xml` (case-insensitive).

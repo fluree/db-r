@@ -45,7 +45,7 @@ mod http_tests {
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use fluree_db_core::ContentStore;
-    use fluree_db_nameservice::GraphSourcePublisher;
+    use fluree_db_nameservice::GraphSourceLookup;
     use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
     use fluree_search_service::backend::{
         Bm25Backend, Bm25BackendConfig, IndexLoader, SearchBackend,

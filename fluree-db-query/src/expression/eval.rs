@@ -5,6 +5,7 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
+use super::helpers::{eval_cached_bool_predicate, PreparedBoolExpression};
 use super::value::ComparableValue;
 use crate::binding::{Binding, BindingRow, RowAccess};
 use crate::context::ExecutionContext;
@@ -14,18 +15,22 @@ use crate::var_registry::VarId;
 use std::sync::Arc;
 
 impl Expression {
-    /// Evaluate a filter expression against a row.
-    ///
-    /// Returns `true` if the row passes the filter, `false` otherwise.
-    /// Type mismatches and unbound variables result in `false`.
-    ///
-    /// The `ctx` parameter provides access to the execution context for resolving
-    /// `Binding::EncodedLit` values (late materialization). Pass `None` if no
-    /// context is available (e.g., in tests).
-    ///
-    /// This method is generic over `RowAccess`, allowing it to work with both
-    /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
-    pub fn eval_to_bool<R: RowAccess>(
+    fn decode_lookup_error(
+        kind: &'static str,
+        details: impl Into<String>,
+        err: impl std::fmt::Display,
+    ) -> QueryError {
+        let details = details.into();
+        tracing::debug!(
+            kind,
+            details = %details,
+            error = %err,
+            "dictionary lookup failure during expression evaluation"
+        );
+        QueryError::dictionary_lookup(format!("{kind}: {details}: {err}"))
+    }
+
+    pub(crate) fn eval_to_bool_uncached<R: RowAccess>(
         &self,
         row: &R,
         ctx: Option<&ExecutionContext<'_>>,
@@ -51,6 +56,31 @@ impl Expression {
                 Ok(false)
             }
         }
+    }
+
+    /// Evaluate a filter expression against a row.
+    ///
+    /// Returns `true` if the row passes the filter, `false` otherwise.
+    /// Type mismatches and unbound variables result in `false`.
+    ///
+    /// The `ctx` parameter provides access to the execution context for resolving
+    /// `Binding::EncodedLit` values (late materialization). Pass `None` if no
+    /// context is available (e.g., in tests).
+    ///
+    /// This method is generic over `RowAccess`, allowing it to work with both
+    /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
+    pub fn eval_to_bool<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<bool> {
+        if let Some(pass) =
+            eval_cached_bool_predicate(self, row, ctx, || self.eval_to_bool_uncached(row, ctx))?
+        {
+            return Ok(pass);
+        }
+
+        self.eval_to_bool_uncached(row, ctx)
     }
 
     /// Evaluate expression to a comparable value.
@@ -82,8 +112,16 @@ impl Expression {
                     }) else {
                         return Ok(None);
                     };
-                    let val = decoded
-                        .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
+                    let val = decoded.map_err(|e| {
+                        Self::decode_lookup_error(
+                            "decode encoded literal",
+                            format!(
+                                "o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}",
+                                o_kind, o_key, p_id, dt_id, lang_id
+                            ),
+                            e,
+                        )
+                    })?;
                     Ok(ComparableValue::try_from(&val).ok())
                 }
                 Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
@@ -97,7 +135,11 @@ impl Expression {
                     };
                     match resolved {
                         Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
-                        Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
+                        Err(e) => Err(Self::decode_lookup_error(
+                            "resolve subject IRI",
+                            format!("s_id={s_id}"),
+                            e,
+                        )),
                     }
                 }
                 Some(Binding::EncodedPid { p_id }) => {
@@ -106,9 +148,8 @@ impl Expression {
                     };
                     match store.resolve_predicate_iri(*p_id) {
                         Some(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
-                        None => Err(QueryError::Internal(format!(
-                            "resolve_predicate_iri: unknown p_id {}",
-                            p_id
+                        None => Err(QueryError::dictionary_lookup(format!(
+                            "resolve predicate IRI: unknown p_id={p_id}"
                         ))),
                     }
                 }
@@ -146,7 +187,36 @@ impl Expression {
     ) -> Binding {
         match self.try_eval_to_binding(row, ctx) {
             Ok(binding) => binding,
+            Err(err) if err.can_demote_in_expression() => Binding::Unbound,
             Err(_) => Binding::Unbound,
+        }
+    }
+
+    /// Evaluate to binding in non-strict mode while preserving fatal execution
+    /// errors such as dictionary lookup failures.
+    pub fn try_eval_to_binding_non_strict<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<Binding> {
+        match self.try_eval_to_binding(row, ctx) {
+            Ok(binding) => Ok(binding),
+            Err(err) if err.can_demote_in_expression() => Ok(Binding::Unbound),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Evaluate a filter in normal SPARQL mode while preserving fatal execution
+    /// errors such as dictionary lookup failures.
+    pub fn eval_to_bool_non_strict<R: RowAccess>(
+        &self,
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<bool> {
+        match self.eval_to_bool(row, ctx) {
+            Ok(pass) => Ok(pass),
+            Err(err) if err.can_demote_in_expression() => Ok(false),
+            Err(err) => Err(err),
         }
     }
 
@@ -184,15 +254,18 @@ impl Expression {
 /// `ScanOperator`, `NestedLoopJoinOperator`, and any future operator that
 /// supports inline filters.
 pub fn passes_filters(
-    filters: &[Expression],
+    filters: &[PreparedBoolExpression],
     schema: &[VarId],
     bindings: &[Binding],
     ctx: Option<&ExecutionContext<'_>>,
-) -> bool {
-    filters.iter().all(|expr| {
+) -> Result<bool> {
+    for expr in filters {
         let row = BindingRow::new(schema, bindings);
-        expr.eval_to_bool(&row, ctx).unwrap_or(false)
-    })
+        if !expr.eval_to_bool_non_strict(&row, ctx)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]

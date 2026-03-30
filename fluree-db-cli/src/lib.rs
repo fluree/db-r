@@ -25,6 +25,9 @@ use fluree_db_api::server_defaults::{generate_config_template_for, ConfigFormat,
 /// consumers can construct a [`Cli`] programmatically and call this
 /// directly, or call individual command handlers from [`commands`].
 pub async fn run(cli: Cli) -> error::CliResult<()> {
+    // Set the global remote HTTP timeout from CLI args before dispatching.
+    context::set_remote_timeout(std::time::Duration::from_secs(cli.timeout));
+
     let config_path = cli.config.as_deref();
     let direct = cli.direct;
 
@@ -232,9 +235,20 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::log::run(ledger.as_deref(), oneline, count, &fluree_dir).await
         }
 
-        Commands::Show { commit, ledger } => {
+        Commands::Show {
+            commit,
+            ledger,
+            remote,
+        } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::show::run(&commit, ledger.as_deref(), &fluree_dir).await
+            commands::show::run(
+                &commit,
+                ledger.as_deref(),
+                &fluree_dir,
+                remote.as_deref(),
+                cli.direct,
+            )
+            .await
         }
 
         Commands::Config { action } => {
@@ -357,6 +371,15 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Memory { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::memory::run(action, &fluree_dir).await
+        }
+
+        Commands::Iceberg { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            match action {
+                cli::IcebergAction::Map(args) => {
+                    commands::iceberg::run_iceberg_map(*args, &fluree_dir, direct).await
+                }
+            }
         }
 
         Commands::Mcp { action } => {

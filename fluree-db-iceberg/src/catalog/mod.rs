@@ -3,11 +3,16 @@
 //! This module provides the [`CatalogClient`] trait and implementations for
 //! interacting with Iceberg REST catalogs (primarily Polaris).
 
+pub mod direct;
 mod rest;
 mod table_identifier;
 
+pub use direct::DirectCatalogClient;
 pub use rest::{RestCatalogClient, RestCatalogConfig};
 pub use table_identifier::{encode_namespace_for_rest, parse_table_identifier, TableIdentifier};
+
+#[cfg(feature = "aws")]
+pub use direct::SendDirectCatalogClient;
 
 use crate::credential::VendedCredentials;
 use crate::error::Result;

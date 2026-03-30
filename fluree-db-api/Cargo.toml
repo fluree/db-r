@@ -64,7 +64,7 @@ fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true
-lru.workspace = true
+moka.workspace = true
 rustc-hash = "2"
 thiserror.workspace = true
 serde.workspace = true
@@ -99,6 +99,7 @@ sysinfo = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 tempfile = "3.19"
 mimalloc.workspace = true
+fs2 = "0.4"
 # Numeric types used by datatype tests
 num-bigint = "0.4"
 num-bigdecimal = { package = "bigdecimal", version = "0.4" }
@@ -124,6 +125,11 @@ required-features = ["credential"]
 name = "it_storage_s3_testcontainers"
 path = "tests/it_storage_s3_testcontainers.rs"
 required-features = ["aws-testcontainers"]
+
+[[test]]
+name = "it_iceberg_direct"
+path = "tests/it_iceberg_direct.rs"
+required-features = ["iceberg", "aws-testcontainers"]
 
 [[bench]]
 name = "vector_query"

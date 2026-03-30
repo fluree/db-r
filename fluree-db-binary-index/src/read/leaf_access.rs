@@ -594,11 +594,12 @@ pub fn fetch_header_and_directory(
     // On failure, double the estimate up to 3 times (covers up to ~960 bytes
     // per leaflet, far beyond any realistic directory entry size).
     let mut buf = full_header_dir;
+    let mut parsed: Option<DecodedLeafDirV3> = None;
     for _ in 0..3 {
         match decode_leaf_dir_v3_with_base(&buf, &header) {
             Ok(dir) => {
-                let payload_base = dir.payload_base as u64;
-                return Ok((dir, payload_base));
+                parsed = Some(dir);
+                break;
             }
             Err(_) => {
                 // Directory was larger than estimated — double and retry.
@@ -608,7 +609,10 @@ pub fn fetch_header_and_directory(
         }
     }
     // Final attempt after tripling the budget.
-    let dir = decode_leaf_dir_v3_with_base(&buf, &header)?;
+    let dir = match parsed {
+        Some(dir) => dir,
+        None => decode_leaf_dir_v3_with_base(&buf, &header)?,
+    };
     let payload_base = dir.payload_base as u64;
     Ok((dir, payload_base))
 }

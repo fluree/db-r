@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [features]
 default = ["server"]
 server = ["dep:fluree-db-server"]
+iceberg = ["fluree-db-api/iceberg"]
 otel = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",

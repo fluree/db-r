@@ -21,6 +21,7 @@
 use crate::binding::Batch;
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::expression::PreparedBoolExpression;
 use crate::filter::filter_batch;
 use crate::ir::Expression;
 use crate::operator::{
@@ -37,8 +38,8 @@ use std::sync::Arc;
 pub struct HavingOperator {
     /// Child operator (typically AggregateOperator or GroupByOperator)
     child: BoxedOperator,
-    /// Filter expression to evaluate
-    expr: Expression,
+    /// Prepared filter expression to evaluate
+    prepared_expr: PreparedBoolExpression,
     /// Output schema (same as child)
     in_schema: Arc<[VarId]>,
     /// Operator state
@@ -56,9 +57,10 @@ impl HavingOperator {
     /// * `expr` - Filter expression to evaluate
     pub fn new(child: BoxedOperator, expr: Expression) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
+        let prepared_expr = PreparedBoolExpression::new(expr);
         Self {
             child,
-            expr,
+            prepared_expr,
             in_schema: schema,
             state: OperatorState::Created,
             out_schema: None,
@@ -102,7 +104,8 @@ impl Operator for HavingOperator {
                 continue;
             }
 
-            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.in_schema, ctx)? {
+            if let Some(filtered) = filter_batch(&batch, &self.prepared_expr, &self.in_schema, ctx)?
+            {
                 return Ok(trim_batch(&self.out_schema, filtered));
             }
         }
