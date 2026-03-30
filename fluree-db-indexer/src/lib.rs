@@ -127,10 +127,28 @@ where
             .await
             .map_err(|e| IndexerError::NameService(e.to_string()))?
             .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
+        let commit_gap = record.commit_t - record.index_t;
+
+        tracing::info!(
+            ledger_id = ledger_id,
+            index_t = record.index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            has_index = record.index_head_id.is_some(),
+            incremental_enabled = config.incremental_enabled,
+            incremental_max_commits = config.incremental_max_commits,
+            "loaded ledger state for index build"
+        );
 
         // If index is already current, return it
         if let Some(ref root_id) = record.index_head_id {
             if record.index_t >= record.commit_t {
+                tracing::info!(
+                    ledger_id = ledger_id,
+                    index_t = record.index_t,
+                    commit_t = record.commit_t,
+                    "index already current; returning existing root"
+                );
                 return Ok(IndexResult {
                     root_id: root_id.clone(),
                     index_t: record.index_t,
@@ -141,7 +159,6 @@ where
         }
 
         // Try incremental indexing if conditions are met.
-        let commit_gap = record.commit_t - record.index_t;
         let can_incremental = config.incremental_enabled
             && record.index_head_id.is_some()
             && record.index_t > 0
@@ -175,6 +192,13 @@ where
             );
         }
 
+        tracing::info!(
+            ledger_id = ledger_id,
+            index_t = record.index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            "starting full rebuild path"
+        );
         rebuild_index_from_commits(storage, ledger_id, &record, config).await
     }
     .instrument(span)

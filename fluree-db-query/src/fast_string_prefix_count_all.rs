@@ -16,6 +16,7 @@ use crate::fast_path_common::{build_count_batch, fast_path_store, ref_to_p_id, F
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
+use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_binary_index::{BinaryCursor, BinaryFilter, ColumnProjection, ColumnSet};
@@ -93,29 +94,27 @@ fn prefix_match_count(ctx: &ExecutionContext<'_>, pred: &Ref, prefix: &str) -> R
         return Ok(Some(0));
     }
 
-    let id_ranges = contiguous_ranges(&string_ids);
+    let Ok(id_ranges) = contiguous_ranges(&string_ids) else {
+        return Ok(None);
+    };
     count_prefix_rows_opst(store, ctx.binary_g_id, p_id, &id_ranges, ctx.to_t).map(Some)
 }
 
-fn contiguous_ranges(sorted_ids: &[u32]) -> Vec<(u32, u32)> {
+fn contiguous_ranges(sorted_ids: &[u32]) -> Result<Vec<(u32, u32)>> {
     if sorted_ids.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-
-    let mut ranges = Vec::new();
-    let mut start = sorted_ids[0];
-    let mut prev = sorted_ids[0];
-    for &id in &sorted_ids[1..] {
-        if id == prev.saturating_add(1) {
-            prev = id;
-            continue;
-        }
-        ranges.push((start, prev));
-        start = id;
-        prev = id;
+    let mut ids = sorted_ids.to_vec();
+    ids.sort_unstable();
+    let start = ids[0];
+    let end = *ids.last().unwrap_or(&start);
+    let span_len = u64::from(end) - u64::from(start) + 1;
+    if span_len != ids.len() as u64 {
+        return Err(QueryError::execution(
+            "prefix string ids are not contiguous; refusing prefix count fast-path",
+        ));
     }
-    ranges.push((start, prev));
-    ranges
+    Ok(vec![(start, end)])
 }
 
 fn count_prefix_rows_opst(
@@ -131,7 +130,7 @@ fn count_prefix_rows_opst(
     let branch = Arc::new(branch.clone());
     let projection = ColumnProjection {
         output: ColumnSet::EMPTY,
-        internal: ColumnSet::EMPTY,
+        internal: ColumnSet::single(ColumnId::OKey),
     };
 
     let mut total = 0u64;
@@ -181,7 +180,14 @@ fn count_prefix_rows_opst(
                 .next_batch()
                 .map_err(|e| QueryError::Internal(format!("binary cursor: {e}")))?
             {
-                total = total.checked_add(batch.row_count as u64).ok_or_else(|| {
+                let mut batch_matches = 0u64;
+                for row_idx in 0..batch.row_count {
+                    let o_key = batch.o_key.get_or(row_idx, 0);
+                    if o_key >= u64::from(start_id) && o_key <= u64::from(end_id) {
+                        batch_matches += 1;
+                    }
+                }
+                total = total.checked_add(batch_matches).ok_or_else(|| {
                     QueryError::execution("COUNT(*) overflow in string-prefix scan")
                 })?;
             }
@@ -189,4 +195,24 @@ fn count_prefix_rows_opst(
     }
 
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contiguous_ranges;
+
+    #[test]
+    fn prefix_ids_accept_single_contiguous_run() {
+        let ranges = contiguous_ranges(&[10, 11, 12]).expect("contiguous ids");
+        assert_eq!(ranges, vec![(10, 12)]);
+    }
+
+    #[test]
+    fn prefix_ids_reject_gapped_runs() {
+        let err = contiguous_ranges(&[10, 12]).expect_err("gapped ids should reject");
+        assert!(
+            err.to_string().contains("not contiguous"),
+            "unexpected error: {err}"
+        );
+    }
 }

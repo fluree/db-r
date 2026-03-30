@@ -500,20 +500,15 @@ fn build_prefix_id_ranges(
         return Ok(Arc::from(Vec::<(u32, u32)>::new()));
     }
     ids.sort_unstable();
-    let mut ranges = Vec::new();
-    let mut start = ids[0];
-    let mut prev = ids[0];
-    for &id in &ids[1..] {
-        if id == prev.saturating_add(1) {
-            prev = id;
-            continue;
-        }
-        ranges.push((start, prev));
-        start = id;
-        prev = id;
+    let start = ids[0];
+    let end = *ids.last().unwrap_or(&start);
+    let span_len = u64::from(end) - u64::from(start) + 1;
+    if span_len != ids.len() as u64 {
+        return Err(std::io::Error::other(format!(
+            "prefix string ids are not contiguous for {prefix:?}; refusing range pushdown"
+        )));
     }
-    ranges.push((start, prev));
-    Ok(Arc::from(ranges.into_boxed_slice()))
+    Ok(Arc::from(vec![(start, end)].into_boxed_slice()))
 }
 
 fn range_contains(ranges: &[(u32, u32)], value: u32) -> bool {

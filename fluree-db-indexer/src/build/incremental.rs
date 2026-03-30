@@ -121,6 +121,14 @@ where
         .clone()
         .ok_or(IndexerError::NoCommits)?;
     let from_t = record.index_t;
+    tracing::info!(
+        ledger_id = ledger_id,
+        from_t,
+        to_t = record.commit_t,
+        base_root = %base_root_id,
+        head_commit = %head_commit_id,
+        "starting incremental index build"
+    );
 
     let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
         fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),

@@ -1369,6 +1369,367 @@ async fn indexed_string_functions_work_for_indexed_and_overlay_strings() {
 }
 
 #[tokio::test]
+async fn indexed_count_with_lang_filter_counts_matching_lang_tag_rows() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-count-lang-filter:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:a", "ex:label": {"@value": "Alpha", "@language": "en"}},
+                    {"@id": "ex:b", "ex:label": {"@value": "Bravo", "@language": "en"}},
+                    {"@id": "ex:c", "ex:label": {"@value": "Bonjour", "@language": "fr"}},
+                    {"@id": "ex:d", "ex:label": "Plain"}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger.t())
+                .await
+                .expect("load indexed-only view");
+            let query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (COUNT(?s) AS ?count)
+                WHERE {
+                  ?s ex:label ?o .
+                  FILTER(LANG(?o) = "en")
+                }
+            "#;
+            let result = fluree
+                .query(&view, QueryInput::Sparql(query))
+                .await
+                .expect("indexed LANG count query");
+            let jsonld = result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&jsonld),
+                normalize_rows_array(&json!([2])),
+                "indexed COUNT with LANG filter should count only en-tagged literals"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn indexed_numeric_sum_fast_paths_work_for_identity_and_add_self() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-numeric-sum-fast-paths:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:a", "ex:n": 1},
+                    {"@id": "ex:b", "ex:n": 2},
+                    {"@id": "ex:c", "ex:n": 3}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger.t())
+                .await
+                .expect("load indexed-only view");
+
+            let baseline_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (SUM(?o) AS ?sum)
+                WHERE { ?s ex:n ?o }
+            "#;
+            let baseline_result = fluree
+                .query(&view, QueryInput::Sparql(baseline_query))
+                .await
+                .expect("indexed SUM(?o) query");
+            let baseline_json = baseline_result
+                .to_jsonld(&view.snapshot)
+                .expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&baseline_json),
+                normalize_rows_array(&json!([6])),
+                "indexed SUM(?o) should add integer values directly"
+            );
+
+            let add_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (SUM(?o + ?o) AS ?sum)
+                WHERE { ?s ex:n ?o }
+            "#;
+            let add_result = fluree
+                .query(&view, QueryInput::Sparql(add_query))
+                .await
+                .expect("indexed SUM(?o + ?o) query");
+            let add_json = add_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&add_json),
+                normalize_rows_array(&json!([12])),
+                "indexed SUM(?o + ?o) should double each integer value"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn indexed_numeric_count_fast_path_handles_threshold_filters() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-numeric-count-threshold:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:a", "ex:n": 1},
+                    {"@id": "ex:b", "ex:n": 2},
+                    {"@id": "ex:c", "ex:n": 3},
+                    {"@id": "ex:d", "ex:n": 3}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger.t())
+                .await
+                .expect("load indexed-only view");
+
+            let ge_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (COUNT(?s) AS ?count)
+                WHERE {
+                  ?s ex:n ?o .
+                  FILTER (?o >= 2)
+                }
+            "#;
+            let ge_result = fluree
+                .query(&view, QueryInput::Sparql(ge_query))
+                .await
+                .expect("indexed COUNT(?s) with >= query");
+            let ge_json = ge_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&ge_json),
+                normalize_rows_array(&json!([3])),
+                "indexed COUNT with ?o >= 2 should count qualifying rows"
+            );
+
+            let gt_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (COUNT(?s) AS ?count)
+                WHERE {
+                  ?s ex:n ?o .
+                  FILTER (?o > 2)
+                }
+            "#;
+            let gt_result = fluree
+                .query(&view, QueryInput::Sparql(gt_query))
+                .await
+                .expect("indexed COUNT(?s) with > query");
+            let gt_json = gt_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&gt_json),
+                normalize_rows_array(&json!([2])),
+                "indexed COUNT with ?o > 2 should honor exclusive thresholds"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn indexed_numeric_avg_min_max_fast_paths_work() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/indexed-numeric-avg-min-max:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let baseline = json!({
+                "@context": { "ex": "http://example.org/ns/" },
+                "@graph": [
+                    {"@id": "ex:a", "ex:n": 1},
+                    {"@id": "ex:b", "ex:n": 2},
+                    {"@id": "ex:c", "ex:n": 3},
+                    {"@id": "ex:d", "ex:n": 4}
+                ]
+            });
+            let result = fluree
+                .insert_with_opts(
+                    ledger,
+                    &baseline,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("baseline insert");
+            let ledger = result.ledger;
+
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 1);
+            }
+
+            let view = fluree
+                .db_at_t(ledger_id, ledger.t())
+                .await
+                .expect("load indexed-only view");
+
+            let avg_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (AVG(?o) AS ?avg)
+                WHERE { ?s ex:n ?o }
+            "#;
+            let avg_result = fluree
+                .query(&view, QueryInput::Sparql(avg_query))
+                .await
+                .expect("indexed AVG(?o) query");
+            let avg_json = avg_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&avg_json),
+                normalize_rows_array(&json!([2.5])),
+                "indexed AVG(?o) should average numeric values directly"
+            );
+
+            let min_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (MIN(?o) AS ?min)
+                WHERE { ?s ex:n ?o }
+            "#;
+            let min_result = fluree
+                .query(&view, QueryInput::Sparql(min_query))
+                .await
+                .expect("indexed MIN(?o) query");
+            let min_json = min_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&min_json),
+                normalize_rows_array(&json!([1])),
+                "indexed MIN(?o) should use numeric leaflet boundaries"
+            );
+
+            let max_query = r#"
+                PREFIX ex: <http://example.org/ns/>
+                SELECT (MAX(?o) AS ?max)
+                WHERE { ?s ex:n ?o }
+            "#;
+            let max_result = fluree
+                .query(&view, QueryInput::Sparql(max_query))
+                .await
+                .expect("indexed MAX(?o) query");
+            let max_json = max_result.to_jsonld(&view.snapshot).expect("to_jsonld");
+            assert_eq!(
+                normalize_rows_array(&max_json),
+                normalize_rows_array(&json!([4])),
+                "indexed MAX(?o) should use numeric leaflet boundaries"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn indexed_strstarts_sum_counts_prefix_matches() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory()

@@ -111,9 +111,15 @@ where
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
+                const INFO_PROGRESS_EVERY: usize = 500;
+                const DEBUG_PROGRESS_EVERY: usize = 100;
+
                 let mut cids = Vec::new();
                 let mut current = Some(head_commit_id.clone());
                 let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
+                let walk_started = std::time::Instant::now();
+                let mut head_t: Option<i64> = None;
+                let mut genesis_t: Option<i64> = None;
 
                 while let Some(cid) = current {
                     let bytes = content_store
@@ -126,11 +132,39 @@ where
                     if let Some(mode) = envelope.ns_split_mode {
                         split_mode = mode;
                     }
+                    if head_t.is_none() {
+                        head_t = Some(envelope.t);
+                    }
+                    genesis_t = Some(envelope.t);
                     current = envelope.previous_id().cloned();
                     cids.push(cid);
+
+                    let walked = cids.len();
+                    if walked % INFO_PROGRESS_EVERY == 0 {
+                        tracing::info!(
+                            commits_walked = walked,
+                            current_t = envelope.t,
+                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                            "Phase A progress: walked commit chain"
+                        );
+                    } else if walked % DEBUG_PROGRESS_EVERY == 0 {
+                        tracing::debug!(
+                            commits_walked = walked,
+                            current_t = envelope.t,
+                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                            "Phase A progress: walked commit chain"
+                        );
+                    }
                 }
 
                 cids.reverse(); // chronological order (genesis first)
+                tracing::info!(
+                    commits = cids.len(),
+                    genesis_t = ?genesis_t,
+                    head_t = ?head_t,
+                    elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                    "Phase A complete: commit chain collected"
+                );
                 (cids, split_mode)
             };
             drop(_span_a);
@@ -170,6 +204,7 @@ where
             let mut total_commit_size = 0u64;
             let mut total_asserts = 0u64;
             let mut total_retracts = 0u64;
+            let resolve_started = std::time::Instant::now();
 
             for (i, cid) in commit_cids.iter().enumerate() {
                 // If chunk is non-empty and near budget, flush before processing
@@ -205,6 +240,16 @@ where
                     chunk_flakes = chunk.flake_count(),
                     "commit resolved into chunk"
                 );
+                if (i + 1) % 500 == 0 {
+                    tracing::info!(
+                        commits_resolved = i + 1,
+                        total_commits = commit_cids.len(),
+                        t = resolved.t,
+                        chunk_flakes = chunk.flake_count(),
+                        elapsed_ms = resolve_started.elapsed().as_millis() as u64,
+                        "Phase B progress: resolved commits into chunks"
+                    );
+                }
 
                 // Post-commit flush check.
                 if chunk.flake_count() >= chunk_max_flakes {
