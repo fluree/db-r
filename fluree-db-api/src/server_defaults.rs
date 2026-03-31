@@ -271,6 +271,7 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # ledger_cache_sweep_secs = 60           # background sweep interval
 # shutdown_timeout_secs = 30             # graceful shutdown drain timeout
 # query_timeout_secs = 0                 # global query timeout; 0 = no timeout
+# maintenance_mode = false               # start in read-only mode (toggle via /v1/fluree/admin/maintenance)
 
 # [server.s3]
 # bucket = ""                            # S3 bucket name (enables S3 storage, requires aws feature)

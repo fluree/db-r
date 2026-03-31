@@ -257,6 +257,125 @@ impl fluree_db_nameservice::GraphSourceLookup for ProxyNameService {
     }
 }
 
+#[async_trait]
+impl fluree_db_nameservice::GraphSourcePublisher for ProxyNameService {
+    async fn publish_graph_source(
+        &self,
+        _name: &str,
+        _branch: &str,
+        _source_type: fluree_db_nameservice::GraphSourceType,
+        _config: &str,
+        _dependencies: &[String],
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source publishing is not supported in proxy mode. \
+             Forward the request to the transaction server.",
+        ))
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        _name: &str,
+        _branch: &str,
+        _index_id: &fluree_db_core::ContentId,
+        _index_t: i64,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source index publishing is not supported in proxy mode.",
+        ))
+    }
+
+    async fn retract_graph_source(&self, _name: &str, _branch: &str) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source retraction is not supported in proxy mode.",
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::Publisher for ProxyNameService {
+    async fn publish_ledger_init(&self, _ledger_id: &str) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Ledger creation is not supported in proxy mode. Forward the request to the transaction server.",
+        ))
+    }
+
+    async fn publish_commit(
+        &self,
+        _ledger_id: &str,
+        _commit_t: i64,
+        _commit_id: &fluree_db_core::ContentId,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Commit publishing is not supported in proxy mode.",
+        ))
+    }
+
+    async fn publish_index(
+        &self,
+        _ledger_id: &str,
+        _index_t: i64,
+        _index_id: &fluree_db_core::ContentId,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Index publishing is not supported in proxy mode.",
+        ))
+    }
+
+    async fn retract(&self, _ledger_id: &str) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Ledger retraction is not supported in proxy mode.",
+        ))
+    }
+
+    fn publishing_ledger_id(&self, _ledger_id: &str) -> Option<String> {
+        None
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::ConfigPublisher for ProxyNameService {
+    async fn push_config(
+        &self,
+        _ledger_id: &str,
+        _expected: Option<&fluree_db_nameservice::ConfigValue>,
+        _new: &fluree_db_nameservice::ConfigValue,
+    ) -> Result<fluree_db_nameservice::ConfigCasResult> {
+        Err(NameServiceError::storage(
+            "Config publishing is not supported in proxy mode.",
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::AdminPublisher for ProxyNameService {
+    async fn publish_index_allow_equal(
+        &self,
+        _ledger_id: &str,
+        _index_t: i64,
+        _index_id: &fluree_db_core::ContentId,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Admin index publishing is not supported in proxy mode.",
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::RefPublisher for ProxyNameService {
+    async fn compare_and_set_ref(
+        &self,
+        _ledger_id: &str,
+        _kind: fluree_db_nameservice::RefKind,
+        _expected: Option<&fluree_db_nameservice::RefValue>,
+        _new_value: &fluree_db_nameservice::RefValue,
+    ) -> Result<fluree_db_nameservice::CasResult> {
+        Err(NameServiceError::storage(
+            "Ref publishing is not supported in proxy mode.",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

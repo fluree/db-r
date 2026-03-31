@@ -8,6 +8,7 @@ mod events;
 mod graph_source;
 #[cfg(feature = "iceberg")]
 mod iceberg;
+mod import;
 mod ledger;
 #[cfg(feature = "metrics")]
 pub(crate) mod metrics;
@@ -23,7 +24,7 @@ mod transact;
 use crate::state::AppState;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -48,7 +49,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/graph-source/bm25/create", post(graph_source::bm25_create))
         .route("/graph-source/bm25/sync", post(graph_source::bm25_sync))
         .route("/graph-source/bm25/status", post(graph_source::bm25_status))
-        .route("/graph-source/bm25/drop", post(graph_source::bm25_drop));
+        .route("/graph-source/bm25/drop", post(graph_source::bm25_drop))
+        .route("/admin/config", put(admin::config_update));
 
     #[cfg(feature = "iceberg")]
     let v1_admin_protected_routes =
@@ -96,6 +98,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/context/*ledger",
             get(context::get_context).put(context::set_context),
         )
+        // Bulk import endpoint
+        .route("/import", post(import::import))
         // Commit-push endpoint (precomputed commits)
         .route("/push/*ledger", post(push::push_ledger_tail))
         // Commit show endpoint (decoded commit with resolved IRIs)

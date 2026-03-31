@@ -212,6 +212,151 @@ pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_js
     }))
 }
 
+/// Config write endpoint
+///
+/// PUT /v1/fluree/config
+///
+/// Persists configuration changes to the config file (.fluree/config.toml or .jsonld).
+/// Only a subset of settings can take effect without restart:
+/// - `log_level`, `query_timeout_secs`, `maintenance_mode` (hot-reloaded)
+/// - All others are written to file but require server restart.
+pub async fn config_update(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ConfigUpdateResponse>> {
+    let config_path = state.config_file_path.as_ref().ok_or_else(|| {
+        crate::error::ServerError::bad_request(
+            "No config file found — cannot persist changes. \
+             Run `fluree init` to create a config file first.",
+        )
+    })?;
+
+    // Read existing config
+    let existing_content = std::fs::read_to_string(config_path).map_err(|e| {
+        crate::error::ServerError::internal(format!(
+            "Failed to read config file {}: {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+
+    // Determine format from extension
+    let is_json = config_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("jsonld"));
+
+    // Merge incoming values into the existing config
+    let updated_content = if is_json {
+        let mut existing: serde_json::Value =
+            serde_json::from_str(&existing_content).unwrap_or_else(|_| serde_json::json!({}));
+        let server = existing.as_object_mut().and_then(|o| {
+            o.entry("server")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+        });
+        if let Some(server_obj) = server {
+            if let Some(updates) = body.as_object() {
+                for (k, v) in updates {
+                    server_obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        serde_json::to_string_pretty(&existing).map_err(|e| {
+            crate::error::ServerError::internal(format!("Failed to serialize config: {}", e))
+        })?
+    } else {
+        // TOML: parse, merge into [server], re-serialize
+        let mut existing: toml::Value = toml::from_str(&existing_content)
+            .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        let server = existing.as_table_mut().and_then(|t| {
+            t.entry("server")
+                .or_insert_with(|| toml::Value::Table(Default::default()))
+                .as_table_mut()
+        });
+        if let Some(server_table) = server {
+            if let Some(updates) = body.as_object() {
+                for (k, v) in updates {
+                    if let Some(toml_val) = json_to_toml(v) {
+                        server_table.insert(k.clone(), toml_val);
+                    }
+                }
+            }
+        }
+        toml::to_string_pretty(&existing).map_err(|e| {
+            crate::error::ServerError::internal(format!("Failed to serialize config: {}", e))
+        })?
+    };
+
+    // Write back
+    std::fs::write(config_path, &updated_content).map_err(|e| {
+        crate::error::ServerError::internal(format!(
+            "Failed to write config file {}: {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+
+    // Hot-reload safe settings
+    let mut applied = Vec::new();
+    let mut requires_restart = Vec::new();
+
+    if let Some(obj) = body.as_object() {
+        for key in obj.keys() {
+            match key.as_str() {
+                "maintenance_mode" => {
+                    if let Some(v) = obj.get(key).and_then(|v| v.as_bool()) {
+                        state
+                            .maintenance_mode
+                            .store(v, std::sync::atomic::Ordering::SeqCst);
+                        applied.push(key.clone());
+                    }
+                }
+                // All other settings require restart
+                _ => {
+                    requires_restart.push(key.clone());
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        config_file = %config_path.display(),
+        applied = ?applied,
+        requires_restart = ?requires_restart,
+        "Config updated"
+    );
+
+    Ok(Json(ConfigUpdateResponse {
+        applied,
+        requires_restart,
+    }))
+}
+
+/// Convert a serde_json Value to a toml Value (best-effort for simple types).
+fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
+    match v {
+        serde_json::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(toml::Value::Integer)
+            .or_else(|| n.as_f64().map(toml::Value::Float)),
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<toml::Value> = arr.iter().filter_map(json_to_toml).collect();
+            Some(toml::Value::Array(items))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Serialize)]
+pub struct ConfigUpdateResponse {
+    /// Settings that took effect immediately
+    pub applied: Vec<String>,
+    /// Settings written to file but requiring server restart
+    pub requires_restart: Vec<String>,
+}
+
 /// Server statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {

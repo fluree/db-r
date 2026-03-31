@@ -236,6 +236,33 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
     }
 }
 
+/// Inject server-configured IRI prefixes into the query's `@context`.
+///
+/// If the server has `.fluree/prefixes.json` loaded, these are merged into
+/// the query's `@context` as default prefix mappings. User-supplied context
+/// entries take precedence (no overwrite).
+fn inject_prefixes(query: &mut JsonValue, state: &AppState) {
+    let Some(ref prefixes) = state.prefixes else {
+        return;
+    };
+    let Some(obj) = query.as_object_mut() else {
+        return;
+    };
+
+    let ctx = obj
+        .entry("@context")
+        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+
+    if let Some(ctx_obj) = ctx.as_object_mut() {
+        // Only inject prefixes not already defined by the user
+        for (prefix, iri) in prefixes {
+            ctx_obj
+                .entry(prefix)
+                .or_insert_with(|| JsonValue::String(iri.clone()));
+        }
+    }
+}
+
 /// Execute a query
 ///
 /// POST /fluree/query
@@ -466,6 +493,7 @@ pub async fn query(
 
         // Inject header values into query opts
         inject_headers_into_query(&mut query_json, &headers);
+        inject_prefixes(&mut query_json, &state);
 
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
@@ -643,6 +671,7 @@ pub async fn query_ledger(
 
     // Inject header values into query opts
     inject_headers_into_query(&mut query_json, &headers);
+        inject_prefixes(&mut query_json, &state);
 
     // Enforce bearer ledger scope for unsigned requests
     if let Some(p) = bearer.0.as_ref() {
@@ -820,6 +849,7 @@ pub async fn explain_ledger(
 
         // Inject header values into query opts
         inject_headers_into_query(&mut query_json, &headers);
+        inject_prefixes(&mut query_json, &state);
 
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
@@ -2078,6 +2108,7 @@ pub async fn explain(
 
         // Inject header values into query opts
         inject_headers_into_query(&mut query_json, &headers);
+        inject_prefixes(&mut query_json, &state);
 
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {

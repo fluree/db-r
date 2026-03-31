@@ -37,6 +37,14 @@ pub struct AppState {
     /// Server configuration
     pub config: ServerConfig,
 
+    /// Resolved path to the config file (.fluree/config.toml or .jsonld).
+    /// `None` if no config file was found or used.
+    pub config_file_path: Option<PathBuf>,
+
+    /// IRI prefix mappings from `.fluree/prefixes.json` (managed by CLI).
+    /// Injected as default `@context` entries for JSON-LD queries.
+    pub prefixes: Option<std::collections::HashMap<String, String>>,
+
     /// Telemetry configuration
     pub telemetry_config: TelemetryConfig,
 
@@ -124,12 +132,48 @@ impl AppState {
             fluree_db_api::ApiError::internal(format!("Invalid configuration: {}", e))
         })?;
 
+        // Resolve config file path (for config write API)
+        let config_file_path =
+            crate::config_file::resolve_config_path(config.config_file.as_deref());
+
+        // Load IRI prefixes from .fluree/prefixes.json (if present)
+        let prefixes = config_file_path.as_ref().and_then(|cfg_path| {
+            let fluree_dir = cfg_path.parent()?;
+            let prefix_path = fluree_dir.join("prefixes.json");
+            match std::fs::read_to_string(&prefix_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<std::collections::HashMap<String, String>>(
+                        &content,
+                    ) {
+                        Ok(map) if !map.is_empty() => {
+                            tracing::info!(
+                                count = map.len(),
+                                path = %prefix_path.display(),
+                                "Loaded IRI prefixes"
+                            );
+                            Some(map)
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %prefix_path.display(),
+                                "Failed to parse prefixes.json"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(_) => None, // File not found — normal, not an error
+            }
+        });
+
         // Create Fluree instance based on storage access mode
         let (fluree, cache_stats_handle) = if config.is_proxy_storage_mode() {
             // Proxy mode: peer proxies all storage reads through tx server
             Self::create_proxy_fluree(&config)?
         } else {
-            // Shared mode (or transaction server): use file storage
+            // Shared mode (or transaction server): use file storage (or S3)
             Self::create_file_fluree(&config)?
         };
 
@@ -185,6 +229,8 @@ impl AppState {
         Ok(Self {
             fluree,
             config,
+            config_file_path,
+            prefixes,
             telemetry_config,
             start_time: Instant::now(),
             index_config,
