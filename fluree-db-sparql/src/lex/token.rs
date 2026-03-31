@@ -230,6 +230,11 @@ pub enum TokenKind {
     KwUuid,
     KwStrUuid,
 
+    // Vector similarity functions (Fluree extensions)
+    KwDotProduct,
+    KwCosineSimilarity,
+    KwEuclideanDistance,
+
     // Prologue
     KwBase,
     KwPrefix,
@@ -744,6 +749,12 @@ pub fn keyword_from_str(s: &str) -> Option<TokenKind> {
         "SAMETERM" => Some(TokenKind::KwSameTerm),
         "UUID" => Some(TokenKind::KwUuid),
         "STRUUID" => Some(TokenKind::KwStrUuid),
+        // Vector similarity functions (Fluree extensions, case-insensitive with underscore variants)
+        "DOTPRODUCT" | "DOT_PRODUCT" => Some(TokenKind::KwDotProduct),
+        "COSINESIMILARITY" | "COSINE_SIMILARITY" => Some(TokenKind::KwCosineSimilarity),
+        "EUCLIDEANDISTANCE" | "EUCLIDEAN_DISTANCE" | "EUCLIDIANDISTANCE" => {
+            Some(TokenKind::KwEuclideanDistance)
+        }
         "BASE" => Some(TokenKind::KwBase),
         "PREFIX" => Some(TokenKind::KwPrefix),
         "INSERT" => Some(TokenKind::KwInsert),

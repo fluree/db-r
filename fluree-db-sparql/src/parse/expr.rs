@@ -669,6 +669,17 @@ fn check_builtin_function_keyword(tokens: &TokenStream) -> Option<FunctionName> 
         return Some(FunctionName::StrUuid);
     }
 
+    // Vector similarity functions
+    if tokens.check_keyword(TokenKind::KwDotProduct) {
+        return Some(FunctionName::DotProduct);
+    }
+    if tokens.check_keyword(TokenKind::KwCosineSimilarity) {
+        return Some(FunctionName::CosineSimilarity);
+    }
+    if tokens.check_keyword(TokenKind::KwEuclideanDistance) {
+        return Some(FunctionName::EuclideanDistance);
+    }
+
     None
 }
 
