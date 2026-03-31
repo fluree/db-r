@@ -5,6 +5,7 @@ mod admin_auth;
 mod commits;
 mod context;
 mod events;
+mod graph_source;
 #[cfg(feature = "iceberg")]
 mod iceberg;
 mod ledger;
@@ -41,7 +42,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/drop-branch", post(ledger::drop_branch))
         .route("/rebase", post(ledger::rebase))
         .route("/merge", post(ledger::merge))
-        .route("/admin/maintenance", post(admin::maintenance_toggle));
+        .route("/admin/maintenance", post(admin::maintenance_toggle))
+        .route("/graph-source/bm25/create", post(graph_source::bm25_create))
+        .route("/graph-source/bm25/sync", post(graph_source::bm25_sync))
+        .route("/graph-source/bm25/status", post(graph_source::bm25_status))
+        .route("/graph-source/bm25/drop", post(graph_source::bm25_drop));
 
     #[cfg(feature = "iceberg")]
     let v1_admin_protected_routes =
