@@ -329,6 +329,9 @@ pub async fn update(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -465,6 +468,9 @@ pub async fn update_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -613,6 +619,9 @@ pub async fn insert(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -759,6 +768,9 @@ pub async fn upsert(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -904,6 +916,9 @@ pub async fn insert_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -1051,6 +1066,9 @@ pub async fn upsert_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;

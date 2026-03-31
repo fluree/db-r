@@ -451,6 +451,12 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_LEDGER_CACHE_SWEEP_INTERVAL")]
     pub ledger_cache_sweep_secs: Option<u64>,
 
+    /// Start the server in maintenance (read-only) mode.
+    /// Write endpoints return HTTP 503. Toggle at runtime via
+    /// POST /v1/fluree/admin/maintenance.
+    #[arg(long, env = "FLUREE_MAINTENANCE_MODE")]
+    pub maintenance_mode: bool,
+
     /// Global query timeout in seconds. Queries exceeding this limit are
     /// cancelled and return HTTP 504. 0 means no timeout (default).
     /// Per-query fuel limits (`max-fuel` in opts) still apply independently.
@@ -696,6 +702,7 @@ impl Default for ServerConfig {
             no_ledger_cache: false,
             ledger_cache_idle_ttl_secs: None,
             ledger_cache_sweep_secs: None,
+            maintenance_mode: false,
             query_timeout_secs: 0,
             shutdown_timeout_secs: 30,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,

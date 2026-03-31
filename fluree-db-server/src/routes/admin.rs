@@ -100,6 +100,58 @@ pub async fn readiness(
     }
 }
 
+/// Maintenance mode toggle endpoint
+///
+/// POST /v1/fluree/admin/maintenance
+///
+/// Toggle read-only mode at runtime. When enabled, write endpoints
+/// (insert, upsert, update, create, drop, branch, rebase, push)
+/// return HTTP 503 Service Unavailable.
+///
+/// Request body: `{"enabled": true}` or `{"enabled": false}`
+pub async fn maintenance_toggle(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MaintenanceRequest>,
+) -> Result<Json<MaintenanceResponse>> {
+    let previous = state
+        .maintenance_mode
+        .swap(body.enabled, std::sync::atomic::Ordering::SeqCst);
+
+    tracing::info!(enabled = body.enabled, previous, "Maintenance mode toggled");
+
+    Ok(Json(MaintenanceResponse {
+        enabled: body.enabled,
+        previous,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct MaintenanceRequest {
+    pub enabled: bool,
+}
+
+#[derive(Serialize)]
+pub struct MaintenanceResponse {
+    pub enabled: bool,
+    pub previous: bool,
+}
+
+/// Check if the server is in maintenance mode. Returns 503 if so.
+///
+/// Called at the top of write endpoints to enforce read-only mode.
+pub fn check_maintenance(state: &AppState) -> Result<()> {
+    if state
+        .maintenance_mode
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        Err(crate::error::ServerError::service_unavailable(
+            "Server is in maintenance mode — write operations are temporarily disabled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Config inspection endpoint
 ///
 /// GET /v1/fluree/config
@@ -154,6 +206,7 @@ pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_js
             "tx_server_url": c.tx_server_url.as_deref().map(|_| "***"),
         },
         "mcp_enabled": c.mcp_enabled,
+        "maintenance_mode": state.maintenance_mode.load(std::sync::atomic::Ordering::Relaxed),
     }))
 }
 

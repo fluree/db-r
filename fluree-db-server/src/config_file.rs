@@ -70,6 +70,7 @@ pub struct ServerFileConfig {
     pub ledger_cache_sweep_secs: Option<u64>,
     pub shutdown_timeout_secs: Option<u64>,
     pub query_timeout_secs: Option<u64>,
+    pub maintenance_mode: Option<bool>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -523,6 +524,11 @@ pub fn apply_to_server_config(
     if is_default("query_timeout_secs") {
         if let Some(v) = file.query_timeout_secs {
             config.query_timeout_secs = v;
+        }
+    }
+    if is_default("maintenance_mode") {
+        if let Some(v) = file.maintenance_mode {
+            config.maintenance_mode = v;
         }
     }
 

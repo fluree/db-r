@@ -47,6 +47,10 @@ pub enum ServerError {
     #[error("{0}")]
     NotAcceptable(String),
 
+    /// Service Unavailable (503) - server in maintenance mode
+    #[error("{0}")]
+    ServiceUnavailable(String),
+
     /// Gateway Timeout (504) - query execution exceeded server timeout
     #[error("Query timed out: {0}")]
     GatewayTimeout(String),
@@ -112,6 +116,7 @@ impl ServerError {
             ServerError::Unauthorized(_) => errors::UNAUTHORIZED,
             ServerError::NotFound(_) => errors::NOT_FOUND,
             ServerError::NotAcceptable(_) => errors::NOT_ACCEPTABLE,
+            ServerError::ServiceUnavailable(_) => errors::INTERNAL,
             ServerError::GatewayTimeout(_) => errors::INTERNAL,
             ServerError::Api(ApiError::AwaitTNotReached { .. }) => errors::COMMIT_CONFLICT,
             ServerError::SparqlUpdateLower(_) => errors::SPARQL_LOWER,
@@ -185,6 +190,9 @@ impl ServerError {
             // 409 - Conflict (read-after-write: min_t not yet reached)
             ServerError::Api(ApiError::AwaitTNotReached { .. }) => StatusCode::CONFLICT,
 
+            // 503 - Service Unavailable (maintenance mode)
+            ServerError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+
             // 504 - Gateway Timeout (query timeout exceeded)
             ServerError::GatewayTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             #[cfg(feature = "credential")]
@@ -241,6 +249,10 @@ impl ServerError {
     /// Create a not acceptable error (406)
     pub fn not_acceptable(msg: impl Into<String>) -> Self {
         ServerError::NotAcceptable(msg.into())
+    }
+
+    pub fn service_unavailable(msg: impl Into<String>) -> Self {
+        ServerError::ServiceUnavailable(msg.into())
     }
 }
 

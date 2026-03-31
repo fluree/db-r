@@ -23,7 +23,7 @@ use fluree_db_api::{
     server_defaults, Fluree, FlureeBuilder, IndexConfig, LedgerManagerConfig, NameServiceMode,
 };
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,10 @@ pub struct AppState {
 
     /// HTTP client for transaction forwarding (peer mode only)
     pub forwarding_client: Option<Arc<ForwardingClient>>,
+
+    /// When true, write endpoints (insert, upsert, update, create, drop, etc.)
+    /// are rejected with HTTP 503. Read-only endpoints continue to work.
+    pub maintenance_mode: AtomicBool,
 
     /// Counter for ledger refreshes (for testing/metrics)
     /// Incremented when a ledger is actually reloaded (not for coalesced requests)
@@ -176,6 +180,8 @@ impl AppState {
             reindex_max_bytes: config.reindex_max_bytes,
         });
 
+        let start_in_maintenance = config.maintenance_mode;
+
         Ok(Self {
             fluree,
             config,
@@ -187,6 +193,7 @@ impl AppState {
             jwks_cache,
             peer_state,
             forwarding_client,
+            maintenance_mode: AtomicBool::new(start_in_maintenance),
             refresh_counter: AtomicU64::new(0),
             cache_stats_handle: Some(cache_stats_handle),
         })
