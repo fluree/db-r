@@ -87,6 +87,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/explain/*ledger",
             get(query::explain_ledger_tail).post(query::explain_ledger_tail),
         )
+        // BM25 full-text search query (index provider-aware)
+        .route("/graph-source/bm25/query", post(graph_source::bm25_query))
         // Transaction endpoints
         .route("/update", post(transact::update))
         .route("/update/*ledger", post(transact::update_ledger_tail))

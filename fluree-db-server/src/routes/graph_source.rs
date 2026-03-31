@@ -1,7 +1,7 @@
-//! Graph source lifecycle endpoints: BM25 full-text index management.
+//! Graph source endpoints: BM25 full-text index management and querying.
 //!
-//! These endpoints allow creating, syncing, checking, and dropping BM25
-//! full-text indexes via the HTTP API. All are admin-auth protected.
+//! Lifecycle endpoints (create, sync, status, drop) are admin-auth protected.
+//! The query endpoint is on the public v1 router for data access.
 
 use crate::error::{Result, ServerError};
 use crate::state::AppState;
@@ -166,4 +166,56 @@ pub async fn bm25_drop(
         deleted_snapshots: result.deleted_snapshots,
         was_already_retracted: result.was_already_retracted,
     }))
+}
+
+// ===== BM25 Query =====
+
+/// POST /v1/fluree/graph-source/bm25/query
+///
+/// Execute a query with BM25 full-text search support. This enables
+/// `f:searchText` patterns (and `f:queryVector` if the vector feature is
+/// compiled in) that search against BM25 graph source indexes.
+///
+/// The query body must include a `from` field specifying the source ledger.
+/// Example:
+/// ```json
+/// {
+///   "from": "mydb:main",
+///   "where": [
+///     {"@id": "?doc", "@type": "ex:Article"},
+///     {"f:searchText": {"f:graphSource": "search:main", "f:query": "rust async", "f:result": "?doc"}}
+///   ],
+///   "select": {"?doc": ["@id", "ex:title"]}
+/// }
+/// ```
+pub async fn bm25_query(
+    State(state): State<Arc<AppState>>,
+    Json(query_json): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>> {
+    let result = state
+        .fluree
+        .query_connection_with_bm25(&query_json)
+        .await
+        .map_err(ServerError::Api)?;
+
+    // Resolve the primary ledger for formatting (IRI compaction).
+    // Extract the first ledger from the query's `from` clause.
+    let from = query_json
+        .get("from")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ServerError::bad_request(
+                "BM25 query requires a 'from' field specifying the source ledger",
+            )
+        })?;
+
+    let view = state.fluree.db(from).await.map_err(ServerError::Api)?;
+
+    let config = fluree_db_api::FormatterConfig::default();
+    let json = result
+        .format_async(view.as_graph_db_ref(), &config)
+        .await
+        .map_err(|e| ServerError::internal(format!("Failed to format results: {}", e)))?;
+
+    Ok(Json(json))
 }

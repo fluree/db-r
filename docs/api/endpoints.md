@@ -2370,6 +2370,67 @@ curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/drop \
   -d '{"graph_source_id": "search:main"}'
 ```
 
+### POST /v1/fluree/graph-source/bm25/query
+
+Execute a query with BM25 full-text search support. This enables `f:searchText`
+patterns that search against BM25 graph source indexes created via the
+`/bm25/create` endpoint.
+
+**No admin auth required** — this is a read/query operation.
+
+The query body must include a `from` field specifying the source ledger.
+
+```
+POST /v1/fluree/graph-source/bm25/query
+Content-Type: application/json
+```
+
+**Request body:**
+```json
+{
+  "from": "mydb:main",
+  "where": [
+    {"@id": "?doc", "@type": "ex:Article"},
+    {"f:searchText": {
+      "f:graphSource": "search:main",
+      "f:query": "rust concurrency",
+      "f:result": "?doc"
+    }}
+  ],
+  "select": {"?doc": ["@id", "ex:title", "ex:content"]}
+}
+```
+
+**Response (200):**
+```json
+[
+  {
+    "@id": "ex:article-42",
+    "ex:title": "Fearless Concurrency in Rust",
+    "ex:content": "Rust's ownership model enables..."
+  }
+]
+```
+
+The `f:searchText` pattern binds matching document IRIs to the result variable.
+The `f:graphSource` field specifies which BM25 index to search (created via
+`/bm25/create`). Regular query patterns (filters, joins, nested selects) work
+alongside the search pattern.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "mydb:main",
+    "where": [
+      {"@id": "?doc"},
+      {"f:searchText": {"f:graphSource": "search:main", "f:query": "async await", "f:result": "?doc"}}
+    ],
+    "select": {"?doc": ["@id", "ex:title"]}
+  }'
+```
+
 ## Admin Endpoints
 
 ### POST /admin/index

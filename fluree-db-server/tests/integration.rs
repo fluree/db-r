@@ -2943,3 +2943,69 @@ async fn min_t_header_enforces_read_after_write() {
         status,
     );
 }
+
+// ============================================================================
+// BM25 query endpoint tests
+// ============================================================================
+
+#[tokio::test]
+async fn bm25_query_endpoint_requires_from_field() {
+    let (_tmp, state) = test_state().await;
+    let app = build_router(state);
+
+    // Query without `from` should return an error (400 or 500)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"select":{"?s":["*"]}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_client_error() || resp.status().is_server_error(),
+        "Missing 'from' should return an error, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn bm25_query_endpoint_accepts_valid_query() {
+    let (_tmp, state) = test_state().await;
+
+    // Create a ledger so the `from` resolves
+    let app = build_router(state.clone());
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/fluree/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"ledger":"bm25q-test"}"#))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // A simple query (no BM25 pattern) should still work through the
+    // BM25-aware path since it falls back gracefully.
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"from":"bm25q-test:main","where":{"@id":"?s"},"select":{"?s":["@id"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
