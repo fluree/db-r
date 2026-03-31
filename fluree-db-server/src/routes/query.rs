@@ -171,16 +171,21 @@ fn get_ledger_id(
     body: &JsonValue,
 ) -> Result<String> {
     // Priority: path > header > body.from
+    //
+    // For all sources, strip any time-travel suffix (@t:N, @iso:, @commit:)
+    // and graph fragment (#...) so the returned ID is always a clean ledger
+    // identifier. The full suffix is preserved in the query body's `from`
+    // field for dataset path routing.
     if let Some(ledger) = path_ledger {
-        return Ok(ledger.to_string());
+        return Ok(base_ledger_id(ledger).unwrap_or_else(|_| ledger.to_string()));
     }
 
     if let Some(ledger) = &headers.ledger {
-        return Ok(ledger.clone());
+        return Ok(base_ledger_id(ledger).unwrap_or_else(|_| ledger.clone()));
     }
 
     if let Some(from) = body.get("from").and_then(|v| v.as_str()) {
-        return Ok(from.to_string());
+        return Ok(base_ledger_id(from).unwrap_or_else(|_| from.to_string()));
     }
 
     Err(ServerError::MissingLedger)
@@ -340,7 +345,50 @@ pub async fn query(
             };
         }
 
-        match state.fluree.query_from().sparql(&sparql).execute_formatted().await {
+        // Inject auth-derived identity and policy-class for SPARQL policy enforcement.
+        // When both are None we run the plain connection-level SPARQL. When either
+        // is Some we must extract the primary ledger from the SPARQL FROM clause and
+        // route through ledger-scoped policy evaluation via db_with_policy().
+        let identity = effective_identity(&credential, &bearer);
+        let policy_class = data_auth.default_policy_class.as_deref();
+
+        let conn_result = if identity.is_none() && policy_class.is_none() {
+            state
+                .fluree
+                .query_from()
+                .sparql(&sparql)
+                .execute_formatted()
+                .await
+        } else {
+            match fluree_db_api::sparql_dataset_ledger_ids(&sparql) {
+                Ok(ids) => match ids.first() {
+                    Some(primary_ledger) => {
+                        let opts = fluree_db_api::QueryConnectionOptions {
+                            identity: identity.as_deref().map(str::to_string),
+                            policy_class: policy_class.map(|pc| vec![pc.to_string()]),
+                            ..Default::default()
+                        };
+                        match state.fluree.db_with_policy(primary_ledger, &opts).await {
+                            Ok(view) => {
+                                view.query(state.fluree.as_ref())
+                                    .sparql(&sparql)
+                                    .execute_formatted()
+                                    .await
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    None => Err(fluree_db_api::ApiError::query(
+                        "Connection-scoped SPARQL with identity/policy requires a FROM clause specifying the ledger",
+                    )),
+                },
+                Err(_) => Err(fluree_db_api::ApiError::query(
+                    "Could not parse FROM clause for policy evaluation in connection-scoped SPARQL",
+                )),
+            }
+        };
+
+        match conn_result {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -469,6 +517,20 @@ pub async fn query_ledger(
 
     let delimited = wants_delimited(&headers);
 
+    // If the URL path contains a time-travel suffix (e.g., mydb:main@t:1) or
+    // graph fragment (e.g., mydb:main#txn-meta), strip it from the ledger ID
+    // and preserve the full string for `from` injection below.
+    let (base_ledger, has_time_travel) = {
+        let (no_frag, _frag) = split_graph_fragment(&ledger);
+        match fluree_db_core::ledger_id::split_time_travel_suffix(no_frag) {
+            Ok((base, time_spec)) => {
+                let has_suffix = time_spec.is_some() || _frag.is_some();
+                (base.to_string(), has_suffix)
+            }
+            Err(_) => (ledger.clone(), false),
+        }
+    };
+
     // Handle SPARQL query - ledger is known from path
     if is_sparql_request(&headers, &credential, &params) {
         let sparql = resolve_sparql_text(&params, &credential)?;
@@ -478,15 +540,24 @@ pub async fn query_ledger(
 
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
-            if !credential.is_signed() && !p.can_read(&ledger) {
+            if !credential.is_signed() && !p.can_read(&base_ledger) {
                 set_span_error_code(&span, "error:Forbidden");
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }
 
         let identity = effective_identity(&credential, &bearer);
-        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited, &headers)
-            .await;
+        let policy_class = data_auth.default_policy_class.as_deref();
+        return execute_sparql_ledger(
+            &state,
+            &base_ledger,
+            &sparql,
+            identity.as_deref(),
+            policy_class,
+            delimited,
+            &headers,
+        )
+        .await;
     }
 
     // Handle JSON-LD query (JSON body)
@@ -499,8 +570,23 @@ pub async fn query_ledger(
         }
     }
 
-    // Get ledger id (path takes precedence)
-    let ledger_id = match get_ledger_id(Some(&ledger), &headers, &query_json) {
+    // When the URL path contains time-travel or fragment suffixes (e.g.,
+    // mydb:main@t:1 or mydb:main#txn-meta), inject the full path as `from`
+    // so that requires_dataset_features() routes through the dataset path
+    // which knows how to handle time specs and graph fragments.
+    if has_time_travel {
+        if let Some(obj) = query_json.as_object_mut() {
+            if !obj.contains_key("from") {
+                obj.insert(
+                    "from".to_string(),
+                    JsonValue::String(ledger.clone()),
+                );
+            }
+        }
+    }
+
+    // Get ledger id (use base_ledger — the path with time-travel stripped)
+    let ledger_id = match get_ledger_id(Some(&base_ledger), &headers, &query_json) {
         Ok(ledger_id) => {
             span.record("ledger_id", ledger_id.as_str());
             ledger_id
@@ -521,7 +607,7 @@ pub async fn query_ledger(
 
     // Enforce bearer ledger scope for unsigned requests
     if let Some(p) = bearer.0.as_ref() {
-        if !credential.is_signed() && !p.can_read(&ledger) {
+        if !credential.is_signed() && !p.can_read(&base_ledger) {
             set_span_error_code(&span, "error:Forbidden");
             return Err(ServerError::not_found("Ledger not found"));
         }
@@ -1205,6 +1291,7 @@ async fn execute_sparql_ledger(
     ledger_id: &str,
     sparql: &str,
     identity: Option<&str>,
+    policy_class: Option<&str>,
     delimited: Option<DelimitedFormat>,
     headers: &FlureeHeaders,
 ) -> Result<Response> {
@@ -1267,21 +1354,8 @@ async fn execute_sparql_ledger(
                     fmt.name().to_uppercase()
                 )));
             }
-            let result = match identity {
-                Some(id) => {
-                    let opts = fluree_db_api::QueryConnectionOptions {
-                        identity: Some(id.to_string()),
-                        ..Default::default()
-                    };
-                    let view = state.fluree.db_with_policy(ledger_id, &opts).await
-                        .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?;
-                    view.query(state.fluree.as_ref())
-                        .sparql(sparql)
-                        .execute_formatted()
-                        .await
-                        .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?
-                }
-                None => state
+            let result = if identity.is_none() && policy_class.is_none() {
+                state
                     .fluree
                     .graph(ledger_id)
                     .query()
@@ -1290,13 +1364,33 @@ async fn execute_sparql_ledger(
                     .await
                     .inspect_err(|_| {
                         set_span_error_code(&span, "error:QueryFailed");
-                    })?,
+                    })?
+            } else {
+                let opts = fluree_db_api::QueryConnectionOptions {
+                    identity: identity.map(str::to_string),
+                    policy_class: policy_class.map(|pc| vec![pc.to_string()]),
+                    ..Default::default()
+                };
+                let view = state
+                    .fluree
+                    .db_with_policy(ledger_id, &opts)
+                    .await
+                    .inspect_err(|_| {
+                        set_span_error_code(&span, "error:QueryFailed");
+                    })?;
+                view.query(state.fluree.as_ref())
+                    .sparql(sparql)
+                    .execute_formatted()
+                    .await
+                    .inspect_err(|_| {
+                        set_span_error_code(&span, "error:QueryFailed");
+                    })?
             };
             return Ok((HeaderMap::new(), Json(result)).into_response());
         }
 
-        // Identity-based queries go through connection path (returns pre-formatted JSON)
-        if let Some(id) = identity {
+        // Identity/policy-based queries go through connection path (returns pre-formatted JSON)
+        if identity.is_some() || policy_class.is_some() {
             if has_dataset_clause {
                 return Err(ServerError::not_acceptable(
                     "FROM/FROM NAMED is not currently supported with identity-scoped SPARQL on the ledger-scoped endpoint".to_string(),
@@ -1320,12 +1414,19 @@ async fn execute_sparql_ledger(
                 )));
             }
             let opts = fluree_db_api::QueryConnectionOptions {
-                identity: Some(id.to_string()),
+                identity: identity.map(str::to_string),
+                policy_class: policy_class.map(|pc| vec![pc.to_string()]),
                 ..Default::default()
             };
-            let view = state.fluree.db_with_policy(ledger_id, &opts).await
-                .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?;
-            let result = view.query(state.fluree.as_ref())
+            let view = state
+                .fluree
+                .db_with_policy(ledger_id, &opts)
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })?;
+            let result = view
+                .query(state.fluree.as_ref())
                 .sparql(sparql)
                 .execute_formatted()
                 .await

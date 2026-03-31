@@ -37,9 +37,7 @@ fn detect_cgroup_memory_bytes() -> Option<u64> {
     }
 
     // cgroup v1: memory controller
-    if let Ok(content) =
-        std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    {
+    if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
         let trimmed = content.trim();
         if let Ok(bytes) = trimmed.parse::<u64>() {
             // cgroup v1 reports a very large number (close to i64::MAX) when unlimited
