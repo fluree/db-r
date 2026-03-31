@@ -138,7 +138,7 @@ impl ContentAddressedWrite for MemoryStorage {
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
         let address = content_address(STORAGE_METHOD_MEMORY, kind, ledger_id, content_hash_hex);
-        self.write_bytes(&address, bytes).await?;
+        self.insert(&address, bytes.to_vec());
         Ok(ContentWriteResult {
             address,
             content_hash: content_hash_hex.to_string(),
@@ -154,7 +154,7 @@ impl StorageCas for MemoryStorage {
         if data.contains_key(address) {
             Ok(false)
         } else {
-            data.insert(address.to_string(), bytes.to_vec());
+            data.insert(address.into(), bytes.to_vec());
             Ok(true)
         }
     }
