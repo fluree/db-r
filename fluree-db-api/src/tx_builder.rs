@@ -817,7 +817,7 @@ where
             .with_graph_delta(graph_delta.into_iter().collect());
 
         // Handle no-op
-        let (receipt, new_state) =
+        let (receipt, mut new_state) =
             if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
                 let (base, _) = view.into_parts();
                 (
@@ -843,8 +843,22 @@ where
             commit_t: receipt.t,
         };
 
+        if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            let cache_dir = std::env::temp_dir().join("fluree_binary_cache");
+            let _ = crate::ledger_manager::load_and_attach_binary_store(
+                fluree.storage(),
+                &mut new_state,
+                &cache_dir,
+                Some(std::sync::Arc::clone(fluree.leaflet_cache())),
+            )
+            .await?;
+        }
+
         // Update cache
         write_guard.replace(new_state);
+        handle
+            .sync_binary_store_from_state(write_guard.state())
+            .await;
 
         // Trigger background indexing if needed (outside cache update is fine here)
         if let IndexingMode::Background(h) = &fluree.indexing_mode {
@@ -990,7 +1004,7 @@ where
             });
         }
 
-        let (receipt, new_state) = fluree
+        let (receipt, mut new_state) = fluree
             .commit_staged(view, ns_registry, &index_config, commit_opts)
             .await?;
 
@@ -1002,8 +1016,22 @@ where
             commit_t: receipt.t,
         };
 
+        if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            let cache_dir = std::env::temp_dir().join("fluree_binary_cache");
+            let _ = crate::ledger_manager::load_and_attach_binary_store(
+                fluree.storage(),
+                &mut new_state,
+                &cache_dir,
+                Some(std::sync::Arc::clone(fluree.leaflet_cache())),
+            )
+            .await?;
+        }
+
         // Update cache
         write_guard.replace(new_state);
+        handle
+            .sync_binary_store_from_state(write_guard.state())
+            .await;
         drop(write_guard);
 
         // Trigger background indexing if needed (after cache update; no need to hold lock)

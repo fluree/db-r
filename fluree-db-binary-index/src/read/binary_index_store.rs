@@ -1536,6 +1536,7 @@ pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
     dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
 }
 
 impl BinaryGraphView {
@@ -1544,6 +1545,7 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty: None,
+            namespace_codes_fallback: None,
         }
     }
 
@@ -1562,7 +1564,22 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty,
+            namespace_codes_fallback: None,
         }
+    }
+
+    /// Provide snapshot-derived namespace codes for novelty subject decoding when
+    /// the attached store predates a namespace-adding commit.
+    pub fn with_namespace_codes_fallback(
+        mut self,
+        namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
+    ) -> Self {
+        self.namespace_codes_fallback = namespace_codes_fallback;
+        self
+    }
+
+    pub fn namespace_codes_fallback(&self) -> Option<Arc<HashMap<u16, String>>> {
+        self.namespace_codes_fallback.clone()
     }
 
     /// Decode a value from `(o_type, o_key)`. Novelty-aware when `dict_novelty`
@@ -1665,7 +1682,17 @@ impl BinaryGraphView {
                 }
             }
         }
-        let result = self.store.resolve_subject_iri(s_id);
+        let result = self.store.resolve_subject_iri(s_id).or_else(|store_err| {
+            let Some(dn) = self.dict_novelty.as_ref() else {
+                return Err(store_err);
+            };
+            match dn.subjects.resolve_subject(s_id) {
+                Some((ns_code, suffix)) => self
+                    .namespace_prefix(ns_code)
+                    .map(|prefix| format!("{}{}", prefix, suffix)),
+                None => Err(store_err),
+            }
+        });
         if let Err(err) = &result {
             tracing::debug!(
                 g_id = self.g_id,
@@ -1759,11 +1786,22 @@ impl BinaryGraphView {
         }
         // Novel — need full IRI string (prefix + suffix).
         match dn.subjects.resolve_subject(s_id) {
-            Some((ns_code, suffix)) => match self.store.namespace_prefix(ns_code) {
+            Some((ns_code, suffix)) => match self.namespace_prefix(ns_code) {
                 Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
                 Err(e) => Some(Err(e)),
             },
             None => None, // Not in DictNovelty either — fall through to store
+        }
+    }
+
+    fn namespace_prefix(&self, ns_code: u16) -> io::Result<String> {
+        match self.store.namespace_prefix(ns_code) {
+            Ok(prefix) => Ok(prefix),
+            Err(err) => self
+                .namespace_codes_fallback
+                .as_ref()
+                .and_then(|codes| codes.get(&ns_code).cloned())
+                .ok_or(err),
         }
     }
 

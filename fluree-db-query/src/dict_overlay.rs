@@ -118,6 +118,7 @@ impl DictOverlay {
                 graph_view.g_id(),
                 Some(Arc::clone(&dict_novelty)),
             )
+            .with_namespace_codes_fallback(graph_view.namespace_codes_fallback())
         };
 
         Self {

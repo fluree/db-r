@@ -1098,7 +1098,8 @@ impl BinaryScanOperator {
             Arc::clone(&store_arc),
             self.g_id,
             dict_novelty_arc.clone(),
-        );
+        )
+        .with_namespace_codes_fallback(ctx.and_then(|c| c.namespace_codes_fallback.clone()));
         // DictOverlay is no longer needed here for decoding — BinaryGraphView
         // handles watermark routing internally. DictOverlay is still used for
         // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.

@@ -224,7 +224,8 @@ impl Operator for PredicateGroupCountFirstsOperator {
             Arc::clone(binary_index_store),
             g_id,
             ctx.dict_novelty.clone(),
-        );
+        )
+        .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -1369,7 +1370,8 @@ fn compute_group_by_object_star_topk(
     }
 
     // Build output columns.
-    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone());
+    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone())
+        .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
     let dt_count = WellKnownDatatypes::new().xsd_long;
 
     let mut col_o1: Vec<Binding> = Vec::with_capacity(rows.len());

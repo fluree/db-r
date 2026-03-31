@@ -280,6 +280,20 @@ impl LedgerHandle {
         }
     }
 
+    /// Keep the out-of-band cached binary store coherent with the current state.
+    ///
+    /// Call this while holding the state lock, after replacing or mutating the
+    /// `LedgerState`, so `snapshot()` returns a `binary_store` value that matches
+    /// `snapshot.range_provider`.
+    pub async fn sync_binary_store_from_state(&self, state: &LedgerState) {
+        let binary_store = state.binary_store.as_ref().and_then(|te| {
+            std::sync::Arc::clone(&te.0)
+                .downcast::<BinaryIndexStore>()
+                .ok()
+        });
+        *self.inner.binary_store.lock().await = binary_store;
+    }
+
     /// Update last access time
     fn touch(&self) {
         self.inner
@@ -540,7 +554,7 @@ use fluree_db_query::BinaryRangeProvider;
 /// to the LedgerState's LedgerSnapshot, and return the Arc'd store.
 ///
 /// Returns `Ok(None)` if no index_head_id is present or the root is not v2.
-async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
+pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     storage: &S,
     state: &mut LedgerState,
     cache_dir: &std::path::Path,

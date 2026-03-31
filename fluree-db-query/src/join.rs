@@ -94,7 +94,8 @@ pub(crate) fn make_dict_overlay(
 ) -> Option<crate::dict_overlay::DictOverlay> {
     ctx.dict_novelty.as_ref().map(|dn| {
         crate::dict_overlay::DictOverlay::new(
-            BinaryGraphView::with_novelty(Arc::clone(store), ctx.binary_g_id, Some(Arc::clone(dn))),
+            BinaryGraphView::with_novelty(Arc::clone(store), ctx.binary_g_id, Some(Arc::clone(dn)))
+                .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone()),
             Arc::clone(dn),
         )
     })

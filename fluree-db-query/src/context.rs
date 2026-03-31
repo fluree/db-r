@@ -92,6 +92,9 @@ pub struct ExecutionContext<'a> {
     /// shared layer (populated during commit). When absent, an uninitialized
     /// `DictNovelty` is used as fallback (routes everything to persisted tree).
     pub dict_novelty: Option<Arc<DictNovelty>>,
+    /// Snapshot-derived namespace codes used when a novelty subject resolves to
+    /// a namespace introduced after the attached binary store was loaded.
+    pub namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
     /// Ledger-scoped runtime IDs for predicates and datatypes.
     pub runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
     /// Optional spatial index providers for `Pattern::S2Search`.
@@ -152,6 +155,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            namespace_codes_fallback: None,
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
@@ -168,6 +172,9 @@ impl<'a> ExecutionContext<'a> {
     pub fn from_graph_db_ref(db: GraphDbRef<'a>, vars: &'a VarRegistry) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
         let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+        let namespace_codes_fallback = binary_store
+            .as_ref()
+            .map(|_| Arc::new(db.snapshot.namespaces().clone()));
         let runtime_small_dicts = db
             .runtime_small_dicts
             .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
@@ -193,6 +200,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store,
             binary_g_id: db.g_id,
             dict_novelty,
+            namespace_codes_fallback,
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
@@ -213,6 +221,9 @@ impl<'a> ExecutionContext<'a> {
     ) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
         let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+        let namespace_codes_fallback = binary_store
+            .as_ref()
+            .map(|_| Arc::new(db.snapshot.namespaces().clone()));
         let runtime_small_dicts = db
             .runtime_small_dicts
             .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
@@ -238,6 +249,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store,
             binary_g_id: db.g_id,
             dict_novelty,
+            namespace_codes_fallback,
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
@@ -275,6 +287,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            namespace_codes_fallback: None,
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
@@ -317,6 +330,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            namespace_codes_fallback: None,
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
@@ -355,6 +369,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            namespace_codes_fallback: None,
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
@@ -632,7 +647,11 @@ impl<'a> ExecutionContext<'a> {
             return None;
         }
         let store = self.binary_store.as_ref()?;
-        Some(store.graph_with_novelty(self.binary_g_id, self.dict_novelty.clone()))
+        Some(
+            store
+                .graph_with_novelty(self.binary_g_id, self.dict_novelty.clone())
+                .with_namespace_codes_fallback(self.namespace_codes_fallback.clone()),
+        )
     }
 
     /// Decode an `EncodedLit` binding value using DictNovelty-aware routing.
@@ -712,6 +731,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            namespace_codes_fallback: self.namespace_codes_fallback.clone(),
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
@@ -759,6 +779,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            namespace_codes_fallback: self.namespace_codes_fallback.clone(),
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
@@ -797,6 +818,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None, // GraphRef doesn't have binary store
             binary_g_id: graph.g_id,
             dict_novelty: None, // GraphRef doesn't have dict novelty
+            namespace_codes_fallback: None,
             runtime_small_dicts: None,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,

@@ -336,6 +336,18 @@ where
         )
         .map_err(|e| e.into_api_error())?;
 
+        let mut new_state = new_state;
+        if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            let cache_dir = std::env::temp_dir().join("fluree_binary_cache");
+            let _ = crate::ledger_manager::load_and_attach_binary_store(
+                self.storage(),
+                &mut new_state,
+                &cache_dir,
+                Some(std::sync::Arc::clone(self.leaflet_cache())),
+            )
+            .await?;
+        }
+
         // 8) Compute indexing status from the updated state.
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
         let indexing_needed = new_state.should_reindex(index_config);
@@ -349,6 +361,7 @@ where
         };
 
         guard.replace(new_state);
+        handle.sync_binary_store_from_state(guard.state()).await;
 
         // 9) Trigger background indexing if enabled and needed.
         if let IndexingMode::Background(idx_handle) = &self.indexing_mode {

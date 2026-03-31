@@ -407,7 +407,8 @@ impl Operator for GeoSearchOperator {
             }
             // Build DictOverlay for ephemeral ID translation.
             if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
-                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()));
+                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()))
+                    .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
                 let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
                 self.dict_overlay = Some(dict_ov);
             }
