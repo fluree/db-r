@@ -1240,6 +1240,8 @@ pub struct MergeBranchResponse {
     pub fast_forward: bool,
     /// New commit HEAD t of the target
     pub new_head_t: i64,
+    /// Number of commit blobs copied to the target namespace
+    pub commits_copied: usize,
 }
 
 /// Merge a source branch into a target branch
@@ -1338,6 +1340,7 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
             source: report.source,
             fast_forward: report.fast_forward,
             new_head_t: report.new_head_t,
+            commits_copied: report.commits_copied,
         };
 
         tracing::info!(

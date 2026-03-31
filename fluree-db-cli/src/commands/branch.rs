@@ -534,8 +534,8 @@ async fn run_merge(
                 .await?;
 
             println!(
-                "Merged '{}' into '{}' (fast-forward to t={}).",
-                report.source, report.target, report.new_head_t,
+                "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+                report.source, report.target, report.new_head_t, report.commits_copied,
             );
         }
     }
@@ -556,10 +556,14 @@ fn print_merge_result(result: &serde_json::Value) -> CliResult<()> {
         .get("new_head_t")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
+    let commits_copied = result
+        .get("commits_copied")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     println!(
-        "Merged '{}' into '{}' (fast-forward to t={}).",
-        source, target, new_t,
+        "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+        source, target, new_t, commits_copied,
     );
     Ok(())
 }
