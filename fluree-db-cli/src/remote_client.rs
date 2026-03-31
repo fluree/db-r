@@ -893,6 +893,32 @@ impl RemoteLedgerClient {
         .await
     }
 
+    /// Merge a branch into its target on the remote server.
+    ///
+    /// Calls `POST {base_url}/merge`.
+    pub async fn merge_branch(
+        &self,
+        ledger: &str,
+        source: &str,
+        target: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("merge");
+        let mut body = serde_json::json!({
+            "ledger": ledger,
+            "source": source,
+        });
+        if let Some(t) = target {
+            body["target"] = serde_json::Value::String(t.to_string());
+        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
     /// List all branches for a ledger on the remote server.
     ///
     /// Calls `GET {base_url}/branch/{ledger}`.
