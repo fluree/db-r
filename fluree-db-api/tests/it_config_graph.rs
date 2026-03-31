@@ -1616,3 +1616,184 @@ async fn unique_different_values_allowed() {
         .await
         .expect("different values for unique property should be allowed");
 }
+
+// =============================================================================
+// Issue #127: Upsert self-conflict on f:enforceUnique
+// =============================================================================
+
+/// Regression test for https://github.com/fluree/db-r/issues/127
+///
+/// Upserting an entity with the same `f:enforceUnique` value it already holds
+/// should be an idempotent no-op (retraction + assertion cancel out), NOT a
+/// unique constraint violation against itself.
+#[tokio::test]
+async fn upsert_enforce_unique_self_conflict_should_be_noop() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-self-upsert:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Add enforceUnique annotation on ex:userId + seed an entity
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [
+                    {"@id": "ex:userId", "f:enforceUnique": true},
+                    {
+                        "@id": "ex:user1",
+                        "@type": "ex:User",
+                        "ex:userId": "u-001",
+                        "ex:displayName": "alice"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: Enable unique enforcement in config
+    let result = write_unique_config(&fluree, ledger, ledger_id).await;
+    let ledger = result.ledger;
+
+    // Step 3: Upsert the SAME entity with the SAME unique value (idempotent update)
+    // This is the exact pattern from issue #127: re-asserting the same
+    // f:enforceUnique value on the same entity should succeed.
+    let result = fluree
+        .upsert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:user1",
+                "@type": "ex:User",
+                "ex:userId": "u-001",
+                "ex:displayName": "alice-updated"
+            }),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "upsert of same entity with same unique value should succeed (not self-conflict): {:?}",
+        result.err()
+    );
+    let ledger = result.unwrap().ledger;
+
+    // Step 4: Verify entity appears exactly once
+    let query = json!({
+        "@context": {"ex": "http://example.org/"},
+        "where": {"@id": "?u", "@type": "ex:User", "ex:userId": "u-001"},
+        "select": {"?u": ["*"]}
+    });
+    let rows = support::query_jsonld_formatted(&fluree, &ledger, &query)
+        .await
+        .expect("query should succeed");
+    let arr = rows.as_array().expect("result should be array");
+    assert_eq!(
+        arr.len(),
+        1,
+        "entity should appear exactly once after idempotent upsert, got: {arr:#?}"
+    );
+
+    // Step 5: Verify the displayName was updated
+    let entity = &arr[0];
+    assert_eq!(
+        entity.get("ex:displayName").and_then(|v| v.as_str()),
+        Some("alice-updated"),
+        "displayName should be updated"
+    );
+}
+
+/// Regression test for https://github.com/fluree/db-r/issues/127 (corruption variant)
+///
+/// Even if an upsert fails (e.g., a genuine unique constraint violation), the
+/// failure must NOT corrupt in-memory state. A subsequent successful transaction
+/// must leave the ledger in a consistent state.
+#[tokio::test]
+async fn failed_upsert_does_not_corrupt_in_memory_state() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/unique-no-corrupt:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Step 1: Add enforceUnique annotation + seed two entities with distinct values
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [
+                    {"@id": "ex:email", "f:enforceUnique": true},
+                    {"@id": "ex:alice", "ex:email": "alice@example.com", "ex:name": "Alice"},
+                    {"@id": "ex:bob", "ex:email": "bob@example.com", "ex:name": "Bob"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Step 2: Enable unique enforcement
+    let result = write_unique_config(&fluree, ledger, ledger_id).await;
+    let ledger = result.ledger;
+
+    // Step 3: Attempt an insert that SHOULD fail (bob tries to claim alice's email)
+    let err = fluree
+        .insert(
+            ledger.clone(),
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:bob",
+                "ex:email": "alice@example.com"
+            }),
+        )
+        .await;
+    assert!(err.is_err(), "should fail with unique constraint violation");
+
+    // Step 4: Perform a SECOND successful transaction on the same ledger state.
+    // If the failed transaction corrupted in-memory state, this commit
+    // would persist the corruption.
+    let result = fluree
+        .insert(
+            ledger.clone(),
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:charlie",
+                "ex:email": "charlie@example.com",
+                "ex:name": "Charlie"
+            }),
+        )
+        .await
+        .expect("subsequent insert should succeed");
+    let ledger = result.ledger;
+
+    // Step 5: Verify alice is NOT duplicated
+    let query = json!({
+        "@context": {"ex": "http://example.org/"},
+        "where": {"@id": "?u", "ex:email": "alice@example.com"},
+        "select": {"?u": ["*"]}
+    });
+    let rows = support::query_jsonld_formatted(&fluree, &ledger, &query)
+        .await
+        .expect("query should succeed");
+    let arr = rows.as_array().expect("result should be array");
+    assert_eq!(
+        arr.len(),
+        1,
+        "alice should appear exactly once (no duplication from failed txn): {arr:#?}"
+    );
+
+    // Step 6: Verify alice's properties are intact
+    let alice = &arr[0];
+    assert_eq!(
+        alice.get("ex:name").and_then(|v| v.as_str()),
+        Some("Alice"),
+        "alice's properties should be intact after failed upsert + subsequent commit"
+    );
+}

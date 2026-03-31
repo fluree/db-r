@@ -1876,7 +1876,9 @@ async fn single_ledger_dataset_string_functions() {
         .await
         .expect("CONTAINS query through dataset");
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
     assert_eq!(
         normalize_flat_results(&jsonld),
         normalize_flat_results(&json!(["Alice"]))
@@ -1895,7 +1897,9 @@ async fn single_ledger_dataset_string_functions() {
         .query_dataset(&dataset, QueryInput::Sparql(strlen))
         .await
         .expect("STRLEN query through dataset");
-    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
     assert_eq!(
         normalize_rows_array(&jsonld),
         vec![vec![json!("Bob"), json!(3)]]
@@ -1914,7 +1918,9 @@ async fn single_ledger_dataset_string_functions() {
         .query_dataset(&dataset, QueryInput::Sparql(lcase))
         .await
         .expect("LCASE query through dataset");
-    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
     assert_eq!(
         normalize_flat_results(&jsonld),
         normalize_flat_results(&json!(["alice"]))
